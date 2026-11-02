@@ -43,7 +43,7 @@ export async function loadStructures<Structure>(
   // Loop through all the matching files in the directory
   for await (const file of glob(pattern)) {
     // Index files define shared command/event types and must not be loaded as structures.
-    if (/\/index\.(?:ts|js)$/.test(file)) {
+    if (/\/index\.(?:ts|js)$/.test(file) || file.includes('.test.')) {
       continue;
     }
 
