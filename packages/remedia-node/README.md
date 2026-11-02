@@ -1,13 +1,19 @@
 # @remedia/node
 
-This directory contains the Rust N-API crate and private pnpm package for Remedia's Node.js
-bindings. It is currently a smoke-test scaffold: the native addon exports `plus_100(input)`, and it
-is not connected to `remedia-core` yet.
+This directory contains the Rust N-API crate and private pnpm package for Remedia's embedded Node.js
+bindings. The addon calls `remedia-core`, `remedia-discord`, and `remedia-observability` directly in
+the Node process; it does not use `remedia-server` as an intermediary.
 
-The intended integration is embedded and in-process: a future N-API API will call native Rust
-engine code directly. It is separate from the future standalone remote server. Client-provided
-streams and buffers are intended for local bindings initially; neither capability is implemented
-in this scaffold.
+The TypeScript entrypoint exports `Remedia`, `PlaybackSession`, and `DiscordSession`. Playback
+accepts explicit local-file or HTTP(S)-URL sources. Standalone playback currently decodes into a
+null output; Discord sessions encode PCM to Opus in `remedia-core` and send packets through the
+existing voice transport. The application must obtain Discord voice session data through its own
+Gateway client. Client-provided streams and buffers are not supported yet.
+
+Each `Remedia` owns an isolated observability context. Rust diagnostics are forwarded through a
+bounded callback queue with `on('debug', listener)`; use `close()` to stop sessions, disconnect
+transports, and shut down owned telemetry. Operational errors reject API Promises and remain
+available on session state independently of diagnostic delivery.
 
 ## Development
 
@@ -18,7 +24,8 @@ pnpm --filter @remedia/node test
 pnpm --filter @remedia/node build
 ```
 
-The test command builds the debug addon and runs the Node.js smoke test. Generated native bindings
-are build artifacts; the package is private and is not currently published. See the
-[Node.js bindings topic](../../apps/docs/content/docs/node/bindings.mdx) for the current status and
-planned boundary.
+The test command builds the debug addon and runs local Node.js integration tests. `build` creates a
+release addon and TypeScript declarations. N-API loader/declaration files are generated from the
+Rust source by `@napi-rs/cli`; the package is private and is not published. See the
+[Node.js bindings topic](../../apps/docs/content/docs/node/bindings.mdx) for the API and current
+limitations.

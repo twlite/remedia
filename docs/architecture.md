@@ -3,8 +3,8 @@
 This document distinguishes implemented behavior from design intentions. `remedia-core` implements
 file/HTTP-to-PCM decoding, playback sessions, generic output, and transport-independent Opus
 encoding. `remedia-discord` implements one outbound voice connection with DAVE and RTP-size
-transport encryption. The server remains starter code. The N-API package has a minimal smoke export
-but is not yet connected to the engine.
+transport encryption. The server remains starter code. The N-API package now exposes initial native
+playback, Discord session, and diagnostics APIs.
 
 ## Rust crates
 
@@ -30,25 +30,32 @@ but is not yet connected to the engine.
   that lifecycle. Export is off by default; the crate does not export OTLP logs.
 - **`remedia-server`** is intended to run the engine as a standalone remote service and expose
   operations over a WebSocket RPC protocol.
-- **`remedia-node`** contains the Rust N-API crate. It is intended to call the engine directly in the
-  Node.js process instead of routing local calls through the standalone server; the current smoke
-  export does not yet provide that integration.
+- **`remedia-node`** contains the Rust N-API crate and thin TypeScript wrapper. `Remedia` owns
+  isolated native playback sessions, Discord voice connections, and one bounded diagnostics
+  forwarder. Native playback methods run on NAPI-RS's managed Tokio runtime; blocking core methods
+  are dispatched to blocking workers. A caller-owned cancellation token covers the gap before a
+  scheduled decoder worker starts, so concurrent stop, dispose, or close cannot leave a late
+  playback worker behind. Standalone sessions currently decode into `NullOutput`,
+  while Discord sessions use the core Opus output adapter. The addon does not install a global
+  tracing subscriber. It is private and under development; it does not accept Node streams or
+  buffers and does not implement server RPC.
 
-The core decoder, playback, Opus, and outbound Discord transport APIs exist. Server RPC, N-API
-playback integration, receiving audio, and device output remain design intentions. Add crates or
+The core decoder, playback, Opus, outbound Discord transport, and first N-API playback integration
+exist. Server RPC, receiving audio, and device output remain design intentions. Add crates or
 packages only when implementation needs them.
 
-The bounded `DiagnosticReceiver` in `remedia-observability` is an internal Rust event-routing seam
-for a future N-API bridge. It does not emit JavaScript events. A future Node binding may forward
-those structured events through a bounded `ThreadsafeFunction` pump; no JavaScript debug-event API
-is implemented yet. The standalone server can initialize the same shared context when server
-runtime work begins.
+The bounded `DiagnosticReceiver` in `remedia-observability` is connected to the Node wrapper by one
+dedicated forwarding worker and a bounded N-API `ThreadsafeFunction`. The receiver is per
+`Remedia` context; clones compete for events and are not broadcasts. The wrapper exposes structured
+events through `on('debug', listener)` and reports events dropped by either bounded queue. Embedded
+contexts disable console output by default to avoid duplicating events handled by JavaScript. The
+standalone server can initialize the same shared context when server runtime work begins.
 
 ## Embedded and remote integration
 
 Embedded Node.js integration is intended for local applications that need direct native access.
-It may ingest client-provided streams or buffers because the binding and the producer run in the
-same process.
+Future local bindings may ingest client-provided streams or buffers because the binding and producer
+run in the same process; that input path is not part of the current Node API.
 
 Remote integration runs in a separate server process. Its initial inputs are files and HTTP URLs
 that the server can access. Uploading arbitrary client-generated binary streams to the remote

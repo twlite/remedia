@@ -40,6 +40,7 @@ impl OtlpProtocol {
 pub struct ObservabilityConfig {
     filter: String,
     log_format: LogFormat,
+    console_enabled: bool,
     otel_enabled: bool,
     pub(crate) traces_protocol: OtlpProtocol,
     pub(crate) metrics_protocol: OtlpProtocol,
@@ -50,6 +51,7 @@ impl Default for ObservabilityConfig {
         Self {
             filter: "warn".to_owned(),
             log_format: LogFormat::Text,
+            console_enabled: true,
             otel_enabled: false,
             traces_protocol: OtlpProtocol::HttpProtobuf,
             metrics_protocol: OtlpProtocol::HttpProtobuf,
@@ -81,6 +83,15 @@ impl ObservabilityConfig {
         self
     }
 
+    /// Enable or disable console formatting while keeping filtered diagnostic routing active.
+    ///
+    /// Embedded hosts can disable console output when they forward structured events to their
+    /// own logger. This does not change filtering or optional OTLP export.
+    pub fn with_console_enabled(mut self, enabled: bool) -> Self {
+        self.console_enabled = enabled;
+        self
+    }
+
     /// Enable or disable OTLP traces and metrics export.
     pub fn with_otel_enabled(mut self, enabled: bool) -> Self {
         self.otel_enabled = enabled;
@@ -95,6 +106,11 @@ impl ObservabilityConfig {
     /// Return the selected console format.
     pub const fn log_format(&self) -> LogFormat {
         self.log_format
+    }
+
+    /// Return whether this configuration emits text or JSON events to stderr.
+    pub const fn console_enabled(&self) -> bool {
+        self.console_enabled
     }
 
     /// Return whether this configuration creates OTLP exporters.
@@ -173,6 +189,7 @@ impl ObservabilityConfig {
         Ok(Self {
             filter,
             log_format,
+            console_enabled: true,
             otel_enabled,
             traces_protocol,
             metrics_protocol,

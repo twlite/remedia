@@ -10,14 +10,15 @@ The repository is under active development. `remedia-core` opens local files and
 decodes them with native FFmpeg libraries, yields normalized PCM, and provides playback sessions
 with pause, resume, stop, seeking, generic output, and Opus encoding. `remedia-discord` implements
 an outbound voice transport for encoded Opus with voice gateway v8, RTP-size transport encryption,
-and DAVE through `davey`. It has not been verified against a live Discord bot yet. Remote RPC,
-audio-device output, and the Node.js engine integration are not implemented.
+and DAVE through `davey`. It has not been verified against a live Discord bot yet.
+`packages/remedia-node` provides an initial native Node.js integration for playback, Discord voice
+sessions, and structured diagnostics. Remote RPC and local audio-device output are not implemented.
 
 The intended integrations have different boundaries:
 
-- **Embedded Node.js:** `packages/remedia-node` is a minimal N-API scaffold that is intended to call
-  the Rust engine directly in the local process. It is intended to accept local inputs such as
-  client-provided streams and buffers; the current smoke-test export is not connected to the engine.
+- **Embedded Node.js:** `packages/remedia-node` calls the Rust engine directly through N-API. It
+  supports file/HTTP(S) playback and Discord voice sessions using externally obtained voice
+  credentials. Client-provided streams and buffers are not implemented.
 - **Remote server:** a future standalone server will expose the engine over a remote protocol.
   Initially, it is intended to accept files and HTTP URLs that the server itself can access.
 
@@ -27,12 +28,13 @@ not working features.
 ## Repository structure
 
 ```text
-apps/docs/                 Next.js and Fumadocs documentation site
-crates/remedia-core/       Core engine; see its README for decoding, playback, and Opus output
-crates/remedia-discord/    Discord transport; see its README for current support and limits
+apps/docs/                    Next.js and Fumadocs documentation site
+apps/discord/                 Manual Discord bot integration harness
+crates/remedia-core/          Core decoder, playback, PCM output, and Opus encoding
+crates/remedia-discord/       Discord voice transport for encoded Opus
 crates/remedia-observability/ Shared tracing, bounded diagnostics, and optional OTLP export
-crates/remedia-server/     Future remote server; currently a placeholder crate
-packages/remedia-node/     N-API scaffold; see its README for current package status
+crates/remedia-server/        Future remote server; currently a placeholder crate
+packages/remedia-node/        Native N-API bindings and TypeScript wrapper
 ```
 
 Component guides: [core](crates/remedia-core/README.md),

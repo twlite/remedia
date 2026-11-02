@@ -3,6 +3,10 @@
     "rust-lang.rust-analyzer",
     "ms-vscode.vscode-typescript-next",
     "oxc.oxc-vscode",
-    "redhat.vscode-yaml"
+    "redhat.vscode-yaml",
+    "tamasfe.even-better-toml",
+    "codezombiech.gitignore",
+    "christian-kohler.npm-intellisense",
+    "christian-kohler.path-intellisense"
   ]
 }

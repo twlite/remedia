@@ -1,5 +1,13 @@
 {
   "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll": "explicit",
+    "source.organizeImports": "never"
+  },
+  "editor.trimAutoWhitespace": false,
+  "files.insertFinalNewline": true,
+  "files.eol": "\n",
+  "npm.packageManager": "pnpm",
   "[rust]": {
     "editor.defaultFormatter": "rust-lang.rust-analyzer"
   },

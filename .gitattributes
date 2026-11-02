@@ -1,5 +1,5 @@
 * text=auto eol=lf
 
 # Generated napi-rs loader and declarations
-packages/remedia-node/index.js linguist-detectable=false
-packages/remedia-node/index.d.ts linguist-detectable=false
+packages/remedia-node/native.js linguist-detectable=false
+packages/remedia-node/native.d.ts linguist-detectable=false

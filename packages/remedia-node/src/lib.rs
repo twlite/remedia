@@ -1,6 +1,20 @@
-use napi_derive::napi;
+mod diagnostics;
+mod discord;
+mod native;
+mod playback;
+mod runtime;
+#[cfg(test)]
+mod tests;
+mod types;
+mod util;
 
-#[napi]
-pub fn plus_100(input: u32) -> u32 {
-    input + 100
-}
+pub use native::NativeRemedia;
+pub use types::{
+    NativeDiagnosticEvent, NativeDiagnosticField, NativeMediaSource, NativePlaybackPosition,
+    NativeStreamInfo, NativeVoiceOptions, NativeVoiceSessionIds,
+};
+
+pub(crate) const NAPI_DIAGNOSTIC_QUEUE_CAPACITY: usize = 128;
+pub(crate) const DIAGNOSTIC_RECEIVE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(25);
+pub(crate) type NativeResult<T> = napi::Result<T>;

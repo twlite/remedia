@@ -11,10 +11,15 @@ crate-type = ["cdylib"]
 
 [dependencies]
 napi-derive = "3.6.5"
+remedia-core = { path = "../../crates/remedia-core" }
+remedia-discord = { path = "../../crates/remedia-discord" }
+remedia-observability = { path = "../../crates/remedia-observability" }
+flume = "0.11"
+tracing = "0.1.41"
 
 [dependencies.napi]
 version = "3.12.4"
-features = ["napi3", "dyn-symbols"]
+features = ["napi3", "dyn-symbols", "tokio_rt"]
 default-features = false
 
 [build-dependencies]

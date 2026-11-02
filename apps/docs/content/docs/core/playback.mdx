@@ -18,6 +18,12 @@ Choose an explicit file or HTTP(S) source and move an output into the session.
 decoder; it returns the selected stream metadata only after that succeeds.
 Decoding and frame delivery then run on the session worker.
 
+`play_with_cancellation(source, output, token)` accepts a caller-owned
+`CancellationToken`. A token cancelled before the worker starts prevents the
+source from opening; after startup it interrupts decoder I/O. Call `stop()` as
+well to join the worker and release its output. Ordinary callers can use
+`play()`, which creates its own token and is cancelled by `stop()`.
+
 ```rust
 use remedia_core::{InputSource, NullOutput, PlaybackSession, PlaybackState};
 

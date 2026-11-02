@@ -1,33 +1,189 @@
 ---
 title: Node.js bindings
-description: Current N-API scaffold and the intended embedded integration boundary.
+description: Control native Remedia playback and Discord voice sessions from Node.js.
 ---
 
 # Node.js bindings
 
-`packages/remedia-node` is a private Rust N-API package in the Cargo and pnpm workspaces. It is
-currently a build and test scaffold: the native addon exports a small `plus_100` smoke-test
-function. It does not open media, call `remedia-core`, or provide playback APIs.
+`@remedia/node` is a Rust N-API addon with a thin TypeScript wrapper. It calls
+`remedia-core`, `remedia-discord`, and `remedia-observability` in the current
+Node process. It does not start `remedia-server` and does not install a global
+Rust tracing subscriber.
 
-## Intended integration
+The package is under development and is currently private. It supports local
+file and HTTP(S) sources. A standalone playback session decodes into a null
+output for inspection and testing; a Discord session connects the existing
+Opus output to the voice transport. Client-provided streams, buffers, a local
+audio device, server RPC, and a Discord Gateway or REST client are not
+implemented by these bindings.
 
-The planned Node.js integration is embedded in the Node process. N-API bindings will call native
-Rust engine code directly, without routing media through `remedia-server`. This should allow local
-applications to provide inputs such as client-generated streams or buffers. That input support is
-not implemented yet.
+## Build prerequisites
 
-The standalone server is a separate integration with different input constraints: it will initially
-work with files and HTTP(S) URLs reachable by the server process. See the
-[remote server overview](/docs/server/overview).
-
-## Build the current scaffold
-
-From the repository root, install workspace dependencies and run:
+Use the repository's pinned Rust toolchain, Node.js 22.18 or newer, and pnpm
+12.16.1. Building the native addon requires the FFmpeg development libraries
+used by `remedia-core` and native libopus. From the repository root:
 
 ```sh
+pnpm install --frozen-lockfile
 pnpm --filter @remedia/node test
 pnpm --filter @remedia/node build
 ```
 
-The test script builds the debug native addon and runs the package's Node.js smoke test. The
-generated addon is a local build artifact. The package is private and is not a published Node.js API.
+The test command builds a debug addon and runs local Node integration tests.
+`build` creates the release addon and TypeScript declarations. The N-API loader
+and native declarations are generated from Rust source by `@napi-rs/cli`.
+
+## Create and close an instance
+
+Create each independent engine context with `await Remedia.create()`. The
+instance owns its playback sessions, voice connections, bounded diagnostics
+queue, and optional OpenTelemetry providers. Call `close()` during normal
+shutdown; it stops playback, disconnects voice transports, flushes telemetry,
+and releases native workers. It can be called more than once.
+
+```ts
+import { Remedia } from '@remedia/node';
+
+const remedia = await Remedia.create();
+const playback = remedia.createPlaybackSession();
+
+try {
+  const media = await playback.play({ file: './audio/example.wav' });
+  console.log(media.codec, media.durationMs);
+
+  const finalState = await playback.wait();
+  console.log(finalState, playback.position);
+} finally {
+  await playback.dispose();
+  await remedia.close();
+}
+```
+
+`MediaSource` is an explicit union: `{ file: string }` or `{ url: string }`.
+The binding does not infer a source type from arbitrary strings. The returned
+`AudioStreamInfo` contains the selected stream index, codec, original sample
+rate and channel layout when known, duration when known, bit rate, and media
+metadata.
+
+Standalone sessions currently use `NullOutput`, which consumes decoded PCM as
+fast as possible and does not produce sound. Discord sessions use the
+transport-independent core Opus adapter and send the resulting packets through
+their associated voice connection.
+
+## Playback controls
+
+`PlaybackSession.state` reports `idle`, `starting`, `playing`, `pausing`,
+`resuming`, `paused`, `stopping`, `stopped`, `completed`, or `failed`.
+`play()` resolves only after the native decoder has opened and selected an
+audio stream. It rejects on initialization failure. Starting a second source
+while one is active is rejected; stop the current source first.
+
+The session methods are Promise-based where they wait on native work:
+
+```ts
+await playback.pause();
+await playback.resume();
+await playback.seek(12_500); // milliseconds
+await playback.stop();
+const outcome = await playback.wait();
+```
+
+Pausing and seeking take effect at a decoder/output boundary. `stop()` cancels
+playback but does not disconnect an associated Discord voice transport. A
+normal EOF moves to `completed`; an unrecoverable decoder or output error moves
+to `failed` and is available as `playback.error`. API failures reject their
+Promise and remain separate from debug diagnostics.
+
+`position` returns `submittedMs` and `playedMs`. The null output consumes the
+whole stream without real-time pacing, so position can advance to the end
+quickly. A Discord transport currently cannot report audible playback time;
+its `playedMs` is `null`. `durationMs` is `null` when the source does not
+provide a duration.
+
+## Discord voice sessions
+
+The application must use its own Discord Gateway integration to join the
+channel and obtain the voice session ID, token, and endpoint. It passes
+Discord snowflakes as decimal strings, preserving their full `u64` precision.
+The transport performs voice Gateway negotiation, UDP discovery, transport
+encryption, and required DAVE setup. DAVE protocol version support and live
+Discord verification are described in the [Discord voice guide](/docs/discord/voice-output).
+
+```ts
+const voice = await remedia.connectVoice({
+  guildId: '123456789012345678',
+  channelId: '234567890123456789',
+  userId: '345678901234567890',
+  sessionId: process.env.DISCORD_VOICE_SESSION_ID!,
+  token: process.env.DISCORD_VOICE_TOKEN!,
+  endpoint: process.env.DISCORD_VOICE_ENDPOINT!,
+});
+
+try {
+  await voice.play({ url: 'https://example.org/audio.mp3' });
+  console.log(voice.connectionState, await voice.wait());
+  await voice.stop(); // leaves the voice connection open
+} finally {
+  await voice.disconnect();
+}
+```
+
+`DiscordSession` extends playback controls and exposes `connectionState` and
+`connectionError`. `disconnect()` stops its current playback and releases the
+voice transport while leaving connection state inspectable. `dispose()` also
+forgets the disconnected voice and playback session. Stopping playback alone
+keeps the connection available for another source. Closing the
+owning `Remedia` instance disconnects all remaining sessions.
+
+This package does not implement channel joining, commands, REST calls, client
+streams, or server RPC. Do not log or persist the supplied voice token or
+session ID.
+
+## Structured diagnostics
+
+Register one callback per `Remedia` instance. Events preserve severity,
+tracing target, stable event name, message, structured fields, timestamp in
+Unix milliseconds, and optional internal playback/voice correlation IDs.
+These IDs are not Discord guild IDs or secret voice session IDs.
+
+```ts
+const listener = (event) => {
+  console.log(event.severity, event.event, event.playbackId, event.fields);
+};
+remedia.on('debug', listener);
+// Later:
+remedia.off('debug', listener);
+remedia.removeAllListeners('debug');
+```
+
+Media workers do not call JavaScript directly. A dedicated worker forwards one
+instance's diagnostic receiver through a bounded
+N-API `ThreadsafeFunction`; cloned receivers are not treated as broadcasts.
+Events may be dropped under backpressure. `remedia.droppedDebugEvents` reports
+drops in both bounded queues. Debug callbacks do not carry operational errors;
+those are Promise rejections, playback state, and the `error` properties.
+Structured integer fields are strings so `u64` and `i64` values retain full
+precision in JavaScript; floating-point fields remain numbers.
+
+Environment variables are read when `Remedia.create()` runs:
+
+| Variable                                         | Default                   | Behavior                                                                                                                       |
+| ------------------------------------------------ | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `REMEDIA_DEBUG=1`                                | disabled                  | Enables debug events for Remedia components.                                                                                   |
+| `REMEDIA_LOG`                                    | `warn`                    | Tracing filter, for example `remedia_core=info,remedia_discord=debug`; takes precedence over `REMEDIA_DEBUG`.                  |
+| `REMEDIA_LOG_FORMAT`                             | `text`                    | Accepts `text` or `json`. Console output is disabled for this embedded binding so the JS callback is not duplicated to stderr. |
+| `REMEDIA_OTEL_ENABLED`                           | `false`                   | Set to `true` to enable OTLP traces and metrics.                                                                               |
+| `OTEL_SERVICE_NAME`                              | OpenTelemetry SDK default | Service resource name.                                                                                                         |
+| `OTEL_RESOURCE_ATTRIBUTES`                       | OpenTelemetry SDK default | Standard resource attributes.                                                                                                  |
+| `OTEL_EXPORTER_OTLP_*`                           | HTTP/protobuf defaults    | Standard shared and signal-specific endpoint/protocol settings.                                                                |
+| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | parent-based always-on    | Standard trace sampler configuration, validated when export is enabled.                                                        |
+
+OTLP exporters run asynchronously and are opt-in. `close()` flushes and shuts
+down the providers owned by that instance. These bindings do not install or
+replace a process-global tracing subscriber, so they can coexist with host
+application diagnostics. Core and Discord do not depend on Node.js.
+
+For Rust-level observability setup and metric semantics, see the
+[observability guide](/docs/observability/configuration). For the native media
+and transport boundaries, see the [decoding guide](/docs/core/decoding) and
+the [Discord voice guide](/docs/discord/voice-output).

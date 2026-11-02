@@ -55,7 +55,7 @@ pub struct Observability {
     tracer_provider: Option<SdkTracerProvider>,
     meter_provider: Option<SdkMeterProvider>,
     writer_guard: Option<WorkerGuard>,
-    console_error_counter: ErrorCounter,
+    console_error_counter: Option<ErrorCounter>,
 }
 
 impl Observability {
@@ -68,13 +68,6 @@ impl Observability {
             })?;
 
         let (diagnostics_layer, diagnostics) = DiagnosticsLayer::bounded(DIAGNOSTIC_QUEUE_CAPACITY);
-        let (console_writer, writer_guard) = NonBlockingBuilder::default()
-            .buffered_lines_limit(CONSOLE_QUEUE_CAPACITY)
-            .lossy(true)
-            .thread_name("remedia-log-writer")
-            .finish(io::stderr());
-        let console_error_counter = console_writer.error_counter();
-
         let (tracer_provider, meter_provider, metrics, otel_layer) = if config.otel_enabled() {
             let (tracer_provider, meter_provider, metrics) = build_otel(&config)?;
             let tracer = tracer_provider.tracer("remedia");
@@ -96,35 +89,44 @@ impl Observability {
             (None, None, RemediaMetrics::default(), None)
         };
 
-        let console_filter = filter.clone();
-        let event_filter = filter;
-        let layers: Box<dyn Layer<Registry> + Send + Sync> = match config.log_format() {
-            LogFormat::Text => {
-                let console = tracing_subscriber::fmt::layer()
-                    .with_writer(console_writer)
-                    .with_target(true)
-                    .with_ansi(false)
-                    .with_filter(console_filter);
-                let events = diagnostics_layer.with_filter(event_filter);
-                match otel_layer {
-                    Some(otel) => Box::new(console.and_then(events).and_then(otel)),
-                    None => Box::new(console.and_then(events)),
-                }
-            }
-            LogFormat::Json => {
-                let console = tracing_subscriber::fmt::layer()
-                    .json()
-                    .with_writer(console_writer)
-                    .with_target(true)
-                    .with_ansi(false)
-                    .with_filter(console_filter);
-                let events = diagnostics_layer.with_filter(event_filter);
-                match otel_layer {
-                    Some(otel) => Box::new(console.and_then(events).and_then(otel)),
-                    None => Box::new(console.and_then(events)),
-                }
-            }
+        let events: Box<dyn Layer<Registry> + Send + Sync> =
+            Box::new(diagnostics_layer.with_filter(filter.clone()));
+        let (console, writer_guard, console_error_counter) = if config.console_enabled() {
+            let (writer, guard) = NonBlockingBuilder::default()
+                .buffered_lines_limit(CONSOLE_QUEUE_CAPACITY)
+                .lossy(true)
+                .thread_name("remedia-log-writer")
+                .finish(io::stderr());
+            let error_counter = writer.error_counter();
+            let layer: Box<dyn Layer<Registry> + Send + Sync> = match config.log_format() {
+                LogFormat::Text => Box::new(
+                    tracing_subscriber::fmt::layer()
+                        .with_writer(writer)
+                        .with_target(true)
+                        .with_ansi(false)
+                        .with_filter(filter),
+                ),
+                LogFormat::Json => Box::new(
+                    tracing_subscriber::fmt::layer()
+                        .json()
+                        .with_writer(writer)
+                        .with_target(true)
+                        .with_ansi(false)
+                        .with_filter(filter),
+                ),
+            };
+            (Some(layer), Some(guard), Some(error_counter))
+        } else {
+            (None, None, None)
         };
+
+        let mut layers: Box<dyn Layer<Registry> + Send + Sync> = match console {
+            Some(console) => Box::new(console.and_then(events)),
+            None => events,
+        };
+        if let Some(otel) = otel_layer {
+            layers = Box::new(layers.and_then(otel));
+        }
         let dispatch = Dispatch::new(Registry::default().with(layers));
         let handle = ObservabilityHandle {
             dispatch: Some(dispatch.clone()),
@@ -137,7 +139,7 @@ impl Observability {
             diagnostics,
             tracer_provider,
             meter_provider,
-            writer_guard: Some(writer_guard),
+            writer_guard,
             console_error_counter,
         })
     }
@@ -168,7 +170,9 @@ impl Observability {
 
     /// Return the number of console lines dropped because the bounded writer was full.
     pub fn dropped_console_lines(&self) -> u64 {
-        self.console_error_counter.dropped_lines() as u64
+        self.console_error_counter
+            .as_ref()
+            .map_or(0, |counter| counter.dropped_lines() as u64)
     }
 
     /// Flush pending traces and metrics. No-op when OTLP is disabled.
@@ -359,7 +363,7 @@ mod tests {
                 tracer_provider: Some(tracer_provider),
                 meter_provider: Some(meter_provider),
                 writer_guard: None,
-                console_error_counter,
+                console_error_counter: Some(console_error_counter),
             },
             writer_guard,
         )
@@ -380,6 +384,29 @@ mod tests {
         let second = Observability::new(ObservabilityConfig::default()).unwrap();
         assert!(first.handle().dispatch().is_some());
         assert!(second.handle().dispatch().is_some());
+    }
+
+    #[test]
+    fn console_can_be_disabled_while_structured_diagnostics_remain_enabled() {
+        let config = ObservabilityConfig::default()
+            .with_filter("info")
+            .unwrap()
+            .with_console_enabled(false);
+        let telemetry = Observability::new(config).unwrap();
+        let diagnostics = telemetry.diagnostics();
+        let dispatch = telemetry.handle().dispatch().unwrap().clone();
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(
+                name: "core.test.diagnostics_only",
+                target: "remedia_core::test",
+                "structured event remains active"
+            );
+        });
+
+        let event = diagnostics.try_recv().unwrap();
+        assert_eq!(event.event, "core.test.diagnostics_only");
+        assert_eq!(telemetry.dropped_console_lines(), 0);
     }
 
     #[test]

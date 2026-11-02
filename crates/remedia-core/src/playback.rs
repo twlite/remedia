@@ -205,9 +205,29 @@ impl PlaybackSession {
         source: InputSource,
         output: O,
     ) -> Result<AudioStreamInfo, PlaybackError> {
+        self.play_with_cancellation(source, output, CancellationToken::new())
+    }
+
+    /// Open a source using a caller-owned cancellation signal.
+    ///
+    /// If the token is cancelled before the worker starts, playback does not
+    /// begin. Once started, cancelling the token interrupts decoder I/O; call
+    /// [`stop`](Self::stop) to join the worker and release its output.
+    pub fn play_with_cancellation<O: MediaOutput>(
+        &self,
+        source: InputSource,
+        output: O,
+        cancellation: CancellationToken,
+    ) -> Result<AudioStreamInfo, PlaybackError> {
         let start_guard = lock(&self.start_lock);
+        if cancellation.is_cancelled() {
+            return Err(PlaybackError::Cancelled);
+        }
         {
             let data = lock(&self.shared.data);
+            if cancellation.is_cancelled() {
+                return Err(PlaybackError::Cancelled);
+            }
             if data.stopping || is_active(data.state) {
                 return Err(PlaybackError::InvalidState {
                     operation: "start playback",
@@ -216,14 +236,19 @@ impl PlaybackSession {
             }
         }
         self.reap_previous_worker()?;
+        if cancellation.is_cancelled() {
+            return Err(PlaybackError::Cancelled);
+        }
 
         let output: Arc<dyn MediaOutput> = Arc::new(output);
-        let cancellation = CancellationToken::new();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
 
         let source_kind = source.kind();
         let (generation, playback_id) = {
             let mut data = lock(&self.shared.data);
+            if cancellation.is_cancelled() {
+                return Err(PlaybackError::Cancelled);
+            }
             if data.stopping {
                 return Err(PlaybackError::InvalidState {
                     operation: "start playback",
@@ -1513,6 +1538,22 @@ mod tests {
         );
 
         session.stop().unwrap();
+    }
+
+    #[test]
+    fn pre_cancelled_play_does_not_start_a_source() {
+        let session = PlaybackSession::new();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let result = session.play_with_cancellation(
+            InputSource::file("missing.wav"),
+            NullOutput::new(),
+            cancellation,
+        );
+
+        assert!(matches!(result, Err(PlaybackError::Cancelled)));
+        assert_eq!(session.state(), PlaybackState::Idle);
     }
 
     #[test]

@@ -773,6 +773,6 @@ if (
   }
 }
 
-const { plus100 } = nativeBinding
-export { plus100 }
+const { NativeRemedia } = nativeBinding
+export { NativeRemedia }
 export const __napiBindingTarget = __napiLoadedBindingTarget

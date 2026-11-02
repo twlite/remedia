@@ -46,9 +46,11 @@ the `Observability` owner alive while the installed subscriber is in use, then f
 down during application shutdown. When the host already owns tracing, it can keep that subscriber
 and pass a local Remedia handle to playback and voice connections instead.
 
-`DiagnosticReceiver` is a bounded Rust event route for native hosts and a future N-API bridge.
-Cloned receivers compete for events. The queue holds at most 256 events and uses non-blocking sends;
-`dropped_events()` reports overflow. There is no JavaScript `debug` event API yet.
+`DiagnosticReceiver` is a bounded Rust event route for native hosts. Cloned receivers compete for
+events. The queue holds at most 256 events and uses non-blocking sends; `dropped_events()` reports
+overflow. The Node binding creates one receiver per `Remedia` instance and forwards events from a
+dedicated worker through a bounded N-API callback queue. `remedia.on('debug', listener)` receives
+structured events, and `remedia.droppedDebugEvents` counts drops in both bounded queues.
 
 ## Environment variables
 
@@ -79,6 +81,11 @@ is reported by the exporter builder.
 `REMEDIA_LOG` filters console lines and the bounded diagnostic receiver. When OTLP is enabled,
 Remedia lifecycle spans and events at `INFO` or above are exported independently of that filter, so
 the default `warn` console setting does not disable traces.
+
+The embedded Node binding disables console output to avoid duplicating events that the application
+handles through JavaScript. Its `REMEDIA_LOG`, `REMEDIA_DEBUG`, and OTLP settings still control
+filtering and export. `REMEDIA_LOG_FORMAT` is validated but does not change the structured JavaScript
+event object.
 
 Examples:
 
@@ -147,10 +154,12 @@ names and URL values as a defense in depth. Applications should follow the same 
 their own tracing fields; never place credentials in an event message.
 
 In a native application, use a local `ObservabilityHandle` to share one metrics provider and bounded
-diagnostic receiver across sessions. A standalone server can initialize the same context when its
-runtime is implemented. A future N-API bridge can drain the bounded Rust diagnostic route and
-forward it from a dedicated task through a `ThreadsafeFunction`; Remedia does not call JavaScript
-from the Rust core or Discord transport today.
+diagnostic receiver across sessions. The Node binding owns one such context per `Remedia` instance;
+it does not install or replace a process-global tracing subscriber. Its JavaScript callback runs
+through a bounded `ThreadsafeFunction`, never directly on a media worker. A standalone server can
+initialize the same context when its runtime is implemented.
 
 OTLP log export is not enabled in this milestone. Console logs and the bounded structured Rust event
-route remain available. The server is still a placeholder, and no Node diagnostic event API exists.
+route remain available. Node diagnostic events preserve structured fields; 64-bit integer field
+values are delivered as decimal strings to avoid JavaScript precision loss. The server is still a
+placeholder.

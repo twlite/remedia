@@ -24,9 +24,10 @@ observability.shutdown()?;
 Set `REMEDIA_DEBUG=1` for Remedia debug events, `REMEDIA_LOG` for tracing directives,
 `REMEDIA_LOG_FORMAT=json` for JSON console lines, and `REMEDIA_OTEL_ENABLED=true` to opt into
 OpenTelemetry export. Standard `OTEL_*` variables configure the service resource, sampling, and
-OTLP endpoints. Diagnostic events inherit playback and voice correlation IDs from active Remedia
-spans where applicable. OTLP log export and the JavaScript diagnostic-event bridge are not
-implemented.
+OTLP endpoints. Use `ObservabilityConfig::with_console_enabled(false)` when an embedding host routes
+events elsewhere. Diagnostic events inherit playback and voice correlation IDs from active Remedia
+spans where applicable. The Node binding forwards structured diagnostics through a bounded
+ThreadsafeFunction. OTLP log export is not implemented.
 
 See the [observability guide](../../apps/docs/content/docs/observability/configuration.mdx) and
 [architecture overview](../../docs/architecture.md) for initialization, filtering, event routing,
