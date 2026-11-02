@@ -1,12 +1,16 @@
 # Architecture
 
-This document describes Remedia's intended design. The engine, Discord, and server crates are still
-starter code. The N-API package has a minimal smoke export but is not yet connected to the engine.
+This document describes the current boundaries and the design still to be implemented. `remedia-core`
+implements the first file/HTTP-to-PCM decoding path. Playback management, Discord transport, and the
+server remain starter code. The N-API package has a minimal smoke export but is not yet connected to
+the engine.
 
 ## Rust crates
 
-- **`remedia-core`** is intended to own decoding, playback state, seeking, filtering, and media
-  processing. It should use native FFmpeg libraries rather than starting FFmpeg subprocesses.
+- **`remedia-core`** opens local filesystem paths and HTTP(S) URLs with libavformat, selects and
+  decodes an audio stream with libavcodec, and converts output through libswresample to interleaved
+  48 kHz stereo `f32` PCM. It uses native FFmpeg libraries rather than starting FFmpeg subprocesses.
+  Playback state, seeking, filtering, and output scheduling are not implemented yet.
 - **`remedia-discord`** is intended to adapt the generic engine's output to Discord voice transport.
   Discord-specific behavior should remain outside the generic media engine.
 - **`remedia-server`** is intended to run the engine as a standalone remote service and expose
@@ -15,8 +19,8 @@ starter code. The N-API package has a minimal smoke export but is not yet connec
   Node.js process instead of routing local calls through the standalone server; the current smoke
   export does not yet provide that integration.
 
-These boundaries are goals, not existing APIs. Add crates or packages only when implementation
-needs them.
+The core decoding API exists; the remaining boundaries are design intentions. Add crates or packages
+only when implementation needs them.
 
 ## Embedded and remote integration
 
@@ -31,12 +35,17 @@ not need.
 
 ## Processing and inputs
 
-The initial input focus is local files and HTTP URLs. Native FFmpeg libraries are intended to handle
-media decoding and processing. Rust should perform this work on native threads or asynchronous
-workers appropriate to the implementation, keeping blocking media work off an async executor's
-control path where necessary.
+The implemented decoder accepts explicit file-path and HTTP(S)-URL source variants. It probes the
+container, chooses an audio stream, and yields frames incrementally as fast as the caller consumes
+them. FFmpeg handles redirects and unknown HTTP content lengths. A configurable network I/O timeout
+and an atomic cancellation token can interrupt blocked operations. No audio is queued or paced by a
+global worker.
 
-No crate currently declares FFmpeg dependencies, links native FFmpeg libraries, or starts media
-workers. CI therefore does not install FFmpeg development packages today. When a crate begins
-linking FFmpeg, its build requirements should be documented and installed in CI rather than hidden
-by disabling that crate's checks.
+FFmpeg resamples to normalized interleaved 48 kHz stereo `f32` samples in FL/FR order. Mono input is
+duplicated to stereo; multichannel input is downmixed using its channel layout. The frame position is
+tracked as a sample offset on the output timeline. Duration and stream metadata can be unknown. The
+first API does not expose seeking, playback scheduling, filters, or audio-device output.
+
+Building `remedia-core` requires native libavformat, libavcodec, libavutil, and libswresample
+development libraries. CI installs these libraries on Ubuntu. No FFmpeg executable is used at
+runtime.

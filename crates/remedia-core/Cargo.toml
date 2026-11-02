@@ -5,6 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ffmpeg-next = { version = "=7.1.0", default-features = false, features = [
+  "codec",
+  "format",
+  "software-resampling",
+] }
+thiserror = "2.0"
+url = "2.5"
 
 [lints]
 workspace = true

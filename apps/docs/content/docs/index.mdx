@@ -1,13 +1,21 @@
 ---
-title: Hello World
-description: Your first document
+title: Remedia
+description: A native Rust audio engine with local and remote integration plans.
 ---
 
-Welcome to the docs! You can start writing documents in `/content/docs`.
+# Remedia
 
-## What is Next?
+Remedia is an audio engine under development. Its first working media pipeline is in `remedia-core`:
+it opens local files and HTTP(S) URLs, decodes audio with native FFmpeg libraries, and yields
+normalized PCM frames incrementally.
+
+The output is interleaved 48 kHz stereo `f32` in Front Left / Front Right order. Discord transport,
+playback scheduling, filters, seeking, remote RPC, and the Node.js binding are not implemented yet.
 
 <Cards>
-  <Card title="Learn more about Next.js" href="https://nextjs.org/docs" />
-  <Card title="Learn more about Fumadocs" href="https://fumadocs.dev" />
+  <Card
+    title="Decode audio"
+    href="/docs/decoding"
+    description="Learn the Rust input, metadata, cancellation, and PCM frame APIs."
+  />
 </Cards>

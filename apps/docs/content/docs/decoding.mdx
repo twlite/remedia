@@ -1,0 +1,114 @@
+---
+title: Audio decoding
+description: Open local files or HTTP(S) URLs and consume normalized PCM frames.
+---
+
+# Audio decoding
+
+`remedia-core` opens a source through FFmpeg's native libavformat, selects an audio stream, decodes
+it with libavcodec, and converts frames with libswresample. It does not launch `ffmpeg` or
+`ffprobe` subprocesses, and it does not read the whole source into memory before yielding audio.
+
+## Output format
+
+Every `PcmFrame` contains owned interleaved `f32` samples in the normalized format:
+
+- 48,000 samples per second
+- 2 channels in Front Left / Front Right order
+- Interleaving `L0, R0, L1, R1, ...`
+- Samples clamped to the conventional `-1.0..=1.0` range; non-finite values become zero
+
+Mono sources are mapped to both stereo channels. Sources with more than two channels are downmixed
+by libswresample using the source channel layout. The decoder emits variable length frames and never
+pads them to a fixed duration or paces them in real time. The output layer can packetize these frames
+later.
+
+`PcmFrame.samples_per_channel` is the number of output sample frames. Its `samples` vector contains
+twice that many scalar `f32` values. `start_sample` is the frame's start position on the 48 kHz output
+timeline. The decoder's `output_format()` returns the shared `PcmFormat::NORMALIZED` constant.
+
+## Open and consume a file
+
+Choose a source variant explicitly. A string is never guessed to be a file path or URL.
+
+```rust
+use remedia_core::{AudioDecoder, InputSource};
+
+let mut decoder = AudioDecoder::open(InputSource::file("media/track.flac"))?;
+let info = decoder.info();
+println!("{}; {:?} Hz; {:?} channels", info.codec, info.sample_rate, info.channels);
+
+let mut total_sample_frames = 0;
+while let Some(frame) = decoder.next_frame()? {
+    // Read or copy frame.samples before requesting the next block.
+    total_sample_frames += frame.samples_per_channel;
+}
+println!("Decoded {total_sample_frames} sample frames per channel");
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Use `InputSource::http_url(url)` for `http://` or `https://` sources. HTTP redirects and responses
+without a known content length are handled by FFmpeg's demuxer. HTTP status failures, network
+timeouts, invalid media, and missing audio streams return errors. The server must expose a supported
+FFmpeg HTTP(S) protocol and the requested media must be reachable from the process.
+
+## Metadata
+
+`decoder.info()` returns `AudioStreamInfo` for the selected audio stream:
+
+- `stream_index` and `codec`
+- Optional source `sample_rate`, channel count, and channel-layout description
+- Optional media duration and bit rate
+- Available container and stream tags in `metadata`
+
+Duration and some stream properties can be unknown, especially for live or incomplete sources.
+`AudioDecoder::open` selects FFmpeg's best usable audio stream, so a video stream before the audio
+stream does not prevent decoding. Inputs without a usable audio stream return
+`DecoderError::NoAudioStream`.
+
+## HTTP timeouts and cancellation
+
+Network reads have a 15-second I/O timeout by default. Set another timeout with
+`DecoderOptions::io_timeout`. To interrupt a blocked open or read, pass a cloneable cancellation
+token before opening the source:
+
+```rust
+use std::time::Duration;
+use remedia_core::{AudioDecoder, CancellationToken, DecoderOptions, InputSource};
+
+let cancellation = CancellationToken::new();
+let options = DecoderOptions {
+    io_timeout: Duration::from_secs(8),
+    cancellation: cancellation.clone(),
+};
+let mut decoder = AudioDecoder::open_with_options(
+    InputSource::http_url("https://example.com/audio.mp3"),
+    options,
+)?;
+
+// Another thread can call cancellation.cancel() to interrupt a blocked read.
+let mut total_sample_frames = 0;
+while let Some(frame) = decoder.next_frame()? {
+    total_sample_frames += frame.samples_per_channel;
+}
+println!("Decoded {total_sample_frames} sample frames per channel");
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Each decoder owns its demuxer, decoder, and resampler, so independent sessions do not share playback
+state. The pull API applies backpressure naturally: the next input packet is read only as the caller
+requests more frames. Drop the decoder to close its native resources.
+
+## Example and current limits
+
+Run the example from the repository root:
+
+```sh
+cargo run -p remedia-core --example decode -- file ./media/track.flac
+cargo run -p remedia-core --example decode -- url https://example.com/audio.mp3
+```
+
+The example prints source metadata and the decoded sample count and duration. The current API does
+not expose seeking, playback scheduling, device output, filters, Opus encoding, or remote stream
+uploads. Supported codecs and containers depend on the native FFmpeg libraries installed on the
+system.

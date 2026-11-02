@@ -6,10 +6,10 @@ control.
 
 ## Current status
 
-The repository is at an early stage. The three engine/server crates currently contain starter code;
-decoding, playback, Discord transport, and remote RPC are not implemented yet. The Node.js package
-contains a minimal napi-rs smoke binding and is not connected to `remedia-core`. The `apps/docs`
-directory contains a Next.js and Fumadocs starter site.
+The repository is under active development. `remedia-core` now opens local files and HTTP(S) URLs,
+selects an audio stream, decodes it with native FFmpeg libraries, and yields normalized PCM frames.
+Playback management, Discord transport, and remote RPC are not implemented yet. The Node.js package
+still contains only a napi-rs smoke binding and is not connected to `remedia-core`.
 
 The intended integrations have different boundaries:
 
@@ -25,22 +25,25 @@ not working features.
 ## Repository structure
 
 ```text
-apps/docs/                 Next.js documentation site
-crates/remedia-core/       Intended home of the generic Rust media engine
+apps/docs/                 Next.js and Fumadocs documentation site
+crates/remedia-core/       File/HTTP audio decoding and normalized PCM output
 crates/remedia-discord/    Intended home of Discord voice transport
 crates/remedia-server/     Intended home of the standalone remote server
 packages/remedia-node/     Native Node.js binding scaffold and smoke test
 ```
 
-The core is intended to use native FFmpeg libraries for media processing, rather than spawning
-FFmpeg subprocesses. Discord transport will remain separate from the generic engine. See
-[`docs/architecture.md`](docs/architecture.md) for the intended boundaries and current limitations.
+The core uses native FFmpeg libraries for media processing; it does not spawn FFmpeg subprocesses.
+It outputs interleaved 48 kHz stereo `f32` samples, downmixing through FFmpeg's channel-layout-aware
+resampler. Discord transport will remain separate from the generic engine. See
+[`docs/architecture.md`](docs/architecture.md) and the [decoding guide](apps/docs/content/docs/decoding.mdx)
+for supported inputs, API details, and current limitations.
 
 ## Development
 
 You need Rust via rustup, Node.js 22.18 or newer, and pnpm 12.16.1. The workspace declares Rust
 1.88 as its minimum supported version and pins Rust 1.99.1 for development. FFmpeg development
-libraries are not required by the current starter crates.
+headers and libraries for libavformat, libavcodec, libavutil, and libswresample are required to build
+`remedia-core`.
 
 ```sh
 pnpm install --frozen-lockfile
@@ -52,6 +55,9 @@ pnpm --filter @remedia/node test
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+
+cargo run -p remedia-core --example decode -- file ./path/to/audio.wav
+cargo run -p remedia-core --example decode -- url https://example.com/audio.mp3
 ```
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup details, platform notes, and pull request

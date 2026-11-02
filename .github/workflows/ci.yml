@@ -33,9 +33,12 @@ jobs:
 
   rust:
     name: Rust and N-API
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
+
+      - run: sudo apt-get update
+      - run: sudo apt-get install --yes clang libclang-dev pkg-config libavcodec-dev libavformat-dev libavutil-dev libswresample-dev
 
       - uses: pnpm/action-setup@v6.1.0
         with:

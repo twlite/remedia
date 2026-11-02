@@ -1,14 +1,13 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Native media input and audio decoding for Remedia.
+//!
+//! This crate opens local paths and HTTP(S) URLs through FFmpeg's native
+//! libraries and yields normalized interleaved PCM incrementally.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+mod decoder;
+mod error;
+mod input;
+mod source;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use decoder::{AudioDecoder, AudioStreamInfo, DecoderOptions, PcmFormat, PcmFrame};
+pub use error::DecoderError;
+pub use source::{CancellationToken, InputSource};
