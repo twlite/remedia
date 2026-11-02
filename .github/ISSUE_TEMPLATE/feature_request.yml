@@ -1,0 +1,40 @@
+name: Feature request
+description: Propose a focused improvement or capability.
+title: '[Feature]: '
+body:
+  - type: markdown
+    attributes:
+      value: Remedia is under development. Describe the use case and whether it concerns embedded or remote integration.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Intended area
+      options:
+        - remedia-core
+        - remedia-discord
+        - remedia-server
+        - remedia-node
+        - Documentation or tooling
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do, and what limitation are you encountering?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Suggested solution
+      description: Describe the behavior you want. APIs and implementation details are optional.
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Inputs and constraints
+      description: Mention operating systems, runtimes, media formats, or embedded/remote requirements if relevant.
+    validations:
+      required: false

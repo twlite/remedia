@@ -1,0 +1,64 @@
+name: Bug report
+description: Report a reproducible problem in Remedia.
+title: '[Bug]: '
+body:
+  - type: markdown
+    attributes:
+      value: Share only information you are comfortable making public. Redact credentials and private URLs from logs.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - remedia-core
+        - remedia-discord
+        - remedia-server
+        - remedia-node
+        - Documentation or tooling
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and architecture
+      placeholder: macOS 15 arm64, Ubuntu 24.04 x86_64, Windows 11 x64
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Relevant tool versions
+      description: Include Rust, Node.js, and pnpm versions when applicable.
+      placeholder: rustc 1.99.1, Node.js 24.x, pnpm 12.16.1
+    validations:
+      required: false
+  - type: input
+    id: media
+    attributes:
+      label: Input media or source
+      description: Include file or URL type and audio format details when relevant. Do not post private URLs.
+    validations:
+      required: false
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: List the smallest set of steps or commands that reproduces the problem.
+      placeholder: |
+        1. Run ...
+        2. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      render: text
+    validations:
+      required: false

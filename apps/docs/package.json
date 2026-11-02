@@ -6,8 +6,7 @@
     "build": "next build",
     "dev": "next dev",
     "start": "next start",
-    "types:check": "next typegen && tsc --noEmit",
-    "lint": "oxlint"
+    "typecheck": "next typegen && tsc --noEmit"
   },
   "dependencies": {
     "cn": "^0.5.0",
@@ -27,7 +26,6 @@
     "@types/react-dom": "^19.3.0",
     "postcss": "^8.5.31",
     "tailwindcss": "^4.3.3",
-    "typescript": "^7.0.2",
-    "oxlint": "^1.89.0"
+    "typescript": "^7.0.2"
   }
 }

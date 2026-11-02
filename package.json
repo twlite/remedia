@@ -1,5 +1,21 @@
 {
-    "name": "remedia",
-    "version": "0.0.0",
-    "private": true
+  "name": "remedia",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "lint": "oxlint . --deny-warnings",
+    "lint:fix": "oxlint . --fix --deny-warnings",
+    "format": "oxfmt .",
+    "format:check": "oxfmt . --check",
+    "typecheck": "pnpm --recursive --if-present run typecheck",
+    "check": "pnpm lint && pnpm typecheck && pnpm format:check && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
+  },
+  "devDependencies": {
+    "oxfmt": "0.75.0",
+    "oxlint": "1.90.0"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "packageManager": "pnpm@12.16.1"
 }

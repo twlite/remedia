@@ -18,10 +18,10 @@ export default function proxy(request: NextRequest) {
   }
 
   if (isMarkdownPreferred(request)) {
-    const result = rewriteDocs(request.nextUrl.pathname);
+    const docsResult = rewriteDocs(request.nextUrl.pathname);
 
-    if (result) {
-      return NextResponse.rewrite(new URL(result, request.nextUrl), {
+    if (docsResult) {
+      return NextResponse.rewrite(new URL(docsResult, request.nextUrl), {
         // this URL has two representations, selected by `Accept`
         headers: { Vary: 'Accept' },
       });

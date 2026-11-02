@@ -1,0 +1,99 @@
+# Contributing to Remedia
+
+Remedia is under development. Contributions that improve the existing code or make the project
+easier to build and maintain are welcome. Playback, transport, server, and binding features should
+follow the intended boundaries in [`docs/architecture.md`](docs/architecture.md).
+
+## Prerequisites
+
+- Rust through rustup. The workspace declares Rust 1.85 as its minimum supported version; this
+  repository pins Rust 1.99.1 for development and requests `rustfmt` and `clippy` in
+  `rust-toolchain.toml`. Rustup installs the selected toolchain when first needed.
+- Node.js 22.18 or newer.
+- pnpm 12.16.1, selected by the root `package.json`.
+- Git.
+
+The current Rust crates do not link FFmpeg and do not need FFmpeg development packages. If a change
+adds native FFmpeg dependencies, install the development headers and libraries required by that
+crate's build configuration. Common starting points are:
+
+- macOS: `brew install ffmpeg pkg-config`
+- Debian or Ubuntu:
+
+  ```sh
+  sudo apt install pkg-config libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev
+  ```
+
+On Windows, use FFmpeg development libraries that match the target architecture and make their
+headers and libraries discoverable to the crate's build tool.
+
+## Set up the repository
+
+```sh
+git clone https://github.com/twlite/remedia.git
+cd remedia
+corepack enable
+pnpm --version
+pnpm install --frozen-lockfile
+```
+
+The pnpm version should be `12.16.1`. If Corepack is unavailable, install that version with
+`npm install --global pnpm@12.16.1`.
+
+Rustup reads `rust-toolchain.toml` automatically. To install the pinned toolchain and its requested
+components explicitly, run:
+
+```sh
+rustup toolchain install 1.99.1 --component rustfmt --component clippy
+```
+
+## Development commands
+
+Run these from the repository root:
+
+```sh
+pnpm lint             # lint JavaScript and TypeScript with Oxlint
+pnpm lint:fix         # apply Oxlint's safe automatic fixes
+pnpm format           # format supported files with Oxfmt
+pnpm format:check     # check formatting without changing files
+pnpm typecheck        # run each workspace package's typecheck command
+pnpm check            # run the full local validation sequence
+
+cargo fmt --all
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+The docs app can be run with `pnpm --filter docs dev` and built with
+`pnpm --filter docs build`. No Rust or TypeScript test suite beyond the starter Rust tests currently
+exists.
+
+## Where code belongs
+
+- Add a Rust crate under `crates/` when it has an independently useful boundary in the engine,
+  transport, or server. Add it to the Cargo workspace only when it exists and is needed.
+- Add a JavaScript or TypeScript package under `packages/` when it has a distinct package boundary.
+  The existing `packages/remedia-node` manifest is reserved for direct native bindings; it currently
+  has no implementation.
+- Keep documentation tooling and site code under `apps/docs/`.
+- Prefer the root shared TypeScript configuration. Add a package-level override only for a real
+  requirement, such as NodeNext resolution for a Node library or bundler resolution for a frontend.
+- Keep generated native binaries out of commits. Commit generated JS/TypeScript declarations or
+  other source artifacts when the package's build and distribution workflow requires them.
+
+Changes to exported Rust APIs, the planned N-API surface, or the remote protocol need a clear
+compatibility note in the pull request. Do not assume the embedded and remote interfaces have the
+same input constraints.
+
+## Issues and pull requests
+
+Use the bug report form for reproducible defects and the feature request form for proposed work.
+Include operating system and architecture, Rust and Node.js versions where relevant, input media
+details, reproduction steps, and useful logs. Remove credentials, private URLs, and other secrets
+from logs before sharing them.
+
+Pull requests should explain the change and its scope, link a related issue when available, and
+include relevant documentation updates. Run the checks that apply to the change and report any
+platform-specific checks that could not be run. Keep pull requests focused and avoid presenting
+planned capabilities as already implemented.
