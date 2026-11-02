@@ -5,6 +5,9 @@ commands for HTTP(S) playback, an in-memory per-guild queue, pause, resume,
 seek, skip, stop, now playing, and disconnect. The app owns the queue; the
 native Remedia API owns decoding and voice transport. Each guild queue holds
 up to 100 upcoming tracks.
+Playback replies prefer the title returned in Remedia's media metadata and
+fall back to a URL with credentials and query parameters removed. Queue entries
+show URLs until Remedia opens them and returns metadata.
 
 Create `.env` with `DISCORD_TOKEN` and `APPLICATION_ID`, then run from the
 repository root:

@@ -1,4 +1,5 @@
-import type { ChatInputCommandInteraction } from 'discord.js';
+import { MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
+import type { AudioStreamInfo } from '@remedia/node';
 
 export interface VoiceCommandContext {
   guildId: string;
@@ -31,8 +32,9 @@ export function getVoiceCommandContext(
 export async function withVoiceReply(
   interaction: ChatInputCommandInteraction,
   action: () => Promise<string>,
+  ephemeral = false,
 ): Promise<void> {
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply(ephemeral ? { flags: MessageFlags.Ephemeral } : {});
   try {
     await interaction.editReply({ content: await action(), allowedMentions: { parse: [] } });
   } catch (error) {
@@ -62,6 +64,17 @@ export function displayUrl(input: string): string {
   const url = new URL(input);
   const display = `${url.origin}${url.pathname}`;
   return display.length > 160 ? `${display.slice(0, 157)}...` : display;
+}
+
+export function displayTrack(track: {
+  url: string;
+  info?: Pick<AudioStreamInfo, 'metadata'> | undefined;
+}): string {
+  const title = Object.entries(track.info?.metadata ?? {}).find(
+    ([key, value]) => key.toLowerCase() === 'title' && value.trim().length > 0,
+  )?.[1];
+  const label = title?.trim() || displayUrl(track.url);
+  return label.length > 160 ? `${label.slice(0, 157)}...` : label;
 }
 
 export function formatDuration(milliseconds: number | null): string {

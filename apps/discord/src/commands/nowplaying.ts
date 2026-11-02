@@ -1,7 +1,7 @@
 import type { Command } from './index.js';
 import { VoiceRuntime } from '../voice/runtime.js';
 import {
-  displayUrl,
+  displayTrack,
   formatDuration,
   getVoiceCommandContext,
   withVoiceReply,
@@ -18,9 +18,7 @@ export default {
         return 'Nothing is playing.';
       }
 
-      const title = snapshot.current.info?.metadata.title;
-      const rawLabel = title || displayUrl(snapshot.current.url);
-      const label = rawLabel.length > 160 ? `${rawLabel.slice(0, 157)}...` : rawLabel;
+      const label = displayTrack(snapshot.current);
       const duration = snapshot.durationMs ?? snapshot.current.info?.durationMs ?? null;
       const position = formatDuration(snapshot.positionMs);
       const failure = snapshot.lastError ? ` Last track error: ${snapshot.lastError}` : '';

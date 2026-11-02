@@ -1,7 +1,22 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { DiscordSession, PlaybackState, Remedia } from '@remedia/node';
+import { displayTrack } from './command-helpers.js';
 import { DiscordPlaybackManager } from './playback-manager.js';
+
+test('uses the Remedia title when available and a sanitized URL otherwise', () => {
+  assert.equal(
+    displayTrack({
+      url: 'https://media.example/one.mp3?token=private',
+      info: { metadata: { Title: '  A track title  ' } },
+    }),
+    'A track title',
+  );
+  assert.equal(
+    displayTrack({ url: 'https://user:password@media.example/one.mp3?token=private' }),
+    'https://media.example/one.mp3',
+  );
+});
 
 test('queues tracks, advances on completion, and leaves voice connected when stopping', async () => {
   const { manager, session } = createManager();

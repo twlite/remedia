@@ -1,6 +1,6 @@
 import type { Command } from './index.js';
 import { VoiceRuntime } from '../voice/runtime.js';
-import { displayUrl, getVoiceCommandContext, withVoiceReply } from '../voice/command-helpers.js';
+import { displayTrack, getVoiceCommandContext, withVoiceReply } from '../voice/command-helpers.js';
 
 export default {
   data: {
@@ -25,9 +25,9 @@ export default {
 
       const snapshot = await manager.snapshot(guildId, channelId);
       const rows: string[] = [];
-      if (snapshot.current) rows.push(`Now: ${displayUrl(snapshot.current.url)}`);
+      if (snapshot.current) rows.push(`Now: ${displayTrack(snapshot.current)}`);
       for (const [index, track] of snapshot.queue.slice(0, 10).entries()) {
-        rows.push(`${index + 1}. ${displayUrl(track.url)}`);
+        rows.push(`${index + 1}. ${displayTrack(track)}`);
       }
       if (snapshot.queue.length > 10) rows.push(`…and ${snapshot.queue.length - 10} more.`);
       return rows.length > 0 ? rows.join('\n') : 'The queue is empty.';

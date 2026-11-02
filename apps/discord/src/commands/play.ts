@@ -1,7 +1,7 @@
 import type { Command } from './index.js';
 import { VoiceRuntime } from '../voice/runtime.js';
 import {
-  displayUrl,
+  displayTrack,
   getVoiceCommandContext,
   parseHttpUrl,
   withVoiceReply,
@@ -33,7 +33,7 @@ export default {
           requestedBy: context.requesterId,
         },
       );
-      const source = displayUrl(result.track.url);
+      const source = displayTrack(result.track);
       if (result.started) {
         const duration = result.track.info?.durationMs;
         const length =
