@@ -1,0 +1,24 @@
+[package]
+name = "remedia-node"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "node"
+crate-type = ["cdylib"]
+
+[dependencies]
+napi-derive = "3.6.5"
+
+[dependencies.napi]
+version = "3.12.4"
+features = ["napi3", "dyn-symbols"]
+default-features = false
+
+[build-dependencies]
+napi-build = "2.4.2"
+
+[lints]
+workspace = true

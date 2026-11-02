@@ -6,7 +6,7 @@ follow the intended boundaries in [`docs/architecture.md`](docs/architecture.md)
 
 ## Prerequisites
 
-- Rust through rustup. The workspace declares Rust 1.85 as its minimum supported version; this
+- Rust through rustup. The workspace declares Rust 1.88 as its minimum supported version; this
   repository pins Rust 1.99.1 for development and requests `rustfmt` and `clippy` in
   `rust-toolchain.toml`. Rustup installs the selected toolchain when first needed.
 - Node.js 22.18 or newer.
@@ -66,16 +66,17 @@ cargo test --workspace
 ```
 
 The docs app can be run with `pnpm --filter docs dev` and built with
-`pnpm --filter docs build`. No Rust or TypeScript test suite beyond the starter Rust tests currently
-exists.
+`pnpm --filter docs build`. `pnpm --filter @remedia/node test` builds and checks the native smoke
+binding. The Rust tests are still starter tests; there are no media behavior tests yet.
 
 ## Where code belongs
 
 - Add a Rust crate under `crates/` when it has an independently useful boundary in the engine,
   transport, or server. Add it to the Cargo workspace only when it exists and is needed.
 - Add a JavaScript or TypeScript package under `packages/` when it has a distinct package boundary.
-  The existing `packages/remedia-node` manifest is reserved for direct native bindings; it currently
-  has no implementation.
+  Keep an N-API crate alongside its owning Node package: `packages/remedia-node` is included in the
+  root Cargo workspace and currently contains a smoke test, but is not connected to the Remedia
+  engine.
 - Keep documentation tooling and site code under `apps/docs/`.
 - Prefer the root shared TypeScript configuration. Add a package-level override only for a real
   requirement, such as NodeNext resolution for a Node library or bundler resolution for a frontend.

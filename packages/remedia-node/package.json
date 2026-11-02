@@ -1,13 +1,22 @@
 {
   "name": "@remedia/node",
   "version": "0.0.0",
-  "license": "MIT",
+  "private": true,
+  "description": "N-API binding scaffold for Remedia",
   "author": "Twilight <hello@twlite.dev>",
   "repository": "https://github.com/twlite/remedia.git",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "scripts": {},
-  "dependencies": {},
-  "devDependencies": {}
+  "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "build": "napi build --platform --esm --release",
+    "build:debug": "napi build --platform --esm",
+    "test": "pnpm run build:debug && node --test __test__/index.test.mjs"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.10.9"
+  },
+  "napi": {
+    "binaryName": "node"
+  }
 }

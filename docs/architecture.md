@@ -1,7 +1,7 @@
 # Architecture
 
-This document describes Remedia's intended design. The current crates are starter code and do not
-yet implement media playback, Discord transport, remote RPC, or Node.js bindings.
+This document describes Remedia's intended design. The engine, Discord, and server crates are still
+starter code. The N-API package has a minimal smoke export but is not yet connected to the engine.
 
 ## Rust crates
 
@@ -11,8 +11,9 @@ yet implement media playback, Discord transport, remote RPC, or Node.js bindings
   Discord-specific behavior should remain outside the generic media engine.
 - **`remedia-server`** is intended to run the engine as a standalone remote service and expose
   operations over a WebSocket RPC protocol.
-- **`remedia-node`** is a planned N-API package. It should call Rust functionality directly in the
-  Node.js process instead of routing local calls through the standalone server.
+- **`remedia-node`** contains the Rust N-API crate. It is intended to call the engine directly in the
+  Node.js process instead of routing local calls through the standalone server; the current smoke
+  export does not yet provide that integration.
 
 These boundaries are goals, not existing APIs. Add crates or packages only when implementation
 needs them.

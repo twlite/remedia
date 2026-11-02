@@ -44,6 +44,8 @@
     "**/.next/**",
     "**/.source/**",
     "**/generated/**",
+    "packages/remedia-node/index.js",
+    "packages/remedia-node/index.d.ts",
     "**/*.generated.js",
     "**/*.generated.jsx",
     "**/*.generated.ts",

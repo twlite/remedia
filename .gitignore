@@ -8,6 +8,10 @@
 **/.source/
 **/*.tsbuildinfo
 **/*.node
+*.log
+*.tgz
+.npm/
+report.*.json
 
 # Local environment and secret files
 .env

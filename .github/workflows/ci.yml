@@ -32,11 +32,23 @@ jobs:
       - run: pnpm --filter docs build
 
   rust:
-    name: Rust
+    name: Rust and N-API
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
 
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 12.16.1
+
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - run: pnpm --filter @remedia/node test
