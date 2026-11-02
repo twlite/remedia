@@ -23,6 +23,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - run: pnpm install --frozen-lockfile
 
@@ -37,6 +38,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          shared-key: ubuntu-24.04
+
       - run: sudo apt-get update
       - run: sudo apt-get install --yes clang libclang-dev pkg-config libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libopus-dev
 
@@ -48,6 +53,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - run: pnpm install --frozen-lockfile
 
