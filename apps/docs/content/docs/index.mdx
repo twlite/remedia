@@ -12,22 +12,40 @@ normalized PCM frames incrementally.
 The output is interleaved 48 kHz stereo `f32` in Front Left / Front Right order. Core can encode PCM
 to transport-independent Opus packets, and `remedia-discord` can send packets over an outbound voice
 connection with DAVE encryption. The Discord transport has not yet been verified against a live
-bot. Filters, remote RPC, and the Node.js engine binding are not implemented yet.
+bot. The Node.js package is a smoke-test scaffold, and the server crate is a placeholder. Remote RPC
+and the Node.js engine binding are not implemented yet.
+
+## Core engine
 
 <Cards>
   <Card
     title="Decode audio"
-    href="/docs/decoding"
+    href="/docs/core/decoding"
     description="Learn the Rust input, metadata, cancellation, and PCM frame APIs."
   />
   <Card
     title="Playback sessions"
-    href="/docs/playback"
+    href="/docs/core/playback"
     description="Manage playback state, outputs, seeking, and worker cleanup."
   />
+</Cards>
+
+## Integrations
+
+<Cards>
   <Card
     title="Discord voice output"
-    href="/docs/discord"
+    href="/docs/discord/voice-output"
     description="Connect an outbound voice transport and send DAVE-encrypted Opus packets."
+  />
+  <Card
+    title="Node.js bindings"
+    href="/docs/node/bindings"
+    description="Current N-API scaffold and intended direct in-process integration."
+  />
+  <Card
+    title="Remote server"
+    href="/docs/server/overview"
+    description="Current server status and intended remote integration boundary."
   />
 </Cards>

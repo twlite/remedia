@@ -1,0 +1,33 @@
+---
+title: Node.js bindings
+description: Current N-API scaffold and the intended embedded integration boundary.
+---
+
+# Node.js bindings
+
+`packages/remedia-node` is a private Rust N-API package in the Cargo and pnpm workspaces. It is
+currently a build and test scaffold: the native addon exports a small `plus_100` smoke-test
+function. It does not open media, call `remedia-core`, or provide playback APIs.
+
+## Intended integration
+
+The planned Node.js integration is embedded in the Node process. N-API bindings will call native
+Rust engine code directly, without routing media through `remedia-server`. This should allow local
+applications to provide inputs such as client-generated streams or buffers. That input support is
+not implemented yet.
+
+The standalone server is a separate integration with different input constraints: it will initially
+work with files and HTTP(S) URLs reachable by the server process. See the
+[remote server overview](/docs/server/overview).
+
+## Build the current scaffold
+
+From the repository root, install workspace dependencies and run:
+
+```sh
+pnpm --filter @remedia/node test
+pnpm --filter @remedia/node build
+```
+
+The test script builds the debug native addon and runs the package's Node.js smoke test. The
+generated addon is a local build artifact. The package is private and is not a published Node.js API.

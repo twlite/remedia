@@ -1,0 +1,32 @@
+---
+title: Remote server
+description: Current server crate status and intended remote integration boundary.
+---
+
+# Remote server
+
+`remedia-server` is currently a placeholder crate. Running it prints `Hello, world!` and exits. It
+does not expose a remote protocol, WebSocket RPC, media endpoint, or playback service.
+
+## Intended integration
+
+The planned standalone server will host the Remedia engine and expose it over a remote protocol.
+Initially, the server is intended to open files and HTTP(S) URLs that are reachable from the server
+process. Arbitrary streams or buffers created by a client are intended for local N-API integration
+first; remote binary stream ingestion is deferred.
+
+This remote process model is distinct from the
+[embedded Node.js integration](/docs/node/bindings), which is intended to call native engine code
+directly inside the application process. Neither the server protocol nor its playback API has been
+implemented.
+
+## Run the current crate
+
+From the repository root:
+
+```sh
+cargo run -p remedia-server
+```
+
+This only runs the placeholder. The repository-level `docs/architecture.md` describes the intended
+crate boundaries and implementation status.

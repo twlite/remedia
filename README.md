@@ -28,19 +28,26 @@ not working features.
 
 ```text
 apps/docs/                 Next.js and Fumadocs documentation site
-crates/remedia-core/       File/HTTP decoding, playback sessions, PCM output, and Opus encoding
-crates/remedia-discord/    Outbound Discord voice connection, DAVE, RTP, and UDP transport
-crates/remedia-server/     Intended home of the standalone remote server
-packages/remedia-node/     Native Node.js binding scaffold and smoke test
+crates/remedia-core/       Core engine; see its README for decoding, playback, and Opus output
+crates/remedia-discord/    Discord transport; see its README for current support and limits
+crates/remedia-server/     Future remote server; currently a placeholder crate
+packages/remedia-node/     N-API scaffold; see its README for current package status
 ```
+
+Component guides: [core](crates/remedia-core/README.md),
+[Discord transport](crates/remedia-discord/README.md),
+[server](crates/remedia-server/README.md), and [Node.js bindings](packages/remedia-node/README.md).
 
 The core uses native FFmpeg libraries for media processing; it does not spawn FFmpeg subprocesses.
 It outputs interleaved 48 kHz stereo `f32` samples, downmixing through FFmpeg's channel-layout-aware
 resampler. Core Opus packets are transport-independent; Discord owns the voice connection, DAVE,
 RTP, encryption, UDP, and real-time pacing. See
-[`docs/architecture.md`](docs/architecture.md), the [decoding guide](apps/docs/content/docs/decoding.mdx),
-the [playback guide](apps/docs/content/docs/playback.mdx), and the
-[Discord voice guide](apps/docs/content/docs/discord.mdx) for API details and current limitations.
+[`docs/architecture.md`](docs/architecture.md), the
+[decoding guide](apps/docs/content/docs/core/decoding.mdx),
+[playback guide](apps/docs/content/docs/core/playback.mdx), and
+[Discord voice guide](apps/docs/content/docs/discord/voice-output.mdx) for API details and current
+limitations. The [Fumadocs overview](apps/docs/content/docs/index.mdx) groups documentation by
+workspace module.
 
 ## Development
 

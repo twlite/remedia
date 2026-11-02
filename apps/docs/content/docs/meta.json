@@ -1,0 +1,15 @@
+{
+  "title": "Remedia",
+  "root": true,
+  "pages": [
+    "index",
+    "---Core engine---",
+    "core",
+    "---Discord transport---",
+    "discord",
+    "---Node.js bindings---",
+    "node",
+    "---Remote server---",
+    "server"
+  ]
+}
