@@ -24,6 +24,25 @@ export declare class NativeRemedia {
   disconnectVoice(voiceId: string): Promise<void>
   /** Forget a voice session after its transport has been disconnected. */
   releaseVoiceSession(voiceId: string): void
+  /** Create a bounded native byte input for one Node.js Readable producer. */
+  createByteStream(): string
+  /**
+   * Copy one Node buffer into the native-owned bounded input, applying
+   * backpressure when the decoder has not consumed enough pending bytes.
+   */
+  writeByteStream(streamId: string, chunk: Buffer): Promise<void>
+  /**
+   * Signal a clean producer EOF. The stream handle remains valid until it is
+   * cancelled so playback can resolve its source if EOF arrives quickly.
+   */
+  finishByteStream(streamId: string): Promise<void>
+  /** Propagate a JavaScript Readable error through FFmpeg to playback state. */
+  failByteStream(streamId: string, message: string): Promise<void>
+  /**
+   * Cancel an input and wake any native readers or writers blocked by its
+   * bounded queue. Repeated calls are harmless.
+   */
+  cancelByteStream(streamId: string): void
   /** Create an isolated, diagnostics-only Remedia context from environment configuration. */
   static create(): Promise<NativeRemedia>
   /**
@@ -76,9 +95,10 @@ export interface NativeDiagnosticField {
 }
 
 export interface NativeMediaSource {
-  /** Explicitly `file` or `url`; native code never guesses from a string. */
+  /** Explicitly `file`, `url`, `buffer`, or `stream`. */
   kind: string
-  value: string
+  value?: string
+  bytes?: Buffer
 }
 
 export interface NativePlaybackPosition {

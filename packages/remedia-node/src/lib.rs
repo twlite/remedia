@@ -1,5 +1,6 @@
 mod diagnostics;
 mod discord;
+mod input;
 mod native;
 mod playback;
 mod runtime;

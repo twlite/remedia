@@ -68,8 +68,11 @@ cargo test --workspace
 ```
 
 The docs app can be run with `pnpm --filter docs dev` and built with
-`pnpm --filter docs build`. `pnpm --filter @remedia/node test` builds and checks the native smoke
-binding. `cargo test -p remedia-core` runs deterministic file and local-HTTP decoder tests. The
+`pnpm --filter docs build`. `pnpm --filter @remedia/node test` builds the debug N-API addon and runs
+the TypeScript integration tests with Vitest. Add tests under `packages/remedia-node/tests/` and
+split them by behavior; `typecheck` checks both library and test TypeScript. The package keeps Rust
+code in `src/`, TypeScript library code in `lib/`, and generated TypeScript output in `dist/`.
+`cargo test -p remedia-core` runs deterministic file, in-memory, streaming, and local-HTTP decoder tests. The
 core tests cover decoder conversion, seeking, playback lifecycle, Opus framing, backpressure, and
 stop cleanup. `remedia-discord` tests parsing, fail-closed DAVE behavior, RTP, transport encryption,
 UDP discovery, pacing, and bounded queue cancellation without Discord credentials. The
@@ -88,8 +91,8 @@ requires externally obtained Discord voice session information and a reachable v
   only when they exist and are needed.
 - Add a JavaScript or TypeScript package under `packages/` when it has a distinct package boundary.
   Keep an N-API crate alongside its owning Node package: `packages/remedia-node` is included in the
-  root Cargo workspace and currently contains a smoke test, but is not connected to the Remedia
-  engine.
+  root Cargo workspace and calls the Remedia engine in process. Keep its Rust files in `src/` and
+  TypeScript files in `lib/`; do not mix languages in `src/`.
 - Keep documentation tooling and site code under `apps/docs/`.
 - Prefer the root shared TypeScript configuration. Add a package-level override only for a real
   requirement, such as NodeNext resolution for a Node library or bundler resolution for a frontend.

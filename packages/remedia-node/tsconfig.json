@@ -5,11 +5,12 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "target": "ES2022",
-    "rootDir": "src",
+    "rootDir": "lib",
     "outDir": "dist",
     "declaration": true,
     "declarationMap": false,
-    "noEmit": false
+    "noEmit": false,
+    "types": ["node"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["lib/**/*.ts"]
 }

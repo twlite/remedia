@@ -3,6 +3,7 @@
 //! This crate opens local paths and HTTP(S) URLs through FFmpeg's native
 //! libraries and yields normalized interleaved PCM incrementally.
 
+mod byte_stream;
 mod decoder;
 mod error;
 mod input;
@@ -20,6 +21,7 @@ pub(crate) fn with_dispatch<T>(handle: &ObservabilityHandle, callback: impl FnOn
     }
 }
 
+pub use byte_stream::{ByteStreamError, ByteStreamWriter};
 pub use decoder::{AudioDecoder, AudioStreamInfo, DecoderOptions, PcmFormat, PcmFrame};
 pub use error::DecoderError;
 pub use opus::{EncodedOpusPacket, OpusEncoderOutput, OpusPacketSink};

@@ -1,5 +1,7 @@
 use napi::bindgen_prelude::Status;
-use remedia_core::{CancellationToken, PlaybackError, PlaybackSession};
+use remedia_core::{
+    ByteStreamWriter, CancellationToken, InputSource, PlaybackError, PlaybackSession,
+};
 use remedia_discord::DiscordVoiceConnection;
 use remedia_observability::{DiagnosticReceiver, Observability, ObservabilityHandle};
 use std::collections::HashMap;
@@ -19,6 +21,7 @@ pub(crate) struct RuntimeInner {
     pub(crate) diagnostic_drops: Arc<AtomicU64>,
     pub(crate) playbacks: Mutex<HashMap<String, PlaybackEntry>>,
     pub(crate) voices: Mutex<HashMap<String, VoiceEntry>>,
+    pub(crate) byte_streams: Mutex<HashMap<String, ByteStreamEntry>>,
     pub(crate) next_id: AtomicU64,
     pub(crate) closed: AtomicBool,
     pub(crate) operations: napi::tokio::sync::RwLock<()>,
@@ -107,6 +110,12 @@ pub(crate) struct VoiceEntry {
     pub(crate) playback_id: String,
 }
 
+#[derive(Clone)]
+pub(crate) struct ByteStreamEntry {
+    pub(crate) source: InputSource,
+    pub(crate) writer: ByteStreamWriter,
+}
+
 pub(crate) struct DebugForwarder {
     pub(crate) stop: Arc<AtomicBool>,
     pub(crate) worker: Option<JoinHandle<()>>,
@@ -150,6 +159,13 @@ impl RuntimeInner {
             .cloned()
             .ok_or_else(|| napi_error(Status::InvalidArg, "unknown Discord voice session"))
     }
+
+    pub(crate) fn byte_stream(&self, id: &str) -> NativeResult<ByteStreamEntry> {
+        lock(&self.byte_streams)
+            .get(id)
+            .cloned()
+            .ok_or_else(|| napi_error(Status::InvalidArg, "unknown or closed byte stream"))
+    }
 }
 
 impl Drop for RuntimeInner {
@@ -162,6 +178,11 @@ impl Drop for RuntimeInner {
         );
         let voices = std::mem::take(
             self.voices
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        let byte_streams = std::mem::take(
+            self.byte_streams
                 .get_mut()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
@@ -179,6 +200,9 @@ impl Drop for RuntimeInner {
         // N-API finalizers may run on Node's thread. Cleanup joins decoders and async transport
         // workers on this best-effort reaper thread instead of blocking the event loop.
         let cleanup = move || {
+            for entry in byte_streams.into_values() {
+                entry.writer.cancel();
+            }
             for entry in playbacks.into_values() {
                 entry.cancel_start();
                 let _ = entry.session.stop();

@@ -1,3 +1,4 @@
+use napi::bindgen_prelude::Buffer;
 use napi_derive::napi;
 use std::collections::HashMap;
 
@@ -19,9 +20,10 @@ pub struct NativeVoiceSessionIds {
 
 #[napi(object)]
 pub struct NativeMediaSource {
-    /// Explicitly `file` or `url`; native code never guesses from a string.
+    /// Explicitly `file`, `url`, `buffer`, or `stream`.
     pub kind: String,
-    pub value: String,
+    pub value: Option<String>,
+    pub bytes: Option<Buffer>,
 }
 
 #[napi(object)]

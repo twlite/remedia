@@ -222,7 +222,8 @@ impl AudioDecoder {
                 .unwrap_or_else(|| codec_id.name().to_owned()),
             sample_rate: (decoder.rate() > 0).then_some(decoder.rate()),
             channels: (decoder.channels() > 0).then_some(decoder.channels()),
-            channel_layout: layout_description(decoder.channel_layout()),
+            channel_layout: decoder_layout_description(&decoder)
+                .or_else(|| layout_description_from_mask(decoder.channel_layout())),
             duration: stream_duration
                 .checked_duration(stream_time_base)
                 .or_else(|| duration_from_av_time_base(input.duration())),
@@ -268,6 +269,11 @@ impl AudioDecoder {
     /// demuxer or source cannot seek.
     pub fn seek(&mut self, position: Duration) -> Result<(), DecoderError> {
         self.check_cancelled()?;
+        if !self.input.is_seekable() {
+            return Err(DecoderError::UnsupportedSeeking(
+                "the byte stream is non-seekable".to_owned(),
+            ));
+        }
         if let Some(duration) = self.info.duration
             && position > duration
         {
@@ -334,6 +340,9 @@ impl AudioDecoder {
                         }
                     }
                     Err(ffmpeg::Error::Eof) => {
+                        if let Some(message) = self.input.producer_failure() {
+                            return Err(DecoderError::InputFailure(message));
+                        }
                         self.demux_finished = true;
                         self.decoder.send_eof().map_err(|error| {
                             self.decode_error(error, "signaling the end of the input")
@@ -395,7 +404,8 @@ impl AudioDecoder {
         if input_layout.channels() <= 0 {
             return Err(DecoderError::InvalidAudioFormat);
         }
-        let input_layout_key = layout_description(input_layout)
+        let input_layout_key = frame_layout_description(decoded)
+            .or_else(|| layout_description_from_mask(input_layout))
             .unwrap_or_else(|| format!("{} channels", input_layout.channels()));
 
         if let Some(resampler) = &self.resampler {
@@ -551,6 +561,9 @@ impl AudioDecoder {
     }
 
     fn input_error(&self, error: ffmpeg::Error, operation: &'static str) -> DecoderError {
+        if let Some(message) = self.input.producer_failure() {
+            return DecoderError::InputFailure(message);
+        }
         ffmpeg_error(
             error,
             operation,
@@ -682,15 +695,73 @@ impl CheckedDuration for i64 {
     }
 }
 
-fn layout_description(layout: ChannelLayout) -> Option<String> {
+fn decoder_layout_description(decoder: &AudioCodecDecoder) -> Option<String> {
+    // SAFETY: `decoder` owns this context and remains alive for the call.
+    let context = unsafe { decoder.as_ptr() };
+    if context.is_null() {
+        return None;
+    }
+
+    // SAFETY: `context` is borrowed from the live FFmpeg decoder. The
+    // `ch_layout` field is an AVChannelLayout in the native FFmpeg API across
+    // the supported versions; querying it avoids converting ffmpeg-next's
+    // version-dependent legacy/new ChannelLayout wrapper.
+    unsafe { av_channel_layout_description(&(*context).ch_layout) }
+}
+
+fn frame_layout_description(frame: &ffmpeg::frame::Audio) -> Option<String> {
+    // SAFETY: `frame` owns this frame and remains alive for the call.
+    let frame = unsafe { frame.as_ptr() };
+    if frame.is_null() {
+        return None;
+    }
+
+    // SAFETY: `frame` is a live FFmpeg frame borrowed from the decoder. The
+    // native `ch_layout` field is valid for the lifetime of this call.
+    unsafe { av_channel_layout_description(&(*frame).ch_layout) }
+}
+
+fn layout_description_from_mask(layout: ChannelLayout) -> Option<String> {
     if layout.is_empty() || layout.channels() <= 0 {
         return None;
     }
-    let mut buffer = [0_i8; 128];
-    // SAFETY: the buffer is writable for the supplied size and `layout` is a
-    // copy of a valid FFmpeg channel layout owned by the decoded stream.
+
+    // `ChannelLayout` is a legacy bitmask on FFmpeg 6 and an AVChannelLayout
+    // wrapper on FFmpeg 7. Convert only through FFmpeg's public mask API; do
+    // not assume the Rust wrapper has the native structure's ABI.
+    let mut native_layout = std::mem::MaybeUninit::<ffmpeg::ffi::AVChannelLayout>::uninit();
+    // SAFETY: FFmpeg initializes `native_layout` on success from the channel
+    // mask returned by ffmpeg-next. The output is uninitialized on failure.
     let result = unsafe {
-        ffmpeg::ffi::av_channel_layout_describe(&layout.into(), buffer.as_mut_ptr(), buffer.len())
+        ffmpeg::ffi::av_channel_layout_from_mask(native_layout.as_mut_ptr(), layout.bits())
+    };
+    if result < 0 {
+        return None;
+    }
+
+    // SAFETY: `av_channel_layout_from_mask` returned success and initialized
+    // the layout. It is uninitialized after `av_channel_layout_uninit` below.
+    let mut native_layout = unsafe { native_layout.assume_init() };
+    // SAFETY: the initialized layout remains alive and the buffer is writable
+    // for its full length. FFmpeg writes a NUL-terminated description.
+    let description = unsafe { av_channel_layout_description(&native_layout) };
+    // SAFETY: this layout was initialized by FFmpeg and is no longer used.
+    unsafe { ffmpeg::ffi::av_channel_layout_uninit(&mut native_layout) };
+    description
+}
+
+unsafe fn av_channel_layout_description(layout: &ffmpeg::ffi::AVChannelLayout) -> Option<String> {
+    if layout.nb_channels <= 0
+        || layout.order == ffmpeg::ffi::AVChannelOrder::AV_CHANNEL_ORDER_UNSPEC
+    {
+        return None;
+    }
+
+    let mut buffer = [0_i8; 128];
+    // SAFETY: the caller passes a valid AVChannelLayout and `buffer` is
+    // writable for the supplied size.
+    let result = unsafe {
+        ffmpeg::ffi::av_channel_layout_describe(layout, buffer.as_mut_ptr(), buffer.len())
     };
     if result < 0 {
         return None;

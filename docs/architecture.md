@@ -1,16 +1,17 @@
 # Architecture
 
 This document distinguishes implemented behavior from design intentions. `remedia-core` implements
-file/HTTP-to-PCM decoding, playback sessions, generic output, and transport-independent Opus
-encoding. `remedia-discord` implements one outbound voice connection with DAVE and RTP-size
+file, HTTP, buffer, and byte-stream decoding to PCM, playback sessions, generic output, and
+transport-independent Opus encoding. `remedia-discord` implements one outbound voice connection with DAVE and RTP-size
 transport encryption. The server remains starter code. The N-API package now exposes initial native
 playback, Discord session, and diagnostics APIs.
 
 ## Rust crates
 
-- **`remedia-core`** opens local filesystem paths and HTTP(S) URLs with libavformat, selects and
-  decodes an audio stream with libavcodec, and converts output through libswresample to interleaved
-  48 kHz stereo `f32` PCM. It uses native FFmpeg libraries rather than starting FFmpeg subprocesses.
+- **`remedia-core`** opens local filesystem paths, HTTP(S) URLs, owned encoded bytes, and bounded
+  byte streams with libavformat, selects and decodes an audio stream with libavcodec, and converts
+  output through libswresample to interleaved 48 kHz stereo `f32` PCM. It uses native FFmpeg
+  libraries rather than starting FFmpeg subprocesses.
   Playback sessions manage one source, lifecycle state, seeking, and frame delivery to a generic
   output. The generic Opus output adapter uses native libopus, accumulates variable PCM blocks into
   20 ms stereo Opus packets, and marks a padded final packet's actual media duration. It does not
@@ -36,9 +37,11 @@ playback, Discord session, and diagnostics APIs.
   are dispatched to blocking workers. A caller-owned cancellation token covers the gap before a
   scheduled decoder worker starts, so concurrent stop, dispose, or close cannot leave a late
   playback worker behind. Standalone sessions currently decode into `NullOutput`,
-  while Discord sessions use the core Opus output adapter. The addon does not install a global
-  tracing subscriber. It is private and under development; it does not accept Node streams or
-  buffers and does not implement server RPC.
+  while Discord sessions use the core Opus output adapter. The addon accepts files, HTTP(S) URLs,
+  owned Buffer/Uint8Array data, and binary Node.js Readables. Readable chunks are copied into a
+  bounded native byte queue with backpressure; stopping or closing detaches and pauses a caller-owned
+  Readable without destroying it. The addon does not install a global tracing subscriber. It is
+  private and under development and does not implement server RPC.
 
 The core decoder, playback, Opus, outbound Discord transport, and first N-API playback integration
 exist. Server RPC, receiving audio, and device output remain design intentions. Add crates or
@@ -53,22 +56,24 @@ standalone server can initialize the same shared context when server runtime wor
 
 ## Embedded and remote integration
 
-Embedded Node.js integration is intended for local applications that need direct native access.
-Future local bindings may ingest client-provided streams or buffers because the binding and producer
-run in the same process; that input path is not part of the current Node API.
+Embedded Node.js integration provides local applications direct native access. Buffer and
+Uint8Array inputs are copied into native-owned memory. A Node Readable is pumped incrementally into
+a 512 KiB bounded queue, so decoder backpressure reaches the producer without creating an
+unbounded audio buffer. Cancelling playback releases queued bytes and detaches the feeder; the
+caller retains ownership of the Readable, which is paused but not destroyed.
 
-Remote integration runs in a separate server process. Its initial inputs are files and HTTP URLs
-that the server can access. Uploading arbitrary client-generated binary streams to the remote
-server is intentionally deferred; it adds a transport and lifecycle surface that local bindings do
-not need.
+Remote integration runs in a separate server process. Its intended initial inputs are files and
+HTTP URLs that the server can access. Uploading arbitrary client-generated binary streams to the
+remote server is intentionally deferred; the local N-API byte input does not add remote transport.
 
 ## Processing and inputs
 
-The implemented decoder accepts explicit file-path and HTTP(S)-URL source variants. It probes the
+The implemented decoder accepts explicit file-path, HTTP(S)-URL, in-memory byte, and bounded
+producer-backed byte stream variants. Custom byte sources use FFmpeg AVIO callbacks; memory inputs
+support byte seeking, while producer streams are one-shot and non-seekable. The decoder probes the
 container, chooses an audio stream, and yields frames incrementally as fast as the caller consumes
 them. FFmpeg handles redirects and unknown HTTP content lengths. A configurable network I/O timeout
-and an atomic cancellation token can interrupt blocked operations. The decoder itself never paces
-audio.
+and cancellation signals can interrupt blocked operations. The decoder itself never paces audio.
 
 FFmpeg resamples to normalized interleaved 48 kHz stereo `f32` samples in FL/FR order. Mono input is
 duplicated to stereo; multichannel input is downmixed using its channel layout. The frame position is

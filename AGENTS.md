@@ -30,7 +30,7 @@ These describe intended responsibilities, not a claim that every component or fe
 
 - Use native FFmpeg libraries through Rust bindings. Do not spawn `ffmpeg` or `ffprobe` subprocesses for media processing.
 - Keep generic media handling in `remedia-core` and transport-specific logic outside it.
-- Initially support local files and HTTP(S) media inputs in the engine. Treat a remote file path as a path on the server's filesystem, not the client's machine.
+- Core inputs include explicit local files and HTTP(S) URLs, plus owned bytes and bounded byte streams for concrete in-process producers. Treat a remote file path as a path on the server's filesystem, not the client's machine.
 - Do not add arbitrary client-stream uploads over WebSocket unless explicitly requested. The initial remote protocol should not transfer client-generated media bytes; N-API is the intended local ingestion path.
 - Keep sessions independent. Avoid global mutable playback state, unbounded queues, and blocking operations on async executors.
 - Make cancellation, shutdown, error propagation, ownership, and resource cleanup explicit. Apply bounded buffering and backpressure where producers and consumers have independent lifecycles.
@@ -50,6 +50,15 @@ These describe intended responsibilities, not a claim that every component or fe
 - Keep TypeScript interfaces strict and avoid untyped escape hatches where practical.
 - Expose a small public API. Document important invariants, units, lifetimes, ownership, input formats, and failure cases.
 - Never change generated bindings or generated files manually when a source-of-truth generator exists.
+
+### Node package source layout
+
+Keep `packages/remedia-node/src/` for Rust source only, including the N-API crate modules. Keep
+TypeScript source only in `packages/remedia-node/lib/`; `packages/remedia-node/dist/` is compiled
+TypeScript output. N-API generated loader and declaration files (`native.js`, `native.d.ts`, and
+platform binaries) stay at the package root and must be regenerated from Rust source rather than
+edited manually. Put Node tests in `packages/remedia-node/tests/` as TypeScript Vitest files, grouped
+by behavior. Do not mix Rust and TypeScript sources in the same `src/` directory.
 
 ## Documentation is part of implementation
 

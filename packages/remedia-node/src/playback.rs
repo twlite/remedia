@@ -38,7 +38,17 @@ impl NativeRemedia {
         let _operation = self.inner.operations.read().await;
         self.inner.ensure_open()?;
         let entry = self.inner.playback(&playback_id)?;
-        let input = parse_source(source)?;
+        let input = if source.kind == "stream" {
+            let stream_id = source.value.as_deref().ok_or_else(|| {
+                napi_error(
+                    Status::InvalidArg,
+                    "stream media source requires a native byte-stream handle",
+                )
+            })?;
+            self.inner.byte_stream(stream_id)?.source
+        } else {
+            parse_source(source)?
+        };
         let session = Arc::clone(&entry.session);
         let handle = self.inner.observability_handle.clone();
         let connection = match &entry.voice_id {

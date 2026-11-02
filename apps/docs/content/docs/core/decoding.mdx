@@ -6,8 +6,10 @@ description: Open local files or HTTP(S) URLs and consume normalized PCM frames.
 # Audio decoding
 
 `remedia-core` opens a source through FFmpeg's native libavformat, selects an audio stream, decodes
-it with libavcodec, and converts frames with libswresample. It does not launch `ffmpeg` or
-`ffprobe` subprocesses, and it does not read the whole source into memory before yielding audio.
+it with libavcodec, and converts frames with libswresample. Sources may be local files, HTTP(S)
+URLs, owned encoded bytes, or a bounded producer-backed byte stream. It does not launch `ffmpeg` or
+`ffprobe` subprocesses, and it does not read a complete file or producer stream into memory before
+yielding audio.
 
 ## Output format
 
@@ -51,6 +53,55 @@ Use `InputSource::http_url(url)` for `http://` or `https://` sources. HTTP redir
 without a known content length are handled by FFmpeg's demuxer. HTTP status failures, network
 timeouts, invalid media, and missing audio streams return errors. The server must expose a supported
 FFmpeg HTTP(S) protocol and the requested media must be reachable from the process.
+
+## In-memory bytes and producer streams
+
+`InputSource::bytes` owns encoded bytes and permits byte-offset seeking when the container supports
+it. Cloning the source shares its owned byte allocation:
+
+```rust
+use remedia_core::{AudioDecoder, InputSource};
+
+let bytes = std::fs::read("media/track.wav")?;
+let mut decoder = AudioDecoder::open(InputSource::bytes(bytes))?;
+while let Some(frame) = decoder.next_frame()? {
+    consume(frame.samples);
+}
+# fn consume(_: Vec<f32>) {}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+For incremental producers, `InputSource::byte_stream(max_pending_bytes)` returns the source and a
+`ByteStreamWriter`. Writes block when the pending byte capacity is reached, applying backpressure
+without dropping media bytes. Signal normal EOF with `finish()` or propagate a producer failure with
+`fail(message)`. Dropping/cancelling the decoder wakes blocked reads and writes and clears queued
+bytes. A producer-backed input is one-shot and non-seekable:
+
+```rust
+use remedia_core::{AudioDecoder, InputSource};
+
+let (source, writer) = InputSource::byte_stream(512 * 1024)?;
+let producer = std::thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    for encoded_chunk in encoded_chunks() {
+        writer.write(&encoded_chunk)?;
+    }
+    writer.finish()?;
+    Ok(())
+});
+
+let mut decoder = AudioDecoder::open(source)?;
+while let Some(frame) = decoder.next_frame()? {
+    consume(frame.samples);
+}
+producer.join().expect("producer thread panicked")?;
+# fn encoded_chunks() -> Vec<Vec<u8>> { Vec::new() }
+# fn consume(_: Vec<f32>) {}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The queue capacity limits bytes waiting inside Remedia. Producers may hold their current chunk and
+their own upstream buffers, so they should also use bounded buffers. For Node.js Readables and the
+JavaScript ownership rules, see [Node.js bindings](/docs/node/bindings).
 
 ## Metadata
 

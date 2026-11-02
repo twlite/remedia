@@ -26,6 +26,8 @@ pub enum DecoderError {
     InputTimeout,
     #[error("media input was cancelled")]
     Cancelled,
+    #[error("media byte producer failed: {0}")]
+    InputFailure(String),
     #[error("HTTP request failed with status {0}")]
     HttpStatus(u16),
     #[error("failed to open media input: {0}")]
@@ -74,6 +76,7 @@ impl DecoderError {
             Self::InvalidMedia(_) => "invalid_media",
             Self::InputTimeout => "input_timeout",
             Self::Cancelled => "cancelled",
+            Self::InputFailure(_) => "input_failure",
             Self::HttpStatus(_) => "http_status",
             Self::OpenInput(_) => "open_input",
             Self::NoAudioStream => "no_audio_stream",

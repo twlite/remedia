@@ -5,15 +5,15 @@ description: A native Rust audio engine with local and remote integration plans.
 
 # Remedia
 
-Remedia is an audio engine under development. Its first working media pipeline is in `remedia-core`:
-it opens local files and HTTP(S) URLs, decodes audio with native FFmpeg libraries, and yields
-normalized PCM frames incrementally.
+Remedia is an audio engine under development. Its working media pipeline is in `remedia-core`:
+it opens local files, HTTP(S) URLs, owned bytes, and bounded byte streams, decodes audio with native
+FFmpeg libraries, and yields normalized PCM frames incrementally.
 
 The output is interleaved 48 kHz stereo `f32` in Front Left / Front Right order. Core can encode PCM
 to transport-independent Opus packets, and `remedia-discord` can send packets over an outbound voice
 connection with DAVE encryption. The Discord transport has not yet been verified against a live
 bot. The private Node.js package provides an initial in-process API for file/URL playback, external
-Discord voice sessions, and structured diagnostics. It does not support Node streams or buffers yet.
+Discord voice sessions, structured diagnostics, in-memory bytes, and bounded binary Readable inputs.
 The server crate is a placeholder and remote RPC is not implemented.
 
 ## Core engine

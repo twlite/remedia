@@ -9,20 +9,49 @@ use crate::NativeResult;
 use crate::types::{NativeMediaSource, NativeStreamInfo};
 
 pub(crate) fn parse_source(source: NativeMediaSource) -> NativeResult<InputSource> {
-    if source.value.is_empty() {
-        return Err(napi_error(
-            Status::InvalidArg,
-            "media source cannot be empty",
-        ));
-    }
     match source.kind.as_str() {
-        "file" => Ok(InputSource::file(source.value)),
-        "url" => Ok(InputSource::http_url(source.value)),
+        "file" => {
+            let value = source_value(source.value, "file path")?;
+            Ok(InputSource::file(value))
+        }
+        "url" => {
+            let value = source_value(source.value, "media URL")?;
+            Ok(InputSource::http_url(value))
+        }
+        "buffer" => {
+            let bytes = source.bytes.ok_or_else(|| {
+                napi_error(
+                    Status::InvalidArg,
+                    "buffer media source requires a byte buffer",
+                )
+            })?;
+            Ok(InputSource::bytes(Vec::<u8>::from(bytes)))
+        }
+        "stream" => Err(napi_error(
+            Status::InvalidArg,
+            "stream media sources must be created by the Remedia byte-stream API",
+        )),
         _ => Err(napi_error(
             Status::InvalidArg,
-            "media source kind must be `file` or `url`",
+            "media source kind must be `file`, `url`, `buffer`, or `stream`",
         )),
     }
+}
+
+fn source_value(value: Option<String>, description: &str) -> NativeResult<String> {
+    let value = value.ok_or_else(|| {
+        napi_error(
+            Status::InvalidArg,
+            format!("media source requires a {description}"),
+        )
+    })?;
+    if value.is_empty() {
+        return Err(napi_error(
+            Status::InvalidArg,
+            format!("media {description} cannot be empty"),
+        ));
+    }
+    Ok(value)
 }
 
 pub(crate) fn parse_snowflake(field: &'static str, value: &str) -> NativeResult<u64> {

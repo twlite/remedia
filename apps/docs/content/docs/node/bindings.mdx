@@ -11,11 +11,11 @@ Node process. It does not start `remedia-server` and does not install a global
 Rust tracing subscriber.
 
 The package is under development and is currently private. It supports local
-file and HTTP(S) sources. A standalone playback session decodes into a null
-output for inspection and testing; a Discord session connects the existing
-Opus output to the voice transport. Client-provided streams, buffers, a local
-audio device, server RPC, and a Discord Gateway or REST client are not
-implemented by these bindings.
+files, HTTP(S) URLs, in-memory `Buffer`/`Uint8Array` data, and Node.js binary
+`Readable` streams. A standalone playback session decodes into a null output
+for inspection and testing; a Discord session connects the existing Opus
+output to the voice transport. A local audio device, server RPC, and a Discord
+Gateway or REST client are not implemented by these bindings.
 
 ## Build prerequisites
 
@@ -59,8 +59,9 @@ try {
 }
 ```
 
-`MediaSource` is an explicit union: `{ file: string }` or `{ url: string }`.
-The binding does not infer a source type from arbitrary strings. The returned
+`MediaSource` is an explicit union: `{ file: string }`, `{ url: string }`,
+`{ buffer: Buffer | Uint8Array }`, or `{ stream: Readable }`. The binding does
+not infer a source type from arbitrary strings. The returned
 `AudioStreamInfo` contains the selected stream index, codec, original sample
 rate and channel layout when known, duration when known, bit rate, and media
 metadata.
@@ -69,6 +70,91 @@ Standalone sessions currently use `NullOutput`, which consumes decoded PCM as
 fast as possible and does not produce sound. Discord sessions use the
 transport-independent core Opus adapter and send the resulting packets through
 their associated voice connection.
+
+## Buffer and Readable inputs
+
+Pass encoded media bytes directly with a `Buffer` or `Uint8Array`:
+
+```ts
+import { readFile } from 'node:fs/promises';
+import { Remedia } from '@remedia/node';
+
+const bytes = await readFile('./audio/track.mp3');
+const remedia = await Remedia.create();
+const playback = remedia.createPlaybackSession();
+try {
+  await playback.play({ buffer: bytes });
+  console.log(await playback.wait());
+} finally {
+  await playback.dispose();
+  await remedia.close();
+}
+```
+
+For generated or streamed data, pass a Node.js `Readable` that yields only
+`Buffer` or `Uint8Array` chunks. Object-mode streams and other chunk values fail
+the playback operation with a source error. The pump starts before decoder
+initialization, so FFmpeg can probe while the producer is writing:
+
+```ts
+import { Readable } from 'node:stream';
+import { Buffer } from 'node:buffer';
+import { Remedia } from '@remedia/node';
+
+function makeWave(): Buffer {
+  const sampleRate = 48_000;
+  const sampleFrames = 4_800;
+  const bytes = Buffer.alloc(44 + sampleFrames * 2);
+  bytes.write('RIFF', 0);
+  bytes.writeUInt32LE(bytes.length - 8, 4);
+  bytes.write('WAVEfmt ', 8);
+  bytes.writeUInt32LE(16, 16);
+  bytes.writeUInt16LE(1, 20); // PCM
+  bytes.writeUInt16LE(1, 22); // mono
+  bytes.writeUInt32LE(sampleRate, 24);
+  bytes.writeUInt32LE(sampleRate * 2, 28);
+  bytes.writeUInt16LE(2, 32);
+  bytes.writeUInt16LE(16, 34);
+  bytes.write('data', 36);
+  bytes.writeUInt32LE(sampleFrames * 2, 40);
+  return bytes;
+}
+
+const bytes = makeWave();
+const source = Readable.from(
+  [bytes.subarray(0, 16), bytes.subarray(16, 2_000), bytes.subarray(2_000)],
+  { objectMode: false },
+);
+const remedia = await Remedia.create();
+const playback = remedia.createPlaybackSession();
+try {
+  await playback.play({ stream: source });
+  console.log(await playback.wait());
+} finally {
+  await playback.dispose();
+  await remedia.close();
+}
+```
+
+The native queue is capped at 512 KiB of pending bytes per stream. Writes wait
+for decoder consumption before the Readable pump asks for more data. When
+playback is paused, the queue fills and backpressure propagates to the source;
+this prevents unbounded buffering. The input is incremental and does not first
+materialize the complete stream. A single producer chunk and the Readable's own
+high-water mark add to the queue's memory use.
+
+Remedia copies Buffer/Uint8Array data into native-owned memory. For a Readable,
+the feeder copies each chunk before submitting it to native code. Remedia owns
+the feeder and detaches it on stop, dispose, or `Remedia.close()`, but it does
+not destroy the caller-owned Readable. The source is paused and no further
+chunks are consumed after cancellation. A producer error is propagated through
+decoder state and `playback.error` or the rejected `play()` Promise, not through
+diagnostic events.
+
+In-memory buffers support byte-offset seeking when FFmpeg can seek the
+container. A producer-backed Readable is non-seekable; seeking it returns an
+unsupported-seeking error. File and HTTP behavior is unchanged, and supported
+containers/codecs depend on the installed native FFmpeg libraries.
 
 ## Playback controls
 
