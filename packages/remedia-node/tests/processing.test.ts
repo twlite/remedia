@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { afterAll, beforeAll, test } from 'vitest';
 
-import { Remedia } from '../lib/index.js';
-import { createHeldAudioServer, createWaveFixture } from './helpers.js';
+import { Remedia, type DiagnosticEvent } from '../lib/index.js';
+import { createHeldAudioServer, createWaveFixture, makeWave } from './helpers.js';
 
 let fixture: Awaited<ReturnType<typeof createWaveFixture>>;
 
@@ -31,6 +31,7 @@ test('configures raw filtergraphs and independent master gain before playback', 
     await first.play({ buffer: fixture.wave });
     assert.equal(await first.wait(), 'completed');
     assert.ok(first.position.submittedMs > 0);
+    assert.ok(first.position.mediaMs !== null && first.position.mediaMs > 0);
 
     await first.filters.clear();
     assert.equal(first.filters.graph, null);
@@ -44,31 +45,82 @@ test('configures raw filtergraphs and independent master gain before playback', 
 });
 
 test('replaces a live graph safely and preserves the prior graph on validation failure', async () => {
-  const held = await createHeldAudioServer(fixture.wave);
-  const remedia = await Remedia.create();
+  // Keep the HTTP response open after a small prefix so the native decoder is
+  // waiting for more bytes from the same source while graph commands cross the
+  // worker boundary. Each command releases more bytes only after native code
+  // confirms the replacement is pending.
+  const held = await createHeldAudioServer(makeWave(10), 512 * 1024);
+  const remedia = await createRemediaWithPlaybackInfoDiagnostics();
   const playback = remedia.createPlaybackSession();
 
   try {
     const opening = playback.play({ url: held.url });
     await held.ready;
     await opening;
-    await playback.filters.set('tremolo=f=5:d=0.6');
+    assert.equal(playback.state, 'playing');
+    await applyLiveFilter(remedia, playback, held, 'tremolo=f=5:d=0.6');
     await playback.setVolume(1.5);
     await assert.rejects(playback.filters.set('missing_filter=1'));
     assert.equal(playback.filters.graph, 'tremolo=f=5:d=0.6');
+    assert.equal(playback.state, 'playing');
     assert.equal(playback.volume, 1.5);
-    await playback.filters.set('vibrato=f=5:d=0.5');
-    await playback.filters.clear();
+    await applyLiveFilter(remedia, playback, held, 'vibrato=f=5:d=0.5');
+    await applyLiveFilter(remedia, playback, held, null);
     assert.equal(playback.filters.graph, null);
     assert.equal(playback.volume, 1.5);
     held.finish();
     assert.equal(await playback.wait(), 'completed');
+    assert.equal(held.requests, 1, 'filter changes must not reopen the HTTP input');
   } finally {
     await playback.dispose();
     await remedia.close();
     await held.close();
   }
 });
+
+async function createRemediaWithPlaybackInfoDiagnostics(): Promise<Remedia> {
+  const previousLog = process.env.REMEDIA_LOG;
+  const previousDebug = process.env.REMEDIA_DEBUG;
+  process.env.REMEDIA_LOG = 'remedia_core::playback=info';
+  try {
+    return await Remedia.create();
+  } finally {
+    if (previousLog === undefined) delete process.env.REMEDIA_LOG;
+    else process.env.REMEDIA_LOG = previousLog;
+    if (previousDebug === undefined) delete process.env.REMEDIA_DEBUG;
+    else process.env.REMEDIA_DEBUG = previousDebug;
+  }
+}
+
+async function applyLiveFilter(
+  remedia: Remedia,
+  playback: ReturnType<Remedia['createPlaybackSession']>,
+  held: Awaited<ReturnType<typeof createHeldAudioServer>>,
+  expression: string | null,
+): Promise<void> {
+  const requested = waitForFilterRequest(remedia);
+  const update = expression === null ? playback.filters.clear() : playback.filters.set(expression);
+  await requested;
+  assert.ok(held.sendNext() > 0, 'the held source has more bytes for the worker');
+  await update;
+  assert.equal(playback.state, 'playing');
+}
+
+function waitForFilterRequest(remedia: Remedia): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      remedia.off('debug', listener);
+      reject(new Error('timed out waiting for the native filter transition request'));
+    }, 2_000);
+    const listener = (event: DiagnosticEvent) => {
+      if (event.event !== 'core.playback.filter_graph_replacement_requested') return;
+      clearTimeout(timeout);
+      remedia.off('debug', listener);
+      resolve();
+    };
+    remedia.on('debug', listener);
+  });
+}
 
 test('Discord sessions retain independent graph and volume configuration before connect', async () => {
   const remedia = await Remedia.create({ send: () => {} });

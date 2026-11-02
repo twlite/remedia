@@ -38,7 +38,7 @@ let terminal_state = session.wait();
 assert_eq!(terminal_state, PlaybackState::Completed);
 
 let position = session.position();
-println!("submitted: {:?}; consumed: {:?}", position.submitted, position.played);
+println!("media: {:?}; submitted: {:?}; consumed: {:?}", position.media, position.submitted, position.played);
 println!("output statistics: {:?}", stats.snapshot());
 session.stop()?; // joins and releases the finished worker/output
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -115,23 +115,35 @@ session.set_filter_graph(None)?;
 ```
 
 Remedia builds and validates a replacement graph before requesting a change.
-The worker installs it at a PCM boundary, discards delayed output still held
-inside the previous graph, and flushes the output's partial/buffered audio. It
-does not reopen or restart the decoder. Invalid replacements leave the current
-graph active. Changes can be made before playback, while playing, or while
-paused; pause and seek serialize with graph replacement. Stateful filter delay
-does not carry across replacement. Seeking rebuilds filter state at the new
-source position, and natural EOF drains delayed output before output completion.
+The worker installs it at a decoded PCM boundary and discards delayed output
+still held inside the previous graph. PCM already accepted by the output stays
+accepted. A live change does not call the seek-flush operation, reset the Opus
+encoder, invalidate queued RTP packets, reopen the source, or restart the
+decoder. The Opus adapter keeps its partial frame, so one encoded packet can
+contain accepted samples from either side of the graph boundary; sample
+positions remain contiguous. Invalid replacements leave the current graph
+active. Changes can be made before playback, while playing, or while paused;
+pause and seek serialize with graph replacement. Stateful filter delay does not
+carry across replacement. Seeking is different: it rebuilds filter state at the
+new source position and flushes pre-seek output. Natural EOF drains delayed
+output from the active graph before output completion.
+If EOF wins a race with a queued graph update after no PCM boundary remains,
+the update is acknowledged as the session's configuration for its next source;
+it does not alter audio already being finished. A seek that loses the same EOF
+race returns an invalid-state error instead of waiting indefinitely.
 
-Filtergraphs may change duration or sample count. The source timeline and
-`seek(Duration)` remain based on the original media. After a time-changing
-graph, `position().submitted` advances by contiguous filtered PCM samples
-submitted to the output; it is not a source-media timestamp. After seeking, the
-timeline starts at the requested source position and then advances by filtered
-output samples, so it must not be read as an exact source position. `played` is only as accurate
-as the output's own report, and Discord currently reports no audible position.
-The Opus/RTP transport timeline remains continuous across graph changes and
-seeks.
+Filtergraphs may change duration or sample count. `seek(Duration)` remains
+relative to the original media timeline. `position().media` is the source
+position associated with the latest filtered PCM accepted by the output;
+`Timestamp` means it came from a valid decoded source timestamp, while
+`Estimated` means timestamps were missing or the graph can buffer/change the
+source-to-output mapping. It is a processing position, not a claim about what a
+listener has heard. `position().submitted` is the end of the contiguous
+filtered-output sample timeline and is the timeline used by Opus. `played` is
+the output's own consumed/audible report when available. Discord currently
+reports no audible position. The Opus/RTP transport timeline remains continuous
+across graph changes; a seek deliberately invalidates pre-seek queued media but
+keeps the connection's RTP sequence and timestamp state.
 
 The optional master gain is a finite linear value in `0.0..=2.0`: zero mutes,
 one is unity, and 1.5 is 150% amplitude. Values outside that range, NaN, and
@@ -147,9 +159,16 @@ enforces the single-input/single-output PCM contract; it is not a sandbox and
 does not make arbitrary graphs safe to expose to untrusted remote clients.
 When no graph is configured, Remedia bypasses libavfilter entirely.
 
-`position()` distinguishes two positions:
+`position()` exposes three positions:
+
+- `media` is the original source timeline associated with the latest output
+  boundary. It can be estimated for timestamp-less media and for any graph that
+  buffers or changes timing. The core does not infer speed ratios by parsing
+  filter text.
 
 - `submitted` is the end of the latest frame accepted by the output.
+- `submitted` follows filtered PCM sample counts, not source time. This keeps
+  Opus input contiguous even for tempo and sample-rate filters.
 - `played` is an optional position reported by the output. It is `None` when an
   output can only report submission or buffering, and should not be interpreted
   as audible playback progress.
@@ -158,6 +177,15 @@ When no graph is configured, Remedia bypasses libavfilter entirely.
 consumed sample count. Its statistics distinguish scalar interleaved `f32`
 values from sample frames per channel; duration is based on total consumed sample
 frames, including audio consumed again after a seek.
+
+FFmpeg may discard encoder-delay or padding samples described by a codec's
+skip-sample metadata. Remedia sets the decoder packet time base from the
+selected stream so FFmpeg can adjust decoded timestamps for those samples. The
+messages “Could not update timestamps for skipped samples” and “Could not update
+timestamps for discarded samples” are FFmpeg warnings about that timestamp
+adjustment when the decoder lacks a usable packet time base; they do not mean
+the decoder failed to apply the skip/discard metadata. Container duration may
+therefore differ slightly from the number of audible decoded samples.
 
 ## Media output contract
 

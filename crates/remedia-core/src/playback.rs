@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use remedia_observability::{ObservabilityHandle, next_correlation_id};
 use thiserror::Error;
 
-use crate::decoder::{AudioDecoder, AudioStreamInfo, DecoderOptions, PcmFrame};
+use crate::decoder::{
+    AudioDecoder, AudioStreamInfo, DecodedPcmFrame, DecoderOptions, PcmFrame, SourcePosition,
+};
 use crate::error::DecoderError;
 use crate::filter::{FilterGraphError, PcmFilterGraph, PcmProcessor, ProcessError};
 use crate::output::{MediaOutput, OutputError};
@@ -105,10 +107,33 @@ impl From<DecoderError> for PlaybackError {
 /// Positions reported by a session.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PlaybackPosition {
+    /// Source/media position associated with the latest output boundary. This
+    /// is a processing estimate and does not claim samples have been heard.
+    pub media: Option<MediaPosition>,
     /// The end of the latest frame accepted by the output.
     pub submitted: Duration,
     /// The output's consumed/audible position, when it can report one.
     pub played: Option<Duration>,
+}
+
+/// Source timeline position attached to submitted filtered output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MediaPosition {
+    /// Position in the original media timeline, before time-changing filters.
+    pub position: Duration,
+    /// Whether the position came directly from source timestamps or from
+    /// continuity inferred across decoded frames / filtered output.
+    pub accuracy: MediaPositionAccuracy,
+}
+
+/// Confidence of a source-media position estimate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MediaPositionAccuracy {
+    /// Derived from a valid FFmpeg source timestamp on the associated frame.
+    Timestamp,
+    /// Inferred because timestamps were missing or a filtergraph can buffer or
+    /// change the mapping between source and output samples.
+    Estimated,
 }
 
 /// A single-source playback session.
@@ -145,6 +170,8 @@ struct SessionData {
     duration: Option<Duration>,
     info: Option<AudioStreamInfo>,
     submitted_position: Duration,
+    submitted_sample: u64,
+    media_position: Option<MediaPosition>,
     played_position: Option<Duration>,
     last_error: Option<PlaybackError>,
     cancellation: Option<CancellationToken>,
@@ -169,7 +196,7 @@ struct FilterUpdate {
 
 enum WorkerAction {
     Decode,
-    Deliver(PcmFrame),
+    Deliver(DecodedPcmFrame),
     Seek(SeekRequest),
     ReplaceFilter(FilterUpdate),
     Pause,
@@ -204,6 +231,8 @@ impl PlaybackSession {
                     duration: None,
                     info: None,
                     submitted_position: Duration::ZERO,
+                    submitted_sample: 0,
+                    media_position: None,
                     played_position: None,
                     last_error: None,
                     cancellation: None,
@@ -299,6 +328,8 @@ impl PlaybackSession {
             data.duration = None;
             data.info = None;
             data.submitted_position = Duration::ZERO;
+            data.submitted_sample = 0;
+            data.media_position = None;
             data.played_position = None;
             data.last_error = None;
             data.cancellation = Some(cancellation.clone());
@@ -552,32 +583,63 @@ impl PlaybackSession {
     /// The expression is parsed by native libavfilter and must describe one
     /// audio input and one audio output. `None` clears filtering. Empty or
     /// whitespace-only strings are rejected. When active, replacement waits
-    /// for a PCM boundary, drops delayed output from the previous graph, and
-    /// flushes any partial/buffered output packet before activating the new
-    /// graph. The source is not reopened. Graph strings are trusted application
+    /// for a PCM boundary and drops delayed output still held inside the
+    /// previous graph. PCM already accepted by the output is retained. The
+    /// source is not reopened. Graph strings are trusted application
     /// configuration; some FFmpeg filters can access files or URLs.
     pub fn set_filter_graph(&self, expression: Option<&str>) -> Result<(), PlaybackError> {
         let _update = lock(&self.filter_update_lock);
         let expression = expression.map(str::to_owned);
-        let candidate = expression
-            .as_deref()
-            .map(PcmFilterGraph::build)
-            .transpose()
-            .map_err(|error| PlaybackError::FilterGraph(Arc::new(error)))?;
+        let candidate = with_dispatch(&self.shared.observability, || {
+            expression.as_deref().map(PcmFilterGraph::build).transpose()
+        });
+        let candidate = match candidate {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                let playback_id = lock(&self.shared.data).playback_id;
+                with_dispatch(&self.shared.observability, || {
+                    tracing::warn!(
+                        name: "core.playback.filter_graph_replacement_failed",
+                        target: "remedia_core::playback",
+                        playback_id,
+                        error_kind = "invalid_graph",
+                        "replacement filtergraph could not be built; active graph was retained"
+                    );
+                });
+                return Err(PlaybackError::FilterGraph(Arc::new(error)));
+            }
+        };
         let mut data = lock(&self.shared.data);
         if data.filter_graph == expression {
             return Ok(());
         }
+        let playback_id = data.playback_id;
+        let graph_enabled = expression.is_some();
         data.filter_graph = expression;
         let active = is_active(data.state) && !data.stopping;
-        if active && data.processor_initialized {
-            let (response, receiver) = mpsc::sync_channel(1);
+        let response = if active && data.processor_initialized {
+            let (sender, receiver) = mpsc::sync_channel(1);
             data.pending_filter_graph = Some(FilterUpdate {
                 graph: candidate,
-                response,
+                response: sender,
             });
             self.shared.changed.notify_all();
-            drop(data);
+            Some(receiver)
+        } else {
+            None
+        };
+        drop(data);
+        with_dispatch(&self.shared.observability, || {
+            tracing::info!(
+                name: "core.playback.filter_graph_replacement_requested",
+                target: "remedia_core::playback",
+                playback_id,
+                graph_enabled,
+                active,
+                "filtergraph replacement requested"
+            );
+        });
+        if let Some(receiver) = response {
             return receiver.recv().unwrap_or_else(|_| {
                 Err(lock(&self.shared.data)
                     .last_error
@@ -585,10 +647,6 @@ impl PlaybackSession {
                     .unwrap_or(PlaybackError::WorkerPanicked))
             });
         }
-
-        // During early startup the worker has not taken its initial settings
-        // snapshot yet; storing the validated string is sufficient. Later
-        // startup changes are delivered through the worker's pending update.
         Ok(())
     }
 
@@ -745,9 +803,10 @@ impl PlaybackSession {
     /// position. A buffering output may report `None` until it can determine
     /// which samples have actually played.
     pub fn position(&self) -> PlaybackPosition {
-        let (submitted, cached_played, output) = {
+        let (media, submitted, cached_played, output) = {
             let data = lock(&self.shared.data);
             (
+                data.media_position,
                 data.submitted_position,
                 data.played_position,
                 data.output.clone(),
@@ -757,7 +816,11 @@ impl PlaybackSession {
             .as_ref()
             .and_then(safe_played_position)
             .or(cached_played);
-        PlaybackPosition { submitted, played }
+        PlaybackPosition {
+            media,
+            submitted,
+            played,
+        }
     }
 
     /// Return the selected media stream's duration when it is known.
@@ -869,6 +932,7 @@ fn worker_loop(
     cancellation: CancellationToken,
     ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
 ) {
+    let _log_capture = crate::ffmpeg_logging::capture();
     let decoder_started = Instant::now();
     let decoder_result = AudioDecoder::open_with_options(
         source,
@@ -932,7 +996,7 @@ fn worker_loop(
     loop {
         match next_worker_action(&shared, generation, &mut pending_frame, input_finished) {
             WorkerAction::Exit => return,
-            WorkerAction::Decode => match decoder.next_frame() {
+            WorkerAction::Decode => match decoder.next_timed_frame() {
                 Ok(Some(frame)) => pending_frame = Some(frame),
                 Ok(None) => input_finished = true,
                 Err(error) => {
@@ -943,11 +1007,29 @@ fn worker_loop(
                     return;
                 }
             },
-            WorkerAction::Deliver(frame) => {
+            WorkerAction::Deliver(decoded_frame) => {
                 let gain = lock(&shared.data).volume;
-                match processor.write_frame(frame, gain, |frame| {
-                    deliver_processed_frame(&shared, generation, &output, &cancellation, frame)
-                }) {
+                let DecodedPcmFrame {
+                    frame,
+                    source_start_sample,
+                    source_position_estimated,
+                } = decoded_frame;
+                match processor.write_frame(
+                    frame,
+                    source_start_sample,
+                    source_position_estimated,
+                    gain,
+                    |frame, source_position| {
+                        deliver_processed_frame(
+                            &shared,
+                            generation,
+                            &output,
+                            &cancellation,
+                            frame,
+                            source_position,
+                        )
+                    },
+                ) {
                     Ok(()) => {}
                     Err(ProcessError::Output(_)) if is_stopped(&shared, generation) => return,
                     Err(ProcessError::Output(error)) => {
@@ -973,22 +1055,18 @@ fn worker_loop(
                 }
             }
             WorkerAction::ReplaceFilter(update) => {
-                let position = duration_from_samples(processor.next_sample());
-                match output.flush(position, &cancellation) {
+                let next_sample = processor.next_sample();
+                match output.filter_transition(next_sample, &cancellation) {
                     Ok(()) => {
                         processor.replace(update.graph);
-                        let played = safe_played_position(&output);
-                        let mut data = lock(&shared.data);
-                        if data.generation == generation && !data.stopping {
-                            data.played_position = played;
-                        }
                         let _ = update.response.send(Ok(()));
                         tracing::info!(
                             name: "core.playback.filter_graph_replaced",
                             target: "remedia_core::playback",
                             playback_id,
+                            next_sample,
                             graph_enabled = processor.expression().is_some(),
-                            "PCM filtergraph replaced at an output boundary"
+                            "PCM filtergraph replaced without resetting the output timeline"
                         );
                     }
                     Err(_) if is_stopped(&shared, generation) => {
@@ -997,6 +1075,14 @@ fn worker_loop(
                     }
                     Err(error) => {
                         let playback_error = PlaybackError::Output(error);
+                        tracing::warn!(
+                            name: "core.playback.filter_graph_replacement_failed",
+                            target: "remedia_core::playback",
+                            playback_id,
+                            next_sample,
+                            error_kind = "output_transition",
+                            "output rejected filtergraph transition"
+                        );
                         let _ = update.response.send(Err(playback_error.clone()));
                         fail_session(&shared, generation, playback_error, &cancellation, &output);
                         return;
@@ -1078,12 +1164,17 @@ fn worker_loop(
                         fail_session(&shared, generation, playback_error, &cancellation, &output);
                         return;
                     }
-                    match output.flush(request.position, &cancellation) {
+                    match output.flush_samples(target_sample, &cancellation) {
                         Ok(()) => {
                             let played = safe_played_position(&output);
                             let mut data = lock(&shared.data);
                             if data.generation == generation && !data.stopping {
+                                data.submitted_sample = target_sample;
                                 data.submitted_position = request.position;
+                                data.media_position = Some(MediaPosition {
+                                    position: request.position,
+                                    accuracy: MediaPositionAccuracy::Estimated,
+                                });
                                 data.played_position = played;
                             }
                             let _ = request.response.send(Ok(()));
@@ -1150,8 +1241,15 @@ fn worker_loop(
             },
             WorkerAction::Finish => {
                 let gain = lock(&shared.data).volume;
-                match processor.finish(gain, |frame| {
-                    deliver_processed_frame(&shared, generation, &output, &cancellation, frame)
+                match processor.finish(gain, |frame, source_position| {
+                    deliver_processed_frame(
+                        &shared,
+                        generation,
+                        &output,
+                        &cancellation,
+                        frame,
+                        source_position,
+                    )
                 }) {
                     Ok(()) => {}
                     Err(ProcessError::Output(_)) if is_stopped(&shared, generation) => return,
@@ -1179,13 +1277,38 @@ fn worker_loop(
                 match output.finish(&cancellation) {
                     Ok(()) => {
                         let played = safe_played_position(&output);
-                        let mut data = lock(&shared.data);
-                        if data.generation == generation && !data.stopping {
-                            data.played_position = played.or(data.played_position);
-                            data.state = PlaybackState::Completed;
+                        let (pending_seek, pending_filter) = {
+                            let mut data = lock(&shared.data);
+                            let pending = if data.generation == generation && !data.stopping {
+                                data.played_position = played.or(data.played_position);
+                                data.state = PlaybackState::Completed;
+                                (data.pending_seek.take(), data.pending_filter_graph.take())
+                            } else {
+                                (None, None)
+                            };
+                            shared.changed.notify_all();
+                            pending
+                        };
+                        if let Some(request) = pending_seek {
+                            let _ = request.response.send(Err(PlaybackError::InvalidState {
+                                operation: "seek",
+                                state: PlaybackState::Completed,
+                            }));
                         }
-                        shared.changed.notify_all();
-                        drop(data);
+                        if let Some(update) = pending_filter {
+                            // The filter setting was committed to the session before EOF won
+                            // the worker race. There is no remaining PCM boundary to apply it
+                            // to, so acknowledge it for the next source on this session.
+                            let graph_enabled = update.graph.is_some();
+                            let _ = update.response.send(Ok(()));
+                            tracing::info!(
+                                name: "core.playback.filter_graph_deferred",
+                                target: "remedia_core::playback",
+                                playback_id,
+                                graph_enabled,
+                                "playback completed before filter transition; configuration remains for the next source"
+                            );
+                        }
                         shared.observability.metrics().playback_completed();
                         tracing::info!(
                             name: "core.playback.completed",
@@ -1223,7 +1346,7 @@ fn wait_for_start(shared: &SessionShared, generation: u64) -> bool {
 fn next_worker_action(
     shared: &SessionShared,
     generation: u64,
-    pending_frame: &mut Option<PcmFrame>,
+    pending_frame: &mut Option<DecodedPcmFrame>,
     input_finished: bool,
 ) -> WorkerAction {
     let mut data = lock(&shared.data);
@@ -1277,7 +1400,7 @@ fn fail_session(
 
     cancellation.cancel();
     let _ = safe_cancel(output);
-    let (pending_seek, pending_filter, playback_id) = {
+    let (pending_seek, pending_filter, playback_id, output_sample) = {
         let mut data = lock(&shared.data);
         if data.generation != generation
             || matches!(
@@ -1290,18 +1413,20 @@ fn fail_session(
         data.state = PlaybackState::Failed;
         data.last_error = Some(error.clone());
         let playback_id = data.playback_id;
+        let output_sample = data.submitted_sample;
         let pending_seek = data.pending_seek.take();
         let pending_filter = data.pending_filter_graph.take();
         shared.changed.notify_all();
-        (pending_seek, pending_filter, playback_id)
+        (pending_seek, pending_filter, playback_id, output_sample)
     };
     shared.observability.metrics().playback_failed();
     tracing::error!(
         name: "core.playback.failed",
         target: "remedia_core::playback",
         playback_id,
+        output_sample,
         error_kind = playback_error_kind(&error),
-        "playback failed"
+        "playback worker failed"
     );
     if let Some(request) = pending_seek {
         let _ = request.response.send(Err(error.clone()));
@@ -1317,6 +1442,7 @@ fn deliver_processed_frame(
     output: &Arc<dyn MediaOutput>,
     cancellation: &CancellationToken,
     frame: PcmFrame,
+    source_position: Option<SourcePosition>,
 ) -> Result<(), OutputError> {
     let end_sample = frame
         .start_sample
@@ -1325,7 +1451,18 @@ fn deliver_processed_frame(
     let played = safe_played_position(output);
     let mut data = lock(&shared.data);
     if data.generation == generation && !data.stopping {
+        data.submitted_sample = end_sample;
         data.submitted_position = duration_from_samples(end_sample);
+        if let Some(source_position) = source_position {
+            data.media_position = Some(MediaPosition {
+                position: duration_from_samples(source_position.sample),
+                accuracy: if source_position.estimated {
+                    MediaPositionAccuracy::Estimated
+                } else {
+                    MediaPositionAccuracy::Timestamp
+                },
+            });
+        }
         if played.is_some() {
             data.played_position = played;
         }
@@ -1437,9 +1574,11 @@ mod tests {
     use remedia_observability::{Observability, ObservabilityConfig};
 
     use super::{
-        PlaybackError, PlaybackSession, PlaybackState, SessionData, SessionShared, lock, wait,
+        MediaPositionAccuracy, PlaybackError, PlaybackSession, PlaybackState, SessionData,
+        SessionShared, lock, wait,
     };
     use crate::decoder::PcmFrame;
+    use crate::opus::{EncodedOpusPacket, OpusEncoderOutput, OpusPacketSink};
     use crate::output::{MediaOutput, NullOutput, NullOutputStats, OutputError};
     use crate::source::{CancellationToken, InputSource};
 
@@ -1496,6 +1635,8 @@ mod tests {
         flushes: Vec<Duration>,
         position: Duration,
         cancelled: bool,
+        finish_blocked: bool,
+        finish_started: bool,
         finished: bool,
     }
 
@@ -1506,6 +1647,12 @@ mod tests {
                 changed: Condvar::new(),
             });
             (Self(Arc::clone(&shared)), GateHandle(shared))
+        }
+
+        fn blocked_finish() -> (Self, GateHandle) {
+            let (output, handle) = Self::new();
+            lock(&handle.0.data).finish_blocked = true;
+            (output, handle)
         }
     }
 
@@ -1538,6 +1685,24 @@ mod tests {
                 })
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             data.accepted.len() >= count
+        }
+
+        fn wait_for_finish(&self) -> bool {
+            let data = lock(&self.0.data);
+            let (data, _) = self
+                .0
+                .changed
+                .wait_timeout_while(data, TEST_TIMEOUT, |data| {
+                    !data.finish_started && !data.cancelled
+                })
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            data.finish_started
+        }
+
+        fn release_finish(&self) {
+            let mut data = lock(&self.0.data);
+            data.finish_blocked = false;
+            self.0.changed.notify_all();
         }
 
         fn snapshot(&self) -> GateSnapshot {
@@ -1607,10 +1772,15 @@ mod tests {
         }
 
         fn finish(&self, cancellation: &CancellationToken) -> Result<(), OutputError> {
-            if cancellation.is_cancelled() {
+            let mut data = lock(&self.0.data);
+            data.finish_started = true;
+            self.0.changed.notify_all();
+            while data.finish_blocked && !data.cancelled && !cancellation.is_cancelled() {
+                data = wait(&self.0.changed, data);
+            }
+            if data.cancelled || cancellation.is_cancelled() {
                 return Err(OutputError::Cancelled);
             }
-            let mut data = lock(&self.0.data);
             data.finished = true;
             self.0.changed.notify_all();
             Ok(())
@@ -1655,6 +1825,122 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct StepPacketSink(Arc<StepSinkShared>);
+
+    #[derive(Default)]
+    struct StepSinkShared {
+        data: Mutex<StepSinkData>,
+        changed: Condvar,
+    }
+
+    #[derive(Default)]
+    struct StepSinkData {
+        permits: usize,
+        calls: usize,
+        packets: Vec<EncodedOpusPacket>,
+        flushes: usize,
+        finished: bool,
+        cancelled: bool,
+    }
+
+    #[derive(Clone)]
+    struct StepPacketHandle(Arc<StepSinkShared>);
+
+    impl StepPacketSink {
+        fn new() -> (Self, StepPacketHandle) {
+            let shared = Arc::new(StepSinkShared::default());
+            (Self(Arc::clone(&shared)), StepPacketHandle(shared))
+        }
+    }
+
+    impl StepPacketHandle {
+        fn calls(&self) -> usize {
+            lock(&self.0.data).calls
+        }
+
+        fn release(&self, count: usize) {
+            let mut data = lock(&self.0.data);
+            data.permits = data.permits.saturating_add(count);
+            self.0.changed.notify_all();
+        }
+
+        fn wait_for_calls(&self, count: usize) -> bool {
+            let data = lock(&self.0.data);
+            let (data, _) = self
+                .0
+                .changed
+                .wait_timeout_while(data, TEST_TIMEOUT, |data| {
+                    data.calls < count && !data.cancelled
+                })
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            data.calls >= count
+        }
+
+        fn snapshot(&self) -> StepSinkData {
+            let data = lock(&self.0.data);
+            StepSinkData {
+                permits: data.permits,
+                calls: data.calls,
+                packets: data.packets.clone(),
+                flushes: data.flushes,
+                finished: data.finished,
+                cancelled: data.cancelled,
+            }
+        }
+    }
+
+    impl OpusPacketSink for StepPacketSink {
+        fn send_packet(
+            &self,
+            packet: EncodedOpusPacket,
+            cancellation: &CancellationToken,
+        ) -> Result<(), OutputError> {
+            let mut data = lock(&self.0.data);
+            data.calls += 1;
+            self.0.changed.notify_all();
+            while data.permits == 0 && !data.cancelled && !cancellation.is_cancelled() {
+                data = self
+                    .0
+                    .changed
+                    .wait(data)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            if data.cancelled || cancellation.is_cancelled() {
+                return Err(OutputError::Cancelled);
+            }
+            data.permits -= 1;
+            data.packets.push(packet);
+            Ok(())
+        }
+
+        fn flush(
+            &self,
+            _position: Duration,
+            cancellation: &CancellationToken,
+        ) -> Result<(), OutputError> {
+            if cancellation.is_cancelled() {
+                return Err(OutputError::Cancelled);
+            }
+            lock(&self.0.data).flushes += 1;
+            Ok(())
+        }
+
+        fn finish(&self, cancellation: &CancellationToken) -> Result<(), OutputError> {
+            if cancellation.is_cancelled() {
+                return Err(OutputError::Cancelled);
+            }
+            lock(&self.0.data).finished = true;
+            Ok(())
+        }
+
+        fn cancel(&self) {
+            let mut data = lock(&self.0.data);
+            data.cancelled = true;
+            self.0.changed.notify_all();
+        }
+    }
+
     #[test]
     fn null_output_reports_natural_completion_and_position() {
         let source = TempWave::constant(4800, 4096);
@@ -1675,12 +1961,74 @@ mod tests {
         assert_eq!(session.duration(), Some(Duration::from_millis(100)));
         assert_eq!(session.position().submitted, Duration::from_millis(100));
         assert_eq!(session.position().played, Some(Duration::from_millis(100)));
+        assert_eq!(
+            session.position().media.map(|position| position.position),
+            Some(Duration::from_millis(100))
+        );
         session.stop().unwrap();
         assert_eq!(session.state(), PlaybackState::Completed);
     }
 
     #[test]
-    fn live_filter_replacement_flushes_old_output_and_keeps_master_gain_independent() {
+    fn source_media_position_survives_tempo_and_speed_filters() {
+        for (graph, expected_output_samples) in [
+            ("volume=0.5", 48_000),
+            ("asetrate=60000,aresample=48000", 38_400),
+            ("asetrate=38400,aresample=48000", 60_000),
+            ("atempo=1.25", 38_400),
+        ] {
+            let source = TempWave::constant(48_000, 4_096);
+            let session = PlaybackSession::new();
+            session.set_filter_graph(Some(graph)).unwrap();
+            let output = NullOutput::new();
+            session.play(source.source(), output).unwrap();
+            assert_eq!(session.wait(), PlaybackState::Completed, "{graph}");
+
+            let position = session.position();
+            assert_eq!(
+                position.media.map(|media| media.position),
+                Some(Duration::from_secs(1))
+            );
+            assert_eq!(
+                position.media.map(|media| media.accuracy),
+                Some(MediaPositionAccuracy::Estimated)
+            );
+            assert!(
+                (position.submitted.as_millis() as i64
+                    - expected_output_samples as i64 * 1_000 / 48_000)
+                    .abs()
+                    <= 3,
+                "{graph}: {position:?}"
+            );
+            session.stop().unwrap();
+        }
+    }
+
+    #[test]
+    fn mp3_skip_and_discard_samples_keep_the_media_position_near_track_end() {
+        let session = PlaybackSession::new();
+        let info = session
+            .play(
+                InputSource::bytes(include_bytes!("../tests/fixtures/generated-tone.mp3").to_vec()),
+                NullOutput::new(),
+            )
+            .expect("bundled MP3 opens");
+        assert_eq!(session.wait(), PlaybackState::Completed);
+        let expected_duration = info.duration.expect("fixture duration is known");
+        let media_position = session
+            .position()
+            .media
+            .expect("decoded frames report their media position")
+            .position;
+        assert!(
+            media_position.abs_diff(expected_duration) < Duration::from_millis(100),
+            "final media position {media_position:?}, track duration {expected_duration:?}"
+        );
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn live_filter_replacement_drops_old_graph_delay_and_keeps_master_gain_independent() {
         let source = TempWave::constant(96_000, 4096);
         let session = Arc::new(PlaybackSession::new());
         session.set_volume(0.5).unwrap();
@@ -1718,7 +2066,7 @@ mod tests {
         assert!((snapshot.accepted[0].1 - input_level * 0.5).abs() < 0.001);
         assert!(snapshot.accepted[1].1.abs() < 0.001);
         assert!((snapshot.accepted[2].1 - input_level * 0.25 * 1.5).abs() < 0.001);
-        assert_eq!(snapshot.flushes.len(), 1);
+        assert!(snapshot.flushes.is_empty());
         assert_eq!(session.volume(), 1.5);
 
         assert!(matches!(
@@ -1727,6 +2075,156 @@ mod tests {
         ));
         assert_eq!(session.filter_graph().as_deref(), Some("volume=0.25"));
         session.stop().unwrap();
+    }
+
+    #[test]
+    fn filter_and_seek_requests_racing_with_eof_are_resolved() {
+        let source = TempWave::constant(960, 4096);
+        let session = Arc::new(PlaybackSession::new());
+        let (output, gate) = GateOutput::blocked_finish();
+        session.play(source.source(), output).unwrap();
+        assert!(gate.wait_for_calls(1));
+        gate.release(usize::MAX);
+        assert!(gate.wait_for_finish());
+
+        let filter_session = Arc::clone(&session);
+        let (filter_tx, filter_rx) = mpsc::sync_channel(1);
+        let filter_thread = thread::spawn(move || {
+            let _ = filter_tx.send(filter_session.set_filter_graph(Some("tremolo=f=5:d=0.6")));
+        });
+        assert!(wait_for_pending_filter_update(&session));
+
+        let seek_session = Arc::clone(&session);
+        let (seek_tx, seek_rx) = mpsc::sync_channel(1);
+        let seek_thread = thread::spawn(move || {
+            let _ = seek_tx.send(seek_session.seek(Duration::from_millis(5)));
+        });
+        assert!(wait_for_pending_seek(&session));
+
+        gate.release_finish();
+        assert!(
+            filter_rx
+                .recv_timeout(TEST_TIMEOUT)
+                .expect("filter config is acknowledged after EOF")
+                .is_ok()
+        );
+        assert!(matches!(
+            seek_rx
+                .recv_timeout(TEST_TIMEOUT)
+                .expect("pending seek is resolved after EOF"),
+            Err(PlaybackError::InvalidState {
+                operation: "seek",
+                state: PlaybackState::Completed,
+            })
+        ));
+        filter_thread.join().unwrap();
+        seek_thread.join().unwrap();
+        assert_eq!(session.state(), PlaybackState::Completed);
+        assert_eq!(session.filter_graph().as_deref(), Some("tremolo=f=5:d=0.6"));
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn native_opus_filter_changes_keep_playback_active_and_packet_timeline_contiguous() {
+        let source = TempWave::constant(96_000, 4096);
+        let session = Arc::new(PlaybackSession::new());
+        session.set_volume(0.75).unwrap();
+        let (sink, gate) = StepPacketSink::new();
+        session
+            .play(
+                source.source(),
+                OpusEncoderOutput::new(sink).expect("native Opus encoder initializes"),
+            )
+            .unwrap();
+        assert!(
+            gate.wait_for_calls(1),
+            "Opus output reaches its first packet"
+        );
+
+        replace_graph_while_packet_sender_is_blocked(
+            Arc::clone(&session),
+            gate.clone(),
+            Some("tremolo=f=5:d=0.6"),
+        );
+        assert_eq!(session.state(), PlaybackState::Playing);
+        let mut latest_media_position = session
+            .position()
+            .media
+            .expect("first accepted Opus output has a source position")
+            .position;
+        replace_graph_while_packet_sender_is_blocked(
+            Arc::clone(&session),
+            gate.clone(),
+            Some("atempo=1.25"),
+        );
+        assert_eq!(session.state(), PlaybackState::Playing);
+        let media_position = session
+            .position()
+            .media
+            .expect("tempo output retains its source position")
+            .position;
+        assert!(media_position >= latest_media_position);
+        latest_media_position = media_position;
+        replace_graph_while_packet_sender_is_blocked(Arc::clone(&session), gate.clone(), None);
+        assert_eq!(session.state(), PlaybackState::Playing);
+        assert_eq!(session.volume(), 0.75);
+        assert!(
+            session
+                .position()
+                .media
+                .expect("cleared graph retains source progress")
+                .position
+                >= latest_media_position
+        );
+
+        gate.release(usize::MAX);
+        assert_eq!(session.wait(), PlaybackState::Completed);
+        assert_eq!(
+            session.position().media.map(|media| media.position),
+            Some(Duration::from_secs(2))
+        );
+        let snapshot = gate.snapshot();
+        assert!(snapshot.finished);
+        assert_eq!(snapshot.flushes, 0, "filter changes do not seek-flush Opus");
+        assert!(snapshot.packets.len() > 10);
+        for (index, packet) in snapshot.packets.iter().enumerate() {
+            assert_eq!(packet.start_sample, index as u64 * 960);
+            assert_eq!(packet.samples_per_channel, 960);
+            assert!(packet.media_samples_per_channel <= 960);
+        }
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn stop_cancels_a_pending_native_opus_filter_replacement() {
+        let source = TempWave::constant(48_000, 4096);
+        let session = Arc::new(PlaybackSession::new());
+        let (sink, gate) = StepPacketSink::new();
+        session
+            .play(
+                source.source(),
+                OpusEncoderOutput::new(sink).expect("native Opus encoder initializes"),
+            )
+            .unwrap();
+        assert!(gate.wait_for_calls(1));
+
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let update_session = Arc::clone(&session);
+        let update_worker = thread::spawn(move || {
+            let _ = result_tx.send(update_session.set_filter_graph(Some("tremolo=f=5:d=0.6")));
+        });
+        assert!(wait_for_pending_filter_update(&session));
+
+        session
+            .stop()
+            .expect("stop cancels output and joins the worker");
+        assert!(matches!(
+            result_rx.recv_timeout(TEST_TIMEOUT).unwrap(),
+            Err(PlaybackError::Cancelled)
+        ));
+        update_worker.join().expect("filter update worker joins");
+        assert_eq!(session.state(), PlaybackState::Stopped);
+        assert!(gate.snapshot().cancelled);
     }
 
     #[test]
@@ -1750,11 +2248,25 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(session.state(), PlaybackState::Paused);
+        let paused_media_position = session.position().media.map(|media| media.position);
 
         session.set_filter_graph(Some("volume=0.5")).unwrap();
+        assert_eq!(session.state(), PlaybackState::Paused);
+        assert_eq!(
+            session.position().media.map(|media| media.position),
+            paused_media_position
+        );
         let seek_position = Duration::from_millis(500);
         session.seek(seek_position).unwrap();
         assert_eq!(session.position().submitted, seek_position);
+        assert_eq!(
+            session.position().media.map(|media| media.position),
+            Some(seek_position)
+        );
+        assert_eq!(
+            session.position().media.map(|media| media.accuracy),
+            Some(MediaPositionAccuracy::Estimated)
+        );
         assert_eq!(gate.snapshot().flushes.last(), Some(&seek_position));
 
         session.resume().unwrap();
@@ -2116,6 +2628,41 @@ mod tests {
             })
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         data.pending_filter_graph.is_some()
+    }
+
+    fn replace_graph_while_packet_sender_is_blocked(
+        session: Arc<PlaybackSession>,
+        gate: StepPacketHandle,
+        expression: Option<&'static str>,
+    ) {
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let worker_session = Arc::clone(&session);
+        let update_worker = thread::spawn(move || {
+            let _ = result_tx.send(worker_session.set_filter_graph(expression));
+        });
+        assert!(wait_for_pending_filter_update(&session));
+
+        for _ in 0..128 {
+            match result_rx.try_recv() {
+                Ok(result) => {
+                    assert!(result.is_ok(), "filter replacement failed: {result:?}");
+                    update_worker.join().expect("filter update worker joins");
+                    return;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    panic!("filter update worker exited without returning a result");
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+
+            let next_call = gate.calls().saturating_add(1);
+            gate.release(1);
+            assert!(
+                gate.wait_for_calls(next_call),
+                "Opus sender did not reach the next packet while the update was pending"
+            );
+        }
+        panic!("filter graph update did not reach a playback frame boundary");
     }
 
     fn wait_for_condition(

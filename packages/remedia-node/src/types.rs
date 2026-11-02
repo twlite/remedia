@@ -40,6 +40,8 @@ pub struct NativeStreamInfo {
 
 #[napi(object)]
 pub struct NativePlaybackPosition {
+    pub media_ms: Option<f64>,
+    pub media_position_accuracy: Option<String>,
     pub submitted_ms: f64,
     pub played_ms: Option<f64>,
 }

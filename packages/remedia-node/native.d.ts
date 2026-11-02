@@ -80,7 +80,7 @@ export declare class NativeRemedia {
   wait(playbackId: string, generation: string): Promise<string>
   /** Current playback lifecycle state. */
   playbackState(playbackId: string): string
-  /** Playback submitted position and output-reported played position, in milliseconds. */
+  /** Source media, filtered output submission, and output-reported played positions. */
   playbackPosition(playbackId: string): NativePlaybackPosition
   /** Known media duration in milliseconds. */
   playbackDurationMs(playbackId: string): number | null
@@ -116,6 +116,8 @@ export interface NativeMediaSource {
 }
 
 export interface NativePlaybackPosition {
+  mediaMs?: number
+  mediaPositionAccuracy?: string
   submittedMs: number
   playedMs?: number
 }

@@ -82,6 +82,35 @@ is reported by the exporter builder.
 Remedia lifecycle spans and events at `INFO` or above are exported independently of that filter, so
 the default `warn` console setting does not disable traces.
 
+## Native FFmpeg diagnostics
+
+FFmpeg has a process-wide native logging callback separate from Rust `tracing`. When the core first
+initializes FFmpeg, Remedia installs one centralized callback for the process; additional sessions
+and `Remedia` instances reuse it. FFmpeg calls made synchronously inside Remedia are routed to the
+current Remedia tracing dispatcher with target `remedia_core::ffmpeg` and event name
+`core.ffmpeg.log`. Native error, warning, info, debug, and trace levels map to the corresponding
+tracing severities. They use the same `REMEDIA_LOG` filter as the structured Rust events. Debug and
+trace native messages are requested from FFmpeg only when `REMEDIA_DEBUG=1` or a matching
+`REMEDIA_LOG` directive asks for them. Remedia does not change FFmpeg verbosity during playback.
+The native verbosity choice is read once at the process's first Remedia FFmpeg initialization;
+changing environment variables afterward does not mutate FFmpeg's global setting.
+
+Repeated identical messages from the same FFmpeg context and severity are rate-limited for ten
+seconds; the next forwarded event reports how many repeats were suppressed. Messages are bounded and
+redacted for URI values and credential-like key/value fields. FFmpeg skip-sample and discard-padding
+messages are diagnostics, not playback errors. The decoder supplies the selected stream's packet
+time base so FFmpeg can adjust timestamps when it removes encoder delay or padding described by
+codec metadata.
+
+FFmpeg exposes no getter for a previously installed logging callback. Remedia installs its callback
+once and forwards calls outside a Remedia-marked operation to FFmpeg's default callback up to the
+verbosity level that was active at installation. This preserves default FFmpeg behavior, but an
+application's custom native FFmpeg callback cannot be discovered or chained. FFmpeg can also emit
+messages from internal native worker threads, where thread-local Remedia attribution is unavailable;
+those are treated as unmarked. Applications embedding another FFmpeg consumer with a custom callback
+should coordinate native logging ownership before initializing Remedia. The Node binding does not
+install a Rust tracing subscriber, but the native FFmpeg callback itself is process-global.
+
 The embedded Node binding disables console output to avoid duplicating events that the application
 handles through JavaScript. Its `REMEDIA_LOG`, `REMEDIA_DEBUG`, and OTLP settings still control
 filtering and export. `REMEDIA_LOG_FORMAT` is validated but does not change the structured JavaScript

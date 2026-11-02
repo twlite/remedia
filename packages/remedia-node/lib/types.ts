@@ -33,6 +33,10 @@ export interface AudioStreamInfo {
 }
 
 export interface PlaybackPosition {
+  /** Original media timeline associated with the latest submitted PCM block. */
+  mediaMs: number | null;
+  /** `timestamp` when derived from source PTS, `estimated` when inferred, or null. */
+  mediaPositionAccuracy: 'timestamp' | 'estimated' | null;
   submittedMs: number;
   playedMs: number | null;
 }

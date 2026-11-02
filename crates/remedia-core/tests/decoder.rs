@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use remedia_core::{
     AudioDecoder, CancellationToken, DecoderError, DecoderOptions, InputSource, PcmFormat,
 };
+use remedia_observability::{DiagnosticValue, Observability, ObservabilityConfig};
 
 static NEXT_TEMP_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -167,6 +168,60 @@ fn decodes_compressed_media_from_an_owned_buffer() {
     assert_eq!(decoder.info().sample_rate, Some(22_050));
     assert_eq!(decoder.info().channels, Some(1));
     assert!(frame_count(&collect_frames(&mut decoder)) > 0);
+}
+
+#[test]
+fn mp3_encoder_delay_keeps_media_duration_and_routes_skip_diagnostics() {
+    let observability = Observability::new(
+        ObservabilityConfig::default()
+            .with_filter("remedia_core::ffmpeg=trace")
+            .unwrap()
+            .with_console_enabled(false),
+    )
+    .unwrap();
+    let diagnostics = observability.diagnostics();
+    let dispatch = observability.handle().dispatch().unwrap().clone();
+
+    let (metadata_duration, decoded_samples) = tracing::dispatcher::with_default(&dispatch, || {
+        let results = (0..5)
+            .map(|_| {
+                let mut decoder = AudioDecoder::open(InputSource::bytes(
+                    include_bytes!("fixtures/generated-tone.mp3").to_vec(),
+                ))
+                .unwrap();
+                let duration = decoder.info().duration.unwrap();
+                let samples = frame_count(&collect_frames(&mut decoder));
+                assert!(samples > 0);
+                (duration, samples)
+            })
+            .collect::<Vec<_>>();
+        *results.last().expect("five MP3 decodes completed")
+    });
+
+    let decoded_duration = decoded_samples as f64 / 48_000.0;
+    assert!(decoded_samples > 0);
+    assert!(
+        (decoded_duration - metadata_duration.as_secs_f64()).abs() < 0.1,
+        "decoded {decoded_duration:.3}s, metadata {metadata_duration:?}"
+    );
+
+    let events = std::iter::from_fn(|| diagnostics.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        !events.iter().any(|event| {
+            matches!(
+                event.fields.get("ffmpeg_message"),
+                Some(DiagnosticValue::String(message))
+                    if message.contains("Could not update timestamps for skipped samples")
+                        || message.contains("Could not update timestamps for discarded samples")
+            )
+        }),
+        "FFmpeg reported a timestamp adjustment warning after packet time base setup: {events:?}"
+    );
+    assert!(
+        events.len() < 128,
+        "repeated MP3 diagnostics were not bounded"
+    );
+    assert_eq!(diagnostics.dropped_events(), 0);
 }
 
 #[test]

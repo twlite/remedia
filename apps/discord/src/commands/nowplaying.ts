@@ -20,9 +20,9 @@ export default {
 
       const label = displayTrack(snapshot.current);
       const duration = snapshot.durationMs ?? snapshot.current.info?.durationMs ?? null;
-      const position = formatDuration(snapshot.positionMs);
+      const position = `${snapshot.positionEstimated ? '~' : ''}${formatDuration(snapshot.positionMs)}`;
       const failure = snapshot.lastError ? ` Last track error: ${snapshot.lastError}` : '';
-      return `Now playing **${label}** — submitted ${position} / ${formatDuration(duration)} (${snapshot.state}).${failure}`;
+      return `Now playing **${label}** — position ${position} / ${formatDuration(duration)} (${snapshot.state}).${failure}`;
     });
   },
 } satisfies Command;

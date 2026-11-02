@@ -49,6 +49,16 @@ pub trait OpusPacketSink: Send + Sync + 'static {
         cancellation: &CancellationToken,
     ) -> Result<(), OutputError>;
 
+    /// Discard pre-seek packets and synchronize to an exact normalized PCM
+    /// sample. Existing sinks remain compatible through the duration fallback.
+    fn flush_samples(
+        &self,
+        sample_position: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OutputError> {
+        self.flush(duration_from_samples(sample_position), cancellation)
+    }
+
     /// Suspend transport after already accepted packets are drained.
     fn pause(&self, _cancellation: &CancellationToken) -> Result<(), OutputError> {
         Ok(())
@@ -218,6 +228,13 @@ impl OpusEncoderOutput {
         if let Some(expected) = state.next_input_sample
             && expected != frame.start_sample
         {
+            tracing::error!(
+                name: "core.opus.pcm_discontinuity",
+                target: "remedia_core::opus",
+                expected_sample = expected,
+                received_sample = frame.start_sample,
+                "Opus output rejected a discontinuous PCM timeline"
+            );
             return Err(OutputError::new(format!(
                 "PCM timeline is discontinuous: expected sample {expected}, received {}",
                 frame.start_sample
@@ -297,8 +314,16 @@ impl MediaOutput for OpusEncoderOutput {
         position: Duration,
         cancellation: &CancellationToken,
     ) -> Result<(), OutputError> {
+        self.flush_samples(duration_to_samples(position)?, cancellation)
+    }
+
+    fn flush_samples(
+        &self,
+        sample_position: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OutputError> {
         self.ensure_active(cancellation)?;
-        self.sink.flush(position, cancellation)?;
+        self.sink.flush_samples(sample_position, cancellation)?;
         let mut state = lock(&self.state);
         state
             .encoder
@@ -306,8 +331,36 @@ impl MediaOutput for OpusEncoderOutput {
             .map_err(OutputError::with_source)?;
         state.partial_scalars = 0;
         state.partial_start_sample = None;
-        state.next_input_sample = Some(duration_to_samples(position)?);
+        state.next_input_sample = Some(sample_position);
         state.finished = false;
+        Ok(())
+    }
+
+    fn filter_transition(
+        &self,
+        next_sample_position: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OutputError> {
+        self.ensure_active(cancellation)?;
+        let mut state = lock(&self.state);
+        if let Some(expected) = state.next_input_sample
+            && expected != next_sample_position
+        {
+            tracing::error!(
+                name: "core.opus.filter_transition_discontinuity",
+                target: "remedia_core::opus",
+                expected_sample = expected,
+                received_sample = next_sample_position,
+                "filter transition did not match the next Opus PCM sample"
+            );
+            return Err(OutputError::new(format!(
+                "filter transition expected sample {expected}, received {next_sample_position}"
+            )));
+        }
+        // A partial Opus frame is already accepted PCM. Keep it so it can be
+        // completed by the next graph's contiguous samples. This avoids a seek
+        // flush, encoder reset, and Discord RTP generation change.
+        state.next_input_sample = Some(next_sample_position);
         Ok(())
     }
 
@@ -380,6 +433,14 @@ fn duration_to_samples(position: Duration) -> Result<u64, OutputError> {
     u64::try_from(samples).map_err(|_| OutputError::new("seek position exceeds the PCM timeline"))
 }
 
+fn duration_from_samples(samples: u64) -> Duration {
+    let rate = u64::from(OUTPUT_SAMPLE_RATE_HZ);
+    let seconds = samples / rate;
+    let remainder = samples % rate;
+    let nanoseconds = (u128::from(remainder) * 1_000_000_000 / u128::from(rate)) as u32;
+    Duration::new(seconds, nanoseconds)
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -398,6 +459,8 @@ mod tests {
     #[derive(Default)]
     struct CaptureState {
         packets: Vec<EncodedOpusPacket>,
+        flushes: usize,
+        flush_sample_positions: Vec<u64>,
         finished: bool,
         fail: bool,
     }
@@ -424,6 +487,18 @@ mod tests {
             _position: Duration,
             _cancellation: &CancellationToken,
         ) -> Result<(), OutputError> {
+            lock(&self.0).flushes += 1;
+            Ok(())
+        }
+
+        fn flush_samples(
+            &self,
+            sample_position: u64,
+            _cancellation: &CancellationToken,
+        ) -> Result<(), OutputError> {
+            let mut state = lock(&self.0);
+            state.flushes += 1;
+            state.flush_sample_positions.push(sample_position);
             Ok(())
         }
 
@@ -504,5 +579,56 @@ mod tests {
         let packets = &lock(&state).packets;
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].start_sample, 4_800);
+    }
+
+    #[test]
+    fn sample_accurate_flush_preserves_non_round_duration_boundaries() {
+        for sample_position in [1_024, 1_337, 2_003, 4_096, 10_001] {
+            let sink = CaptureSink::default();
+            let state = Arc::clone(&sink.0);
+            let output = OpusEncoderOutput::new(sink).unwrap();
+            let cancellation = CancellationToken::new();
+            output
+                .write_frame(pcm(0, sample_position as usize), &cancellation)
+                .unwrap();
+            output
+                .flush_samples(sample_position, &cancellation)
+                .unwrap();
+            assert!(
+                output
+                    .write_frame(pcm(sample_position, 960), &cancellation)
+                    .is_ok()
+            );
+            assert_eq!(
+                lock(&state).flush_sample_positions,
+                [sample_position],
+                "the exact sample position reaches the packet sink"
+            );
+        }
+    }
+
+    #[test]
+    fn live_filter_transition_keeps_partial_opus_pcm_and_does_not_flush_sink() {
+        let sink = CaptureSink::default();
+        let state = Arc::clone(&sink.0);
+        let output = OpusEncoderOutput::new(sink).unwrap();
+        let cancellation = CancellationToken::new();
+
+        output.write_frame(pcm(0, 1_024), &cancellation).unwrap();
+        output.filter_transition(1_024, &cancellation).unwrap();
+        output
+            .write_frame(pcm(1_024, 1_024), &cancellation)
+            .unwrap();
+        output.finish(&cancellation).unwrap();
+
+        let state = lock(&state);
+        assert_eq!(state.packets.len(), 3);
+        assert_eq!(state.packets[0].start_sample, 0);
+        assert_eq!(state.packets[1].start_sample, 960);
+        assert_eq!(state.packets[2].start_sample, 1_920);
+        assert_eq!(state.packets[1].media_samples_per_channel, 960);
+        assert_eq!(state.packets[2].media_samples_per_channel, 128);
+        assert_eq!(state.flushes, 0, "filter changes must not flush the sink");
+        assert!(state.finished);
     }
 }

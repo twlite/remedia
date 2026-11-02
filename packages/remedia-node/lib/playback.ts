@@ -41,7 +41,16 @@ export class PlaybackSession {
 
   get position(): PlaybackPosition {
     const position = this.#native.playbackPosition(this.#playbackId);
-    return { submittedMs: position.submittedMs, playedMs: position.playedMs ?? null };
+    return {
+      mediaMs: position.mediaMs ?? null,
+      mediaPositionAccuracy:
+        position.mediaPositionAccuracy === 'timestamp' ||
+        position.mediaPositionAccuracy === 'estimated'
+          ? position.mediaPositionAccuracy
+          : null,
+      submittedMs: position.submittedMs,
+      playedMs: position.playedMs ?? null,
+    };
   }
 
   get durationMs(): number | null {

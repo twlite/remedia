@@ -133,7 +133,14 @@ export class DiscordSession {
   }
 
   get position(): PlaybackPosition {
-    return this.#playback?.position ?? { submittedMs: 0, playedMs: null };
+    return (
+      this.#playback?.position ?? {
+        mediaMs: null,
+        mediaPositionAccuracy: null,
+        submittedMs: 0,
+        playedMs: null,
+      }
+    );
   }
 
   get durationMs(): number | null {

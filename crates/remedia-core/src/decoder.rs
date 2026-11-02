@@ -90,6 +90,22 @@ pub struct PcmFrame {
     pub start_sample: u64,
 }
 
+/// Internal decoder frame plus its best available source-timeline timestamp.
+/// The public PCM frame continues to expose only the normalized output shape.
+#[derive(Clone, Debug)]
+pub(crate) struct DecodedPcmFrame {
+    pub frame: PcmFrame,
+    pub source_start_sample: Option<u64>,
+    pub source_position_estimated: bool,
+}
+
+/// A source position associated with a processed output boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SourcePosition {
+    pub sample: u64,
+    pub estimated: bool,
+}
+
 /// A pull-based decoder that owns its FFmpeg input, codec, and resampler.
 ///
 /// Each call to [`next_frame`](Self::next_frame) returns one decoded block as
@@ -104,7 +120,7 @@ pub struct AudioDecoder {
     info: AudioStreamInfo,
     cancellation: CancellationToken,
     resampler: Option<ResamplerState>,
-    pending_frames: VecDeque<PcmFrame>,
+    pending_frames: VecDeque<DecodedPcmFrame>,
     next_sample_position: Option<u64>,
     seek_target_sample: Option<u64>,
     demux_finished: bool,
@@ -131,6 +147,7 @@ impl AudioDecoder {
         source: InputSource,
         options: DecoderOptions,
     ) -> Result<Self, DecoderError> {
+        let _log_capture = crate::ffmpeg_logging::capture();
         let source_kind = source.kind();
         let span = tracing::info_span!(
             target: "remedia_core::decoder",
@@ -202,8 +219,16 @@ impl AudioDecoder {
 
         let context = ffmpeg::codec::context::Context::from_parameters(parameters)
             .map_err(|error| decoder_open_error(error, codec_id.name(), &options.cancellation))?;
-        let decoder = context
-            .decoder()
+        let mut decoder_context = context.decoder();
+        // libavcodec needs the packet time base to adjust timestamps when it
+        // applies encoder-delay / discard-padding metadata (for example MP3
+        // skip samples). Without it FFmpeg still removes those samples, but
+        // logs that it could not move the associated timestamps. The decoded
+        // frame PTS is then less useful for mapping output back to media time.
+        if stream_time_base.numerator() > 0 && stream_time_base.denominator() > 0 {
+            decoder_context.set_packet_time_base(stream_time_base);
+        }
+        let decoder = decoder_context
             .audio()
             .map_err(|error| decoder_open_error(error, codec_id.name(), &options.cancellation))?;
 
@@ -268,6 +293,7 @@ impl AudioDecoder {
     /// operation fails with [`DecoderError::UnsupportedSeeking`] when the
     /// demuxer or source cannot seek.
     pub fn seek(&mut self, position: Duration) -> Result<(), DecoderError> {
+        let _log_capture = crate::ffmpeg_logging::capture();
         self.check_cancelled()?;
         if !self.input.is_seekable() {
             return Err(DecoderError::UnsupportedSeeking(
@@ -311,6 +337,11 @@ impl AudioDecoder {
     /// Decode and return the next normalized PCM block, or `Ok(None)` after
     /// the decoder has drained all codec and resampler delay.
     pub fn next_frame(&mut self) -> Result<Option<PcmFrame>, DecoderError> {
+        Ok(self.next_timed_frame()?.map(|frame| frame.frame))
+    }
+
+    pub(crate) fn next_timed_frame(&mut self) -> Result<Option<DecodedPcmFrame>, DecoderError> {
+        let _log_capture = crate::ffmpeg_logging::capture();
         self.check_cancelled()?;
         if let Some(frame) = self.pending_frames.pop_front() {
             return Ok(Some(frame));
@@ -501,7 +532,9 @@ impl AudioDecoder {
             self.stream_time_base,
             OUTPUT_SAMPLE_RATE_HZ,
         );
-        let (start_sample, trim_samples) = if let Some(target_sample) = self.seek_target_sample {
+        let previous_next_sample = self.next_sample_position;
+        let seek_target_sample = self.seek_target_sample;
+        let (start_sample, trim_samples) = if let Some(target_sample) = seek_target_sample {
             let source_start = source_start.unwrap_or(target_sample);
             let source_end = source_start.saturating_add(samples_per_channel as u64);
             if source_end <= target_sample {
@@ -535,11 +568,32 @@ impl AudioDecoder {
             samples.push(normalize_sample(right[index]));
         }
 
+        let (source_start_sample, source_position_estimated) =
+            if let Some(target_sample) = seek_target_sample {
+                if let Some(source_start) = source_start {
+                    (
+                        Some(source_start.saturating_add(trim_samples as u64)),
+                        false,
+                    )
+                } else {
+                    (Some(target_sample), true)
+                }
+            } else if let Some(source_start) = source_start {
+                (Some(source_start), false)
+            } else if let Some(previous_sample) = previous_next_sample {
+                (Some(previous_sample), true)
+            } else {
+                (None, true)
+            };
         self.next_sample_position = Some(start_sample.saturating_add(samples_per_channel as u64));
-        self.pending_frames.push_back(PcmFrame {
-            samples,
-            samples_per_channel,
-            start_sample,
+        self.pending_frames.push_back(DecodedPcmFrame {
+            frame: PcmFrame {
+                samples,
+                samples_per_channel,
+                start_sample,
+            },
+            source_start_sample,
+            source_position_estimated,
         });
         Ok(())
     }

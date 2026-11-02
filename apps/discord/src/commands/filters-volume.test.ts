@@ -83,7 +83,12 @@ class FakeDiscordSession {
   readonly userId = 'bot';
   connectionState = 'disconnected';
   state: PlaybackState = 'idle';
-  position = { submittedMs: 0, playedMs: null };
+  position = {
+    mediaMs: null,
+    mediaPositionAccuracy: null,
+    submittedMs: 0,
+    playedMs: null,
+  };
   durationMs = 10_000;
   error: string | null = null;
   volume = 1;

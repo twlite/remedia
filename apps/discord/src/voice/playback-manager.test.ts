@@ -66,7 +66,7 @@ test('queues tracks, advances on completion, and leaves voice connected when sto
     'https://media.example/one.mp3',
     'https://media.example/two.mp3',
   ]);
-  assert.equal(session.filters.graph, 'volume=0.75,bass=g=8:f=110');
+  assert.equal(session.filters.graph, FILTER_PRESETS.bassboost);
   assert.equal(session.volume, 0.75);
 
   await manager.enqueue('guild', 'channel', 'bot', {
@@ -110,6 +110,25 @@ test('consecutive skips start every queued track exactly once and preserve per-g
   assert.equal(snapshot.current, null);
   assert.equal(snapshot.queue.length, 0);
   assert.equal(snapshot.connectionState, 'connected');
+  await manager.close();
+});
+
+test('now-playing snapshots prefer original media position over filtered output time', async () => {
+  const { manager, session } = createManager();
+  await manager.enqueue('guild', 'channel', 'bot', {
+    url: 'https://media.example/nightcore.wav',
+    requestedBy: 'alice',
+  });
+  session.position = {
+    mediaMs: 48_000,
+    mediaPositionAccuracy: 'estimated',
+    submittedMs: 38_400,
+    playedMs: null,
+  };
+
+  const snapshot = await manager.snapshot('guild', 'channel');
+  assert.equal(snapshot.positionMs, 48_000);
+  assert.equal(snapshot.positionEstimated, true);
   await manager.close();
 });
 
@@ -337,7 +356,17 @@ class FakeDiscordSession {
   readonly playedUrls: string[] = [];
   connectionState = 'disconnected';
   state: PlaybackState = 'idle';
-  position = { submittedMs: 0, playedMs: null };
+  position: {
+    mediaMs: number | null;
+    mediaPositionAccuracy: 'timestamp' | 'estimated' | null;
+    submittedMs: number;
+    playedMs: number | null;
+  } = {
+    mediaMs: null,
+    mediaPositionAccuracy: null,
+    submittedMs: 0,
+    playedMs: null,
+  };
   durationMs = 10_000;
   error: string | null = null;
   seekPositionMs: number | undefined;
@@ -397,7 +426,12 @@ class FakeDiscordSession {
     const generation = ++this.#generation;
     this.#currentGeneration = generation;
     this.state = 'playing';
-    this.position = { submittedMs: 0, playedMs: null };
+    this.position = {
+      mediaMs: null,
+      mediaPositionAccuracy: null,
+      submittedMs: 0,
+      playedMs: null,
+    };
     return {
       streamIndex: 0,
       codec: 'mp3',

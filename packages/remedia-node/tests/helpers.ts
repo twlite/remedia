@@ -56,23 +56,29 @@ export async function createHeldAudioServer(
 ): Promise<{
   url: string;
   ready: Promise<void>;
+  requests: number;
+  sendNext(chunkBytes?: number): number;
   finish(): void;
   waitForClientClose(): Promise<void>;
   close(): Promise<void>;
 }> {
   let response: ServerResponse | undefined;
+  let offset = 0;
+  let requests = 0;
   let readyResolve: (() => void) | undefined;
   let clientCloseResolve: (() => void) | undefined;
   const ready = new Promise<void>((resolve) => (readyResolve = resolve));
   const clientClosed = new Promise<void>((resolve) => (clientCloseResolve = resolve));
   const server = createServer((_request, outgoing) => {
+    requests += 1;
     response = outgoing;
     outgoing.on('close', () => clientCloseResolve?.());
     outgoing.writeHead(200, {
       'content-length': wave.length,
       'content-type': 'audio/wav',
     });
-    outgoing.write(wave.subarray(0, prefixBytes));
+    offset = Math.min(prefixBytes, wave.length);
+    outgoing.write(wave.subarray(0, offset));
     readyResolve?.();
   });
   server.listen(0, '127.0.0.1');
@@ -84,8 +90,20 @@ export async function createHeldAudioServer(
   return {
     url: `http://127.0.0.1:${address.port}/held.wav`,
     ready,
+    get requests() {
+      return requests;
+    },
+    sendNext(chunkBytes = 64 * 1024) {
+      const end = Math.min(offset + chunkBytes, wave.length);
+      const chunk = wave.subarray(offset, end);
+      offset = end;
+      response?.write(chunk);
+      return chunk.length;
+    },
     finish() {
-      response?.end(wave.subarray(prefixBytes));
+      const remainder = wave.subarray(offset);
+      offset = wave.length;
+      response?.end(remainder);
     },
     async waitForClientClose() {
       let timeout: NodeJS.Timeout | undefined;

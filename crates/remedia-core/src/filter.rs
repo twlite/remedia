@@ -3,7 +3,7 @@ use std::ffi::{CStr, CString};
 use ffmpeg_next as ffmpeg;
 use thiserror::Error;
 
-use crate::decoder::{OUTPUT_SAMPLE_RATE_HZ, PcmFrame};
+use crate::decoder::{OUTPUT_SAMPLE_RATE_HZ, PcmFrame, SourcePosition};
 use crate::output::OutputError;
 
 /// A filtergraph could not be built or processed for normalized PCM.
@@ -31,13 +31,14 @@ pub(crate) struct PcmFilterGraph {
 
 impl PcmFilterGraph {
     pub(crate) fn build(expression: &str) -> Result<Self, FilterGraphError> {
+        let _log_capture = crate::ffmpeg_logging::capture();
         if expression.trim().is_empty() {
             return Err(FilterGraphError::Empty);
         }
         if CString::new(expression).is_err() {
             return Err(FilterGraphError::NulByte);
         }
-        ffmpeg::init().map_err(|error| FilterGraphError::Invalid(error.to_string()))?;
+        crate::input::initialize().map_err(|error| FilterGraphError::Invalid(error.to_string()))?;
 
         let mut graph = ffmpeg::filter::Graph::new();
         let source = ffmpeg::filter::find("abuffer")
@@ -255,6 +256,7 @@ fn validate_single_input_output(graph: &ffmpeg::filter::Graph) -> Result<(), Fil
 pub(crate) struct PcmProcessor {
     graph: Option<PcmFilterGraph>,
     next_sample: u64,
+    source_position: Option<SourcePosition>,
 }
 
 impl PcmProcessor {
@@ -265,6 +267,7 @@ impl PcmProcessor {
         Ok(Self {
             graph: expression.map(PcmFilterGraph::build).transpose()?,
             next_sample: start_sample,
+            source_position: None,
         })
     }
 
@@ -287,15 +290,29 @@ impl PcmProcessor {
             .map(PcmFilterGraph::build)
             .transpose()?;
         self.next_sample = start_sample;
+        self.source_position = Some(SourcePosition {
+            sample: start_sample,
+            estimated: true,
+        });
         Ok(())
     }
 
     pub(crate) fn write_frame(
         &mut self,
         input: PcmFrame,
+        source_start_sample: Option<u64>,
+        source_position_estimated: bool,
         gain: f32,
-        mut deliver: impl FnMut(PcmFrame) -> Result<(), OutputError>,
+        mut deliver: impl FnMut(PcmFrame, Option<SourcePosition>) -> Result<(), OutputError>,
     ) -> Result<(), ProcessError> {
+        let source_position_estimated = source_position_estimated || self.graph.is_some();
+        let source_position = source_start_sample.map(|sample| SourcePosition {
+            sample: sample.saturating_add(input.samples_per_channel as u64),
+            estimated: source_position_estimated,
+        });
+        if source_position.is_some() {
+            self.source_position = source_position;
+        }
         if self.graph.is_some() {
             self.graph
                 .as_mut()
@@ -310,12 +327,14 @@ impl PcmProcessor {
                     .pull()
                     .map_err(ProcessError::Filter)?;
                 match frame {
-                    Some(frame) => self.deliver(frame, gain, true, &mut deliver)?,
+                    Some(frame) => {
+                        self.deliver(frame, gain, true, source_position, &mut deliver)?
+                    }
                     None => break,
                 }
             }
         } else {
-            self.deliver(input, gain, false, &mut deliver)?;
+            self.deliver(input, gain, false, source_position, &mut deliver)?;
         }
         Ok(())
     }
@@ -323,7 +342,7 @@ impl PcmProcessor {
     pub(crate) fn finish(
         &mut self,
         gain: f32,
-        mut deliver: impl FnMut(PcmFrame) -> Result<(), OutputError>,
+        mut deliver: impl FnMut(PcmFrame, Option<SourcePosition>) -> Result<(), OutputError>,
     ) -> Result<(), ProcessError> {
         if self.graph.is_none() {
             return Ok(());
@@ -341,7 +360,9 @@ impl PcmProcessor {
                 .pull()
                 .map_err(ProcessError::Filter)?;
             match frame {
-                Some(frame) => self.deliver(frame, gain, true, &mut deliver)?,
+                Some(frame) => {
+                    self.deliver(frame, gain, true, self.source_position, &mut deliver)?
+                }
                 None => return Ok(()),
             }
         }
@@ -352,7 +373,8 @@ impl PcmProcessor {
         mut frame: PcmFrame,
         gain: f32,
         clip_output: bool,
-        deliver: &mut impl FnMut(PcmFrame) -> Result<(), OutputError>,
+        source_position: Option<SourcePosition>,
+        deliver: &mut impl FnMut(PcmFrame, Option<SourcePosition>) -> Result<(), OutputError>,
     ) -> Result<(), ProcessError> {
         let scalar_count = frame.samples_per_channel.checked_mul(2).ok_or_else(|| {
             ProcessError::Filter(FilterGraphError::Processing(
@@ -378,7 +400,7 @@ impl PcmProcessor {
         self.next_sample = self
             .next_sample
             .saturating_add(u64::try_from(frame.samples_per_channel).unwrap_or(u64::MAX));
-        deliver(frame).map_err(ProcessError::Output)
+        deliver(frame, source_position).map_err(ProcessError::Output)
     }
 }
 
@@ -403,15 +425,16 @@ mod tests {
 
     fn process(expression: &str, input: PcmFrame, gain: f32) -> Vec<PcmFrame> {
         let mut processor = PcmProcessor::new(Some(expression), input.start_sample).unwrap();
+        let source_start_sample = input.start_sample;
         let mut output = Vec::new();
         processor
-            .write_frame(input, gain, |frame| {
+            .write_frame(input, Some(source_start_sample), false, gain, |frame, _| {
                 output.push(frame);
                 Ok(())
             })
             .unwrap();
         processor
-            .finish(gain, |frame| {
+            .finish(gain, |frame, _| {
                 output.push(frame);
                 Ok(())
             })
@@ -512,20 +535,71 @@ mod tests {
     }
 
     #[test]
+    fn time_changing_graphs_keep_original_media_progress_separate_from_output_samples() {
+        for (expression, output_range) in [
+            ("asetrate=60000,aresample=48000", 36_000..=40_000),
+            ("asetrate=38400,aresample=48000", 57_000..=63_000),
+            ("atempo=1.25", 36_000..=40_000),
+        ] {
+            let mut processor = PcmProcessor::new(Some(expression), 0).unwrap();
+            let mut last_source_position = None;
+            for start in (0..48_000).step_by(960) {
+                processor
+                    .write_frame(
+                        pcm(start, 960, 0.25),
+                        Some(start),
+                        false,
+                        1.0,
+                        |_, source_position| {
+                            last_source_position = source_position;
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+            }
+            processor
+                .finish(1.0, |_, source_position| {
+                    last_source_position = source_position;
+                    Ok(())
+                })
+                .unwrap();
+
+            assert!(
+                output_range.contains(&processor.next_sample()),
+                "{expression}"
+            );
+            assert_eq!(
+                last_source_position,
+                Some(super::super::decoder::SourcePosition {
+                    sample: 48_000,
+                    estimated: true,
+                }),
+                "{expression}"
+            );
+        }
+    }
+
+    #[test]
     fn no_graph_bypasses_ffmpeg_and_master_gain_clips_finite_samples() {
         let mut processor = PcmProcessor::new(None, 120).unwrap();
         let mut output = Vec::new();
         processor
-            .write_frame(pcm(12_345, 3, 0.75), 2.0, |frame| {
-                output.push(frame);
-                Ok(())
-            })
+            .write_frame(
+                pcm(12_345, 3, 0.75),
+                Some(12_345),
+                false,
+                2.0,
+                |frame, _| {
+                    output.push(frame);
+                    Ok(())
+                },
+            )
             .unwrap();
         assert_eq!(output[0].start_sample, 120);
         assert_eq!(output[0].samples, vec![1.0; 6]);
 
         processor
-            .write_frame(pcm(12_348, 3, 0.5), 0.0, |frame| {
+            .write_frame(pcm(12_348, 3, 0.5), Some(12_348), false, 0.0, |frame, _| {
                 output.push(frame);
                 Ok(())
             })

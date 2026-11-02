@@ -108,18 +108,24 @@ optional output-reported played position.
 
 An optional single-input/single-output `PcmFilterGraph` uses libavfilter after normalized PCM
 decoding and before independent master gain. Replacements are built and validated before activation,
-then installed at a worker frame boundary; delayed output from the prior graph is discarded and the
-output is flushed without reopening media or disconnecting voice. Seeking rebuilds filter state and
-natural EOF drains it. Raw expressions are trusted configuration: validation checks the PCM graph
-contract and does not sandbox filters that can access external resources. Master gain is finite
-linear `0.0..=2.0`, defaults to unity, and clamps output samples to `[-1, 1]`; gain above unity can
-clip.
+then installed at a worker frame boundary. Delayed output held inside the old graph is discarded;
+PCM already accepted by the output is retained. Replacement does not perform a seek flush, reset
+the Opus encoder, or advance Discord's sender generation. The Opus adapter keeps partial PCM and
+validates exact integer sample positions, so packets remain contiguous across the switch. Seeking
+uses a separate sample-accurate flush, rebuilds filter state, and invalidates queued pre-seek output;
+natural EOF drains the active graph. Raw expressions are trusted configuration: validation checks
+the PCM graph contract and does not sandbox filters that can access external resources. Master gain
+is finite linear `0.0..=2.0`, defaults to unity, and clamps output samples to `[-1, 1]`; gain above
+unity can clip.
 
 There are distinct source, filtered-output, and transport timelines. Seeking is relative to the
-source timeline. `PlaybackPosition.submitted` after a time-changing graph measures contiguous
-filtered PCM samples accepted by the output, not source time. Discord's RTP timeline remains
-connection-owned and continuous across graph replacement, seek, and source replacement. Discord
-currently reports no audible played position.
+source timeline. `PlaybackPosition.media` is the source timestamp associated with the latest output
+boundary; it is marked estimated when timestamps are missing or a graph buffers or changes timing.
+It does not claim that a listener has heard the media. `PlaybackPosition.submitted` after a
+time-changing graph measures contiguous filtered PCM samples accepted by the output, not source
+time. `PlaybackPosition.played` is only populated by outputs that can measure consumed audio;
+Discord currently reports none. Discord's RTP timeline remains connection-owned and continuous
+across graph replacement, seek, and source replacement.
 
 `OpusEncoderOutput` owns one libopus encoder and one packet sink per playback. The Discord adapter
 owns a bounded queue and does not block Tokio runtime workers: the synchronous core worker is the
@@ -152,7 +158,12 @@ event queue are bounded and lossy so logging cannot block audio workers. OTLP tr
 require `REMEDIA_OTEL_ENABLED=true`; the default creates no network exporters. Applications should
 flush and shut down owned providers during normal application shutdown, never from an audio callback.
 See the [observability guide](../apps/docs/content/docs/observability/configuration.mdx) for
-environment variables, event fields, metric semantics, and current limitations.
+environment variables, event fields, metric semantics, and current limitations. Native FFmpeg logs
+are routed through one process-wide callback installed once by the core, then emitted through the
+active Remedia tracing dispatcher for synchronous Remedia operations. FFmpeg does not expose a
+previous-callback getter, so Remedia cannot chain an arbitrary custom native callback; internal
+FFmpeg worker-thread messages also cannot always be attributed to the Remedia operation that
+created them. These process-global logging limits are documented in the observability guide.
 
 Building `remedia-core` requires native libavformat, libavcodec, libavutil, libswresample, and
 libopus development libraries. CI installs these libraries on Ubuntu. No FFmpeg executable is used

@@ -181,10 +181,18 @@ normal EOF moves to `completed`; an unrecoverable decoder or output error moves
 to `failed` and is available as `playback.error`. API failures reject their
 Promise and remain separate from debug diagnostics.
 
-`position` returns `submittedMs` and `playedMs`. The null output consumes the
-whole stream without real-time pacing, so position can advance to the end
-quickly. A Discord transport currently cannot report audible playback time;
-its `playedMs` is `null`. `durationMs` is `null` when the source does not
+`position` returns `mediaMs`, `mediaPositionAccuracy`, `submittedMs`, and
+`playedMs`. `mediaMs` is the original source timeline associated with the latest
+filtered PCM accepted by the output. Its accuracy is `timestamp` when based on
+valid source timestamps, `estimated` when decoding or a filtergraph makes that
+mapping uncertain, and `null` before a position is available. It is not proof
+that the listener has heard those samples. `submittedMs` is the filtered PCM
+output timeline (also used for Opus continuity), and `playedMs` is populated
+only when the output reports actual consumption. A Discord transport currently
+cannot report audible playback time, so `playedMs` is `null`; the Discord test
+bot displays source progress with an approximation marker in that case. The
+null output consumes the whole stream without real-time pacing, so positions
+can advance to the end quickly. `durationMs` is `null` when the source does not
 provide a duration.
 
 ## Native filters and master volume
@@ -204,9 +212,16 @@ console.log(voice.filters.graph, voice.volume); // null, 0.75
 
 Filter graphs can be set before playback or before `DiscordSession.connect()`.
 On an active track, a change is validated first and takes effect at the next
-PCM boundary. Remedia discards delayed samples still held in the previous stateful graph,
-flushes partial/buffered output, and retains the current decoder and Discord
-connection. Invalid graphs reject without replacing the graph already in use.
+decoded PCM boundary. Remedia discards delayed samples still held in the
+previous stateful graph, keeps PCM already accepted by the output, and retains
+the current decoder and Discord connection. It does not perform a seek flush,
+reset the Opus encoder, or invalidate queued RTP packets. A partial Opus frame
+is retained and can contain accepted PCM from both sides of the graph boundary;
+sample positions remain contiguous. Invalid graphs reject without replacing
+the graph already in use.
+If EOF wins a race before another PCM boundary exists, the update is retained
+for the next source on that session. A seek that loses an EOF race rejects with
+an invalid-state error.
 Pass a raw audio graph expression, not an FFmpeg command-line option; empty or
 whitespace-only strings reject, and `clear()` disables filtering. The parser
 requires one effective PCM input and output but does not sandbox filters that
@@ -219,12 +234,16 @@ limiting or loudness normalization. Volume is applied after the graph and is
 preserved when filters change or tracks are replaced on the same session.
 Each session has independent settings, and disposal releases them.
 
-Time-changing filters alter the filtered PCM timeline. `position.submittedMs`
-then advances by filtered samples submitted to the output, not source media time;
-after seek it starts at the requested source position and advances on that filtered timeline.
-`seek()` remains relative to the original source timeline. Discord does not
-report audible position, so `playedMs` remains `null`. Graph replacement,
-seek, pause, stop, and end-of-stream flush are handled by the native playback
+Time-changing filters alter the filtered PCM timeline. `position.mediaMs` tracks
+the original source position associated with the latest output boundary and is
+marked estimated whenever timestamps or a graph's buffering/timing prevent an
+exact mapping. Remedia does not parse filter expressions to guess a constant
+speed ratio. `position.submittedMs` advances by filtered samples submitted to
+the output, not source media time. `seek()` remains relative to the original
+source timeline and resets both timelines to the requested position. Discord
+does not report audible position, so `playedMs` remains `null`; source progress
+shown by the Discord test bot is therefore approximate. Graph replacement,
+seek, pause, stop, and end-of-stream draining are handled by the native playback
 worker; no graph or PCM work runs on Node's event loop.
 
 ## Discord Gateway adapter

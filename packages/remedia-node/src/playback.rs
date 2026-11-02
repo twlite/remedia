@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use napi::bindgen_prelude::Status;
 use napi_derive::napi;
-use remedia_core::{NullOutput, OpusEncoderOutput, PlaybackError, PlaybackSession};
+use remedia_core::{
+    MediaPositionAccuracy, NullOutput, OpusEncoderOutput, PlaybackError, PlaybackSession,
+};
 use remedia_discord::ConnectionState;
 
 use crate::native::NativeRemedia;
@@ -221,11 +223,16 @@ impl NativeRemedia {
         Ok(playback_state_name(self.inner.playback(&playback_id)?.session.state()).to_owned())
     }
 
-    /// Playback submitted position and output-reported played position, in milliseconds.
+    /// Source media, filtered output submission, and output-reported played positions.
     #[napi]
     pub fn playback_position(&self, playback_id: String) -> napi::Result<NativePlaybackPosition> {
         let position = self.inner.playback(&playback_id)?.session.position();
         Ok(NativePlaybackPosition {
+            media_ms: position.media.map(|media| duration_millis(media.position)),
+            media_position_accuracy: position.media.map(|media| match media.accuracy {
+                MediaPositionAccuracy::Timestamp => "timestamp".to_owned(),
+                MediaPositionAccuracy::Estimated => "estimated".to_owned(),
+            }),
             submitted_ms: duration_millis(position.submitted),
             played_ms: position.played.map(duration_millis),
         })

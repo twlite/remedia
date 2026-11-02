@@ -6,6 +6,7 @@
 mod byte_stream;
 mod decoder;
 mod error;
+mod ffmpeg_logging;
 mod filter;
 mod input;
 mod opus;
@@ -29,6 +30,7 @@ pub use filter::FilterGraphError;
 pub use opus::{EncodedOpusPacket, OpusEncoderOutput, OpusPacketSink};
 pub use output::{MediaOutput, NullOutput, NullOutputStats, NullOutputStatsHandle, OutputError};
 pub use playback::{
-    PlaybackError, PlaybackPosition, PlaybackSession, PlaybackState, PlaybackWaiter,
+    MediaPosition, MediaPositionAccuracy, PlaybackError, PlaybackPosition, PlaybackSession,
+    PlaybackState, PlaybackWaiter,
 };
 pub use source::{CancellationToken, InputSource};

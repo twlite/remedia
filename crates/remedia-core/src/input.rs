@@ -64,6 +64,7 @@ impl Drop for OpenedInput {
 pub(crate) fn initialize() -> Result<(), DecoderError> {
     FFMPEG_INITIALIZATION
         .get_or_init(|| {
+            crate::ffmpeg_logging::install();
             ffmpeg::init().map_err(|error| error.to_string())?;
             ffmpeg::format::network::init();
             Ok(())
@@ -77,6 +78,7 @@ pub(crate) fn open(
     timeout: Duration,
     cancellation: CancellationToken,
 ) -> Result<OpenedInput, DecoderError> {
+    let _log_capture = crate::ffmpeg_logging::capture();
     initialize()?;
 
     if cancellation.is_cancelled() {

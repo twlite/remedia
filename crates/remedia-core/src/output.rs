@@ -61,6 +61,33 @@ pub trait MediaOutput: Send + Sync + 'static {
         cancellation: &CancellationToken,
     ) -> Result<(), OutputError>;
 
+    /// Discard pre-seek data and reset the output at an exact normalized PCM
+    /// sample. The default preserves compatibility with outputs that only
+    /// implement the duration-based [`Self::flush`] operation.
+    fn flush_samples(
+        &self,
+        sample_position: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OutputError> {
+        self.flush(duration_from_sample_position(sample_position), cancellation)
+    }
+
+    /// Notify the output that a replacement filtergraph will supply the next
+    /// PCM samples. Implementations should preserve their timeline and accepted
+    /// audio; unlike [`Self::flush_samples`], this is not a seek or transport
+    /// generation change.
+    fn filter_transition(
+        &self,
+        _next_sample_position: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OutputError> {
+        if cancellation.is_cancelled() {
+            Err(OutputError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Suspend downstream output after the current frame boundary. Outputs
     /// which do not schedule or transmit in real time can keep the default.
     fn pause(&self, _cancellation: &CancellationToken) -> Result<(), OutputError> {

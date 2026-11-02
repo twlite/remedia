@@ -17,6 +17,7 @@ export interface PlaybackSnapshot {
   connectionState: string;
   state: PlaybackState;
   positionMs: number;
+  positionEstimated: boolean;
   durationMs: number | null;
   current: TrackSnapshot | null;
   queue: readonly TrackRequest[];
@@ -324,11 +325,13 @@ function toTrackSnapshot(track: Track): TrackSnapshot {
 }
 
 function toPlaybackSnapshot(player: GuildPlayer): PlaybackSnapshot {
+  const position = player.session.position;
   return {
     channelId: player.session.channelId,
     connectionState: player.session.connectionState,
     state: player.session.state,
-    positionMs: player.session.position.submittedMs,
+    positionMs: position.mediaMs ?? position.submittedMs,
+    positionEstimated: position.playedMs === null || position.mediaPositionAccuracy === 'estimated',
     durationMs: player.session.durationMs,
     current: player.current ? toTrackSnapshot(player.current) : null,
     queue: player.queue.map(({ url, requestedBy }) => ({ url, requestedBy })),
