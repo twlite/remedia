@@ -7,6 +7,7 @@ rust-version.workspace = true
 [dependencies]
 ffmpeg-next = { version = "=7.1.0", default-features = false, features = [
   "codec",
+  "filter",
   "format",
   "software-resampling",
 ] }

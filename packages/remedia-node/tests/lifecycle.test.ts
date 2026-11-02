@@ -198,3 +198,25 @@ test('closing Remedia stops playback and settles waiters', async () => {
     await held.close();
   }
 });
+
+test('completion waiters remain bound to the source active when wait was called', async () => {
+  const held = await createHeldAudioServer(makeWave(10));
+  const remedia = await Remedia.create();
+  const playback = remedia.createPlaybackSession();
+
+  try {
+    const opening = playback.play({ url: held.url });
+    await held.ready;
+    await opening;
+    const oldWait = playback.wait();
+    await playback.stop();
+    await playback.play({ buffer: fixture.wave });
+    assert.equal(await oldWait, 'stopped');
+    assert.equal(playback.state, 'playing');
+    assert.equal(await playback.wait(), 'completed');
+  } finally {
+    await playback.dispose();
+    await remedia.close();
+    await held.close();
+  }
+});

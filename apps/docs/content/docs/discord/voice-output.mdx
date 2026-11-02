@@ -115,6 +115,12 @@ Finishing or cancelling an output does not disconnect the voice connection.
 Call `disconnect().await` to close the connection and release its worker, socket,
 and DAVE state.
 
+Each output has a monotonically increasing generation. Cancellation applies only
+while its generation is still current, so a delayed stop from an older playback
+cannot deactivate a replacement track. Packets are checked against the latest
+published generation before delivery, including when several generation changes
+arrive before the transport worker observes them.
+
 The sender sends Speaking before the first RTP packet. Pause drains packets
 already accepted by the sender, sends the protocol's five 20 ms silence frames,
 and turns Speaking off. Resume enables Speaking again and continues the same

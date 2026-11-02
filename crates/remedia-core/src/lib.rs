@@ -6,6 +6,7 @@
 mod byte_stream;
 mod decoder;
 mod error;
+mod filter;
 mod input;
 mod opus;
 mod output;
@@ -24,7 +25,10 @@ pub(crate) fn with_dispatch<T>(handle: &ObservabilityHandle, callback: impl FnOn
 pub use byte_stream::{ByteStreamError, ByteStreamWriter};
 pub use decoder::{AudioDecoder, AudioStreamInfo, DecoderOptions, PcmFormat, PcmFrame};
 pub use error::DecoderError;
+pub use filter::FilterGraphError;
 pub use opus::{EncodedOpusPacket, OpusEncoderOutput, OpusPacketSink};
 pub use output::{MediaOutput, NullOutput, NullOutputStats, NullOutputStatsHandle, OutputError};
-pub use playback::{PlaybackError, PlaybackPosition, PlaybackSession, PlaybackState};
+pub use playback::{
+    PlaybackError, PlaybackPosition, PlaybackSession, PlaybackState, PlaybackWaiter,
+};
 pub use source::{CancellationToken, InputSource};

@@ -8,6 +8,8 @@ import { VoiceRuntime } from './voice/runtime.js';
 const token = process.env.DISCORD_TOKEN;
 if (!token) throw new Error('DISCORD_TOKEN must be set in apps/discord/.env.');
 
+process.title = 'Remedia Discord Bot';
+
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
 });
@@ -65,6 +67,12 @@ function sendGatewayVoicePayload(
   guildId: string,
   payload: DiscordGatewayVoicePayload,
 ): void {
+  const maybeGuild = gatewayClient.guilds.cache.get(guildId);
+  if (maybeGuild?.shard) {
+    maybeGuild.shard.send(payload);
+    return;
+  }
+
   const shardCount = gatewayClient.ws.shards.size;
   if (shardCount === 0) throw new Error('Discord Gateway has no active shards.');
   const shardId = Number((BigInt(guildId) >> 22n) % BigInt(shardCount));

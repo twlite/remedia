@@ -12,10 +12,11 @@ playback, Discord session, and diagnostics APIs.
   byte streams with libavformat, selects and decodes an audio stream with libavcodec, and converts
   output through libswresample to interleaved 48 kHz stereo `f32` PCM. It uses native FFmpeg
   libraries rather than starting FFmpeg subprocesses.
-  Playback sessions manage one source, lifecycle state, seeking, and frame delivery to a generic
-  output. The generic Opus output adapter uses native libopus, accumulates variable PCM blocks into
+  Playback sessions manage one source, lifecycle state, seeking, optional native libavfilter
+  graphs, linear master gain, and frame delivery to a generic output. With no graph configured,
+  PCM bypasses libavfilter. The generic Opus output adapter uses native libopus, accumulates variable PCM blocks into
   20 ms stereo Opus packets, and marks a padded final packet's actual media duration. It does not
-  pace packets or expose Discord types. Device output and filtering are not implemented.
+  pace packets or expose Discord types. Device output is not implemented.
 - **`remedia-discord`** accepts already-encoded Opus packets and owns voice gateway v8, UDP
   discovery, DAVE MLS/media encryption through `davey`, RTP packetization, transport encryption,
   speaking state, real-time packet pacing, and connection cleanup. It does not decode or encode
@@ -42,8 +43,10 @@ playback, Discord session, and diagnostics APIs.
   not send a bot Gateway request. Native playback methods run on NAPI-RS's managed Tokio runtime; blocking core methods
   are dispatched to blocking workers. A caller-owned cancellation token covers the gap before a
   scheduled decoder worker starts, so concurrent stop, dispose, or close cannot leave a late
-  playback worker behind. Standalone sessions currently decode into `NullOutput`,
-  while Discord sessions use the core Opus output adapter. The addon accepts files, HTTP(S) URLs,
+  playback worker behind. Completion waiters capture a source generation synchronously, so a delayed
+  waiter cannot attach to a replacement track. Standalone sessions currently decode into
+  `NullOutput`, while Discord sessions use the core Opus output adapter. Both session types expose
+  raw filtergraphs and independent linear master volume. The addon accepts files, HTTP(S) URLs,
   owned Buffer/Uint8Array data, and binary Node.js Readables. Readable chunks are copied into a
   bounded native byte queue with backpressure; stopping or closing detaches and pauses a caller-owned
   Readable without destroying it. The addon does not install a global tracing subscriber. It is
@@ -57,7 +60,10 @@ intentions. Add crates or packages only when implementation needs them.
 `apps/discord` is a manual discord.js integration harness over `@remedia/node`. It forwards raw
 Gateway dispatches, sends OP 4 through the owning shard, and provides app-level slash commands with
 an in-memory per-guild URL queue. Queueing stays out of the core and Node playback APIs. The bot
-runs its TypeScript source with `tsx`; `tsc --noEmit` remains its type check.
+runs its TypeScript source with `tsx`; `tsc --noEmit` remains its type check. Its six named audio
+presets, `/filter`, and `/volume` commands are harness-only conveniences; the raw graph API remains
+generic. The application-owned queue stores per-guild effect settings and preserves them across
+skips.
 
 The bounded `DiagnosticReceiver` in `remedia-observability` is connected to the Node wrapper by one
 dedicated forwarding worker and a bounded N-API `ThreadsafeFunction`. The receiver is per
@@ -99,6 +105,21 @@ session-level audio queue. Pause waits for an in-flight read or output call to r
 Stop cancels the decoder/output and joins the worker. `NullOutput` records consumption statistics
 without real-time pacing. The session distinguishes the position submitted to an output from an
 optional output-reported played position.
+
+An optional single-input/single-output `PcmFilterGraph` uses libavfilter after normalized PCM
+decoding and before independent master gain. Replacements are built and validated before activation,
+then installed at a worker frame boundary; delayed output from the prior graph is discarded and the
+output is flushed without reopening media or disconnecting voice. Seeking rebuilds filter state and
+natural EOF drains it. Raw expressions are trusted configuration: validation checks the PCM graph
+contract and does not sandbox filters that can access external resources. Master gain is finite
+linear `0.0..=2.0`, defaults to unity, and clamps output samples to `[-1, 1]`; gain above unity can
+clip.
+
+There are distinct source, filtered-output, and transport timelines. Seeking is relative to the
+source timeline. `PlaybackPosition.submitted` after a time-changing graph measures contiguous
+filtered PCM samples accepted by the output, not source time. Discord's RTP timeline remains
+connection-owned and continuous across graph replacement, seek, and source replacement. Discord
+currently reports no audible played position.
 
 `OpusEncoderOutput` owns one libopus encoder and one packet sink per playback. The Discord adapter
 owns a bounded queue and does not block Tokio runtime workers: the synchronous core worker is the

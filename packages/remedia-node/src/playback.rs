@@ -111,6 +111,72 @@ impl NativeRemedia {
             .map_err(|error| playback_error("could not seek playback", error))
     }
 
+    /// Validate and replace the trusted native FFmpeg audio filtergraph.
+    #[napi]
+    pub async fn playback_set_filter_graph(
+        &self,
+        playback_id: String,
+        graph: String,
+    ) -> napi::Result<()> {
+        self.with_playback_operation(&playback_id, move |session| {
+            session.set_filter_graph(Some(&graph))
+        })
+        .await
+        .map_err(|error| playback_error("could not set audio filtergraph", error))
+    }
+
+    /// Clear the current native audio filtergraph.
+    #[napi]
+    pub async fn playback_clear_filter_graph(&self, playback_id: String) -> napi::Result<()> {
+        self.with_playback_operation(&playback_id, |session| session.set_filter_graph(None))
+            .await
+            .map_err(|error| playback_error("could not clear audio filtergraph", error))
+    }
+
+    /// Current configured raw FFmpeg filtergraph, if any.
+    #[napi]
+    pub fn playback_filter_graph(&self, playback_id: String) -> napi::Result<Option<String>> {
+        Ok(self.inner.playback(&playback_id)?.session.filter_graph())
+    }
+
+    /// Set normalized linear master gain in the inclusive range 0.0 through 2.0.
+    #[napi]
+    pub async fn playback_set_volume(&self, playback_id: String, gain: f64) -> napi::Result<()> {
+        if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
+            return Err(napi_error(
+                Status::InvalidArg,
+                "master volume must be a finite linear gain between 0.0 and 2.0",
+            ));
+        }
+        let gain = gain as f32;
+        self.with_playback_operation(&playback_id, move |session| session.set_volume(gain))
+            .await
+            .map_err(|error| playback_error("could not set master volume", error))
+    }
+
+    /// Current normalized linear master gain.
+    #[napi]
+    pub fn playback_volume(&self, playback_id: String) -> napi::Result<f64> {
+        Ok(f64::from(
+            self.inner.playback(&playback_id)?.session.volume(),
+        ))
+    }
+
+    /// Validate a filtergraph before a Discord voice session has a native playback object.
+    #[napi]
+    pub async fn validate_filter_graph(&self, graph: String) -> napi::Result<()> {
+        let _operation = self.inner.operations.read().await;
+        self.inner.ensure_open()?;
+        run_blocking(move || PlaybackSession::validate_filter_graph(&graph))
+            .await?
+            .map_err(|error| {
+                napi_error(
+                    Status::InvalidArg,
+                    format!("invalid audio filtergraph: {error}"),
+                )
+            })
+    }
+
     /// Stop playback without disconnecting its Discord voice transport.
     #[napi]
     pub async fn stop(&self, playback_id: String) -> napi::Result<()> {
@@ -120,13 +186,32 @@ impl NativeRemedia {
             .map_err(|error| playback_error("could not stop playback", error))
     }
 
-    /// Wait asynchronously until playback completes, stops, or fails.
+    /// Capture the source generation before an asynchronous wait is scheduled.
     #[napi]
-    pub async fn wait(&self, playback_id: String) -> napi::Result<String> {
+    pub fn playback_generation(&self, playback_id: String) -> napi::Result<String> {
+        Ok(self
+            .inner
+            .playback(&playback_id)?
+            .session
+            .completion_generation()
+            .to_string())
+    }
+
+    /// Wait for a generation captured synchronously by the JavaScript wrapper.
+    #[napi]
+    pub async fn wait(&self, playback_id: String, generation: String) -> napi::Result<String> {
+        self.inner.ensure_open()?;
+        let generation = generation
+            .parse::<u64>()
+            .map_err(|_| napi_error(Status::InvalidArg, "invalid playback generation"))?;
+        let waiter = self
+            .inner
+            .playback(&playback_id)?
+            .session
+            .completion_for_generation(generation);
         let _operation = self.inner.operations.read().await;
         self.inner.ensure_open()?;
-        let session = Arc::clone(&self.inner.playback(&playback_id)?.session);
-        let state = run_blocking(move || session.wait()).await?;
+        let state = run_blocking(move || waiter.wait()).await?;
         Ok(playback_state_name(state).to_owned())
     }
 

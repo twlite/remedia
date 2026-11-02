@@ -1,0 +1,49 @@
+import type { Command } from './index.js';
+import { VoiceRuntime } from '../voice/runtime.js';
+import { FILTER_PRESET_NAMES, type FilterPresetName } from '../voice/filter-presets.js';
+import { getVoiceCommandContext, withVoiceReply } from '../voice/command-helpers.js';
+
+export default {
+  data: {
+    name: 'filter',
+    description: 'Set, clear, or list this server’s audio filter.',
+    options: [
+      {
+        type: 1,
+        name: 'set',
+        description: 'Apply one audio filter preset.',
+        options: [
+          {
+            type: 3,
+            name: 'preset',
+            description: 'Filter preset to apply.',
+            required: true,
+            choices: FILTER_PRESET_NAMES.map((name) => ({ name, value: name })),
+          },
+        ],
+      },
+      { type: 1, name: 'clear', description: 'Disable the current filter.' },
+      { type: 1, name: 'list', description: 'Show available presets and the selected filter.' },
+    ],
+  },
+  async execute(interaction) {
+    await withVoiceReply(interaction, async () => {
+      const { guildId, channelId } = getVoiceCommandContext(interaction);
+      const manager = VoiceRuntime.current.playback;
+      const action = interaction.options.getSubcommand();
+      if (action === 'set') {
+        const preset = interaction.options.getString('preset', true) as FilterPresetName;
+        await manager.setFilter(guildId, channelId, preset);
+        return `Applied the ${preset} filter.`;
+      }
+      if (action === 'clear') {
+        await manager.setFilter(guildId, channelId, null);
+        return 'Audio filter cleared.';
+      }
+
+      const snapshot = await manager.snapshot(guildId, channelId);
+      const selected = snapshot.filterPreset ?? 'none';
+      return `Available filters: ${FILTER_PRESET_NAMES.join(', ')}. Current: ${selected}.`;
+    });
+  },
+} satisfies Command;

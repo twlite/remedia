@@ -12,7 +12,7 @@
     "prestart": "pnpm --filter @remedia/node build",
     "dev": "tsx --env-file=.env --watch src/index.ts",
     "start": "tsx --env-file=.env src/index.ts",
-    "test": "tsx --test src/voice/playback-manager.test.ts",
+    "test": "tsx --test src/voice/*.test.ts src/commands/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

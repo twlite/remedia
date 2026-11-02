@@ -10,6 +10,7 @@ use thiserror::Error;
 
 use crate::decoder::{AudioDecoder, AudioStreamInfo, DecoderOptions, PcmFrame};
 use crate::error::DecoderError;
+use crate::filter::{FilterGraphError, PcmFilterGraph, PcmProcessor, ProcessError};
 use crate::output::{MediaOutput, OutputError};
 use crate::source::{CancellationToken, InputSource};
 use crate::with_dispatch;
@@ -83,6 +84,10 @@ pub enum PlaybackError {
         target: Duration,
         duration: Duration,
     },
+    #[error("audio filtergraph error: {0}")]
+    FilterGraph(#[source] Arc<FilterGraphError>),
+    #[error("master volume must be a finite gain between 0.0 and 2.0, received {0}")]
+    InvalidVolume(f32),
 }
 
 impl From<DecoderError> for PlaybackError {
@@ -116,6 +121,15 @@ pub struct PlaybackSession {
     shared: Arc<SessionShared>,
     worker: Mutex<Option<JoinHandle<()>>>,
     start_lock: Mutex<()>,
+    filter_update_lock: Mutex<()>,
+}
+
+/// A completion wait bound to the playback generation active when it was
+/// created. Replacing a stopped source cannot make an older waiter follow the
+/// new source.
+pub struct PlaybackWaiter {
+    shared: Arc<SessionShared>,
+    generation: u64,
 }
 
 struct SessionShared {
@@ -136,6 +150,10 @@ struct SessionData {
     cancellation: Option<CancellationToken>,
     output: Option<Arc<dyn MediaOutput>>,
     pending_seek: Option<SeekRequest>,
+    filter_graph: Option<String>,
+    pending_filter_graph: Option<FilterUpdate>,
+    processor_initialized: bool,
+    volume: f32,
     stopping: bool,
 }
 
@@ -144,10 +162,16 @@ struct SeekRequest {
     response: SyncSender<Result<(), PlaybackError>>,
 }
 
+struct FilterUpdate {
+    graph: Option<PcmFilterGraph>,
+    response: SyncSender<Result<(), PlaybackError>>,
+}
+
 enum WorkerAction {
     Decode,
     Deliver(PcmFrame),
     Seek(SeekRequest),
+    ReplaceFilter(FilterUpdate),
     Pause,
     Resume,
     Finish,
@@ -185,6 +209,10 @@ impl PlaybackSession {
                     cancellation: None,
                     output: None,
                     pending_seek: None,
+                    filter_graph: None,
+                    pending_filter_graph: None,
+                    processor_initialized: false,
+                    volume: 1.0,
                     stopping: false,
                 }),
                 changed: Condvar::new(),
@@ -192,6 +220,7 @@ impl PlaybackSession {
             }),
             worker: Mutex::new(None),
             start_lock: Mutex::new(()),
+            filter_update_lock: Mutex::new(()),
         }
     }
 
@@ -275,6 +304,7 @@ impl PlaybackSession {
             data.cancellation = Some(cancellation.clone());
             data.output = Some(Arc::clone(&output));
             data.pending_seek = None;
+            data.processor_initialized = false;
 
             let shared = Arc::clone(&self.shared);
             let worker_output = Arc::clone(&output);
@@ -517,13 +547,95 @@ impl PlaybackSession {
         })
     }
 
+    /// Validate and configure a trusted FFmpeg audio filtergraph.
+    ///
+    /// The expression is parsed by native libavfilter and must describe one
+    /// audio input and one audio output. `None` clears filtering. Empty or
+    /// whitespace-only strings are rejected. When active, replacement waits
+    /// for a PCM boundary, drops delayed output from the previous graph, and
+    /// flushes any partial/buffered output packet before activating the new
+    /// graph. The source is not reopened. Graph strings are trusted application
+    /// configuration; some FFmpeg filters can access files or URLs.
+    pub fn set_filter_graph(&self, expression: Option<&str>) -> Result<(), PlaybackError> {
+        let _update = lock(&self.filter_update_lock);
+        let expression = expression.map(str::to_owned);
+        let candidate = expression
+            .as_deref()
+            .map(PcmFilterGraph::build)
+            .transpose()
+            .map_err(|error| PlaybackError::FilterGraph(Arc::new(error)))?;
+        let mut data = lock(&self.shared.data);
+        if data.filter_graph == expression {
+            return Ok(());
+        }
+        data.filter_graph = expression;
+        let active = is_active(data.state) && !data.stopping;
+        if active && data.processor_initialized {
+            let (response, receiver) = mpsc::sync_channel(1);
+            data.pending_filter_graph = Some(FilterUpdate {
+                graph: candidate,
+                response,
+            });
+            self.shared.changed.notify_all();
+            drop(data);
+            return receiver.recv().unwrap_or_else(|_| {
+                Err(lock(&self.shared.data)
+                    .last_error
+                    .clone()
+                    .unwrap_or(PlaybackError::WorkerPanicked))
+            });
+        }
+
+        // During early startup the worker has not taken its initial settings
+        // snapshot yet; storing the validated string is sufficient. Later
+        // startup changes are delivered through the worker's pending update.
+        Ok(())
+    }
+
+    /// Return the configured graph expression, if any.
+    pub fn filter_graph(&self) -> Option<String> {
+        lock(&self.shared.data).filter_graph.clone()
+    }
+
+    /// Set master gain independently of the raw FFmpeg filtergraph.
+    ///
+    /// The accepted linear amplitude range is `0.0..=2.0`. Samples are hard
+    /// clipped to `[-1.0, 1.0]`; this is not a limiter or loudness normalizer.
+    /// Changes take effect at the next processed PCM frame and persist across
+    /// tracks in this session.
+    pub fn set_volume(&self, gain: f32) -> Result<(), PlaybackError> {
+        if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
+            return Err(PlaybackError::InvalidVolume(gain));
+        }
+        lock(&self.shared.data).volume = gain;
+        Ok(())
+    }
+
+    /// Current normalized linear master gain.
+    pub fn volume(&self) -> f32 {
+        lock(&self.shared.data).volume
+    }
+
+    /// Validate a graph without creating a playback session.
+    pub fn validate_filter_graph(expression: &str) -> Result<(), FilterGraphError> {
+        PcmFilterGraph::build(expression).map(|_| ())
+    }
+
     /// Stop active work, cancel pending I/O/output, and join its worker.
     ///
     /// Stopping an idle session changes it to `Stopped`. Repeated stops are
     /// harmless. `Completed` and `Failed` remain terminal so their outcome and
     /// error remain observable.
     pub fn stop(&self) -> Result<(), PlaybackError> {
-        let (needs_cleanup, active, playback_id, cancellation, output, pending_seek) = {
+        let (
+            needs_cleanup,
+            active,
+            playback_id,
+            cancellation,
+            output,
+            pending_seek,
+            pending_filter,
+        ) = {
             let mut data = lock(&self.shared.data);
             while data.stopping {
                 data = wait(&self.shared.changed, data);
@@ -548,6 +660,7 @@ impl PlaybackSession {
             };
             let output = data.output.take();
             let pending_seek = data.pending_seek.take();
+            let pending_filter = data.pending_filter_graph.take();
             let playback_id = data.playback_id;
             self.shared.changed.notify_all();
             (
@@ -557,11 +670,15 @@ impl PlaybackSession {
                 cancellation,
                 output,
                 pending_seek,
+                pending_filter,
             )
         };
 
         if let Some(request) = pending_seek {
             let _ = request.response.send(Err(PlaybackError::Cancelled));
+        }
+        if let Some(update) = pending_filter {
+            let _ = update.response.send(Err(PlaybackError::Cancelled));
         }
         if let Some(cancellation) = &cancellation {
             with_dispatch(&self.shared.observability, || {
@@ -660,11 +777,28 @@ impl PlaybackSession {
 
     /// Block until the session reaches a terminal state.
     pub fn wait(&self) -> PlaybackState {
-        let mut data = lock(&self.shared.data);
-        while is_active(data.state) {
-            data = wait(&self.shared.changed, data);
+        self.completion().wait()
+    }
+
+    /// Capture the active playback so a wait scheduled on another thread stays
+    /// bound to that source even if it is stopped and replaced before waiting
+    /// begins.
+    pub fn completion(&self) -> PlaybackWaiter {
+        self.completion_for_generation(self.completion_generation())
+    }
+
+    /// Return the current source generation for adapters that must capture a wait
+    /// before scheduling blocking work on another runtime.
+    pub fn completion_generation(&self) -> u64 {
+        lock(&self.shared.data).generation
+    }
+
+    /// Bind a completion waiter to a generation captured by an adapter.
+    pub fn completion_for_generation(&self, generation: u64) -> PlaybackWaiter {
+        PlaybackWaiter {
+            shared: Arc::clone(&self.shared),
+            generation,
         }
-        data.state
     }
 
     fn reap_previous_worker(&self) -> Result<(), PlaybackError> {
@@ -673,6 +807,21 @@ impl PlaybackSession {
             return Err(PlaybackError::WorkerPanicked);
         }
         Ok(())
+    }
+}
+
+impl PlaybackWaiter {
+    /// Block until the captured source reaches a terminal state. If it has
+    /// already been replaced, this returns `Stopped`.
+    pub fn wait(&self) -> PlaybackState {
+        let mut data = lock(&self.shared.data);
+        while data.generation == self.generation && is_active(data.state) {
+            data = wait(&self.shared.changed, data);
+        }
+        if data.generation != self.generation {
+            return PlaybackState::Stopped;
+        }
+        data.state
     }
 }
 
@@ -744,6 +893,21 @@ fn worker_loop(
         }
     };
 
+    let graph_expression = {
+        let mut data = lock(&shared.data);
+        data.processor_initialized = true;
+        data.filter_graph.clone()
+    };
+    let mut processor = match PcmProcessor::new(graph_expression.as_deref(), 0) {
+        Ok(processor) => processor,
+        Err(error) => {
+            let error = PlaybackError::FilterGraph(Arc::new(error));
+            fail_session(&shared, generation, error.clone(), &cancellation, &output);
+            let _ = ready.send(Err(error));
+            return;
+        }
+    };
+
     let info = decoder.info().clone();
     if ready.send(Ok(info)).is_err() {
         cancellation.cancel();
@@ -780,22 +944,13 @@ fn worker_loop(
                 }
             },
             WorkerAction::Deliver(frame) => {
-                let end_sample = frame
-                    .start_sample
-                    .saturating_add(frame.samples_per_channel as u64);
-                match output.write_frame(frame, &cancellation) {
-                    Ok(()) => {
-                        let played = safe_played_position(&output);
-                        let mut data = lock(&shared.data);
-                        if data.generation == generation && !data.stopping {
-                            data.submitted_position = duration_from_samples(end_sample);
-                            if played.is_some() {
-                                data.played_position = played;
-                            }
-                        }
-                    }
-                    Err(_) if is_stopped(&shared, generation) => return,
-                    Err(error) => {
+                let gain = lock(&shared.data).volume;
+                match processor.write_frame(frame, gain, |frame| {
+                    deliver_processed_frame(&shared, generation, &output, &cancellation, frame)
+                }) {
+                    Ok(()) => {}
+                    Err(ProcessError::Output(_)) if is_stopped(&shared, generation) => return,
+                    Err(ProcessError::Output(error)) => {
                         fail_session(
                             &shared,
                             generation,
@@ -803,6 +958,47 @@ fn worker_loop(
                             &cancellation,
                             &output,
                         );
+                        return;
+                    }
+                    Err(ProcessError::Filter(error)) => {
+                        fail_session(
+                            &shared,
+                            generation,
+                            PlaybackError::FilterGraph(Arc::new(error)),
+                            &cancellation,
+                            &output,
+                        );
+                        return;
+                    }
+                }
+            }
+            WorkerAction::ReplaceFilter(update) => {
+                let position = duration_from_samples(processor.next_sample());
+                match output.flush(position, &cancellation) {
+                    Ok(()) => {
+                        processor.replace(update.graph);
+                        let played = safe_played_position(&output);
+                        let mut data = lock(&shared.data);
+                        if data.generation == generation && !data.stopping {
+                            data.played_position = played;
+                        }
+                        let _ = update.response.send(Ok(()));
+                        tracing::info!(
+                            name: "core.playback.filter_graph_replaced",
+                            target: "remedia_core::playback",
+                            playback_id,
+                            graph_enabled = processor.expression().is_some(),
+                            "PCM filtergraph replaced at an output boundary"
+                        );
+                    }
+                    Err(_) if is_stopped(&shared, generation) => {
+                        let _ = update.response.send(Err(PlaybackError::Cancelled));
+                        return;
+                    }
+                    Err(error) => {
+                        let playback_error = PlaybackError::Output(error);
+                        let _ = update.response.send(Err(playback_error.clone()));
+                        fail_session(&shared, generation, playback_error, &cancellation, &output);
                         return;
                     }
                 }
@@ -875,6 +1071,13 @@ fn worker_loop(
                 Ok(()) => {
                     pending_frame = None;
                     input_finished = false;
+                    let target_sample = samples_from_duration(request.position);
+                    if let Err(error) = processor.reset(target_sample) {
+                        let playback_error = PlaybackError::FilterGraph(Arc::new(error));
+                        let _ = request.response.send(Err(playback_error.clone()));
+                        fail_session(&shared, generation, playback_error, &cancellation, &output);
+                        return;
+                    }
                     match output.flush(request.position, &cancellation) {
                         Ok(()) => {
                             let played = safe_played_position(&output);
@@ -945,37 +1148,66 @@ fn worker_loop(
                     }
                 }
             },
-            WorkerAction::Finish => match output.finish(&cancellation) {
-                Ok(()) => {
-                    let played = safe_played_position(&output);
-                    let mut data = lock(&shared.data);
-                    if data.generation == generation && !data.stopping {
-                        data.played_position = played.or(data.played_position);
-                        data.state = PlaybackState::Completed;
+            WorkerAction::Finish => {
+                let gain = lock(&shared.data).volume;
+                match processor.finish(gain, |frame| {
+                    deliver_processed_frame(&shared, generation, &output, &cancellation, frame)
+                }) {
+                    Ok(()) => {}
+                    Err(ProcessError::Output(_)) if is_stopped(&shared, generation) => return,
+                    Err(ProcessError::Output(error)) => {
+                        fail_session(
+                            &shared,
+                            generation,
+                            PlaybackError::Output(error),
+                            &cancellation,
+                            &output,
+                        );
+                        return;
                     }
-                    shared.changed.notify_all();
-                    drop(data);
-                    shared.observability.metrics().playback_completed();
-                    tracing::info!(
-                        name: "core.playback.completed",
-                        target: "remedia_core::playback",
-                        playback_id,
-                        "playback reached end of stream"
-                    );
-                    return;
+                    Err(ProcessError::Filter(error)) => {
+                        fail_session(
+                            &shared,
+                            generation,
+                            PlaybackError::FilterGraph(Arc::new(error)),
+                            &cancellation,
+                            &output,
+                        );
+                        return;
+                    }
                 }
-                Err(_) if is_stopped(&shared, generation) => return,
-                Err(error) => {
-                    fail_session(
-                        &shared,
-                        generation,
-                        PlaybackError::Output(error),
-                        &cancellation,
-                        &output,
-                    );
-                    return;
+                match output.finish(&cancellation) {
+                    Ok(()) => {
+                        let played = safe_played_position(&output);
+                        let mut data = lock(&shared.data);
+                        if data.generation == generation && !data.stopping {
+                            data.played_position = played.or(data.played_position);
+                            data.state = PlaybackState::Completed;
+                        }
+                        shared.changed.notify_all();
+                        drop(data);
+                        shared.observability.metrics().playback_completed();
+                        tracing::info!(
+                            name: "core.playback.completed",
+                            target: "remedia_core::playback",
+                            playback_id,
+                            "playback reached end of stream"
+                        );
+                        return;
+                    }
+                    Err(_) if is_stopped(&shared, generation) => return,
+                    Err(error) => {
+                        fail_session(
+                            &shared,
+                            generation,
+                            PlaybackError::Output(error),
+                            &cancellation,
+                            &output,
+                        );
+                        return;
+                    }
                 }
-            },
+            }
         }
     }
 }
@@ -998,6 +1230,9 @@ fn next_worker_action(
     loop {
         if data.generation != generation || data.stopping || data.state == PlaybackState::Stopped {
             return WorkerAction::Exit;
+        }
+        if let Some(update) = data.pending_filter_graph.take() {
+            return WorkerAction::ReplaceFilter(update);
         }
         if let Some(request) = data.pending_seek.take() {
             return WorkerAction::Seek(request);
@@ -1042,7 +1277,7 @@ fn fail_session(
 
     cancellation.cancel();
     let _ = safe_cancel(output);
-    let (pending_seek, playback_id) = {
+    let (pending_seek, pending_filter, playback_id) = {
         let mut data = lock(&shared.data);
         if data.generation != generation
             || matches!(
@@ -1056,8 +1291,9 @@ fn fail_session(
         data.last_error = Some(error.clone());
         let playback_id = data.playback_id;
         let pending_seek = data.pending_seek.take();
+        let pending_filter = data.pending_filter_graph.take();
         shared.changed.notify_all();
-        (pending_seek, playback_id)
+        (pending_seek, pending_filter, playback_id)
     };
     shared.observability.metrics().playback_failed();
     tracing::error!(
@@ -1068,8 +1304,33 @@ fn fail_session(
         "playback failed"
     );
     if let Some(request) = pending_seek {
-        let _ = request.response.send(Err(error));
+        let _ = request.response.send(Err(error.clone()));
     }
+    if let Some(update) = pending_filter {
+        let _ = update.response.send(Err(error));
+    }
+}
+
+fn deliver_processed_frame(
+    shared: &SessionShared,
+    generation: u64,
+    output: &Arc<dyn MediaOutput>,
+    cancellation: &CancellationToken,
+    frame: PcmFrame,
+) -> Result<(), OutputError> {
+    let end_sample = frame
+        .start_sample
+        .saturating_add(u64::try_from(frame.samples_per_channel).unwrap_or(u64::MAX));
+    output.write_frame(frame, cancellation)?;
+    let played = safe_played_position(output);
+    let mut data = lock(&shared.data);
+    if data.generation == generation && !data.stopping {
+        data.submitted_position = duration_from_samples(end_sample);
+        if played.is_some() {
+            data.played_position = played;
+        }
+    }
+    Ok(())
 }
 
 struct ActivePlaybackGuard {
@@ -1093,6 +1354,8 @@ fn playback_error_kind(error: &PlaybackError) -> &'static str {
         PlaybackError::SeekPending => "seek_pending",
         PlaybackError::UnsupportedSeeking(_) => "unsupported_seeking",
         PlaybackError::SeekOutOfRange { .. } => "seek_out_of_range",
+        PlaybackError::FilterGraph(_) => "filter_graph",
+        PlaybackError::InvalidVolume(_) => "invalid_volume",
     }
 }
 
@@ -1119,6 +1382,13 @@ fn duration_from_samples(samples: u64) -> Duration {
     let remainder = samples % rate;
     let nanoseconds = (u128::from(remainder) * 1_000_000_000 / u128::from(rate)) as u32;
     Duration::new(seconds, nanoseconds)
+}
+
+fn samples_from_duration(position: Duration) -> u64 {
+    u64::try_from(
+        position.as_nanos() * u128::from(crate::decoder::OUTPUT_SAMPLE_RATE_HZ) / 1_000_000_000,
+    )
+    .unwrap_or(u64::MAX)
 }
 
 fn normalize_position(position: Duration) -> Result<Duration, PlaybackError> {
@@ -1160,7 +1430,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::{Arc, Barrier, Condvar, Mutex};
+    use std::sync::{Arc, Barrier, Condvar, Mutex, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -1282,6 +1552,7 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
     struct GateSnapshot {
         write_calls: usize,
         accepted: Vec<(u64, f32)>,
@@ -1406,6 +1677,115 @@ mod tests {
         assert_eq!(session.position().played, Some(Duration::from_millis(100)));
         session.stop().unwrap();
         assert_eq!(session.state(), PlaybackState::Completed);
+    }
+
+    #[test]
+    fn live_filter_replacement_flushes_old_output_and_keeps_master_gain_independent() {
+        let source = TempWave::constant(96_000, 4096);
+        let session = Arc::new(PlaybackSession::new());
+        session.set_volume(0.5).unwrap();
+        let (output, gate) = GateOutput::new();
+        session.play(source.source(), output).unwrap();
+        assert!(gate.wait_for_calls(1));
+
+        let update_session = Arc::clone(&session);
+        let (updated, updated_rx) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let _ = updated.send(update_session.set_filter_graph(Some("volume=0.25")));
+        });
+        assert!(wait_for_pending_filter_update(&session));
+        session.set_volume(0.0).unwrap();
+        gate.release(1);
+        let update_result = updated_rx.recv_timeout(TEST_TIMEOUT);
+        assert!(
+            update_result.is_ok(),
+            "filter replacement timed out: state={:?}, error={:?}, output={:?}",
+            session.state(),
+            session.last_error(),
+            gate.snapshot()
+        );
+        assert!(update_result.unwrap().is_ok());
+        assert_eq!(session.filter_graph().as_deref(), Some("volume=0.25"));
+        assert!(gate.wait_for_calls(2));
+        session.set_volume(1.5).unwrap();
+        gate.release(1);
+        assert!(gate.wait_for_calls(3));
+        gate.release(1);
+        assert!(gate.wait_for_accepted(3));
+
+        let snapshot = gate.snapshot();
+        let input_level = 4096.0 / 32768.0 / std::f32::consts::SQRT_2;
+        assert!((snapshot.accepted[0].1 - input_level * 0.5).abs() < 0.001);
+        assert!(snapshot.accepted[1].1.abs() < 0.001);
+        assert!((snapshot.accepted[2].1 - input_level * 0.25 * 1.5).abs() < 0.001);
+        assert_eq!(snapshot.flushes.len(), 1);
+        assert_eq!(session.volume(), 1.5);
+
+        assert!(matches!(
+            session.set_filter_graph(Some("missing_filter=1")),
+            Err(PlaybackError::FilterGraph(_))
+        ));
+        assert_eq!(session.filter_graph().as_deref(), Some("volume=0.25"));
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn filter_replacement_and_seek_are_applied_while_paused() {
+        let source = TempWave::constant(48_000, 4096);
+        let session = Arc::new(PlaybackSession::new());
+        let (output, gate) = GateOutput::new();
+        session.play(source.source(), output).unwrap();
+        assert!(gate.wait_for_calls(1));
+
+        let pause_session = Arc::clone(&session);
+        let (paused, paused_rx) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let _ = paused.send(pause_session.pause());
+        });
+        gate.release(1);
+        assert!(
+            paused_rx
+                .recv_timeout(TEST_TIMEOUT)
+                .expect("pause should reach a frame boundary")
+                .is_ok()
+        );
+        assert_eq!(session.state(), PlaybackState::Paused);
+
+        session.set_filter_graph(Some("volume=0.5")).unwrap();
+        let seek_position = Duration::from_millis(500);
+        session.seek(seek_position).unwrap();
+        assert_eq!(session.position().submitted, seek_position);
+        assert_eq!(gate.snapshot().flushes.last(), Some(&seek_position));
+
+        session.resume().unwrap();
+        assert!(gate.wait_for_calls(2));
+        gate.release(1);
+        assert!(gate.wait_for_accepted(2));
+        let snapshot = gate.snapshot();
+        let (start_sample, first_sample) = snapshot.accepted[1];
+        assert!(start_sample >= 24_000);
+        let input_level = 4096.0 / 32768.0 / std::f32::consts::SQRT_2;
+        assert!((first_sample - input_level * 0.5).abs() < 0.001);
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn completion_waiter_remains_bound_to_its_source_after_replacement() {
+        let source = TempWave::constant(48_000, 4096);
+        let session = PlaybackSession::new();
+        let (first_output, first_gate) = GateOutput::new();
+        session.play(source.source(), first_output).unwrap();
+        assert!(first_gate.wait_for_calls(1));
+        let first_waiter = session.completion();
+
+        session.stop().unwrap();
+        let (second_output, second_gate) = GateOutput::new();
+        session.play(source.source(), second_output).unwrap();
+        assert!(second_gate.wait_for_calls(1));
+
+        assert_eq!(first_waiter.wait(), PlaybackState::Stopped);
+        assert_eq!(session.state(), PlaybackState::Playing);
+        session.stop().unwrap();
     }
 
     #[test]
@@ -1724,6 +2104,18 @@ mod tests {
         wait_for_condition(&session.shared, TEST_TIMEOUT, |data| {
             data.pending_seek.is_some()
         })
+    }
+
+    fn wait_for_pending_filter_update(session: &PlaybackSession) -> bool {
+        let data = lock(&session.shared.data);
+        let (data, _) = session
+            .shared
+            .changed
+            .wait_timeout_while(data, TEST_TIMEOUT, |data| {
+                data.pending_filter_graph.is_none()
+            })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        data.pending_filter_graph.is_some()
     }
 
     fn wait_for_condition(

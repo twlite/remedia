@@ -55,6 +55,11 @@ voice session IDs, tokens, or endpoints.
 - `/stop` stops playback and clears the queue while keeping the voice
   connection open.
 - `/disconnect` stops playback, clears the queue, and leaves the voice channel.
+- `/filter set <preset>` applies one of `8d`, `bassboost`, `nightcore`,
+  `vaporwave`, `tremolo`, or `vibrato`; `/filter clear` disables the selected
+  graph, and `/filter list` displays the choices and current selection.
+- `/volume` reads the current setting; `/volume percent:<0..200>` sets linear
+  gain. Zero mutes, 100 is unity, and values above 100 may clip.
 
 The queue belongs to this sample application, not `remedia-core` or
 `@remedia/node`. It is held in memory per guild and is lost when the bot exits.
@@ -68,6 +73,20 @@ the guild without printing the media URL. Commands are
 restricted to users currently in the same voice channel as the bot. The bot
 does not move an existing session to another channel implicitly; disconnect
 first, then issue `/play` from the new channel.
+
+The six names above are convenience presets defined only in `apps/discord`; each
+maps to a raw FFmpeg graph passed to the generic Node API. The selected preset
+and percentage are stored in the in-memory guild player, apply immediately to
+an active track, and carry over to queued tracks and skips. Filter changes do
+not change volume, and volume changes do not rebuild the graph. A disconnect or
+bot shutdown disposes the guild player and drops both settings. Engine callers
+can use arbitrary trusted filtergraphs instead of these names.
+
+Queue operations are serialized per guild. Skip stops and joins the current
+playback before opening the next URL while retaining the connected voice
+transport. Completion waits are bound to the source generation active when
+`wait()` was called, so a delayed completion from an old item cannot clear or
+advance a replacement item.
 
 Only direct HTTP(S) media URLs are accepted. The installed FFmpeg libraries
 must support the container and codec. There is no search, URL resolution,

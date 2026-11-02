@@ -44,7 +44,7 @@ jobs:
           shared-key: ubuntu-24.04
 
       - run: sudo apt-get update
-      - run: sudo apt-get install --yes clang libclang-dev pkg-config libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libopus-dev
+      - run: sudo apt-get install --yes clang libclang-dev pkg-config libavcodec-dev libavfilter-dev libavformat-dev libavutil-dev libswresample-dev libopus-dev
 
       - uses: pnpm/action-setup@v6.1.0
         with:

@@ -187,6 +187,46 @@ quickly. A Discord transport currently cannot report audible playback time;
 its `playedMs` is `null`. `durationMs` is `null` when the source does not
 provide a duration.
 
+## Native filters and master volume
+
+Both `PlaybackSession` and `DiscordSession` expose the core's raw FFmpeg audio
+filtergraph and an independent master gain. No named music presets are part of
+`@remedia/node`.
+
+```ts
+await voice.filters.set('bass=g=8,volume=0.8');
+await voice.setVolume(0.75);
+
+await voice.filters.set('tremolo=f=5:d=0.6'); // replaces the previous graph live
+await voice.filters.clear();
+console.log(voice.filters.graph, voice.volume); // null, 0.75
+```
+
+Filter graphs can be set before playback or before `DiscordSession.connect()`.
+On an active track, a change is validated first and takes effect at the next
+PCM boundary. Remedia discards delayed samples still held in the previous stateful graph,
+flushes partial/buffered output, and retains the current decoder and Discord
+connection. Invalid graphs reject without replacing the graph already in use.
+Pass a raw audio graph expression, not an FFmpeg command-line option; empty or
+whitespace-only strings reject, and `clear()` disables filtering. The parser
+requires one effective PCM input and output but does not sandbox filters that
+may access files or URLs. Only pass trusted graph strings to the engine.
+
+`volume` is a normalized linear gain from `0` through `2`; the default is `1`.
+`setVolume(0)` mutes without stopping playback, `setVolume(1)` is unity, and
+values above one may clip. Samples are clamped to `[-1, 1]`; this is not
+limiting or loudness normalization. Volume is applied after the graph and is
+preserved when filters change or tracks are replaced on the same session.
+Each session has independent settings, and disposal releases them.
+
+Time-changing filters alter the filtered PCM timeline. `position.submittedMs`
+then advances by filtered samples submitted to the output, not source media time;
+after seek it starts at the requested source position and advances on that filtered timeline.
+`seek()` remains relative to the original source timeline. Discord does not
+report audible position, so `playedMs` remains `null`. Graph replacement,
+seek, pause, stop, and end-of-stream flush are handled by the native playback
+worker; no graph or PCM work runs on Node's event loop.
+
 ## Discord Gateway adapter
 
 The application still owns its Discord Gateway client and decides when to

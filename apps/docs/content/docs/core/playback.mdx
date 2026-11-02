@@ -77,6 +77,16 @@ starting, playing, pausing, paused, or stopping returns
 `play()` with the new source and a new output value. There are no playlists or
 automatic next-source transitions.
 
+`PlaybackSession::wait()` blocks the calling thread until the current source
+reaches a terminal state. Async adapters should capture
+`PlaybackSession::completion()` before dispatching that wait to a blocking
+worker; its `PlaybackWaiter::wait()` remains bound to that source and returns
+`Stopped` if a replacement starts first. Adapters that cross an async scheduling
+boundary can capture `completion_generation()` synchronously and later create
+the corresponding waiter with `completion_for_generation(generation)`. The
+Node wrapper does this internally so an old completion cannot attach to a new
+track.
+
 ## Seeking and position
 
 `seek(Duration)` is supported while playing or paused. The decoder uses FFmpeg's
@@ -86,6 +96,56 @@ buffered audio before it resumes delivery. A known duration is checked before
 the request is sent. HTTP sources may not support seeking; the server must support
 the range behavior required by its FFmpeg protocol. Unsupported sources return
 `PlaybackError::UnsupportedSeeking` and keep the current playback state.
+
+## Native FFmpeg filtergraphs and master volume
+
+`PlaybackSession::set_filter_graph` accepts a trusted, raw libavfilter audio graph
+expression with one effective audio input and output. The graph receives and
+returns Remedia's packed stereo `f32`, 48 kHz PCM. FFmpeg validates filter names,
+options, connections, and negotiated output format. Whitespace-only input is
+rejected with `FilterGraphError::Empty`; pass `None` to clear filtering.
+
+```rust
+session.set_filter_graph(Some("bass=g=8,treble=g=-2"))?;
+session.set_volume(0.75)?; // 75% linear master gain, independent of graph filters
+println!("graph={:?}, gain={}", session.filter_graph(), session.volume());
+session.set_filter_graph(Some("tremolo=f=5:d=0.6"))?; // replace while active
+session.set_filter_graph(None)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Remedia builds and validates a replacement graph before requesting a change.
+The worker installs it at a PCM boundary, discards delayed output still held
+inside the previous graph, and flushes the output's partial/buffered audio. It
+does not reopen or restart the decoder. Invalid replacements leave the current
+graph active. Changes can be made before playback, while playing, or while
+paused; pause and seek serialize with graph replacement. Stateful filter delay
+does not carry across replacement. Seeking rebuilds filter state at the new
+source position, and natural EOF drains delayed output before output completion.
+
+Filtergraphs may change duration or sample count. The source timeline and
+`seek(Duration)` remain based on the original media. After a time-changing
+graph, `position().submitted` advances by contiguous filtered PCM samples
+submitted to the output; it is not a source-media timestamp. After seeking, the
+timeline starts at the requested source position and then advances by filtered
+output samples, so it must not be read as an exact source position. `played` is only as accurate
+as the output's own report, and Discord currently reports no audible position.
+The Opus/RTP transport timeline remains continuous across graph changes and
+seeks.
+
+The optional master gain is a finite linear value in `0.0..=2.0`: zero mutes,
+one is unity, and 1.5 is 150% amplitude. Values outside that range, NaN, and
+infinity return `PlaybackError::InvalidVolume`. Gain is applied after filtering
+at a frame boundary. Output samples are clamped to `[-1.0, 1.0]`; gains above
+unity can therefore clip and do not provide limiting or loudness normalization.
+Volume and graph configuration survive track replacement on the same session
+and are independent across sessions.
+
+Treat graph expressions as trusted application configuration. Some FFmpeg
+filters can read files, URLs, or other external resources. Endpoint validation
+enforces the single-input/single-output PCM contract; it is not a sandbox and
+does not make arbitrary graphs safe to expose to untrusted remote clients.
+When no graph is configured, Remedia bypasses libavfilter entirely.
 
 `position()` distinguishes two positions:
 

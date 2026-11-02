@@ -60,10 +60,24 @@ export declare class NativeRemedia {
   resume(playbackId: string): Promise<void>
   /** Seek to a media position in milliseconds. */
   seek(playbackId: string, positionMs: number): Promise<void>
+  /** Validate and replace the trusted native FFmpeg audio filtergraph. */
+  playbackSetFilterGraph(playbackId: string, graph: string): Promise<void>
+  /** Clear the current native audio filtergraph. */
+  playbackClearFilterGraph(playbackId: string): Promise<void>
+  /** Current configured raw FFmpeg filtergraph, if any. */
+  playbackFilterGraph(playbackId: string): string | null
+  /** Set normalized linear master gain in the inclusive range 0.0 through 2.0. */
+  playbackSetVolume(playbackId: string, gain: number): Promise<void>
+  /** Current normalized linear master gain. */
+  playbackVolume(playbackId: string): number
+  /** Validate a filtergraph before a Discord voice session has a native playback object. */
+  validateFilterGraph(graph: string): Promise<void>
   /** Stop playback without disconnecting its Discord voice transport. */
   stop(playbackId: string): Promise<void>
-  /** Wait asynchronously until playback completes, stops, or fails. */
-  wait(playbackId: string): Promise<string>
+  /** Capture the source generation before an asynchronous wait is scheduled. */
+  playbackGeneration(playbackId: string): string
+  /** Wait for a generation captured synchronously by the JavaScript wrapper. */
+  wait(playbackId: string, generation: string): Promise<string>
   /** Current playback lifecycle state. */
   playbackState(playbackId: string): string
   /** Playback submitted position and output-reported played position, in milliseconds. */

@@ -12,12 +12,14 @@ import {
   type PlaybackPosition,
   type PlaybackState,
 } from './types.js';
+import { FilterControls, validateVolume } from './filters.js';
 
 /** Controls one playback session. Local sessions decode into a no-op output. */
 export class PlaybackSession {
   readonly #native: NativeRemedia;
   readonly #playbackId: string;
   readonly #onDispose: (() => void) | undefined;
+  readonly filters: FilterControls;
   #input: ReadableInputHandle | undefined;
   #disposed = false;
 
@@ -26,6 +28,11 @@ export class PlaybackSession {
     this.#native = native;
     this.#playbackId = playbackId;
     this.#onDispose = onDispose;
+    this.filters = new FilterControls(
+      () => this.#native.playbackFilterGraph(this.#playbackId) ?? null,
+      (graph) => this.#native.playbackSetFilterGraph(this.#playbackId, graph),
+      () => this.#native.playbackClearFilterGraph(this.#playbackId),
+    );
   }
 
   get state(): PlaybackState {
@@ -43,6 +50,18 @@ export class PlaybackSession {
 
   get error(): string | null {
     return this.#native.playbackError(this.#playbackId) ?? null;
+  }
+
+  /** Current normalized linear master gain, from 0.0 (mute) through 2.0. */
+  get volume(): number {
+    return this.#native.playbackVolume(this.#playbackId);
+  }
+
+  /** Set master gain independently of the raw filtergraph. */
+  async setVolume(gain: number): Promise<void> {
+    this.#assertActive();
+    validateVolume(gain);
+    await this.#native.playbackSetVolume(this.#playbackId, gain);
   }
 
   async play(source: MediaSource): Promise<AudioStreamInfo> {
@@ -96,8 +115,11 @@ export class PlaybackSession {
 
   async wait(): Promise<PlaybackState> {
     this.#assertActive();
+    // Capture synchronously so the native blocking waiter stays bound to the source
+    // that was active when wait() was called, even if play() replaces it first.
+    const generation = this.#native.playbackGeneration(this.#playbackId);
     try {
-      return (await this.#native.wait(this.#playbackId)) as PlaybackState;
+      return (await this.#native.wait(this.#playbackId, generation)) as PlaybackState;
     } finally {
       await this.#releaseInput();
     }

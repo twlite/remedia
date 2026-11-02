@@ -1,4 +1,5 @@
 import type { AudioStreamInfo, DiscordSession, PlaybackState, Remedia } from '@remedia/node';
+import { FILTER_PRESETS, type FilterPresetName } from './filter-presets.js';
 
 const MAX_QUEUED_TRACKS = 100;
 
@@ -20,6 +21,8 @@ export interface PlaybackSnapshot {
   current: TrackSnapshot | null;
   queue: readonly TrackRequest[];
   lastError: string | null;
+  filterPreset: FilterPresetName | null;
+  volumePercent: number;
 }
 
 interface Track extends TrackRequest {
@@ -33,6 +36,8 @@ interface GuildPlayer {
   lastError: string | undefined;
   generation: number;
   operations: Promise<void>;
+  filterPreset: FilterPresetName | null;
+  volumePercent: number;
 }
 
 /** Application-owned queueing for the manual Discord harness. The native API remains single-source. */
@@ -140,6 +145,33 @@ export class DiscordPlaybackManager {
     });
   }
 
+  async setFilter(
+    guildId: string,
+    channelId: string,
+    preset: FilterPresetName | null,
+  ): Promise<void> {
+    const player = this.#getPlayer(guildId, channelId);
+    await this.#serialize(player, async () => {
+      if (preset !== null && !Object.hasOwn(FILTER_PRESETS, preset)) {
+        throw new RangeError(`Unknown filter preset: ${preset}`);
+      }
+      if (preset === null) await player.session.filters.clear();
+      else await player.session.filters.set(FILTER_PRESETS[preset]);
+      player.filterPreset = preset;
+    });
+  }
+
+  async setVolume(guildId: string, channelId: string, percent: number): Promise<void> {
+    const player = this.#getPlayer(guildId, channelId);
+    if (!Number.isInteger(percent) || percent < 0 || percent > 200) {
+      throw new RangeError('Volume must be an integer from 0 to 200 percent.');
+    }
+    await this.#serialize(player, async () => {
+      await player.session.setVolume(percent / 100);
+      player.volumePercent = percent;
+    });
+  }
+
   async snapshot(guildId: string, channelId: string): Promise<PlaybackSnapshot> {
     const player = this.#getPlayer(guildId, channelId);
     return this.#serialize(player, () => Promise.resolve(toPlaybackSnapshot(player)));
@@ -187,6 +219,8 @@ export class DiscordPlaybackManager {
       lastError: undefined,
       generation: 0,
       operations: Promise.resolve(),
+      filterPreset: null,
+      volumePercent: 100,
     };
     this.#players.set(guildId, player);
     return player;
@@ -209,6 +243,15 @@ export class DiscordPlaybackManager {
       const generation = ++player.generation;
       player.current = track;
       try {
+        const graph = player.filterPreset === null ? null : FILTER_PRESETS[player.filterPreset];
+        if (graph === null) {
+          if (player.session.filters.graph !== null) await player.session.filters.clear();
+        } else if (player.session.filters.graph !== graph) {
+          await player.session.filters.set(graph);
+        }
+        if (player.session.volume !== player.volumePercent / 100) {
+          await player.session.setVolume(player.volumePercent / 100);
+        }
         track.info = await player.session.play({ url: track.url });
         if (player.generation !== generation) return;
         void this.#watchCompletion(player, generation).catch((error: unknown) => {
@@ -290,6 +333,8 @@ function toPlaybackSnapshot(player: GuildPlayer): PlaybackSnapshot {
     current: player.current ? toTrackSnapshot(player.current) : null,
     queue: player.queue.map(({ url, requestedBy }) => ({ url, requestedBy })),
     lastError: player.lastError ?? null,
+    filterPreset: player.filterPreset,
+    volumePercent: player.volumePercent,
   };
 }
 

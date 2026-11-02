@@ -49,7 +49,9 @@ Component guides: [core](crates/remedia-core/README.md),
 
 The core uses native FFmpeg libraries for media processing; it does not spawn FFmpeg subprocesses.
 It outputs interleaved 48 kHz stereo `f32` samples, downmixing through FFmpeg's channel-layout-aware
-resampler. Core Opus packets are transport-independent; Discord owns the voice connection, DAVE,
+resampler. Playback sessions can apply trusted native FFmpeg audio filtergraphs and independent
+linear master gain before output; filter presets are specific to clients such as the Discord test
+bot. Core Opus packets are transport-independent; Discord owns the voice connection, DAVE,
 RTP, encryption, UDP, and real-time pacing. See
 [`docs/architecture.md`](docs/architecture.md), the
 [decoding guide](apps/docs/content/docs/core/decoding.mdx),
@@ -63,8 +65,9 @@ covers structured logs, bounded diagnostic routing, and opt-in OTLP traces and m
 
 You need Rust via rustup, Node.js 22.18 or newer, and pnpm 12.16.1. The workspace declares Rust
 1.88 as its minimum supported version and pins Rust 1.99.1 for development. FFmpeg development
-headers and libraries for libavformat, libavcodec, libavutil, and libswresample are required to build
-`remedia-core`. Building the Opus adapter also requires native libopus development files.
+headers and libraries for libavformat, libavcodec, libavutil, libavfilter, and libswresample are
+required to build `remedia-core`. Building the Opus adapter also requires native libopus development
+files.
 
 ```sh
 pnpm install --frozen-lockfile

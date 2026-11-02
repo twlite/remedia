@@ -113,6 +113,7 @@ struct ConnectionInner {
     packet_tx: Sender<QueuedPacket>,
     control_tx: Sender<Control>,
     generation: AtomicU64,
+    generation_update: Mutex<()>,
     generation_tx: watch::Sender<u64>,
     cancelled_generation: Arc<AtomicU64>,
     accepted_packet_id: AtomicU64,
@@ -440,6 +441,7 @@ impl DiscordVoiceConnection {
                 packet_tx,
                 control_tx,
                 generation: AtomicU64::new(0),
+                generation_update: Mutex::new(()),
                 generation_tx,
                 cancelled_generation,
                 accepted_packet_id: AtomicU64::new(0),
@@ -520,6 +522,7 @@ impl DiscordVoiceConnection {
     /// connection open. RTP sequence, timestamp, and nonce state remain owned
     /// by the connection across output instances.
     pub fn opus_sender(&self) -> DiscordOpusSender {
+        let _generation_update = lock(&self.inner.generation_update);
         let generation = self.inner.generation.fetch_add(1, Ordering::AcqRel) + 1;
         self.inner.generation_tx.send_replace(generation);
         with_dispatch(&self.inner.observability, || {
@@ -754,20 +757,24 @@ impl OpusPacketSink for DiscordOpusSender {
     ) -> Result<(), OutputError> {
         self.ensure_current(cancellation)
             .map_err(OutputError::with_source)?;
-        let old_generation = self.generation.load(Ordering::Acquire);
-        let generation = self
-            .inner
-            .generation
-            .compare_exchange(
-                old_generation,
-                old_generation.wrapping_add(1),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .map_err(|_| OutputError::with_source(VoiceError::Superseded))?
-            .wrapping_add(1);
-        self.generation.store(generation, Ordering::Release);
-        self.inner.generation_tx.send_replace(generation);
+        let generation = {
+            let _generation_update = lock(&self.inner.generation_update);
+            let old_generation = self.generation.load(Ordering::Acquire);
+            let generation = self
+                .inner
+                .generation
+                .compare_exchange(
+                    old_generation,
+                    old_generation.wrapping_add(1),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .map_err(|_| OutputError::with_source(VoiceError::Superseded))?
+                .wrapping_add(1);
+            self.generation.store(generation, Ordering::Release);
+            self.inner.generation_tx.send_replace(generation);
+            generation
+        };
         with_dispatch(&self.inner.observability, || {
             tracing::info!(
                 name: "discord.rtp_sender.flushed",
@@ -816,6 +823,7 @@ impl OpusPacketSink for DiscordOpusSender {
 
     fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
+        let _generation_update = lock(&self.inner.generation_update);
         let old_generation = self.generation.load(Ordering::Acquire);
         if let Ok(current) = self.inner.generation.compare_exchange(
             old_generation,
@@ -1462,7 +1470,37 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                 }
             }
             Event::Packet(Ok(packet)) => {
+                let published_generation = *generation_rx.borrow();
+                if synchronize_output_generation(
+                    published_generation,
+                    &mut active_generation,
+                    &cancelled_generation,
+                ) {
+                    begin_output_cancel(
+                        &mut queued,
+                        &mut processed_id,
+                        &mut barrier,
+                        &mut paused,
+                        &mut playback_active,
+                        speaking,
+                        &mut next_send_at,
+                    );
+                }
                 if packet.generation == active_generation {
+                    if supersede_cancel_barrier(
+                        &mut barrier,
+                        &mut paused,
+                        &mut playback_active,
+                        &mut next_send_at,
+                    ) {
+                        tracing::debug!(
+                            name: "discord.rtp_sender.cancel_superseded",
+                            target: "remedia_discord::connection",
+                            voice_connection_id,
+                            generation = active_generation,
+                            "new playback superseded the previous sender cancellation barrier"
+                        );
+                    }
                     playback_active = true;
                     queued.push_back(packet);
                     if next_send_at.is_none() && !paused {
@@ -1532,10 +1570,20 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                 }
             }
             Event::Control(Ok(Control::Cancel { generation })) => {
-                if generation == active_generation
-                    || generation.wrapping_add(1) == active_generation
-                {
-                    active_generation = generation.wrapping_add(1);
+                // The control queue and watch channel can be observed in a
+                // different order. Only honor this cancellation if its
+                // generation is still the latest published one; a newer
+                // sender supersedes it.
+                let published_generation = *generation_rx.borrow();
+                if cancellation_matches_generation(
+                    generation,
+                    published_generation,
+                    &cancelled_generation,
+                ) && synchronize_output_generation(
+                    published_generation,
+                    &mut active_generation,
+                    &cancelled_generation,
+                ) {
                     begin_output_cancel(
                         &mut queued,
                         &mut processed_id,
@@ -1744,18 +1792,12 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                 }
             }
             Event::Generation(Ok(())) => {
-                active_generation = *generation_rx.borrow_and_update();
-                let before = queued.len();
-                queued.retain(|packet| {
-                    let keep = packet.generation == active_generation;
-                    if !keep {
-                        processed_id = processed_id.max(packet.id);
-                    }
-                    keep
-                });
-                let dropped = before.saturating_sub(queued.len());
-                metrics.rtp_packet_dropped_by(u64::try_from(dropped).unwrap_or(u64::MAX));
-                if cancelled_generation.load(Ordering::Acquire) == active_generation {
+                let generation = *generation_rx.borrow_and_update();
+                if synchronize_output_generation(
+                    generation,
+                    &mut active_generation,
+                    &cancelled_generation,
+                ) {
                     begin_output_cancel(
                         &mut queued,
                         &mut processed_id,
@@ -1892,6 +1934,53 @@ fn begin_output_cancel(
         *barrier = None;
         *next_send_at = None;
     }
+}
+
+fn cancellation_matches_generation(
+    cancelled_output_generation: u64,
+    published_generation: u64,
+    cancelled_generation: &AtomicU64,
+) -> bool {
+    published_generation == cancelled_output_generation.wrapping_add(1)
+        && cancelled_generation.load(Ordering::Acquire) == published_generation
+}
+
+fn synchronize_output_generation(
+    generation: u64,
+    active_generation: &mut u64,
+    cancelled_generation: &AtomicU64,
+) -> bool {
+    if generation == *active_generation {
+        return false;
+    }
+
+    *active_generation = generation;
+    cancelled_generation.load(Ordering::Acquire) == generation
+}
+
+/// A cancellation barrier belongs to the output generation that was stopped.
+/// If a newer generation already has a packet, keep speaking and resume its
+/// pacing instead of letting the old barrier deactivate the new output.
+fn supersede_cancel_barrier(
+    barrier: &mut Option<PendingBarrier>,
+    paused: &mut bool,
+    playback_active: &mut bool,
+    next_send_at: &mut Option<Instant>,
+) -> bool {
+    if !matches!(
+        barrier.as_ref().map(|pending| &pending.kind),
+        Some(BarrierKind::Cancel)
+    ) {
+        return false;
+    }
+
+    *barrier = None;
+    *paused = false;
+    *playback_active = true;
+    if next_send_at.is_none() {
+        *next_send_at = Some(Instant::now());
+    }
+    true
 }
 
 async fn send_speaking(
@@ -2356,6 +2445,147 @@ mod tests {
         assert_eq!(barrier.as_ref().unwrap().silence_packets, silence_packets);
     }
 
+    #[test]
+    fn new_output_packet_supersedes_an_old_cancel_barrier() {
+        let deadline = Instant::now() + Duration::from_millis(20);
+        let mut barrier = Some(PendingBarrier {
+            target_id: 8,
+            silence_packets: 4,
+            kind: BarrierKind::Cancel,
+            ack: None,
+        });
+        let mut paused = false;
+        let mut playback_active = false;
+        let mut next_send_at = Some(deadline);
+
+        assert!(supersede_cancel_barrier(
+            &mut barrier,
+            &mut paused,
+            &mut playback_active,
+            &mut next_send_at,
+        ));
+        assert!(barrier.is_none());
+        assert!(!paused);
+        assert!(playback_active);
+        assert_eq!(next_send_at, Some(deadline));
+    }
+
+    #[test]
+    fn coalesced_generation_update_does_not_reapply_an_old_cancel() {
+        let cancelled_generation = AtomicU64::new(2);
+        let mut active_generation = 1;
+
+        // Cancellation published generation 2, then the replacement sender
+        // published generation 3 before the actor observed the watch change.
+        assert!(!synchronize_output_generation(
+            3,
+            &mut active_generation,
+            &cancelled_generation,
+        ));
+
+        assert_eq!(active_generation, 3);
+        assert!(!cancellation_matches_generation(
+            1,
+            3,
+            &cancelled_generation
+        ));
+    }
+
+    #[test]
+    fn current_cancel_generation_starts_exactly_one_cancel_barrier() {
+        let cancelled_generation = AtomicU64::new(2);
+        let mut active_generation = 1;
+        let mut queued = VecDeque::from([QueuedPacket {
+            generation: 1,
+            id: 7,
+            packet: EncodedOpusPacket {
+                bytes: vec![1],
+                samples_per_channel: 960,
+                media_samples_per_channel: 960,
+                start_sample: 0,
+            },
+        }]);
+        let mut processed_id = 3;
+        let mut barrier = None;
+        let mut paused = false;
+        let mut playback_active = true;
+        let mut next_send_at = None;
+
+        assert!(cancellation_matches_generation(1, 2, &cancelled_generation));
+        assert!(synchronize_output_generation(
+            2,
+            &mut active_generation,
+            &cancelled_generation,
+        ));
+        begin_output_cancel(
+            &mut queued,
+            &mut processed_id,
+            &mut barrier,
+            &mut paused,
+            &mut playback_active,
+            true,
+            &mut next_send_at,
+        );
+
+        assert_eq!(active_generation, 2);
+        assert!(queued.is_empty());
+        assert_eq!(processed_id, 7);
+        assert!(!playback_active);
+        assert!(matches!(
+            barrier.as_ref().map(|pending| &pending.kind),
+            Some(BarrierKind::Cancel)
+        ));
+    }
+
+    #[test]
+    fn concurrent_sender_replacement_and_drop_publish_the_latest_generation() {
+        let (packet_tx, _packet_rx) = flume::bounded(QUEUE_CAPACITY);
+        let (control_tx, _control_rx) = flume::bounded(16);
+        let (generation_tx, generation_rx) = watch::channel(0);
+        let (state, _) = watch::channel(ConnectionState::Connected);
+        let connection = DiscordVoiceConnection {
+            inner: Arc::new(ConnectionInner {
+                voice_connection_id: 4,
+                observability: ObservabilityHandle::default(),
+                state,
+                failure: Arc::new(Mutex::new(None)),
+                packet_tx,
+                control_tx,
+                generation: AtomicU64::new(0),
+                generation_update: Mutex::new(()),
+                generation_tx,
+                cancelled_generation: Arc::new(AtomicU64::new(u64::MAX)),
+                accepted_packet_id: AtomicU64::new(0),
+                next_packet_id: AtomicU64::new(0),
+                cancellation: TokioCancellationToken::new(),
+                worker: Mutex::new(None),
+            }),
+        };
+        let gate = Arc::new(std::sync::Barrier::new(9));
+        let workers = (0..8)
+            .map(|_| {
+                let connection = connection.clone();
+                let gate = Arc::clone(&gate);
+                std::thread::spawn(move || {
+                    gate.wait();
+                    for _ in 0..100 {
+                        drop(connection.opus_sender());
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        gate.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        assert_eq!(
+            *generation_rx.borrow(),
+            connection.inner.generation.load(Ordering::Acquire)
+        );
+    }
+
     #[tokio::test]
     async fn cancellation_interrupts_a_resume_attempt() {
         let info = VoiceConnectionInfo {
@@ -2407,6 +2637,7 @@ mod tests {
             packet_tx,
             control_tx,
             generation: AtomicU64::new(0),
+            generation_update: Mutex::new(()),
             generation_tx,
             cancelled_generation: Arc::new(AtomicU64::new(u64::MAX)),
             accepted_packet_id: AtomicU64::new(0),

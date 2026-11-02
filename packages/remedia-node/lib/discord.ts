@@ -1,6 +1,7 @@
 import { NativeRemedia, type NativeVoiceOptions, type NativeVoiceSessionIds } from '../native.js';
 import { DiscordGatewayAdapter, isSnowflake } from './gateway.js';
 import { PlaybackSession } from './playback.js';
+import { FilterControls, validateVolume } from './filters.js';
 import type { MediaSource } from './input.js';
 import type {
   AudioStreamInfo,
@@ -64,6 +65,7 @@ export class DiscordSession {
   readonly #native: NativeRemedia;
   readonly #gateway: DiscordGatewayAdapter;
   readonly #onDispose: () => void;
+  readonly filters: FilterControls;
   #playback: PlaybackSession | undefined;
   #nativeSession: NativeVoiceSessionIds | undefined;
   #attempt: ConnectAttempt | undefined;
@@ -77,6 +79,9 @@ export class DiscordSession {
   #generation = 0;
   #joinRequested = false;
   #disposed = false;
+  #filterGraph: string | null = null;
+  #volume = 1;
+  #configurationWork: Promise<void> = Promise.resolve();
 
   /** @internal Constructed by `Remedia.createDiscordSession()`. */
   constructor(
@@ -91,6 +96,11 @@ export class DiscordSession {
     this.#native = native;
     this.#gateway = gateway;
     this.#onDispose = onDispose;
+    this.filters = new FilterControls(
+      () => this.#filterGraph,
+      (graph) => this.#replaceFilterGraph(graph),
+      () => this.#replaceFilterGraph(null),
+    );
   }
 
   /** Current voice transport state. A connected voice WebSocket may temporarily be reconnecting. */
@@ -132,6 +142,24 @@ export class DiscordSession {
 
   get error(): string | null {
     return this.#playback?.error ?? this.connectionError;
+  }
+
+  /** Current normalized linear master gain, from 0.0 (mute) through 2.0. */
+  get volume(): number {
+    return this.#volume;
+  }
+
+  /** Set master gain independently of this session's configured filtergraph. */
+  async setVolume(gain: number): Promise<void> {
+    this.#assertNotDisposed();
+    validateVolume(gain);
+    await this.#serializeConfiguration(async () => {
+      if (this.#connectionState === 'disconnecting') {
+        throw new Error('Discord voice session is disconnecting');
+      }
+      this.#volume = gain;
+      await this.#playback?.setVolume(gain);
+    });
   }
 
   /**
@@ -456,7 +484,17 @@ export class DiscordSession {
       }
 
       this.#nativeSession = nativeSession;
-      this.#playback = new PlaybackSession(this.#native, nativeSession.playbackId);
+      const playback = new PlaybackSession(this.#native, nativeSession.playbackId);
+      this.#playback = playback;
+      await this.#serializeConfiguration(async () => {
+        if (this.#playback !== playback) return;
+        if (this.#filterGraph !== null) await playback.filters.set(this.#filterGraph);
+        if (this.#volume !== 1) await playback.setVolume(this.#volume);
+      });
+      if (!this.#isCurrent(generation, attempt)) {
+        await this.#closeCurrentNativeSession();
+        return;
+      }
       this.#connectionError = undefined;
       this.#connectionState = 'connected';
       this.#voiceServer = undefined;
@@ -560,6 +598,7 @@ export class DiscordSession {
   }
 
   async #closeCurrentNativeSession(): Promise<void> {
+    await this.#configurationWork;
     const nativeSession = this.#nativeSession;
     if (!nativeSession) return;
     this.#nativeSession = undefined;
@@ -620,6 +659,26 @@ export class DiscordSession {
       throw new Error('Discord voice session is not connected');
     }
     return this.#playback;
+  }
+
+  async #replaceFilterGraph(graph: string | null): Promise<void> {
+    this.#assertNotDisposed();
+    await this.#serializeConfiguration(async () => {
+      if (this.#connectionState === 'disconnecting') {
+        throw new Error('Discord voice session is disconnecting');
+      }
+      if (graph !== null) await this.#native.validateFilterGraph(graph);
+      this.#filterGraph = graph;
+      if (!this.#playback) return;
+      if (graph === null) await this.#playback.filters.clear();
+      else await this.#playback.filters.set(graph);
+    });
+  }
+
+  #serializeConfiguration(operation: () => Promise<void>): Promise<void> {
+    const result = this.#configurationWork.then(operation, operation);
+    this.#configurationWork = result.catch(() => {});
+    return result;
   }
 
   #assertNotDisposed(): void {

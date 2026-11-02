@@ -14,15 +14,16 @@ follow the intended boundaries in [`docs/architecture.md`](docs/architecture.md)
 - Git.
 
 `remedia-core` links native FFmpeg libraries through `ffmpeg-next` and `ffmpeg-sys-next`, and its
-Opus adapter links native libopus. Install development headers for libavformat, libavcodec,
-libavutil, libswresample, and libopus, plus `pkg-config` and Clang/libclang for the bindings build.
+Opus adapter links native libopus, and playback filters use libavfilter. Install development headers
+for libavformat, libavcodec, libavutil, libavfilter, libswresample, and libopus, plus `pkg-config`
+and Clang/libclang for the bindings build.
 Common starting points are:
 
 - macOS: install Xcode Command Line Tools, then run `brew install ffmpeg opus pkg-config`.
 - Debian or Ubuntu:
 
   ```sh
-  sudo apt install clang libclang-dev pkg-config libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libopus-dev
+  sudo apt install clang libclang-dev pkg-config libavcodec-dev libavfilter-dev libavformat-dev libavutil-dev libswresample-dev libopus-dev
   ```
 
 On Windows, install FFmpeg development libraries that match the target architecture and configure
@@ -79,8 +80,8 @@ and its local queue tests run with Node's built-in test runner. To start the bot
 `pnpm --filter discord-app start`. This builds the native Node package first and reads
 `DISCORD_TOKEN` and `APPLICATION_ID` from `apps/discord/.env`.
 `cargo test -p remedia-core` runs deterministic file, in-memory, streaming, and local-HTTP decoder tests. The
-core tests cover decoder conversion, seeking, playback lifecycle, Opus framing, backpressure, and
-stop cleanup. `remedia-discord` tests parsing, fail-closed DAVE behavior, RTP, transport encryption,
+core tests cover decoder conversion, seeking, playback lifecycle, native FFmpeg filtergraph processing,
+master gain, Opus framing, backpressure, and stop cleanup. `remedia-discord` tests parsing, fail-closed DAVE behavior, RTP, transport encryption,
 UDP discovery, pacing, and bounded queue cancellation without Discord credentials. The
 examples can be run with `cargo run -p remedia-core --example decode -- file <path>`,
 `cargo run -p remedia-core --example decode -- url <http(s)-url>`, or
