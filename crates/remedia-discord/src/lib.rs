@@ -1,14 +1,18 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Minimal outbound Discord voice transport.
+//!
+//! The caller obtains voice session information from its Discord Gateway
+//! client, then gives this crate transport-independent Opus packets. This
+//! crate owns the voice WebSocket, UDP socket, DAVE session, RTP packetization,
+//! encryption, and real-time scheduling. It does not decode or encode audio.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+mod connection;
+mod crypto;
+mod dave;
+mod error;
+mod protocol;
+mod rtp;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use connection::{
+    ConnectionState, DiscordOpusSender, DiscordVoiceConnection, VoiceConnectionInfo,
+};
+pub use error::VoiceError;

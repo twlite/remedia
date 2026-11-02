@@ -9,9 +9,10 @@ Remedia is an audio engine under development. Its first working media pipeline i
 it opens local files and HTTP(S) URLs, decodes audio with native FFmpeg libraries, and yields
 normalized PCM frames incrementally.
 
-The output is interleaved 48 kHz stereo `f32` in Front Left / Front Right order. Discord transport,
-Discord transport, Opus encoding, filters, remote RPC, and the Node.js binding are not implemented
-yet. Core playback sessions provide pause, resume, stop, and seeking with generic PCM outputs.
+The output is interleaved 48 kHz stereo `f32` in Front Left / Front Right order. Core can encode PCM
+to transport-independent Opus packets, and `remedia-discord` can send packets over an outbound voice
+connection with DAVE encryption. The Discord transport has not yet been verified against a live
+bot. Filters, remote RPC, and the Node.js engine binding are not implemented yet.
 
 <Cards>
   <Card
@@ -23,5 +24,10 @@ yet. Core playback sessions provide pause, resume, stop, and seeking with generi
     title="Playback sessions"
     href="/docs/playback"
     description="Manage playback state, outputs, seeking, and worker cleanup."
+  />
+  <Card
+    title="Discord voice output"
+    href="/docs/discord"
+    description="Connect an outbound voice transport and send DAVE-encrypted Opus packets."
   />
 </Cards>

@@ -1,0 +1,146 @@
+---
+title: Discord voice output
+description: Send core Opus packets through the outbound Discord voice transport.
+---
+
+# Discord voice output
+
+`remedia-discord` sends already-encoded Opus packets. It owns the Discord voice
+WebSocket, UDP socket, RTP state, transport encryption, DAVE session, and packet
+scheduler. It does not decode or encode audio. The outer Discord Gateway client
+must request the voice-state change and provide the resulting session details.
+
+The transport uses voice gateway v8, prefers `aead_aes256_gcm_rtpsize`, and
+supports the required `aead_xchacha20_poly1305_rtpsize` fallback. DAVE is
+mandatory: the connection negotiates a protocol version, exchanges MLS events,
+and does not become `Connected` until the `davey` session can encrypt media.
+`davey` currently supports DAVE protocol version 1; other versions fail with a
+typed error. The transport never falls back to plaintext audio.
+
+The connection follows [Discord's voice connection guide](https://docs.discord.com/developers/topics/voice-connections)
+and [DAVE protocol whitepaper](https://daveprotocol.com/). MLS and media-frame
+cryptography are provided by [`davey`](https://github.com/Snazzah/davey).
+
+## Connect with external Gateway information
+
+The caller supplies the voice session information collected by its own bot
+Gateway integration. DAVE also needs the voice `channel_id` to bind the MLS
+group, in addition to the guild ID used by the voice Gateway Identify message.
+These values are connection credentials: `VoiceConnectionInfo` redacts session
+ID and token in its `Debug` output, and the library does not log or persist them.
+
+```rust
+use std::error::Error;
+use std::sync::Arc;
+
+use remedia_core::{InputSource, OpusEncoderOutput, PlaybackSession, PlaybackState};
+use remedia_discord::{DiscordVoiceConnection, VoiceConnectionInfo};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let connection = DiscordVoiceConnection::connect(VoiceConnectionInfo {
+        guild_id: 123456789012345678,
+        channel_id: 234567890123456789,
+        user_id: 345678901234567890,
+        session_id: std::env::var("DISCORD_VOICE_SESSION_ID")?,
+        token: std::env::var("DISCORD_VOICE_TOKEN")?,
+        endpoint: std::env::var("DISCORD_VOICE_ENDPOINT")?,
+    })
+    .await?;
+
+    let session = Arc::new(PlaybackSession::new());
+    let source = InputSource::file("media/track.wav");
+    let output = OpusEncoderOutput::new(connection.opus_sender())?;
+
+    // PlaybackSession methods are synchronous, so keep them off Tokio workers.
+    let starting_session = Arc::clone(&session);
+    tokio::task::spawn_blocking(move || starting_session.play(source, output)).await??;
+
+    let waiting_session = Arc::clone(&session);
+    let state = tokio::task::spawn_blocking(move || waiting_session.wait()).await?;
+    if state != PlaybackState::Completed {
+        if let Some(error) = session.last_error() {
+            return Err(error.into());
+        }
+        return Err(format!("playback ended in state {state:?}").into());
+    }
+
+    session.stop()?;
+    connection.disconnect().await?;
+    Ok(())
+}
+```
+
+`connect` performs Identify, Hello heartbeat setup, Ready parsing, UDP IP
+discovery, Select Protocol, Session Description, and initial DAVE MLS setup.
+It waits up to 20 seconds for the initial DAVE group to become media-ready.
+The API does not join a channel or request credentials on the caller's behalf.
+`OpusEncoderOutput` adapts normalized PCM to 20 ms stereo Opus packets at 48 kHz.
+A short final block is padded to a full Opus frame; packet metadata records how
+much source audio the padding represents. The adapter performs no real-time
+sleeping.
+
+For a manual sender example that reads connection information and an input source
+from environment variables, run:
+
+```sh
+cargo run -p remedia-discord --example play_file
+```
+
+The example expects `DISCORD_GUILD_ID`, `DISCORD_CHANNEL_ID`,
+`DISCORD_USER_ID`, `DISCORD_VOICE_SESSION_ID`, `DISCORD_VOICE_TOKEN`,
+`DISCORD_VOICE_ENDPOINT`, `REMEDIA_SOURCE_TYPE` (`file` or `url`), and
+`REMEDIA_SOURCE`. A separate Gateway client must already have joined the voice
+channel. Do not put credentials in command history, fixtures, or logs.
+
+## Output ownership and lifecycle
+
+Each `DiscordVoiceConnection` owns one transport task and remains independent of
+individual playback sessions. Calling `opus_sender()` creates a bounded
+backpressured output for one playback; a newer output supersedes the prior one.
+Finishing or cancelling an output does not disconnect the voice connection.
+Call `disconnect().await` to close the connection and release its worker, socket,
+and DAVE state.
+
+The sender sends Speaking before the first RTP packet. Pause drains packets
+already accepted by the sender, sends the protocol's five 20 ms silence frames,
+and turns Speaking off. Resume enables Speaking again and continues the same
+voice connection. End-of-stream uses the same drain and silence behavior before
+the core session becomes `Completed`. Stop cancels pending delivery and releases
+only that playback output. A seek resets the core Opus encoder, increments the
+output generation, and drops queued pre-seek packets; packets already sent cannot
+be recalled. RTP sequence and timestamp counters remain continuous across seek
+and source replacement.
+
+Packets are paced from their encoded sample duration using a monotonic clock.
+The sender does not burst packets after a delay: packets more than one frame
+late are dropped and the schedule is rebased. During an active playback
+underrun, it sends silence on the normal cadence. The queue is bounded, so a slow
+transport applies backpressure to the core playback worker. The decoder and
+Opus encoder themselves remain unpaced.
+
+`PlaybackSession::position().submitted` reports the PCM timeline accepted by the
+output. Discord does not report an audible sample position through this
+transport, so `played` is `None`; it must not be treated as sample-accurate
+playback time.
+
+## Connection errors and limits
+
+Connection setup and packet operations use `VoiceError` for endpoint, WebSocket,
+UDP, encryption, DAVE, packet, timeout, and lifecycle failures. The latest
+background transport failure is available from `connection.failure()` and
+changes the state to `Failed`. No Opus packet is sent until DAVE media encryption
+is ready.
+
+The transport attempts Voice Gateway v8 Resume after a WebSocket close or a
+missed heartbeat acknowledgment. Resume keeps the voice connection's UDP and
+DAVE state. If the gateway rejects Resume, the connection becomes `Failed`; the
+caller must obtain fresh voice session information and connect again. DAVE
+protocol version 1 is the only version supported by the selected `davey`
+release. No live Discord connection has been validated as part of repository
+CI.
+
+This crate does not include a bot Gateway or REST client, channel-join commands,
+audio receiving, RTCP, video, remote binary uploads, DAVE cryptography, or Opus
+encoding. Opus encoding remains in `remedia-core`; DAVE/MLS and network transport
+remain in `remedia-discord`.

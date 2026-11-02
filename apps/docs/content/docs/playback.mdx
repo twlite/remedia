@@ -7,8 +7,9 @@ description: Manage playback state, output delivery, position, and worker cleanu
 
 `PlaybackSession` manages one source and one output instance. It uses a dedicated
 blocking worker for that session, while `AudioDecoder` remains unpaced and
-pull-based. Discord, Node.js, server RPC, device output, and Opus encoding are not
-implemented here.
+pull-based. The core also provides a transport-independent Opus output adapter;
+the [Discord voice guide](/docs/discord) shows how to connect it to the Discord
+transport.
 
 ## Start and observe playback
 
@@ -50,6 +51,7 @@ example-only paced null output so pause and seek are observable with short files
 | `Starting`  | The worker is opening the source and decoder.                           |
 | `Playing`   | The worker may decode and deliver frames.                               |
 | `Pausing`   | Pause was requested and is waiting for the current operation to finish. |
+| `Resuming`  | The output is resuming before frame delivery continues.                 |
 | `Paused`    | The worker waits on a condition variable and does not decode ahead.     |
 | `Stopping`  | Cancellation is in progress and the worker is being joined.             |
 | `Stopped`   | Active work was cancelled and its worker joined.                        |
@@ -99,11 +101,12 @@ frame is accepted. This synchronous call applies backpressure directly: while an
 output is full, the session worker does not decode more audio. An output may use
 its own buffer, but it must bound that buffer and honor cancellation.
 
-Outputs implement `flush` to discard pre-seek audio, `finish` for natural
-end-of-stream, and thread-safe `cancel` to interrupt an in-progress operation
-during stop or failure. `played_position` may report a consumed/audible timeline;
-return `None` when the output cannot provide one. The session holds no lock while
-calling output methods.
+Outputs implement `flush` to discard pre-seek audio, `pause` and `resume` for
+downstream suspension, `finish` for natural end-of-stream, and thread-safe
+`cancel` to interrupt an in-progress operation during stop or failure.
+`played_position` may report a consumed/audible timeline; return `None` when the
+output cannot provide one. The session holds no lock while calling output
+methods.
 
 Output methods execute on the playback worker, except `cancel`, which can run
 concurrently to unblock them. A custom output must make `cancel` safe alongside
@@ -118,6 +121,22 @@ Startup errors are returned from `play()`. Errors after startup set the state to
 decoder failures, output failures, invalid state operations, worker startup or
 panic, cancellation, seek range errors, and unsupported seeking. The original
 decoder or output error remains available as the error source where possible.
+
+## Opus encoding output
+
+`OpusEncoderOutput` adapts normalized PCM to owned `EncodedOpusPacket` values and
+passes them to an `OpusPacketSink`. The default packet duration is 20 ms (960
+samples per channel at 48 kHz), stereo. It accumulates variable-sized decoder
+frames and does not pace encoding. A final incomplete frame is zero-padded to
+960 samples; packet metadata reports both the encoded duration and the shorter
+amount of source audio represented. A seek drops partial PCM and resets the
+native encoder before sending frames from the new timeline.
+
+Each Opus output owns its encoder and sink. The sink contract is synchronous and
+backpressured: implementations should use bounded storage and make `cancel`
+safe alongside a blocked send. The adapter does not expose Discord types and can
+be used with other packet consumers. It requires native libopus development
+files at build time.
 
 ## Runnable example
 

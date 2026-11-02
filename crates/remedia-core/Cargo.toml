@@ -10,6 +10,7 @@ ffmpeg-next = { version = "=7.1.0", default-features = false, features = [
   "format",
   "software-resampling",
 ] }
+opus2 = { version = "=0.4.0", default-features = false, features = ["backend-libopus", "dynamic"] }
 thiserror = "2.0"
 url = "2.5"
 

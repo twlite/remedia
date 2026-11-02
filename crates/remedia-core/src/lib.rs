@@ -6,12 +6,14 @@
 mod decoder;
 mod error;
 mod input;
+mod opus;
 mod output;
 mod playback;
 mod source;
 
 pub use decoder::{AudioDecoder, AudioStreamInfo, DecoderOptions, PcmFormat, PcmFrame};
 pub use error::DecoderError;
+pub use opus::{EncodedOpusPacket, OpusEncoderOutput, OpusPacketSink};
 pub use output::{MediaOutput, NullOutput, NullOutputStats, NullOutputStatsHandle, OutputError};
 pub use playback::{PlaybackError, PlaybackPosition, PlaybackSession, PlaybackState};
 pub use source::{CancellationToken, InputSource};

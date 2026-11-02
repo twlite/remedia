@@ -23,6 +23,8 @@ pub enum PlaybackState {
     Playing,
     /// A pause has been requested and is taking effect at a frame boundary.
     Pausing,
+    /// The output is being resumed; frames are not delivered yet.
+    Resuming,
     /// Decoding is suspended until [`PlaybackSession::resume`] is called.
     Paused,
     /// Active work is being cancelled and its worker is being joined.
@@ -42,6 +44,7 @@ impl fmt::Display for PlaybackState {
             Self::Starting => "starting",
             Self::Playing => "playing",
             Self::Pausing => "pausing",
+            Self::Resuming => "resuming",
             Self::Paused => "paused",
             Self::Stopping => "stopping",
             Self::Stopped => "stopped",
@@ -141,6 +144,8 @@ enum WorkerAction {
     Decode,
     Deliver(PcmFrame),
     Seek(SeekRequest),
+    Pause,
+    Resume,
     Finish,
     Exit,
 }
@@ -332,12 +337,30 @@ impl PlaybackSession {
     pub fn resume(&self) -> Result<(), PlaybackError> {
         let mut data = lock(&self.shared.data);
         match data.state {
-            PlaybackState::Playing => Ok(()),
+            PlaybackState::Playing => return Ok(()),
             PlaybackState::Paused => {
-                data.state = PlaybackState::Playing;
+                data.state = PlaybackState::Resuming;
                 self.shared.changed.notify_all();
-                Ok(())
             }
+            PlaybackState::Resuming => {}
+            state => {
+                return Err(PlaybackError::InvalidState {
+                    operation: "resume",
+                    state,
+                });
+            }
+        }
+
+        while data.state == PlaybackState::Resuming {
+            data = wait(&self.shared.changed, data);
+        }
+        match data.state {
+            PlaybackState::Playing => Ok(()),
+            PlaybackState::Failed => Err(data
+                .last_error
+                .clone()
+                .unwrap_or(PlaybackError::WorkerPanicked)),
+            PlaybackState::Stopping | PlaybackState::Stopped => Err(PlaybackError::Cancelled),
             state => Err(PlaybackError::InvalidState {
                 operation: "resume",
                 state,
@@ -632,6 +655,52 @@ fn worker_loop(
                     }
                 }
             }
+            WorkerAction::Pause => match output.pause(&cancellation) {
+                Ok(()) => {
+                    let mut data = lock(&shared.data);
+                    if data.generation == generation
+                        && !data.stopping
+                        && data.state == PlaybackState::Pausing
+                    {
+                        data.state = PlaybackState::Paused;
+                    }
+                    shared.changed.notify_all();
+                }
+                Err(_) if is_stopped(&shared, generation) => return,
+                Err(error) => {
+                    fail_session(
+                        &shared,
+                        generation,
+                        PlaybackError::Output(error),
+                        &cancellation,
+                        &output,
+                    );
+                    return;
+                }
+            },
+            WorkerAction::Resume => match output.resume(&cancellation) {
+                Ok(()) => {
+                    let mut data = lock(&shared.data);
+                    if data.generation == generation
+                        && !data.stopping
+                        && data.state == PlaybackState::Resuming
+                    {
+                        data.state = PlaybackState::Playing;
+                    }
+                    shared.changed.notify_all();
+                }
+                Err(_) if is_stopped(&shared, generation) => return,
+                Err(error) => {
+                    fail_session(
+                        &shared,
+                        generation,
+                        PlaybackError::Output(error),
+                        &cancellation,
+                        &output,
+                    );
+                    return;
+                }
+            },
             WorkerAction::Seek(request) => match decoder.seek(request.position) {
                 Ok(()) => {
                     pending_frame = None;
@@ -734,8 +803,7 @@ fn next_worker_action(
             return WorkerAction::Seek(request);
         }
         if data.state == PlaybackState::Pausing {
-            data.state = PlaybackState::Paused;
-            shared.changed.notify_all();
+            return WorkerAction::Pause;
         }
         match data.state {
             PlaybackState::Playing => {
@@ -750,6 +818,7 @@ fn next_worker_action(
             PlaybackState::Paused | PlaybackState::Starting => {
                 data = wait(&shared.changed, data);
             }
+            PlaybackState::Resuming => return WorkerAction::Resume,
             PlaybackState::Stopping => return WorkerAction::Exit,
             PlaybackState::Idle
             | PlaybackState::Pausing
@@ -805,6 +874,7 @@ fn is_active(state: PlaybackState) -> bool {
         PlaybackState::Starting
             | PlaybackState::Playing
             | PlaybackState::Pausing
+            | PlaybackState::Resuming
             | PlaybackState::Paused
             | PlaybackState::Stopping
     )

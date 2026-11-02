@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
 
       - run: sudo apt-get update
-      - run: sudo apt-get install --yes clang libclang-dev pkg-config libavcodec-dev libavformat-dev libavutil-dev libswresample-dev
+      - run: sudo apt-get install --yes clang libclang-dev pkg-config libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libopus-dev
 
       - uses: pnpm/action-setup@v6.1.0
         with:

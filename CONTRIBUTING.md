@@ -13,15 +13,16 @@ follow the intended boundaries in [`docs/architecture.md`](docs/architecture.md)
 - pnpm 12.16.1, selected by the root `package.json`.
 - Git.
 
-`remedia-core` links native FFmpeg libraries through `ffmpeg-next` and `ffmpeg-sys-next`. Install
-development headers for libavformat, libavcodec, libavutil, and libswresample, plus `pkg-config` and
-Clang/libclang for the bindings build. Common starting points are:
+`remedia-core` links native FFmpeg libraries through `ffmpeg-next` and `ffmpeg-sys-next`, and its
+Opus adapter links native libopus. Install development headers for libavformat, libavcodec,
+libavutil, libswresample, and libopus, plus `pkg-config` and Clang/libclang for the bindings build.
+Common starting points are:
 
-- macOS: install Xcode Command Line Tools, then run `brew install ffmpeg pkg-config`.
+- macOS: install Xcode Command Line Tools, then run `brew install ffmpeg opus pkg-config`.
 - Debian or Ubuntu:
 
   ```sh
-  sudo apt install clang libclang-dev pkg-config libavcodec-dev libavformat-dev libavutil-dev libswresample-dev
+  sudo apt install clang libclang-dev pkg-config libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libopus-dev
   ```
 
 On Windows, install FFmpeg development libraries that match the target architecture and configure
@@ -69,17 +70,22 @@ cargo test --workspace
 The docs app can be run with `pnpm --filter docs dev` and built with
 `pnpm --filter docs build`. `pnpm --filter @remedia/node test` builds and checks the native smoke
 binding. `cargo test -p remedia-core` runs deterministic file and local-HTTP decoder tests. The
-core tests cover decoder conversion, seeking, session lifecycle, backpressure, and stop cleanup. The
+core tests cover decoder conversion, seeking, playback lifecycle, Opus framing, backpressure, and
+stop cleanup. `remedia-discord` tests parsing, fail-closed DAVE behavior, RTP, transport encryption,
+UDP discovery, pacing, and bounded queue cancellation without Discord credentials. The
 examples can be run with `cargo run -p remedia-core --example decode -- file <path>`,
 `cargo run -p remedia-core --example decode -- url <http(s)-url>`, or
 `cargo run -p remedia-core --example playback -- file <path>`.
+The optional manual voice sender example is `cargo run -p remedia-discord --example play_file`; it
+requires externally obtained Discord voice session information and a reachable voice endpoint.
 
 ## Where code belongs
 
 - Add a Rust crate under `crates/` when it has an independently useful boundary in the engine,
-  transport, or server. `remedia-core` owns source opening, demuxing, decoding, resampling, playback
-  sessions, and generic PCM output. Add crates to the Cargo workspace only when they exist and are
-  needed.
+  transport, or server. `remedia-core` owns source opening, decoding, resampling, playback sessions,
+  generic PCM output, and transport-independent Opus encoding. `remedia-discord` owns Discord voice
+  connections, DAVE, RTP, encryption, UDP, and packet scheduling. Add crates to the Cargo workspace
+  only when they exist and are needed.
 - Add a JavaScript or TypeScript package under `packages/` when it has a distinct package boundary.
   Keep an N-API crate alongside its owning Node package: `packages/remedia-node` is included in the
   root Cargo workspace and currently contains a smoke test, but is not connected to the Remedia

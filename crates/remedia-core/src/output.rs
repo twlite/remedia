@@ -61,6 +61,17 @@ pub trait MediaOutput: Send + Sync + 'static {
         cancellation: &CancellationToken,
     ) -> Result<(), OutputError>;
 
+    /// Suspend downstream output after the current frame boundary. Outputs
+    /// which do not schedule or transmit in real time can keep the default.
+    fn pause(&self, _cancellation: &CancellationToken) -> Result<(), OutputError> {
+        Ok(())
+    }
+
+    /// Resume downstream output after [`Self::pause`].
+    fn resume(&self, _cancellation: &CancellationToken) -> Result<(), OutputError> {
+        Ok(())
+    }
+
     /// Finish successfully after decoder end-of-stream.
     fn finish(&self, cancellation: &CancellationToken) -> Result<(), OutputError>;
 
