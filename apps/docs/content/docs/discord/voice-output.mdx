@@ -93,6 +93,16 @@ A short final block is padded to a full Opus frame; packet metadata records how
 much source audio the padding represents. The adapter performs no real-time
 sleeping.
 
+The core may also automatically send compatible source Opus packets directly
+through this same playback-scoped sender. That optimization is limited to
+untrimmed, 48 kHz mono/stereo Opus packets accepted by the transport's duration
+and size checks. Inputs requiring skip-sample trimming, other codecs, active
+filtergraphs, and non-unity gain use the core's PCM decoder and Opus encoder.
+Enabling or clearing processing during a track changes the core path without
+constructing another Discord sender; RTP sequence/timestamp and DAVE state stay
+owned by the existing voice connection. See [playback mode switching](/docs/core/playback#automatic-opus-passthrough-and-pcm-mode-switching)
+for the decoder warm-up, padding, fallback, and transition limitations.
+
 For a manual sender example that reads connection information and an input source
 from environment variables, run:
 

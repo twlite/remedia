@@ -275,6 +275,39 @@ impl PcmProcessor {
         self.next_sample
     }
 
+    pub(crate) fn source_position(&self) -> Option<SourcePosition> {
+        self.source_position
+    }
+
+    /// Advance the normalized output timeline for an encoded Opus packet that
+    /// bypassed PCM processing. RTP keeps its own packet-duration clock.
+    pub(crate) fn record_passthrough_packet(
+        &mut self,
+        samples_per_channel: u32,
+        source_start_sample: Option<u64>,
+        source_position_estimated: bool,
+    ) -> Result<u64, FilterGraphError> {
+        if self.graph.is_some() {
+            return Err(FilterGraphError::Processing(
+                "cannot advance encoded passthrough while a filtergraph is active".into(),
+            ));
+        }
+        let start_sample = self.next_sample;
+        self.next_sample = self
+            .next_sample
+            .checked_add(u64::from(samples_per_channel))
+            .ok_or_else(|| {
+                FilterGraphError::Processing("output sample timeline overflowed".into())
+            })?;
+        if let Some(source_start_sample) = source_start_sample {
+            self.source_position = Some(SourcePosition {
+                sample: source_start_sample.saturating_add(u64::from(samples_per_channel)),
+                estimated: source_position_estimated,
+            });
+        }
+        Ok(start_sample)
+    }
+
     pub(crate) fn expression(&self) -> Option<&str> {
         self.graph.as_ref().map(PcmFilterGraph::expression)
     }

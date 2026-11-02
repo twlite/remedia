@@ -30,7 +30,7 @@ use crate::error::VoiceError;
 use crate::protocol::{
     GatewayMessage, ip_discovery_request, json_message, parse_ip_discovery_response, parse_u16,
 };
-use crate::rtp::{RtpSender, validate_opus_packet};
+use crate::rtp::{MAX_UDP_PACKET_BYTES, RTP_HEADER_BYTES, RtpSender, validate_opus_packet};
 use crate::with_dispatch;
 
 const GATEWAY_VERSION: u16 = 8;
@@ -748,6 +748,13 @@ impl OpusPacketSink for DiscordOpusSender {
                 }
             }
         }
+    }
+
+    fn supports_passthrough_packet(&self, packet: &EncodedOpusPacket) -> bool {
+        // Leave room for the RTP header and DAVE/transport encryption overhead.
+        // The RTP sender still validates the final encrypted datagram size.
+        let maximum_opus_payload = MAX_UDP_PACKET_BYTES.saturating_sub(RTP_HEADER_BYTES + 64);
+        validate_opus_packet(packet).is_ok() && packet.bytes.len() <= maximum_opus_payload
     }
 
     fn flush(

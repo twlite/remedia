@@ -9,7 +9,9 @@ control.
 The repository is under active development. `remedia-core` opens local files, HTTP(S) URLs, owned
 encoded bytes, and bounded byte streams, decodes them with native FFmpeg libraries, yields
 normalized PCM, and provides playback sessions with pause, resume, stop, seeking, generic output,
-and Opus encoding. `remedia-discord` implements
+and Opus encoding. When an Opus-capable output receives a compatible untrimmed Opus source with no
+active PCM processing, playback can forward source packets directly and switch to or from native
+PCM processing without reopening the input. `remedia-discord` implements
 an outbound voice transport for encoded Opus with voice gateway v8, RTP-size transport encryption,
 and DAVE through `davey`. It has not been verified against a live Discord bot yet.
 `packages/remedia-node` provides an initial native Node.js integration for playback, Discord voice

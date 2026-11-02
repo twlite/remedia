@@ -5,6 +5,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 use crate::decoder::{OUTPUT_SAMPLE_RATE_HZ, PcmFrame};
+use crate::opus::EncodedOpusPacket;
 use crate::source::CancellationToken;
 
 /// An error returned by a media output.
@@ -53,6 +54,13 @@ pub trait MediaOutput: Send + Sync + 'static {
         frame: PcmFrame,
         cancellation: &CancellationToken,
     ) -> Result<(), OutputError>;
+
+    /// Return an optional encoded-Opus capability. PCM-only outputs keep their
+    /// existing contract; outputs such as [`crate::OpusEncoderOutput`] can opt
+    /// in so a compatible source can bypass decode and encode work.
+    fn encoded_opus_output(&self) -> Option<&dyn EncodedOpusOutput> {
+        None
+    }
 
     /// Discard buffered output after a successful seek and reset its timeline.
     fn flush(
@@ -112,6 +120,35 @@ pub trait MediaOutput: Send + Sync + 'static {
     fn played_position(&self) -> Option<Duration> {
         None
     }
+}
+
+/// Optional capability for outputs that can accept both normalized PCM and
+/// already-encoded Opus packets through one playback-scoped sink.
+///
+/// This is separate from [`MediaOutput`] so null and custom PCM consumers do
+/// not need to implement compressed-packet handling.
+pub trait EncodedOpusOutput: Send + Sync {
+    /// Whether the packet's duration and payload meet this output's
+    /// transport-independent acceptance policy.
+    fn supports_encoded_packet(&self, packet: &EncodedOpusPacket) -> bool;
+
+    /// Submit an owned source Opus packet to the same sink used by PCM
+    /// encoding. `start_sample` is on the continuous normalized output
+    /// timeline, not the source container timestamp.
+    fn write_encoded_packet(
+        &self,
+        packet: EncodedOpusPacket,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OutputError>;
+
+    /// Close a partial PCM encoder frame at a safe packet boundary before
+    /// switching back to encoded packets. Implementations must preserve sink
+    /// ordering and must not seek, flush, or replace the underlying transport.
+    fn prepare_passthrough(
+        &self,
+        next_sample_position: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OutputError>;
 }
 
 /// Statistics recorded by [`NullOutput`]. `samples_received` counts scalar

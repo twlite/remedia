@@ -28,9 +28,11 @@ pub use decoder::{AudioDecoder, AudioStreamInfo, DecoderOptions, PcmFormat, PcmF
 pub use error::DecoderError;
 pub use filter::FilterGraphError;
 pub use opus::{EncodedOpusPacket, OpusEncoderOutput, OpusPacketSink};
-pub use output::{MediaOutput, NullOutput, NullOutputStats, NullOutputStatsHandle, OutputError};
+pub use output::{
+    EncodedOpusOutput, MediaOutput, NullOutput, NullOutputStats, NullOutputStatsHandle, OutputError,
+};
 pub use playback::{
-    MediaPosition, MediaPositionAccuracy, PlaybackError, PlaybackPosition, PlaybackSession,
-    PlaybackState, PlaybackWaiter,
+    MediaPosition, MediaPositionAccuracy, PlaybackError, PlaybackPosition, PlaybackProcessingMode,
+    PlaybackSession, PlaybackState, PlaybackWaiter,
 };
 pub use source::{CancellationToken, InputSource};

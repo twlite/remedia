@@ -16,6 +16,8 @@ const OUTPUT_CHANNELS: u16 = 2;
 const OUTPUT_SAMPLE_FORMAT: ffmpeg::format::Sample =
     ffmpeg::format::Sample::F32(SampleType::Planar);
 const RESAMPLER_PADDING_SAMPLES: usize = 128;
+const OPUS_PREROLL_SAMPLES: u64 = 5_760;
+const OPUS_HISTORY_MAX_BYTES: usize = 512 * 1024;
 
 /// The normalized PCM format emitted by this decoder: 48 kHz, stereo FL/FR,
 /// 32-bit floating point, interleaved.
@@ -112,19 +114,44 @@ pub(crate) struct SourcePosition {
 /// soon as it is available. It does not pace playback or retain the whole
 /// source in memory.
 pub struct AudioDecoder {
-    input: OpenedInput,
-    decoder: AudioCodecDecoder,
-    audio_stream_index: usize,
-    network_input: bool,
-    stream_time_base: Rational,
-    info: AudioStreamInfo,
+    reader: AudioPacketReader,
+    decoder: Option<AudioCodecDecoder>,
     cancellation: CancellationToken,
     resampler: Option<ResamplerState>,
     pending_frames: VecDeque<DecodedPcmFrame>,
     next_sample_position: Option<u64>,
     seek_target_sample: Option<u64>,
-    demux_finished: bool,
     finished: bool,
+}
+
+/// Owns the one FFmpeg demux context and selected stream. It can read
+/// compressed audio packets without opening a codec; PCM decoding is attached
+/// lazily when a consumer needs it.
+pub(crate) struct AudioPacketReader {
+    input: OpenedInput,
+    codec_parameters: ffmpeg::codec::Parameters,
+    audio_stream_index: usize,
+    network_input: bool,
+    stream_time_base: Rational,
+    info: AudioStreamInfo,
+    cancellation: CancellationToken,
+    pending_packets: VecDeque<DemuxedAudioPacket>,
+    next_source_sample: Option<u64>,
+    stream_start_sample: Option<u64>,
+    demux_finished: bool,
+    passthrough_rejection: Option<&'static str>,
+    packet_history: VecDeque<DemuxedAudioPacket>,
+    packet_history_samples: u64,
+    packet_history_bytes: usize,
+}
+
+#[derive(Clone)]
+pub(crate) struct DemuxedAudioPacket {
+    pub packet: ffmpeg::Packet,
+    pub source_start_sample: Option<u64>,
+    pub source_position_estimated: bool,
+    pub samples_per_channel: Option<u32>,
+    pub has_trimming_metadata: bool,
 }
 
 struct ResamplerState {
@@ -133,6 +160,229 @@ struct ResamplerState {
     input_layout: String,
     input_channels: u16,
     input_rate: u32,
+}
+
+impl AudioPacketReader {
+    fn open(source: InputSource, options: DecoderOptions) -> Result<Self, DecoderError> {
+        if options.io_timeout.is_zero() {
+            return Err(DecoderError::InvalidOptions(
+                "I/O timeout must be greater than zero",
+            ));
+        }
+        if options.cancellation.is_cancelled() {
+            return Err(DecoderError::Cancelled);
+        }
+        let network_input = matches!(&source, InputSource::HttpUrl(_));
+        let input = input::open(&source, options.io_timeout, options.cancellation.clone())?;
+        let stream = input
+            .streams()
+            .best(ffmpeg::media::Type::Audio)
+            .ok_or(DecoderError::NoAudioStream)?;
+        let stream_index = stream.index();
+        let stream_time_base = stream.time_base();
+        let stream_duration = stream.duration();
+        let stream_start_time = stream.start_time();
+        let parameters = stream.parameters();
+        let codec_id = parameters.id();
+        let codec_parameters = parameters.clone();
+        let stream_tags = stream
+            .metadata()
+            .iter()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .collect::<BTreeMap<_, _>>();
+        let (sample_rate, channels, bit_rate, channel_layout, initial_padding, trailing_padding) =
+            codec_parameter_metadata(&codec_parameters);
+        let mut metadata = input
+            .metadata()
+            .iter()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .collect::<BTreeMap<_, _>>();
+        metadata.extend(stream_tags);
+        let info = AudioStreamInfo {
+            stream_index,
+            codec: codec_id.name().to_owned(),
+            sample_rate,
+            channels,
+            channel_layout,
+            duration: stream_duration
+                .checked_duration(stream_time_base)
+                .or_else(|| duration_from_av_time_base(input.duration())),
+            bit_rate,
+            metadata,
+        };
+        let stream_start_sample = timestamp_to_output_sample(
+            (stream_start_time != ffmpeg::ffi::AV_NOPTS_VALUE).then_some(stream_start_time),
+            stream_time_base,
+            OUTPUT_SAMPLE_RATE_HZ,
+        );
+        let passthrough_rejection = if codec_id != ffmpeg::codec::Id::OPUS {
+            Some("selected codec is not Opus")
+        } else if sample_rate != Some(OUTPUT_SAMPLE_RATE_HZ) {
+            Some("Opus stream sample rate is not 48 kHz")
+        } else if !matches!(channels, Some(1 | 2)) {
+            Some("Opus channel layout is not mono or stereo")
+        } else if initial_padding != 0 || trailing_padding != 0 {
+            Some("stream requires initial or trailing sample trimming")
+        } else {
+            opus_head_passthrough_rejection(&codec_parameters, channels)
+        };
+        Ok(Self {
+            input,
+            codec_parameters,
+            audio_stream_index: stream_index,
+            network_input,
+            stream_time_base,
+            info,
+            cancellation: options.cancellation,
+            pending_packets: VecDeque::new(),
+            next_source_sample: Some(0),
+            stream_start_sample,
+            demux_finished: false,
+            passthrough_rejection,
+            packet_history: VecDeque::new(),
+            packet_history_samples: 0,
+            packet_history_bytes: 0,
+        })
+    }
+
+    fn opus_passthrough_rejection(&self) -> Option<&'static str> {
+        self.passthrough_rejection
+    }
+
+    fn source_boundary_sample(&self) -> Option<u64> {
+        self.next_source_sample
+    }
+
+    fn history_before(&self, boundary_sample: u64) -> Vec<DemuxedAudioPacket> {
+        self.packet_history
+            .iter()
+            .filter(|packet| {
+                packet
+                    .source_start_sample
+                    .zip(packet.samples_per_channel)
+                    .is_some_and(|(start, samples)| {
+                        start.saturating_add(u64::from(samples)) <= boundary_sample
+                    })
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn clear_packet_history(&mut self) {
+        self.packet_history.clear();
+        self.packet_history_samples = 0;
+        self.packet_history_bytes = 0;
+    }
+
+    fn remember_packet(&mut self, packet: &DemuxedAudioPacket) {
+        let Some(samples) = packet.samples_per_channel else {
+            return;
+        };
+        let packet_bytes = packet.packet.size();
+        if packet.has_trimming_metadata || packet_bytes > OPUS_HISTORY_MAX_BYTES {
+            return;
+        }
+        self.packet_history.push_back(packet.clone());
+        self.packet_history_samples = self
+            .packet_history_samples
+            .saturating_add(u64::from(samples));
+        self.packet_history_bytes = self.packet_history_bytes.saturating_add(packet_bytes);
+        while self.packet_history_samples > OPUS_PREROLL_SAMPLES
+            || self.packet_history_bytes > OPUS_HISTORY_MAX_BYTES
+        {
+            let Some(oldest) = self.packet_history.pop_front() else {
+                break;
+            };
+            self.packet_history_samples = self
+                .packet_history_samples
+                .saturating_sub(u64::from(oldest.samples_per_channel.unwrap_or(0)));
+            self.packet_history_bytes = self
+                .packet_history_bytes
+                .saturating_sub(oldest.packet.size());
+        }
+    }
+
+    fn read_audio_packet(&mut self) -> Result<Option<DemuxedAudioPacket>, DecoderError> {
+        if let Some(packet) = self.pending_packets.pop_front() {
+            return Ok(Some(packet));
+        }
+        if self.demux_finished {
+            return Ok(None);
+        }
+        loop {
+            if self.cancellation.is_cancelled() {
+                return Err(DecoderError::Cancelled);
+            }
+            let mut packet = ffmpeg::Packet::empty();
+            match packet.read(&mut self.input) {
+                Ok(()) if packet.stream() != self.audio_stream_index => continue,
+                Ok(()) => {
+                    let timestamp = packet.pts().or_else(|| packet.dts());
+                    let timestamp_sample = timestamp_to_output_sample(
+                        timestamp,
+                        self.stream_time_base,
+                        OUTPUT_SAMPLE_RATE_HZ,
+                    )
+                    .and_then(|sample| sample.checked_sub(self.stream_start_sample.unwrap_or(0)));
+                    let source_start_sample = timestamp_sample.or(self.next_source_sample);
+                    let samples = (self.codec_parameters.id() == ffmpeg::codec::Id::OPUS)
+                        .then(|| {
+                            packet.data().and_then(|bytes| {
+                                opus2::packet::get_nb_samples(bytes, OUTPUT_SAMPLE_RATE_HZ).ok()
+                            })
+                        })
+                        .flatten();
+                    let samples_per_channel =
+                        samples.and_then(|samples| u32::try_from(samples).ok());
+                    let has_skip_samples = packet.side_data().any(|side_data| {
+                        side_data.kind() == ffmpeg::codec::packet::side_data::Type::SkipSamples
+                    });
+                    let has_trimmed_duration = packet.duration() > 0
+                        && samples_per_channel.is_some_and(|samples| {
+                            timestamp_to_output_sample(
+                                Some(packet.duration()),
+                                self.stream_time_base,
+                                OUTPUT_SAMPLE_RATE_HZ,
+                            ) != Some(u64::from(samples))
+                        });
+                    if let (Some(start), Some(samples)) = (source_start_sample, samples_per_channel)
+                    {
+                        self.next_source_sample = Some(start.saturating_add(u64::from(samples)));
+                    }
+                    let demuxed = DemuxedAudioPacket {
+                        packet,
+                        source_start_sample,
+                        source_position_estimated: timestamp_sample.is_none(),
+                        samples_per_channel,
+                        has_trimming_metadata: has_skip_samples || has_trimmed_duration,
+                    };
+                    if self.codec_parameters.id() == ffmpeg::codec::Id::OPUS {
+                        self.remember_packet(&demuxed);
+                    }
+                    return Ok(Some(demuxed));
+                }
+                Err(ffmpeg::Error::Eof) => {
+                    if let Some(message) = self.input.producer_failure() {
+                        return Err(DecoderError::InputFailure(message));
+                    }
+                    self.demux_finished = true;
+                    return Ok(None);
+                }
+                Err(error) if is_again(error) => continue,
+                Err(error) => {
+                    if let Some(message) = self.input.producer_failure() {
+                        return Err(DecoderError::InputFailure(message));
+                    }
+                    return Err(ffmpeg_error(
+                        error,
+                        "reading media packets",
+                        self.cancellation.is_cancelled(),
+                        self.network_input,
+                    ));
+                }
+            }
+        }
+    }
 }
 
 impl AudioDecoder {
@@ -165,11 +415,11 @@ impl AudioDecoder {
                         name: "core.media.opened",
                         target: "remedia_core::decoder",
                         source_kind,
-                        stream_index = decoder.info.stream_index,
-                        codec = %decoder.info.codec,
-                        source_sample_rate = decoder.info.sample_rate,
-                        source_channels = decoder.info.channels,
-                        duration_known = decoder.info.duration.is_some(),
+                        stream_index = decoder.info().stream_index,
+                        codec = %decoder.info().codec,
+                        source_sample_rate = decoder.info().sample_rate,
+                        source_channels = decoder.info().channels,
+                        duration_known = decoder.info().duration.is_some(),
                         "audio stream selected"
                     );
                 }
@@ -190,92 +440,178 @@ impl AudioDecoder {
     }
 
     fn open_inner(source: InputSource, options: DecoderOptions) -> Result<Self, DecoderError> {
-        if options.io_timeout.is_zero() {
-            return Err(DecoderError::InvalidOptions(
-                "I/O timeout must be greater than zero",
-            ));
-        }
-        if options.cancellation.is_cancelled() {
-            return Err(DecoderError::Cancelled);
-        }
+        let mut decoder = Self::open_for_playback(source, options)?;
+        decoder.activate_decoder(&[], None)?;
+        Ok(decoder)
+    }
 
-        let network_input = matches!(&source, InputSource::HttpUrl(_));
-        let input = input::open(&source, options.io_timeout, options.cancellation.clone())?;
-
-        let stream = input
-            .streams()
-            .best(ffmpeg::media::Type::Audio)
-            .ok_or(DecoderError::NoAudioStream)?;
-        let stream_index = stream.index();
-        let stream_time_base = stream.time_base();
-        let stream_duration = stream.duration();
-        let parameters = stream.parameters();
-        let codec_id = parameters.id();
-        let stream_metadata = stream.metadata();
-        let stream_tags: BTreeMap<String, String> = stream_metadata
-            .iter()
-            .map(|(key, value)| (key.to_owned(), value.to_owned()))
-            .collect();
-
-        let context = ffmpeg::codec::context::Context::from_parameters(parameters)
-            .map_err(|error| decoder_open_error(error, codec_id.name(), &options.cancellation))?;
-        let mut decoder_context = context.decoder();
-        // libavcodec needs the packet time base to adjust timestamps when it
-        // applies encoder-delay / discard-padding metadata (for example MP3
-        // skip samples). Without it FFmpeg still removes those samples, but
-        // logs that it could not move the associated timestamps. The decoded
-        // frame PTS is then less useful for mapping output back to media time.
-        if stream_time_base.numerator() > 0 && stream_time_base.denominator() > 0 {
-            decoder_context.set_packet_time_base(stream_time_base);
-        }
-        let decoder = decoder_context
-            .audio()
-            .map_err(|error| decoder_open_error(error, codec_id.name(), &options.cancellation))?;
-
-        let mut metadata: BTreeMap<String, String> = input
-            .metadata()
-            .iter()
-            .map(|(key, value)| (key.to_owned(), value.to_owned()))
-            .collect();
-        metadata.extend(stream_tags);
-
-        let info = AudioStreamInfo {
-            stream_index,
-            codec: decoder
-                .codec()
-                .map(|codec| codec.name().to_owned())
-                .unwrap_or_else(|| codec_id.name().to_owned()),
-            sample_rate: (decoder.rate() > 0).then_some(decoder.rate()),
-            channels: (decoder.channels() > 0).then_some(decoder.channels()),
-            channel_layout: decoder_layout_description(&decoder)
-                .or_else(|| layout_description_from_mask(decoder.channel_layout())),
-            duration: stream_duration
-                .checked_duration(stream_time_base)
-                .or_else(|| duration_from_av_time_base(input.duration())),
-            bit_rate: (decoder.bit_rate() > 0).then_some(decoder.bit_rate() as u64),
-            metadata,
-        };
-
+    pub(crate) fn open_for_playback(
+        source: InputSource,
+        options: DecoderOptions,
+    ) -> Result<Self, DecoderError> {
+        let reader = AudioPacketReader::open(source, options)?;
+        let cancellation = reader.cancellation.clone();
         Ok(Self {
-            input,
-            decoder,
-            audio_stream_index: stream_index,
-            network_input,
-            stream_time_base,
-            info,
-            cancellation: options.cancellation,
+            reader,
+            decoder: None,
+            cancellation,
             resampler: None,
             pending_frames: VecDeque::new(),
             next_sample_position: None,
             seek_target_sample: None,
-            demux_finished: false,
             finished: false,
         })
     }
 
+    pub(crate) fn opus_passthrough_rejection(&self) -> Option<&'static str> {
+        self.reader.opus_passthrough_rejection()
+    }
+
+    pub(crate) fn read_compressed_packet(
+        &mut self,
+    ) -> Result<Option<DemuxedAudioPacket>, DecoderError> {
+        self.check_cancelled()?;
+        self.reader.read_audio_packet()
+    }
+
+    pub(crate) fn source_boundary_sample(&self) -> Option<u64> {
+        self.reader.source_boundary_sample()
+    }
+
+    pub(crate) fn packet_history_before(&self, boundary_sample: u64) -> Vec<DemuxedAudioPacket> {
+        self.reader.history_before(boundary_sample)
+    }
+
+    pub(crate) fn queue_compressed_packet(&mut self, packet: DemuxedAudioPacket) {
+        self.reader.pending_packets.push_front(packet);
+        self.reader.demux_finished = false;
+        self.finished = false;
+    }
+
+    pub(crate) fn activate_decoder(
+        &mut self,
+        preroll: &[DemuxedAudioPacket],
+        source_boundary: Option<u64>,
+    ) -> Result<(), DecoderError> {
+        self.check_cancelled()?;
+        if self.decoder.is_some() {
+            return Ok(());
+        }
+        let codec_id = self.reader.codec_parameters.id();
+        let span = tracing::info_span!(
+            target: "remedia_core::decoder",
+            "core.decoder.initialize",
+            codec = codec_id.name(),
+            otel.status_code = tracing::field::Empty,
+            error.type = tracing::field::Empty,
+        );
+        let result = span.in_scope(|| {
+            let context = ffmpeg::codec::context::Context::from_parameters(
+                self.reader.codec_parameters.clone(),
+            )
+            .map_err(|error| decoder_open_error(error, codec_id.name(), &self.cancellation))?;
+            let mut decoder_context = context.decoder();
+            if self.reader.stream_time_base.numerator() > 0
+                && self.reader.stream_time_base.denominator() > 0
+            {
+                decoder_context.set_packet_time_base(self.reader.stream_time_base);
+            }
+            decoder_context
+                .audio()
+                .map_err(|error| decoder_open_error(error, codec_id.name(), &self.cancellation))
+        });
+        let decoder = match result {
+            Ok(decoder) => {
+                span.record("otel.status_code", "OK");
+                decoder
+            }
+            Err(error) => {
+                span.record("otel.status_code", "ERROR");
+                span.record("error.type", error.kind());
+                tracing::error!(
+                    name: "core.decoder.initialization_failed",
+                    target: "remedia_core::decoder",
+                    codec = codec_id.name(),
+                    error_kind = error.kind(),
+                    "native audio decoder initialization failed"
+                );
+                return Err(error);
+            }
+        };
+        self.decoder = Some(decoder);
+        self.finished = false;
+        self.seek_target_sample = source_boundary;
+
+        if !preroll.is_empty() {
+            tracing::debug!(
+                name: "core.decoder.warmup_started",
+                target: "remedia_core::decoder",
+                codec = codec_id.name(),
+                packet_count = preroll.len(),
+                source_boundary_sample = source_boundary,
+                "decoder warm-up replaying bounded Opus history"
+            );
+        }
+        for packet in preroll {
+            self.send_packet(&packet.packet)?;
+            self.drain_decoder()?;
+        }
+        if !preroll.is_empty() {
+            tracing::debug!(
+                name: "core.decoder.warmup_completed",
+                target: "remedia_core::decoder",
+                codec = codec_id.name(),
+                packet_count = preroll.len(),
+                "decoder warm-up reached the transition boundary"
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn deactivate_decoder(&mut self) -> Result<(), DecoderError> {
+        if !self.pending_frames.is_empty() {
+            return Err(DecoderError::Decode(
+                "cannot leave PCM mode while decoded frames are pending".to_owned(),
+            ));
+        }
+        self.decoder = None;
+        self.resampler = None;
+        self.next_sample_position = None;
+        self.seek_target_sample = None;
+        self.finished = false;
+        tracing::debug!(
+            name: "core.decoder.deactivated",
+            target: "remedia_core::decoder",
+            codec = self.reader.codec_parameters.id().name(),
+            "native decoder and resampler released after passthrough transition"
+        );
+        Ok(())
+    }
+
+    /// Roll back an unsuccessful passthrough-to-PCM activation while retaining
+    /// the demuxer and its unread input position.
+    pub(crate) fn discard_decoder_activation(&mut self) {
+        self.decoder = None;
+        self.resampler = None;
+        self.pending_frames.clear();
+        self.next_sample_position = None;
+        self.seek_target_sample = None;
+        self.finished = false;
+    }
+
+    pub(crate) fn has_pending_frames(&self) -> bool {
+        !self.pending_frames.is_empty()
+    }
+
+    pub(crate) fn read_next_timed_frame(
+        &mut self,
+    ) -> Result<Option<DecodedPcmFrame>, DecoderError> {
+        self.next_timed_frame()
+    }
+
     /// Return metadata for the selected audio stream.
     pub fn info(&self) -> &AudioStreamInfo {
-        &self.info
+        &self.reader.info
     }
 
     /// Return the fixed normalized output format.
@@ -295,12 +631,12 @@ impl AudioDecoder {
     pub fn seek(&mut self, position: Duration) -> Result<(), DecoderError> {
         let _log_capture = crate::ffmpeg_logging::capture();
         self.check_cancelled()?;
-        if !self.input.is_seekable() {
+        if !self.reader.input.is_seekable() {
             return Err(DecoderError::UnsupportedSeeking(
                 "the byte stream is non-seekable".to_owned(),
             ));
         }
-        if let Some(duration) = self.info.duration
+        if let Some(duration) = self.reader.info.duration
             && position > duration
         {
             return Err(DecoderError::SeekOutOfRange {
@@ -317,19 +653,24 @@ impl AudioDecoder {
         let target_sample = duration_to_sample_position(position).map_err(|_| {
             DecoderError::UnsupportedSeeking("the target exceeds the output timeline".to_owned())
         })?;
-        if let Err(error) = self.input.seek(timestamp, ..) {
+        if let Err(error) = self.reader.input.seek(timestamp, ..) {
             if self.cancellation.is_cancelled() {
                 return Err(DecoderError::Cancelled);
             }
             return Err(DecoderError::UnsupportedSeeking(error.to_string()));
         }
 
-        self.decoder.flush();
+        if let Some(decoder) = self.decoder.as_mut() {
+            decoder.flush();
+        }
         self.resampler = None;
         self.pending_frames.clear();
         self.next_sample_position = None;
         self.seek_target_sample = Some(target_sample);
-        self.demux_finished = false;
+        self.reader.demux_finished = false;
+        self.reader.pending_packets.clear();
+        self.reader.next_source_sample = Some(target_sample);
+        self.reader.clear_packet_history();
         self.finished = false;
         Ok(())
     }
@@ -343,6 +684,9 @@ impl AudioDecoder {
     pub(crate) fn next_timed_frame(&mut self) -> Result<Option<DecodedPcmFrame>, DecoderError> {
         let _log_capture = crate::ffmpeg_logging::capture();
         self.check_cancelled()?;
+        if self.decoder.is_none() {
+            self.activate_decoder(&[], None)?;
+        }
         if let Some(frame) = self.pending_frames.pop_front() {
             return Ok(Some(frame));
         }
@@ -353,36 +697,17 @@ impl AudioDecoder {
         loop {
             self.check_cancelled()?;
 
-            if !self.demux_finished {
-                let mut packet = ffmpeg::Packet::empty();
-                match packet.read(&mut self.input) {
-                    Ok(()) => {
-                        if packet.stream() == self.audio_stream_index
-                            && let Err(error) = self.decoder.send_packet(&packet)
-                        {
-                            if is_again(error) {
-                                self.drain_decoder()?;
-                                self.decoder.send_packet(&packet).map_err(|error| {
-                                    self.decode_error(error, "sending an audio packet")
-                                })?;
-                            } else {
-                                return Err(self.decode_error(error, "sending an audio packet"));
-                            }
-                        }
-                    }
-                    Err(ffmpeg::Error::Eof) => {
-                        if let Some(message) = self.input.producer_failure() {
-                            return Err(DecoderError::InputFailure(message));
-                        }
-                        self.demux_finished = true;
-                        self.decoder.send_eof().map_err(|error| {
+            if !self.reader.demux_finished {
+                match self.read_compressed_packet()? {
+                    Some(packet) => self.send_packet(&packet.packet)?,
+                    None => self
+                        .decoder
+                        .as_mut()
+                        .ok_or_else(|| DecoderError::Decode("decoder is inactive".into()))?
+                        .send_eof()
+                        .map_err(|error| {
                             self.decode_error(error, "signaling the end of the input")
-                        })?;
-                    }
-                    Err(error) if is_again(error) => continue,
-                    Err(error) => {
-                        return Err(self.input_error(error, "reading media packets"));
-                    }
+                        })?,
                 }
             }
 
@@ -391,7 +716,7 @@ impl AudioDecoder {
                 return Ok(Some(frame));
             }
 
-            if self.demux_finished {
+            if self.reader.demux_finished {
                 self.flush_resampler()?;
                 self.finished = true;
                 return Ok(self.pending_frames.pop_front());
@@ -403,7 +728,10 @@ impl AudioDecoder {
         loop {
             self.check_cancelled()?;
             let mut decoded = ffmpeg::frame::Audio::empty();
-            match self.decoder.receive_frame(&mut decoded) {
+            let Some(decoder) = self.decoder.as_mut() else {
+                return Ok(());
+            };
+            match decoder.receive_frame(&mut decoded) {
                 Ok(()) => self.convert_frame(&decoded)?,
                 Err(ffmpeg::Error::Eof) => {
                     return Ok(());
@@ -414,6 +742,25 @@ impl AudioDecoder {
                 Err(error) => return Err(self.decode_error(error, "receiving a decoded frame")),
             }
         }
+    }
+
+    fn send_packet(&mut self, packet: &ffmpeg::Packet) -> Result<(), DecoderError> {
+        let Some(decoder) = self.decoder.as_mut() else {
+            return Err(DecoderError::Decode("decoder is inactive".into()));
+        };
+        if let Err(error) = decoder.send_packet(packet) {
+            if is_again(error) {
+                self.drain_decoder()?;
+                self.decoder
+                    .as_mut()
+                    .ok_or_else(|| DecoderError::Decode("decoder is inactive".into()))?
+                    .send_packet(packet)
+                    .map_err(|error| self.decode_error(error, "sending an audio packet"))?;
+            } else {
+                return Err(self.decode_error(error, "sending an audio packet"));
+            }
+        }
+        Ok(())
     }
 
     fn convert_frame(&mut self, decoded: &ffmpeg::frame::Audio) -> Result<(), DecoderError> {
@@ -529,7 +876,7 @@ impl AudioDecoder {
 
         let source_start = timestamp_to_output_sample(
             source_timestamp,
-            self.stream_time_base,
+            self.reader.stream_time_base,
             OUTPUT_SAMPLE_RATE_HZ,
         );
         let previous_next_sample = self.next_sample_position;
@@ -613,18 +960,6 @@ impl AudioDecoder {
             other => other,
         }
     }
-
-    fn input_error(&self, error: ffmpeg::Error, operation: &'static str) -> DecoderError {
-        if let Some(message) = self.input.producer_failure() {
-            return DecoderError::InputFailure(message);
-        }
-        ffmpeg_error(
-            error,
-            operation,
-            self.cancellation.is_cancelled(),
-            self.network_input,
-        )
-    }
 }
 
 fn decoder_open_error(
@@ -640,6 +975,72 @@ fn decoder_open_error(
     } else {
         DecoderError::DecoderInitialization(format!("{codec}: {error}"))
     }
+}
+
+fn codec_parameter_metadata(
+    parameters: &ffmpeg::codec::Parameters,
+) -> (
+    Option<u32>,
+    Option<u16>,
+    Option<u64>,
+    Option<String>,
+    i32,
+    i32,
+) {
+    // SAFETY: Parameters owns a live AVCodecParameters allocation. The fields
+    // read below are scalar values or a borrowed AVChannelLayout inspected
+    // synchronously; no native pointer escapes this helper.
+    let native = unsafe { &*parameters.as_ptr() };
+    let sample_rate = u32::try_from(native.sample_rate)
+        .ok()
+        .filter(|sample_rate| *sample_rate > 0);
+    let channels = u16::try_from(native.ch_layout.nb_channels)
+        .ok()
+        .filter(|channels| *channels > 0);
+    let bit_rate = u64::try_from(native.bit_rate)
+        .ok()
+        .filter(|bit_rate| *bit_rate > 0);
+    let channel_layout = unsafe { av_channel_layout_description(&native.ch_layout) };
+    (
+        sample_rate,
+        channels,
+        bit_rate,
+        channel_layout,
+        native.initial_padding,
+        native.trailing_padding,
+    )
+}
+
+fn opus_head_passthrough_rejection(
+    parameters: &ffmpeg::codec::Parameters,
+    source_channels: Option<u16>,
+) -> Option<&'static str> {
+    // SAFETY: Parameters owns a live AVCodecParameters allocation. The
+    // extradata is borrowed for the duration of this parse only.
+    let native = unsafe { &*parameters.as_ptr() };
+    if native.extradata.is_null() || native.extradata_size < 19 {
+        return Some("Opus stream does not expose a complete OpusHead");
+    }
+    // SAFETY: FFmpeg guarantees extradata is readable for extradata_size bytes
+    // while the owning Parameters value remains alive.
+    let extra =
+        unsafe { std::slice::from_raw_parts(native.extradata, native.extradata_size as usize) };
+    if !extra.starts_with(b"OpusHead") || extra[8] > 1 {
+        return Some("Opus codec initialization data is not a supported OpusHead");
+    }
+    if !matches!(extra[9], 1 | 2) || extra[18] != 0 {
+        return Some("Opus channel mapping configuration is not family zero");
+    }
+    if source_channels != Some(u16::from(extra[9])) {
+        return Some("OpusHead channel count disagrees with stream parameters");
+    }
+    if u16::from_le_bytes([extra[10], extra[11]]) != 0 {
+        return Some("Opus stream has nonzero pre-skip");
+    }
+    if i16::from_le_bytes([extra[16], extra[17]]) != 0 {
+        return Some("OpusHead requires output gain");
+    }
+    None
 }
 
 fn is_again(error: ffmpeg::Error) -> bool {
@@ -749,20 +1150,6 @@ impl CheckedDuration for i64 {
     }
 }
 
-fn decoder_layout_description(decoder: &AudioCodecDecoder) -> Option<String> {
-    // SAFETY: `decoder` owns this context and remains alive for the call.
-    let context = unsafe { decoder.as_ptr() };
-    if context.is_null() {
-        return None;
-    }
-
-    // SAFETY: `context` is borrowed from the live FFmpeg decoder. The
-    // `ch_layout` field is an AVChannelLayout in the native FFmpeg API across
-    // the supported versions; querying it avoids converting ffmpeg-next's
-    // version-dependent legacy/new ChannelLayout wrapper.
-    unsafe { av_channel_layout_description(&(*context).ch_layout) }
-}
-
 fn frame_layout_description(frame: &ffmpeg::frame::Audio) -> Option<String> {
     // SAFETY: `frame` owns this frame and remains alive for the call.
     let frame = unsafe { frame.as_ptr() };
@@ -823,4 +1210,23 @@ unsafe fn av_channel_layout_description(layout: &ffmpeg::ffi::AVChannelLayout) -
     // SAFETY: FFmpeg writes a NUL-terminated description when it succeeds.
     let description = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) };
     Some(description.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod packet_reader_tests {
+    use super::*;
+
+    #[test]
+    fn packet_reader_does_not_initialize_a_pcm_decoder() {
+        let mut decoder = AudioDecoder::open_for_playback(
+            InputSource::bytes(
+                include_bytes!("../tests/fixtures/generated-opus-passthrough.ogg").to_vec(),
+            ),
+            DecoderOptions::default(),
+        )
+        .unwrap();
+        assert!(decoder.decoder.is_none());
+        assert!(decoder.read_compressed_packet().unwrap().is_some());
+        assert!(decoder.decoder.is_none());
+    }
 }

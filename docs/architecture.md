@@ -9,14 +9,24 @@ playback, Discord session, and diagnostics APIs.
 ## Rust crates
 
 - **`remedia-core`** opens local filesystem paths, HTTP(S) URLs, owned encoded bytes, and bounded
-  byte streams with libavformat, selects and decodes an audio stream with libavcodec, and converts
-  output through libswresample to interleaved 48 kHz stereo `f32` PCM. It uses native FFmpeg
-  libraries rather than starting FFmpeg subprocesses.
+  byte streams with libavformat and selects an audio stream. Its demux packet reader is separate
+  from a lazily created libavcodec decoder and libswresample converter, while the public
+  `AudioDecoder` continues to return normalized PCM. For an encoded-Opus-capable output, playback
+  can forward a conservative subset of untrimmed 48 kHz mono/stereo family-zero Opus packets
+  directly; other sources, outputs, and processing configurations use PCM and, when applicable,
+  native libopus encoding. It uses native FFmpeg libraries rather than starting FFmpeg subprocesses.
   Playback sessions manage one source, lifecycle state, seeking, optional native libavfilter
   graphs, linear master gain, and frame delivery to a generic output. With no graph configured,
-  PCM bypasses libavfilter. The generic Opus output adapter uses native libopus, accumulates variable PCM blocks into
-  20 ms stereo Opus packets, and marks a padded final packet's actual media duration. It does not
-  pace packets or expose Discord types. Device output is not implemented.
+  PCM bypasses libavfilter. The generic Opus output adapter uses native libopus lazily, accumulates
+  variable PCM blocks into 20 ms stereo Opus packets, and marks a padded final packet's actual media
+  duration. It shares one encoded packet sink between source passthrough and PCM encoding. Dynamic
+  changes retain the demuxer and transport; up to 120 ms / 512 KiB of compressed history warms a
+  decoder, and partial PCM is closed at a legal packet boundary before returning to passthrough.
+  Packets requiring pre-skip, discard padding, or other trimming fall back to PCM. Filter-graph
+  delayed output is discarded at live processing transitions, so a small gap or artifact can occur.
+  Source media, processed output samples, and RTP time remain distinct. The standalone benchmark
+  example compares passthrough, re-encoding, and filtered modes. The adapter does not pace packets
+  or expose Discord types. Device output is not implemented.
 - **`remedia-discord`** accepts already-encoded Opus packets and owns voice gateway v8, UDP
   discovery, DAVE MLS/media encryption through `davey`, RTP packetization, transport encryption,
   speaking state, real-time packet pacing, and connection cleanup. It does not decode or encode
@@ -99,12 +109,13 @@ tracked as a sample offset on the output timeline. Duration and stream metadata 
 decoder supports timestamp-based seeking where the FFmpeg demuxer can seek; HTTP range behavior may
 limit remote seeking.
 
-Each `PlaybackSession` owns one blocking worker, decoder, and output instance. It applies direct
-backpressure by synchronously handing one owned frame at a time to `MediaOutput`; it has no
-session-level audio queue. Pause waits for an in-flight read or output call to reach a frame boundary.
-Stop cancels the decoder/output and joins the worker. `NullOutput` records consumption statistics
-without real-time pacing. The session distinguishes the position submitted to an output from an
-optional output-reported played position.
+Each `PlaybackSession` owns one blocking worker, one demux reader, an optional lazily initialized
+decoder/resampler, and one output instance. It applies direct backpressure by synchronously handing
+one owned PCM frame or encoded Opus packet to the output; it has no session-level audio queue. Pause
+waits for an in-flight read or output call to reach a safe boundary. Stop cancels source/output work
+and joins the worker. `NullOutput` records PCM consumption without real-time pacing. The session
+distinguishes source position, submitted output position, and optional output-reported played
+position.
 
 An optional single-input/single-output `PcmFilterGraph` uses libavfilter after normalized PCM
 decoding and before independent master gain. Replacements are built and validated before activation,
@@ -127,16 +138,23 @@ time. `PlaybackPosition.played` is only populated by outputs that can measure co
 Discord currently reports none. Discord's RTP timeline remains connection-owned and continuous
 across graph replacement, seek, and source replacement.
 
-`OpusEncoderOutput` owns one libopus encoder and one packet sink per playback. The Discord adapter
-owns a bounded queue and does not block Tokio runtime workers: the synchronous core worker is the
-backpressured producer, and the Discord task schedules packets against a monotonic deadline. An
-underrun sends Opus silence at the normal cadence. Packets more than one packet duration late are
-dropped and the sender rebases its deadline rather than transmitting a catch-up burst. Pause and
-end-of-stream drain accepted packets, send the five protocol silence frames, and turn speaking off.
-Seek increments an output generation and discards queued pre-seek packets; RTP sequence, timestamp,
-and transport nonce state remain owned by the connection and continue across seeks and playback
-replacement. Discord currently cannot report audible sample position, so session `played` remains
-unknown while `submitted` tracks decoded frames accepted by the Opus output.
+`OpusEncoderOutput` owns one playback-scoped packet sink and lazily constructs its libopus encoder
+when PCM first arrives. Compatible source packets and encoded PCM use that same sink. Passthrough
+eligibility is deliberately narrow: a packet must match the Opus payload's parsed duration, avoid
+container trimming, and pass the output's compatibility policy. Filter and gain changes activate
+the decoder without reopening the source; bounded preceding packet history warms it. Returning to
+passthrough closes partial encoder PCM at a legal packet boundary and discards filter-internal
+delayed output. The transition can add a short gap/artifact but does not reset output or RTP state.
+
+The Discord adapter owns a bounded queue and does not block Tokio runtime workers: the synchronous
+core worker is the backpressured producer, and the Discord task schedules packets against a
+monotonic deadline. An underrun sends Opus silence at the normal cadence. Packets more than one
+packet duration late are dropped and the sender rebases its deadline rather than transmitting a
+catch-up burst. Pause and end-of-stream drain accepted packets, send the five protocol silence
+frames, and turn speaking off. Seek increments an output generation and discards queued pre-seek
+packets; RTP sequence, timestamp, and transport nonce state remain owned by the connection and
+continue across seeks, processing-mode transitions, and source replacement. Discord currently
+cannot report audible sample position, so session `played` remains unknown.
 
 Each Discord connection owns one WebSocket, one UDP socket, one DAVE session, and one sender task.
 Playback output instances are connection-scoped producers; creating another output supersedes the

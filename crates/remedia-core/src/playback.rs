@@ -9,10 +9,12 @@ use remedia_observability::{ObservabilityHandle, next_correlation_id};
 use thiserror::Error;
 
 use crate::decoder::{
-    AudioDecoder, AudioStreamInfo, DecodedPcmFrame, DecoderOptions, PcmFrame, SourcePosition,
+    AudioDecoder, AudioStreamInfo, DecodedPcmFrame, DecoderOptions, DemuxedAudioPacket, PcmFrame,
+    SourcePosition,
 };
 use crate::error::DecoderError;
 use crate::filter::{FilterGraphError, PcmFilterGraph, PcmProcessor, ProcessError};
+use crate::opus::EncodedOpusPacket;
 use crate::output::{MediaOutput, OutputError};
 use crate::source::{CancellationToken, InputSource};
 use crate::with_dispatch;
@@ -40,6 +42,15 @@ pub enum PlaybackState {
     Completed,
     /// An unrecoverable decoder, output, or worker failure occurred.
     Failed,
+}
+
+/// The active source-processing path selected for an Opus-capable output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlaybackProcessingMode {
+    /// The compressed source Opus payload is forwarded without PCM conversion.
+    Passthrough,
+    /// The source is decoded and processed as PCM; an Opus-capable output then encodes it.
+    Transcoding,
 }
 
 impl fmt::Display for PlaybackState {
@@ -138,10 +149,11 @@ pub enum MediaPositionAccuracy {
 
 /// A single-source playback session.
 ///
-/// Each active session owns a blocking worker thread, decoder, and one output
-/// instance. Frames are delivered synchronously, so backpressure stops decoding
-/// without a session-level audio queue. A new `play` call is rejected while a
-/// source is active; call `stop` before starting a replacement.
+/// Each active session owns a blocking worker thread, one demux reader, and one
+/// output instance. It creates a decoder only when PCM is required. Frames or
+/// encoded packets are delivered synchronously, so backpressure stops further
+/// input without a session-level audio queue. A new `play` call is rejected
+/// while a source is active; call `stop` before starting a replacement.
 pub struct PlaybackSession {
     shared: Arc<SessionShared>,
     worker: Mutex<Option<JoinHandle<()>>>,
@@ -167,6 +179,9 @@ struct SessionData {
     state: PlaybackState,
     generation: u64,
     playback_id: u64,
+    processing_mode: Option<PlaybackProcessingMode>,
+    passthrough_available: bool,
+    last_processing_error: Option<PlaybackError>,
     duration: Option<Duration>,
     info: Option<AudioStreamInfo>,
     submitted_position: Duration,
@@ -195,6 +210,7 @@ struct FilterUpdate {
 }
 
 enum WorkerAction {
+    ConfigureProcessing,
     Decode,
     Deliver(DecodedPcmFrame),
     Seek(SeekRequest),
@@ -228,6 +244,9 @@ impl PlaybackSession {
                     state: PlaybackState::Idle,
                     generation: 0,
                     playback_id: 0,
+                    processing_mode: None,
+                    passthrough_available: false,
+                    last_processing_error: None,
                     duration: None,
                     info: None,
                     submitted_position: Duration::ZERO,
@@ -324,6 +343,9 @@ impl PlaybackSession {
             let generation = data.generation;
             let playback_id = next_correlation_id();
             data.playback_id = playback_id;
+            data.processing_mode = None;
+            data.passthrough_available = false;
+            data.last_processing_error = None;
             data.state = PlaybackState::Starting;
             data.duration = None;
             data.info = None;
@@ -613,6 +635,7 @@ impl PlaybackSession {
         if data.filter_graph == expression {
             return Ok(());
         }
+        data.last_processing_error = None;
         let playback_id = data.playback_id;
         let graph_enabled = expression.is_some();
         data.filter_graph = expression;
@@ -641,10 +664,17 @@ impl PlaybackSession {
         });
         if let Some(receiver) = response {
             return receiver.recv().unwrap_or_else(|_| {
-                Err(lock(&self.shared.data)
-                    .last_error
-                    .clone()
-                    .unwrap_or(PlaybackError::WorkerPanicked))
+                let data = lock(&self.shared.data);
+                if data.stopping
+                    || matches!(data.state, PlaybackState::Stopping | PlaybackState::Stopped)
+                {
+                    Err(PlaybackError::Cancelled)
+                } else {
+                    Err(data
+                        .last_error
+                        .clone()
+                        .unwrap_or(PlaybackError::WorkerPanicked))
+                }
             });
         }
         Ok(())
@@ -660,12 +690,69 @@ impl PlaybackSession {
     /// The accepted linear amplitude range is `0.0..=2.0`. Samples are hard
     /// clipped to `[-1.0, 1.0]`; this is not a limiter or loudness normalizer.
     /// Changes take effect at the next processed PCM frame and persist across
-    /// tracks in this session.
+    /// tracks in this session. If the change requires entering or leaving Opus
+    /// passthrough, this call waits for that worker transition and returns its
+    /// decoder/output error. The wait can include a blocking input read or
+    /// bounded-output backpressure; `stop` cancels it. While paused, the value
+    /// is staged for the resume boundary instead of making this call wait.
     pub fn set_volume(&self, gain: f32) -> Result<(), PlaybackError> {
         if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
             return Err(PlaybackError::InvalidVolume(gain));
         }
-        lock(&self.shared.data).volume = gain;
+        let (generation, target_mode) = {
+            let mut data = lock(&self.shared.data);
+            if data.volume == gain {
+                return Ok(());
+            }
+            data.last_processing_error = None;
+            data.volume = gain;
+            let target_mode = data.passthrough_available.then_some(
+                if data.filter_graph.is_none() && gain == 1.0 {
+                    PlaybackProcessingMode::Passthrough
+                } else {
+                    PlaybackProcessingMode::Transcoding
+                },
+            );
+            let target_mode = target_mode.filter(|target| {
+                data.processor_initialized
+                    && data.state == PlaybackState::Playing
+                    && data.processing_mode != Some(*target)
+            });
+            self.shared.changed.notify_all();
+            (data.generation, target_mode)
+        };
+
+        if let Some(target_mode) = target_mode {
+            let mut data = lock(&self.shared.data);
+            loop {
+                if data.generation != generation {
+                    return Err(PlaybackError::Cancelled);
+                }
+                if let Some(error) = data.last_processing_error.take() {
+                    return Err(error);
+                }
+                if data.processing_mode == Some(target_mode) {
+                    return Ok(());
+                }
+                if data.stopping
+                    || matches!(data.state, PlaybackState::Stopping | PlaybackState::Stopped)
+                {
+                    return Err(PlaybackError::Cancelled);
+                }
+                if data.state == PlaybackState::Failed {
+                    return Err(data
+                        .last_error
+                        .clone()
+                        .unwrap_or(PlaybackError::WorkerPanicked));
+                }
+                if !is_active(data.state) {
+                    // Natural EOF may win the race. The configured gain is
+                    // retained for the next source on this session.
+                    return Ok(());
+                }
+                data = wait(&self.shared.changed, data);
+            }
+        }
         Ok(())
     }
 
@@ -797,6 +884,12 @@ impl PlaybackSession {
     /// Return the current typed lifecycle state.
     pub fn state(&self) -> PlaybackState {
         lock(&self.shared.data).state
+    }
+
+    /// Return the current source processing mode when a playback source has
+    /// started. `None` is returned before startup selects a path.
+    pub fn processing_mode(&self) -> Option<PlaybackProcessingMode> {
+        lock(&self.shared.data).processing_mode
     }
 
     /// Return submitted position and an optional output-reported played
@@ -933,19 +1026,52 @@ fn worker_loop(
     ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
 ) {
     let _log_capture = crate::ffmpeg_logging::capture();
+    let source_kind = source.kind();
     let decoder_started = Instant::now();
-    let decoder_result = AudioDecoder::open_with_options(
-        source,
-        DecoderOptions {
-            cancellation: cancellation.clone(),
-            ..DecoderOptions::default()
-        },
+    let open_span = tracing::info_span!(
+        target: "remedia_core::decoder",
+        "core.media.open",
+        source_kind,
+        otel.status_code = tracing::field::Empty,
+        error.type = tracing::field::Empty,
     );
+    let decoder_result = open_span.in_scope(|| {
+        AudioDecoder::open_for_playback(
+            source,
+            DecoderOptions {
+                cancellation: cancellation.clone(),
+                ..DecoderOptions::default()
+            },
+        )
+    });
     let metrics = shared.observability.metrics();
     metrics.record_decoder_startup(decoder_started.elapsed().as_secs_f64());
     let mut decoder = match decoder_result {
-        Ok(decoder) => decoder,
+        Ok(decoder) => {
+            open_span.record("otel.status_code", "OK");
+            tracing::info!(
+                name: "core.media.opened",
+                target: "remedia_core::decoder",
+                source_kind,
+                stream_index = decoder.info().stream_index,
+                codec = %decoder.info().codec,
+                source_sample_rate = decoder.info().sample_rate,
+                source_channels = decoder.info().channels,
+                duration_known = decoder.info().duration.is_some(),
+                "audio stream selected"
+            );
+            decoder
+        }
         Err(error) => {
+            open_span.record("otel.status_code", "ERROR");
+            open_span.record("error.type", error.kind());
+            tracing::error!(
+                name: "core.media.open_failed",
+                target: "remedia_core::decoder",
+                source_kind,
+                error_kind = error.kind(),
+                "media input could not be opened"
+            );
             let error = if is_stopped(&shared, generation) {
                 PlaybackError::Cancelled
             } else {
@@ -973,6 +1099,51 @@ fn worker_loop(
     };
 
     let info = decoder.info().clone();
+    let output_opus = output.encoded_opus_output();
+    let passthrough_rejection = decoder.opus_passthrough_rejection();
+    let mut can_passthrough = output_opus.is_some() && passthrough_rejection.is_none();
+    let mut passthrough_mode =
+        can_passthrough && graph_expression.is_none() && lock(&shared.data).volume == 1.0;
+    {
+        let mut data = lock(&shared.data);
+        data.processing_mode = Some(if passthrough_mode {
+            PlaybackProcessingMode::Passthrough
+        } else {
+            PlaybackProcessingMode::Transcoding
+        });
+        data.passthrough_available = can_passthrough;
+        shared.changed.notify_all();
+    }
+    if can_passthrough {
+        tracing::info!(
+            name: "core.playback.opus_passthrough_eligible",
+            target: "remedia_core::playback",
+            playback_id = lock(&shared.data).playback_id,
+            "selected Opus stream can use the encoded packet path"
+        );
+    } else if let Some(reason) = passthrough_rejection {
+        tracing::debug!(
+            name: "core.playback.opus_passthrough_rejected",
+            target: "remedia_core::playback",
+            playback_id = lock(&shared.data).playback_id,
+            reason,
+            "selected stream requires PCM transcoding"
+        );
+    } else if output_opus.is_none() {
+        tracing::trace!(
+            name: "core.playback.opus_passthrough_rejected",
+            target: "remedia_core::playback",
+            playback_id = lock(&shared.data).playback_id,
+            reason = "output does not accept encoded Opus",
+            "selected output uses the PCM path"
+        );
+    }
+    if !passthrough_mode && let Err(error) = decoder.activate_decoder(&[], None) {
+        let error: PlaybackError = error.into();
+        fail_session(&shared, generation, error.clone(), &cancellation, &output);
+        let _ = ready.send(Err(error));
+        return;
+    }
     if ready.send(Ok(info)).is_err() {
         cancellation.cancel();
         let _ = safe_cancel(&output);
@@ -992,21 +1163,278 @@ fn worker_loop(
     );
 
     let mut pending_frame = None;
+    let mut deferred_filter_update: Option<FilterUpdate> = None;
     let mut input_finished = false;
     loop {
-        match next_worker_action(&shared, generation, &mut pending_frame, input_finished) {
+        match next_worker_action(
+            &shared,
+            generation,
+            &mut pending_frame,
+            input_finished,
+            can_passthrough,
+            passthrough_mode,
+        ) {
             WorkerAction::Exit => return,
-            WorkerAction::Decode => match decoder.next_timed_frame() {
-                Ok(Some(frame)) => pending_frame = Some(frame),
-                Ok(None) => input_finished = true,
-                Err(error) => {
-                    if is_stopped(&shared, generation) {
+            WorkerAction::ConfigureProcessing => {
+                if passthrough_mode {
+                    let source_boundary = processor
+                        .source_position()
+                        .map(|position| position.sample)
+                        .or_else(|| decoder.source_boundary_sample())
+                        .unwrap_or(0);
+                    let history = decoder.packet_history_before(source_boundary);
+                    let activation = decoder.activate_decoder(&history, Some(source_boundary));
+                    if let Err(error) = activation {
+                        let playback_error: PlaybackError = error.into();
+                        if can_passthrough {
+                            decoder.discard_decoder_activation();
+                            {
+                                let mut data = lock(&shared.data);
+                                data.filter_graph = processor.expression().map(str::to_owned);
+                                data.volume = 1.0;
+                                data.processing_mode = Some(PlaybackProcessingMode::Passthrough);
+                                data.last_processing_error = Some(playback_error.clone());
+                                shared.changed.notify_all();
+                            }
+                            tracing::warn!(
+                                name: "core.playback.processing_mode_transition_failed",
+                                target: "remedia_core::playback",
+                                playback_id,
+                                source_boundary_sample = source_boundary,
+                                fallback_mode = "passthrough",
+                                error_kind = "decoder_initialization",
+                                "PCM mode could not be initialized; existing Opus passthrough continues"
+                            );
+                            if let Some(update) = deferred_filter_update.take() {
+                                let _ = update.response.send(Err(playback_error));
+                            }
+                            continue;
+                        }
+                        if let Some(update) = deferred_filter_update.take() {
+                            let _ = update.response.send(Err(playback_error.clone()));
+                        }
+                        fail_session(&shared, generation, playback_error, &cancellation, &output);
                         return;
                     }
-                    fail_session(&shared, generation, error.into(), &cancellation, &output);
-                    return;
+                    let applied_filter_update = deferred_filter_update.take();
+                    if let Some(update) = applied_filter_update {
+                        processor.replace(update.graph);
+                        passthrough_mode = false;
+                        {
+                            let mut data = lock(&shared.data);
+                            data.processing_mode = Some(PlaybackProcessingMode::Transcoding);
+                            shared.changed.notify_all();
+                        }
+                        // Do not acknowledge a filter change until the decoder,
+                        // graph, and public processing-mode snapshot agree.
+                        let _ = update.response.send(Ok(()));
+                    } else {
+                        passthrough_mode = false;
+                        {
+                            let mut data = lock(&shared.data);
+                            data.processing_mode = Some(PlaybackProcessingMode::Transcoding);
+                            shared.changed.notify_all();
+                        }
+                    }
+                    tracing::info!(
+                        name: "core.playback.processing_mode_changed",
+                        target: "remedia_core::playback",
+                        playback_id,
+                        mode = "transcoding",
+                        source_boundary_sample = source_boundary,
+                        warmup_packets = history.len(),
+                        warmup_policy_ms = 120_u16,
+                        "playback switched from Opus passthrough to PCM processing"
+                    );
+                } else {
+                    if decoder.has_pending_frames() {
+                        match decoder.read_next_timed_frame() {
+                            Ok(Some(frame)) => {
+                                pending_frame = Some(frame);
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                let playback_error: PlaybackError = error.into();
+                                if let Some(update) = deferred_filter_update.take() {
+                                    let _ = update.response.send(Err(playback_error.clone()));
+                                }
+                                fail_session(
+                                    &shared,
+                                    generation,
+                                    playback_error,
+                                    &cancellation,
+                                    &output,
+                                );
+                                return;
+                            }
+                        }
+                    }
+                    let next_sample = processor.next_sample();
+                    let Some(encoded_output) = output.encoded_opus_output() else {
+                        let error = PlaybackError::Output(OutputError::new(
+                            "passthrough output capability disappeared during playback",
+                        ));
+                        fail_session(&shared, generation, error, &cancellation, &output);
+                        return;
+                    };
+                    if let Err(error) =
+                        encoded_output.prepare_passthrough(next_sample, &cancellation)
+                    {
+                        if is_stopped(&shared, generation) {
+                            return;
+                        }
+                        fail_session(
+                            &shared,
+                            generation,
+                            PlaybackError::Output(error),
+                            &cancellation,
+                            &output,
+                        );
+                        return;
+                    }
+                    if let Err(error) = decoder.deactivate_decoder() {
+                        fail_session(&shared, generation, error.into(), &cancellation, &output);
+                        return;
+                    }
+                    processor.replace(None);
+                    passthrough_mode = true;
+                    {
+                        let mut data = lock(&shared.data);
+                        data.processing_mode = Some(PlaybackProcessingMode::Passthrough);
+                        shared.changed.notify_all();
+                    }
+                    if let Some(update) = deferred_filter_update.take() {
+                        let _ = update.response.send(Ok(()));
+                    }
+                    tracing::info!(
+                        name: "core.playback.processing_mode_changed",
+                        target: "remedia_core::playback",
+                        playback_id,
+                        mode = "passthrough",
+                        output_sample = next_sample,
+                        buffered_filter_output = "discarded_at_live_transition",
+                        "playback switched from PCM processing to Opus passthrough"
+                    );
                 }
-            },
+            }
+            WorkerAction::Decode => {
+                if passthrough_mode {
+                    match decoder.read_compressed_packet() {
+                        Ok(Some(packet)) => {
+                            let should_process = {
+                                let data = lock(&shared.data);
+                                data.filter_graph.is_some() || data.volume != 1.0
+                            };
+                            if should_process {
+                                decoder.queue_compressed_packet(packet);
+                                continue;
+                            }
+                            let packet_info =
+                                encoded_packet_from_demuxed(&packet, decoder.info().channels);
+                            let accepted = output_opus
+                                .filter(|_| !packet.has_trimming_metadata)
+                                .zip(packet_info.as_ref())
+                                .is_some_and(|(encoded, packet)| {
+                                    encoded.supports_encoded_packet(packet)
+                                });
+                            if accepted {
+                                let Some(packet_info) = packet_info else {
+                                    continue;
+                                };
+                                let start_sample = match processor.record_passthrough_packet(
+                                    packet_info.samples_per_channel,
+                                    packet.source_start_sample,
+                                    packet.source_position_estimated,
+                                ) {
+                                    Ok(start_sample) => start_sample,
+                                    Err(error) => {
+                                        fail_session(
+                                            &shared,
+                                            generation,
+                                            PlaybackError::FilterGraph(Arc::new(error)),
+                                            &cancellation,
+                                            &output,
+                                        );
+                                        return;
+                                    }
+                                };
+                                let packet_info = EncodedOpusPacket {
+                                    start_sample,
+                                    ..packet_info
+                                };
+                                let submitted_end = start_sample.saturating_add(u64::from(
+                                    packet_info.media_samples_per_channel,
+                                ));
+                                let source_end = packet.source_start_sample.map(|start| {
+                                    start.saturating_add(u64::from(
+                                        packet_info.media_samples_per_channel,
+                                    ))
+                                });
+                                if let Some(encoded) = output_opus
+                                    && let Err(error) =
+                                        encoded.write_encoded_packet(packet_info, &cancellation)
+                                {
+                                    if is_stopped(&shared, generation) {
+                                        return;
+                                    }
+                                    fail_session(
+                                        &shared,
+                                        generation,
+                                        PlaybackError::Output(error),
+                                        &cancellation,
+                                        &output,
+                                    );
+                                    return;
+                                } else {
+                                    record_encoded_packet_submitted(
+                                        &shared,
+                                        generation,
+                                        &output,
+                                        submitted_end,
+                                        source_end.map(|sample| SourcePosition {
+                                            sample,
+                                            estimated: packet.source_position_estimated,
+                                        }),
+                                    );
+                                }
+                            } else {
+                                tracing::debug!(
+                                    name: "core.playback.opus_packet_passthrough_rejected",
+                                    target: "remedia_core::playback",
+                                    playback_id,
+                                    packet_bytes = packet.packet.size(),
+                                    reason = if packet.has_trimming_metadata { "packet requires container trimming" } else { "packet duration or payload rejected by output" },
+                                    "falling back to PCM decoding for this source"
+                                );
+                                decoder.queue_compressed_packet(packet);
+                                can_passthrough = false;
+                                lock(&shared.data).passthrough_available = false;
+                            }
+                        }
+                        Ok(None) => input_finished = true,
+                        Err(error) => {
+                            if is_stopped(&shared, generation) {
+                                return;
+                            }
+                            fail_session(&shared, generation, error.into(), &cancellation, &output);
+                            return;
+                        }
+                    }
+                } else {
+                    match decoder.next_timed_frame() {
+                        Ok(Some(frame)) => pending_frame = Some(frame),
+                        Ok(None) => input_finished = true,
+                        Err(error) => {
+                            if is_stopped(&shared, generation) {
+                                return;
+                            }
+                            fail_session(&shared, generation, error.into(), &cancellation, &output);
+                            return;
+                        }
+                    }
+                }
+            }
             WorkerAction::Deliver(decoded_frame) => {
                 let gain = lock(&shared.data).volume;
                 let DecodedPcmFrame {
@@ -1056,16 +1484,32 @@ fn worker_loop(
             }
             WorkerAction::ReplaceFilter(update) => {
                 let next_sample = processor.next_sample();
+                let should_switch_mode = {
+                    let data = lock(&shared.data);
+                    let wants_passthrough =
+                        can_passthrough && update.graph.is_none() && data.volume == 1.0;
+                    let wants_transcoding = update.graph.is_some() || data.volume != 1.0;
+                    (passthrough_mode && wants_transcoding)
+                        || (!passthrough_mode && wants_passthrough)
+                };
+                let apply_while_paused = should_switch_mode
+                    && !passthrough_mode
+                    && lock(&shared.data).state == PlaybackState::Paused
+                    && (pending_frame.is_some() || decoder.has_pending_frames());
                 match output.filter_transition(next_sample, &cancellation) {
                     Ok(()) => {
-                        processor.replace(update.graph);
-                        let _ = update.response.send(Ok(()));
+                        if should_switch_mode && !apply_while_paused {
+                            deferred_filter_update = Some(update);
+                        } else {
+                            processor.replace(update.graph);
+                            let _ = update.response.send(Ok(()));
+                        }
                         tracing::info!(
                             name: "core.playback.filter_graph_replaced",
                             target: "remedia_core::playback",
                             playback_id,
                             next_sample,
-                            graph_enabled = processor.expression().is_some(),
+                            graph_enabled = lock(&shared.data).filter_graph.is_some(),
                             "PCM filtergraph replaced without resetting the output timeline"
                         );
                     }
@@ -1153,52 +1597,34 @@ fn worker_loop(
                     return;
                 }
             },
-            WorkerAction::Seek(request) => match decoder.seek(request.position) {
-                Ok(()) => {
-                    pending_frame = None;
-                    input_finished = false;
-                    let target_sample = samples_from_duration(request.position);
-                    if let Err(error) = processor.reset(target_sample) {
-                        let playback_error = PlaybackError::FilterGraph(Arc::new(error));
+            WorkerAction::Seek(request) => {
+                if passthrough_mode {
+                    if let Err(error) = decoder.activate_decoder(&[], None) {
+                        let playback_error: PlaybackError = error.into();
                         let _ = request.response.send(Err(playback_error.clone()));
                         fail_session(&shared, generation, playback_error, &cancellation, &output);
                         return;
                     }
-                    match output.flush_samples(target_sample, &cancellation) {
-                        Ok(()) => {
-                            let played = safe_played_position(&output);
-                            let mut data = lock(&shared.data);
-                            if data.generation == generation && !data.stopping {
-                                data.submitted_sample = target_sample;
-                                data.submitted_position = request.position;
-                                data.media_position = Some(MediaPosition {
-                                    position: request.position,
-                                    accuracy: MediaPositionAccuracy::Estimated,
-                                });
-                                data.played_position = played;
-                            }
-                            let _ = request.response.send(Ok(()));
-                            tracing::info!(
-                                name: "core.playback.seek_completed",
-                                target: "remedia_core::playback",
-                                playback_id,
-                                position_ms = request.position.as_millis() as u64,
-                                "playback seek applied"
-                            );
-                        }
-                        Err(_) if is_stopped(&shared, generation) => {
-                            let _ = request.response.send(Err(PlaybackError::Cancelled));
-                            return;
-                        }
-                        Err(error) => {
-                            let playback_error = PlaybackError::Output(error);
-                            tracing::error!(
-                                name: "core.playback.seek_failed",
-                                target: "remedia_core::playback",
-                                playback_id,
-                                error_kind = playback_error_kind(&playback_error),
-                                "playback seek failed in output"
-                            );
+                    passthrough_mode = false;
+                }
+                // Packet passthrough cannot trim the first packet after a
+                // demuxer seek to an arbitrary sample. Keep this source in the
+                // decoder path after seeking so FFmpeg can discard pre-target
+                // samples exactly.
+                can_passthrough = false;
+                {
+                    let mut data = lock(&shared.data);
+                    data.passthrough_available = false;
+                    data.processing_mode = Some(PlaybackProcessingMode::Transcoding);
+                    shared.changed.notify_all();
+                }
+                match decoder.seek(request.position) {
+                    Ok(()) => {
+                        pending_frame = None;
+                        input_finished = false;
+                        let target_sample = samples_from_duration(request.position);
+                        if let Err(error) = processor.reset(target_sample) {
+                            let playback_error = PlaybackError::FilterGraph(Arc::new(error));
                             let _ = request.response.send(Err(playback_error.clone()));
                             fail_session(
                                 &shared,
@@ -1209,36 +1635,89 @@ fn worker_loop(
                             );
                             return;
                         }
+                        match output.flush_samples(target_sample, &cancellation) {
+                            Ok(()) => {
+                                let played = safe_played_position(&output);
+                                let mut data = lock(&shared.data);
+                                if data.generation == generation && !data.stopping {
+                                    data.submitted_sample = target_sample;
+                                    data.submitted_position = request.position;
+                                    data.media_position = Some(MediaPosition {
+                                        position: request.position,
+                                        accuracy: MediaPositionAccuracy::Estimated,
+                                    });
+                                    data.played_position = played;
+                                }
+                                let _ = request.response.send(Ok(()));
+                                tracing::info!(
+                                    name: "core.playback.seek_completed",
+                                    target: "remedia_core::playback",
+                                    playback_id,
+                                    position_ms = request.position.as_millis() as u64,
+                                    "playback seek applied"
+                                );
+                            }
+                            Err(_) if is_stopped(&shared, generation) => {
+                                let _ = request.response.send(Err(PlaybackError::Cancelled));
+                                return;
+                            }
+                            Err(error) => {
+                                let playback_error = PlaybackError::Output(error);
+                                tracing::error!(
+                                    name: "core.playback.seek_failed",
+                                    target: "remedia_core::playback",
+                                    playback_id,
+                                    error_kind = playback_error_kind(&playback_error),
+                                    "playback seek failed in output"
+                                );
+                                let _ = request.response.send(Err(playback_error.clone()));
+                                fail_session(
+                                    &shared,
+                                    generation,
+                                    playback_error,
+                                    &cancellation,
+                                    &output,
+                                );
+                                return;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        if is_stopped(&shared, generation) {
+                            let _ = request.response.send(Err(PlaybackError::Cancelled));
+                            return;
+                        }
+                        let playback_error: PlaybackError = error.into();
+                        let recoverable = matches!(
+                            playback_error,
+                            PlaybackError::UnsupportedSeeking(_)
+                                | PlaybackError::SeekOutOfRange { .. }
+                        );
+                        tracing::warn!(
+                            name: "core.playback.seek_failed",
+                            target: "remedia_core::playback",
+                            playback_id,
+                            error_kind = playback_error_kind(&playback_error),
+                            recoverable,
+                            "playback seek was not applied"
+                        );
+                        let _ = request.response.send(Err(playback_error.clone()));
+                        if !recoverable && !is_stopped(&shared, generation) {
+                            fail_session(
+                                &shared,
+                                generation,
+                                playback_error,
+                                &cancellation,
+                                &output,
+                            );
+                            return;
+                        }
+                        if is_stopped(&shared, generation) {
+                            return;
+                        }
                     }
                 }
-                Err(error) => {
-                    if is_stopped(&shared, generation) {
-                        let _ = request.response.send(Err(PlaybackError::Cancelled));
-                        return;
-                    }
-                    let playback_error: PlaybackError = error.into();
-                    let recoverable = matches!(
-                        playback_error,
-                        PlaybackError::UnsupportedSeeking(_) | PlaybackError::SeekOutOfRange { .. }
-                    );
-                    tracing::warn!(
-                        name: "core.playback.seek_failed",
-                        target: "remedia_core::playback",
-                        playback_id,
-                        error_kind = playback_error_kind(&playback_error),
-                        recoverable,
-                        "playback seek was not applied"
-                    );
-                    let _ = request.response.send(Err(playback_error.clone()));
-                    if !recoverable && !is_stopped(&shared, generation) {
-                        fail_session(&shared, generation, playback_error, &cancellation, &output);
-                        return;
-                    }
-                    if is_stopped(&shared, generation) {
-                        return;
-                    }
-                }
-            },
+            }
             WorkerAction::Finish => {
                 let gain = lock(&shared.data).volume;
                 match processor.finish(gain, |frame, source_position| {
@@ -1343,16 +1822,52 @@ fn wait_for_start(shared: &SessionShared, generation: u64) -> bool {
     data.generation == generation && data.state == PlaybackState::Playing
 }
 
+fn encoded_packet_from_demuxed(
+    demuxed: &DemuxedAudioPacket,
+    source_channels: Option<u16>,
+) -> Option<EncodedOpusPacket> {
+    let bytes = demuxed.packet.data()?;
+    let parsed = opus2::packet::parse(bytes).ok()?;
+    if parsed.frames.is_empty() {
+        return None;
+    }
+    let packet_channels = match opus2::packet::get_nb_channels(bytes).ok()? {
+        opus2::Channels::Mono => 1,
+        opus2::Channels::Stereo => 2,
+    };
+    if source_channels != Some(packet_channels) {
+        return None;
+    }
+    let samples = demuxed.samples_per_channel?;
+    Some(EncodedOpusPacket {
+        bytes: bytes.to_vec(),
+        samples_per_channel: samples,
+        media_samples_per_channel: samples,
+        start_sample: 0,
+    })
+}
+
 fn next_worker_action(
     shared: &SessionShared,
     generation: u64,
     pending_frame: &mut Option<DecodedPcmFrame>,
     input_finished: bool,
+    can_passthrough: bool,
+    passthrough_mode: bool,
 ) -> WorkerAction {
     let mut data = lock(&shared.data);
     loop {
         if data.generation != generation || data.stopping || data.state == PlaybackState::Stopped {
             return WorkerAction::Exit;
+        }
+        let wants_passthrough =
+            can_passthrough && data.filter_graph.is_none() && data.volume == 1.0;
+        if !passthrough_mode
+            && wants_passthrough
+            && pending_frame.is_some()
+            && data.state == PlaybackState::Playing
+        {
+            return WorkerAction::Deliver(pending_frame.take().expect("pending frame checked"));
         }
         if let Some(update) = data.pending_filter_graph.take() {
             return WorkerAction::ReplaceFilter(update);
@@ -1362,6 +1877,12 @@ fn next_worker_action(
         }
         if data.state == PlaybackState::Pausing {
             return WorkerAction::Pause;
+        }
+        if matches!(data.state, PlaybackState::Playing | PlaybackState::Paused)
+            && passthrough_mode != wants_passthrough
+            && !(wants_passthrough && pending_frame.is_some())
+        {
+            return WorkerAction::ConfigureProcessing;
         }
         match data.state {
             PlaybackState::Playing => {
@@ -1470,6 +1991,34 @@ fn deliver_processed_frame(
     Ok(())
 }
 
+fn record_encoded_packet_submitted(
+    shared: &SessionShared,
+    generation: u64,
+    output: &Arc<dyn MediaOutput>,
+    end_sample: u64,
+    source_position: Option<SourcePosition>,
+) {
+    let played = safe_played_position(output);
+    let mut data = lock(&shared.data);
+    if data.generation == generation && !data.stopping {
+        data.submitted_sample = end_sample;
+        data.submitted_position = duration_from_samples(end_sample);
+        if let Some(source_position) = source_position {
+            data.media_position = Some(MediaPosition {
+                position: duration_from_samples(source_position.sample),
+                accuracy: if source_position.estimated {
+                    MediaPositionAccuracy::Estimated
+                } else {
+                    MediaPositionAccuracy::Timestamp
+                },
+            });
+        }
+        if played.is_some() {
+            data.played_position = played;
+        }
+    }
+}
+
 struct ActivePlaybackGuard {
     metrics: remedia_observability::RemediaMetrics,
 }
@@ -1574,10 +2123,10 @@ mod tests {
     use remedia_observability::{Observability, ObservabilityConfig};
 
     use super::{
-        MediaPositionAccuracy, PlaybackError, PlaybackSession, PlaybackState, SessionData,
-        SessionShared, lock, wait,
+        MediaPositionAccuracy, PlaybackError, PlaybackProcessingMode, PlaybackSession,
+        PlaybackState, SessionData, SessionShared, lock, wait,
     };
-    use crate::decoder::PcmFrame;
+    use crate::decoder::{AudioDecoder, DecoderOptions, PcmFrame};
     use crate::opus::{EncodedOpusPacket, OpusEncoderOutput, OpusPacketSink};
     use crate::output::{MediaOutput, NullOutput, NullOutputStats, OutputError};
     use crate::source::{CancellationToken, InputSource};
@@ -1825,8 +2374,8 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Default)]
-    struct StepPacketSink(Arc<StepSinkShared>);
+    #[derive(Clone)]
+    struct StepPacketSink(Arc<StepSinkShared>, bool);
 
     #[derive(Default)]
     struct StepSinkShared {
@@ -1849,8 +2398,19 @@ mod tests {
 
     impl StepPacketSink {
         fn new() -> (Self, StepPacketHandle) {
+            Self::with_passthrough(true)
+        }
+
+        fn without_passthrough() -> (Self, StepPacketHandle) {
+            Self::with_passthrough(false)
+        }
+
+        fn with_passthrough(passthrough_supported: bool) -> (Self, StepPacketHandle) {
             let shared = Arc::new(StepSinkShared::default());
-            (Self(Arc::clone(&shared)), StepPacketHandle(shared))
+            (
+                Self(Arc::clone(&shared), passthrough_supported),
+                StepPacketHandle(shared),
+            )
         }
     }
 
@@ -1877,6 +2437,32 @@ mod tests {
             data.calls >= count
         }
 
+        fn wait_for_pending_filter(&self, session: &PlaybackSession) -> bool {
+            let data = lock(&session.shared.data);
+            let (data, _) = session
+                .shared
+                .changed
+                .wait_timeout_while(data, TEST_TIMEOUT, |data| {
+                    data.pending_filter_graph.is_none()
+                        && !matches!(data.state, PlaybackState::Stopped | PlaybackState::Failed)
+                })
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            data.pending_filter_graph.is_some()
+        }
+
+        fn wait_for_pending_seek(&self, session: &PlaybackSession) -> bool {
+            let data = lock(&session.shared.data);
+            let (data, _) = session
+                .shared
+                .changed
+                .wait_timeout_while(data, TEST_TIMEOUT, |data| {
+                    data.pending_seek.is_none()
+                        && !matches!(data.state, PlaybackState::Stopped | PlaybackState::Failed)
+                })
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            data.pending_seek.is_some()
+        }
+
         fn snapshot(&self) -> StepSinkData {
             let data = lock(&self.0.data);
             StepSinkData {
@@ -1891,6 +2477,10 @@ mod tests {
     }
 
     impl OpusPacketSink for StepPacketSink {
+        fn supports_passthrough_packet(&self, _packet: &EncodedOpusPacket) -> bool {
+            self.1
+        }
+
         fn send_packet(
             &self,
             packet: EncodedOpusPacket,
@@ -1939,6 +2529,402 @@ mod tests {
             data.cancelled = true;
             self.0.changed.notify_all();
         }
+    }
+
+    #[test]
+    fn compatible_opus_source_is_forwarded_without_transcoding() {
+        let bytes = include_bytes!("../tests/fixtures/generated-opus-passthrough.ogg").to_vec();
+        let source = InputSource::bytes(bytes.clone());
+        let mut packet_reader =
+            AudioDecoder::open_for_playback(source.clone(), DecoderOptions::default()).unwrap();
+        assert_eq!(packet_reader.opus_passthrough_rejection(), None);
+        let mut expected_payloads = Vec::new();
+        while let Some(packet) = packet_reader.read_compressed_packet().unwrap() {
+            expected_payloads.push(packet.packet.data().unwrap().to_vec());
+        }
+        let preroll = packet_reader.packet_history_before(u64::MAX);
+        assert_eq!(preroll.len(), 6, "packet history is capped at 120 ms");
+
+        let (sink, handle) = StepPacketSink::new();
+        handle.release(1_000);
+        let output = OpusEncoderOutput::new(sink).unwrap();
+        let session = PlaybackSession::new();
+        let info = session.play(source, output).unwrap();
+        assert_eq!(info.codec, "opus");
+        assert_eq!(
+            session.processing_mode(),
+            Some(PlaybackProcessingMode::Passthrough)
+        );
+        assert_eq!(session.wait(), PlaybackState::Completed);
+
+        let packets = handle.snapshot().packets;
+        assert_eq!(packets.len(), expected_payloads.len());
+        assert_eq!(
+            packets
+                .iter()
+                .map(|packet| packet.bytes.clone())
+                .collect::<Vec<_>>(),
+            expected_payloads,
+            "passthrough must preserve each demuxed Opus payload"
+        );
+        assert!(
+            packets
+                .iter()
+                .all(|packet| packet.samples_per_channel == 960)
+        );
+        assert!(packets.iter().enumerate().all(|(index, packet)| {
+            packet.start_sample == index as u64 * 960
+                && packet.media_samples_per_channel == packet.samples_per_channel
+        }));
+        assert_eq!(session.position().submitted, Duration::from_millis(2_020));
+        assert_eq!(handle.snapshot().flushes, 0);
+    }
+
+    #[test]
+    fn non_opus_stream_falls_back_to_pcm_and_native_opus_encoding() {
+        let source_bytes = include_bytes!("../tests/fixtures/generated-tone.mp3").to_vec();
+        let reader = AudioDecoder::open_for_playback(
+            InputSource::bytes(source_bytes.clone()),
+            DecoderOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            reader.opus_passthrough_rejection(),
+            Some("selected codec is not Opus")
+        );
+
+        let (sink, handle) = StepPacketSink::new();
+        handle.release(1_000);
+        let session = PlaybackSession::new();
+        session
+            .play(
+                InputSource::bytes(source_bytes),
+                OpusEncoderOutput::new(sink).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(session.wait(), PlaybackState::Completed);
+        let packets = handle.snapshot().packets;
+        assert!(!packets.is_empty());
+        assert!(
+            packets
+                .iter()
+                .all(|packet| packet.samples_per_channel == 960)
+        );
+        assert!(packets.windows(2).all(|pair| {
+            pair[0]
+                .start_sample
+                .saturating_add(u64::from(pair[0].media_samples_per_channel))
+                == pair[1].start_sample
+        }));
+    }
+
+    #[test]
+    fn opus_with_encoder_preskip_falls_back_instead_of_forwarding_trimmed_packets() {
+        let source_bytes = include_bytes!("../tests/fixtures/generated-opus-trimmed.ogg").to_vec();
+        let reader = AudioDecoder::open_for_playback(
+            InputSource::bytes(source_bytes.clone()),
+            DecoderOptions::default(),
+        )
+        .unwrap();
+        assert!(reader.opus_passthrough_rejection().is_some());
+
+        let (sink, handle) = StepPacketSink::new();
+        handle.release(1_000);
+        let session = PlaybackSession::new();
+        session
+            .play(
+                InputSource::bytes(source_bytes),
+                OpusEncoderOutput::new(sink).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(session.wait(), PlaybackState::Completed);
+        assert!(!handle.snapshot().packets.is_empty());
+    }
+
+    #[test]
+    fn output_packet_policy_can_reject_passthrough_and_fall_back_to_pcm() {
+        let (sink, handle) = StepPacketSink::without_passthrough();
+        handle.release(1_000);
+        let session = PlaybackSession::new();
+        session
+            .play(
+                InputSource::bytes(
+                    include_bytes!("../tests/fixtures/generated-opus-passthrough.ogg").to_vec(),
+                ),
+                OpusEncoderOutput::new(sink).unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(session.wait(), PlaybackState::Completed);
+        assert_eq!(
+            session.processing_mode(),
+            Some(PlaybackProcessingMode::Transcoding)
+        );
+        assert!(!handle.snapshot().packets.is_empty());
+    }
+
+    #[test]
+    fn concurrent_opus_sessions_keep_processing_modes_independent() {
+        let fixture = include_bytes!("../tests/fixtures/generated-opus-passthrough.ogg");
+        let (passthrough_sink, passthrough_handle) = StepPacketSink::new();
+        let (processing_sink, processing_handle) = StepPacketSink::new();
+        passthrough_handle.release(1_000);
+        processing_handle.release(1_000);
+        let passthrough = PlaybackSession::new();
+        let processing = PlaybackSession::new();
+        processing.set_volume(0.75).unwrap();
+
+        passthrough
+            .play(
+                InputSource::bytes(fixture.to_vec()),
+                OpusEncoderOutput::new(passthrough_sink).unwrap(),
+            )
+            .unwrap();
+        processing
+            .play(
+                InputSource::bytes(fixture.to_vec()),
+                OpusEncoderOutput::new(processing_sink).unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            passthrough.processing_mode(),
+            Some(PlaybackProcessingMode::Passthrough)
+        );
+        assert_eq!(
+            processing.processing_mode(),
+            Some(PlaybackProcessingMode::Transcoding)
+        );
+        assert_eq!(passthrough.wait(), PlaybackState::Completed);
+        assert_eq!(processing.wait(), PlaybackState::Completed);
+        assert_eq!(
+            passthrough.processing_mode(),
+            Some(PlaybackProcessingMode::Passthrough)
+        );
+        assert_eq!(
+            processing.processing_mode(),
+            Some(PlaybackProcessingMode::Transcoding)
+        );
+        assert!(!passthrough_handle.snapshot().packets.is_empty());
+        assert!(!processing_handle.snapshot().packets.is_empty());
+    }
+
+    #[test]
+    fn passthrough_to_pcm_can_be_staged_while_paused() {
+        let (sink, handle) = StepPacketSink::new();
+        let session = Arc::new(PlaybackSession::new());
+        session
+            .play(
+                InputSource::bytes(
+                    include_bytes!("../tests/fixtures/generated-opus-passthrough.ogg").to_vec(),
+                ),
+                OpusEncoderOutput::new(sink).unwrap(),
+            )
+            .unwrap();
+        assert!(handle.wait_for_calls(1));
+
+        let pause_session = Arc::clone(&session);
+        let (pause_tx, pause_rx) = mpsc::sync_channel(1);
+        let pause_worker = thread::spawn(move || {
+            let _ = pause_tx.send(pause_session.pause());
+        });
+        assert!(wait_for_state(&session, PlaybackState::Pausing));
+        handle.release(1);
+        pause_rx.recv_timeout(TEST_TIMEOUT).unwrap().unwrap();
+        pause_worker.join().unwrap();
+        assert_eq!(session.state(), PlaybackState::Paused);
+
+        session.set_volume(0.75).unwrap();
+        assert!(wait_for_processing_mode(
+            &session,
+            PlaybackProcessingMode::Transcoding
+        ));
+        assert_eq!(session.state(), PlaybackState::Paused);
+
+        session.resume().unwrap();
+        handle.release(1_000);
+        assert_eq!(session.wait(), PlaybackState::Completed);
+        assert!(!handle.snapshot().packets.is_empty());
+    }
+
+    #[test]
+    fn seeking_during_passthrough_uses_pcm_trimming_and_invalidates_old_packets() {
+        let (sink, handle) = StepPacketSink::new();
+        let session = Arc::new(PlaybackSession::new());
+        session
+            .play(
+                InputSource::bytes(
+                    include_bytes!("../tests/fixtures/generated-opus-passthrough.ogg").to_vec(),
+                ),
+                OpusEncoderOutput::new(sink).unwrap(),
+            )
+            .unwrap();
+        assert!(handle.wait_for_calls(1));
+
+        let seeking_session = Arc::clone(&session);
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        let seeker = thread::spawn(move || {
+            let _ = response_tx.send(seeking_session.seek(Duration::from_millis(500)));
+        });
+        assert!(handle.wait_for_pending_seek(&session));
+        handle.release(1);
+        response_rx.recv_timeout(TEST_TIMEOUT).unwrap().unwrap();
+        seeker.join().unwrap();
+
+        assert!(
+            handle.wait_for_calls(2),
+            "seek falls back to decoded output"
+        );
+        handle.release(1_000);
+        assert_eq!(session.wait(), PlaybackState::Completed);
+        let snapshot = handle.snapshot();
+        assert_eq!(snapshot.flushes, 1);
+        assert!(
+            snapshot
+                .packets
+                .iter()
+                .any(|packet| packet.start_sample >= 24_000)
+        );
+    }
+
+    #[test]
+    fn one_opus_source_switches_between_passthrough_and_live_filtering() {
+        let fixture = include_bytes!("../tests/fixtures/generated-opus-passthrough.ogg");
+        let (source, producer) = InputSource::byte_stream(1_024).unwrap();
+        let source_bytes = fixture.to_vec();
+        let producer_thread = thread::spawn(move || {
+            for chunk in source_bytes.chunks(317) {
+                producer.write(chunk).unwrap();
+            }
+            producer.finish().unwrap();
+        });
+        let (sink, handle) = StepPacketSink::new();
+        let output = OpusEncoderOutput::new(sink).unwrap();
+        let session = Arc::new(PlaybackSession::new());
+        session.play(source, output).expect("Opus source starts");
+
+        assert!(handle.wait_for_calls(1));
+        assert_eq!(
+            session.processing_mode(),
+            Some(PlaybackProcessingMode::Passthrough)
+        );
+        let update_session = Arc::clone(&session);
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        let first_update = thread::spawn(move || {
+            let _ = response_tx.send(update_session.set_filter_graph(Some("bass=g=8")));
+        });
+        assert!(handle.wait_for_pending_filter(&session));
+        handle.release(1);
+        response_rx.recv_timeout(TEST_TIMEOUT).unwrap().unwrap();
+        first_update.join().unwrap();
+        assert_eq!(
+            session.processing_mode(),
+            Some(PlaybackProcessingMode::Transcoding),
+            "filter update resolves only after PCM mode is active"
+        );
+
+        assert!(
+            handle.wait_for_calls(2),
+            "PCM transcoding reaches the same sink"
+        );
+        let update_session = Arc::clone(&session);
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        let second_update = thread::spawn(move || {
+            let _ = response_tx.send(update_session.set_filter_graph(Some("atempo=1.05")));
+        });
+        assert!(handle.wait_for_pending_filter(&session));
+        handle.release(1);
+        response_rx.recv_timeout(TEST_TIMEOUT).unwrap().unwrap();
+        second_update.join().unwrap();
+
+        assert!(handle.wait_for_calls(3), "tempo graph remains active");
+        let update_session = Arc::clone(&session);
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        let third_update = thread::spawn(move || {
+            let _ = response_tx.send(update_session.set_filter_graph(Some("tremolo=f=5:d=0.6")));
+        });
+        assert!(handle.wait_for_pending_filter(&session));
+        handle.release(1);
+        response_rx.recv_timeout(TEST_TIMEOUT).unwrap().unwrap();
+        third_update.join().unwrap();
+
+        assert!(handle.wait_for_calls(4), "replacement graph remains active");
+        replace_graph_while_packet_sender_is_blocked(Arc::clone(&session), handle.clone(), None);
+        assert_eq!(
+            session.processing_mode(),
+            Some(PlaybackProcessingMode::Passthrough),
+            "clear resolves only after passthrough mode is active"
+        );
+
+        assert!(handle.wait_for_calls(5), "clear returns to passthrough");
+        let update_session = Arc::clone(&session);
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        let set_gain = thread::spawn(move || {
+            let _ = response_tx.send(update_session.set_volume(0.75));
+        });
+        handle.release(1);
+        response_rx.recv_timeout(TEST_TIMEOUT).unwrap().unwrap();
+        set_gain.join().unwrap();
+        assert!(
+            handle.wait_for_calls(6),
+            "non-unity gain reactivates PCM processing"
+        );
+        let update_session = Arc::clone(&session);
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        let restore_gain = thread::spawn(move || {
+            let _ = response_tx.send(update_session.set_volume(1.0));
+        });
+        handle.release(1_000);
+        response_rx.recv_timeout(TEST_TIMEOUT).unwrap().unwrap();
+        restore_gain.join().unwrap();
+        assert_eq!(
+            session.processing_mode(),
+            Some(PlaybackProcessingMode::Passthrough),
+            "unity gain returns to passthrough"
+        );
+        assert_eq!(session.wait(), PlaybackState::Completed);
+        producer_thread.join().unwrap();
+        let snapshot = handle.snapshot();
+        assert!(snapshot.finished);
+        assert_eq!(snapshot.flushes, 0, "mode changes must not seek-flush RTP");
+        assert_eq!(session.filter_graph(), None);
+        assert_eq!(session.volume(), 1.0);
+        assert!(
+            snapshot
+                .packets
+                .iter()
+                .any(|packet| packet.start_sample > 0)
+        );
+        assert!(snapshot.packets.windows(2).all(|pair| {
+            pair[0]
+                .start_sample
+                .saturating_add(u64::from(pair[0].media_samples_per_channel))
+                == pair[1].start_sample
+        }));
+
+        let mut source_reader = AudioDecoder::open_for_playback(
+            InputSource::bytes(fixture.to_vec()),
+            DecoderOptions::default(),
+        )
+        .unwrap();
+        let mut source_payloads = Vec::new();
+        while let Some(packet) = source_reader.read_compressed_packet().unwrap() {
+            source_payloads.push(packet.packet.data().unwrap().to_vec());
+        }
+        assert_eq!(
+            snapshot.packets.last().map(|packet| &packet.bytes),
+            source_payloads.last(),
+            "the final packet returned to passthrough on the same source"
+        );
+        assert_eq!(
+            snapshot.packets.first().map(|packet| &packet.bytes),
+            source_payloads.first()
+        );
+        assert!(snapshot.packets.iter().any(|packet| {
+            source_payloads
+                .iter()
+                .all(|source_payload| source_payload != &packet.bytes)
+        }));
     }
 
     #[test]
@@ -2610,6 +3596,15 @@ mod tests {
 
     fn wait_for_state(session: &PlaybackSession, expected: PlaybackState) -> bool {
         wait_for_condition(&session.shared, TEST_TIMEOUT, |data| data.state == expected)
+    }
+
+    fn wait_for_processing_mode(
+        session: &PlaybackSession,
+        expected: PlaybackProcessingMode,
+    ) -> bool {
+        wait_for_condition(&session.shared, TEST_TIMEOUT, |data| {
+            data.processing_mode == Some(expected)
+        })
     }
 
     fn wait_for_pending_seek(session: &PlaybackSession) -> bool {

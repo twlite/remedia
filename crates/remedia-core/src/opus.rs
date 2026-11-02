@@ -6,7 +6,7 @@ use opus2::{Application, Channels, Encoder};
 use remedia_observability::ObservabilityHandle;
 
 use crate::decoder::{OUTPUT_SAMPLE_RATE_HZ, PcmFrame};
-use crate::output::{MediaOutput, OutputError};
+use crate::output::{EncodedOpusOutput, MediaOutput, OutputError};
 use crate::source::CancellationToken;
 use crate::with_dispatch;
 
@@ -41,6 +41,13 @@ pub trait OpusPacketSink: Send + Sync + 'static {
         packet: EncodedOpusPacket,
         cancellation: &CancellationToken,
     ) -> Result<(), OutputError>;
+
+    /// Return whether this sink can accept the encoded packet without
+    /// transcoding. A transport can conservatively reject packets that exceed
+    /// its packet-size or duration constraints.
+    fn supports_passthrough_packet(&self, _packet: &EncodedOpusPacket) -> bool {
+        true
+    }
 
     /// Discard packets queued before a seek and move the media timeline.
     fn flush(
@@ -83,8 +90,8 @@ pub trait OpusPacketSink: Send + Sync + 'static {
 
 /// Adapts normalized PCM frames to 20 ms stereo Opus packets.
 ///
-/// It owns one native libopus encoder and one packet sink. At most one partial
-/// frame (under 20 ms) is retained. A short final frame is zero-padded to 20 ms;
+/// It owns one lazily initialized native libopus encoder and one packet sink.
+/// At most one partial frame (under 20 ms) is retained. A short final frame is zero-padded to 20 ms;
 /// the packet records both the 20 ms encoded duration and its shorter media
 /// duration. Seeking discards partial PCM and resets the encoder state.
 pub struct OpusEncoderOutput {
@@ -95,7 +102,7 @@ pub struct OpusEncoderOutput {
 }
 
 struct EncoderState {
-    encoder: Encoder,
+    encoder: Option<Encoder>,
     partial: [f32; OPUS_FRAME_SCALARS],
     partial_scalars: usize,
     partial_start_sample: Option<u64>,
@@ -104,7 +111,10 @@ struct EncoderState {
 }
 
 impl OpusEncoderOutput {
-    /// Create the native stereo encoder and attach an owned packet sink.
+    /// Create an Opus output and attach an owned packet sink.
+    ///
+    /// The native libopus encoder is initialized lazily if playback requires
+    /// PCM processing; a passthrough-only source does not construct it.
     pub fn new(sink: impl OpusPacketSink) -> Result<Self, OutputError> {
         Self::new_with_observability(sink, ObservabilityHandle::default())
     }
@@ -114,36 +124,11 @@ impl OpusEncoderOutput {
         sink: impl OpusPacketSink,
         observability: ObservabilityHandle,
     ) -> Result<Self, OutputError> {
-        let encoder =
-            match Encoder::new(OUTPUT_SAMPLE_RATE_HZ, Channels::Stereo, Application::Audio) {
-                Ok(encoder) => encoder,
-                Err(error) => {
-                    with_dispatch(&observability, || {
-                        tracing::error!(
-                            name: "core.opus.encoder_initialization_failed",
-                            target: "remedia_core::opus",
-                            error_kind = "native_encoder",
-                            "libopus encoder initialization failed"
-                        );
-                    });
-                    return Err(OutputError::with_source(error));
-                }
-            };
-
-        with_dispatch(&observability, || {
-            tracing::info!(
-                name: "core.opus.encoder_initialized",
-                target: "remedia_core::opus",
-                sample_rate_hz = OUTPUT_SAMPLE_RATE_HZ,
-                channels = 2_u16,
-                frame_samples_per_channel = OPUS_FRAME_SAMPLES,
-                "libopus encoder initialized"
-            );
-        });
-
         Ok(Self {
             state: Mutex::new(EncoderState {
-                encoder,
+                // A passthrough-only source does not need a native encoder.
+                // Construct libopus only when the first PCM frame arrives.
+                encoder: None,
                 partial: [0.0; OPUS_FRAME_SCALARS],
                 partial_scalars: 0,
                 partial_start_sample: None,
@@ -154,6 +139,36 @@ impl OpusEncoderOutput {
             cancelled: AtomicBool::new(false),
             observability,
         })
+    }
+
+    fn initialize_encoder(&self, state: &mut EncoderState) -> Result<(), OutputError> {
+        if state.encoder.is_some() {
+            return Ok(());
+        }
+        let encoder = Encoder::new(OUTPUT_SAMPLE_RATE_HZ, Channels::Stereo, Application::Audio)
+            .map_err(|error| {
+                with_dispatch(&self.observability, || {
+                    tracing::error!(
+                        name: "core.opus.encoder_initialization_failed",
+                        target: "remedia_core::opus",
+                        error_kind = "native_encoder",
+                        "libopus encoder initialization failed"
+                    );
+                });
+                OutputError::with_source(error)
+            })?;
+        state.encoder = Some(encoder);
+        with_dispatch(&self.observability, || {
+            tracing::info!(
+                name: "core.opus.encoder_initialized",
+                target: "remedia_core::opus",
+                sample_rate_hz = OUTPUT_SAMPLE_RATE_HZ,
+                channels = 2_u16,
+                frame_samples_per_channel = OPUS_FRAME_SAMPLES,
+                "libopus encoder initialized"
+            );
+        });
+        Ok(())
     }
 
     fn ensure_active(&self, cancellation: &CancellationToken) -> Result<(), OutputError> {
@@ -167,6 +182,7 @@ impl OpusEncoderOutput {
     fn encode_and_send(
         encoder: &mut Encoder,
         pcm: &[f32],
+        encoded_samples_per_channel: usize,
         media_samples_per_channel: usize,
         start_sample: u64,
         sink: &dyn OpusPacketSink,
@@ -189,7 +205,8 @@ impl OpusEncoderOutput {
         sink.send_packet(
             EncodedOpusPacket {
                 bytes,
-                samples_per_channel: OPUS_FRAME_SAMPLES as u32,
+                samples_per_channel: u32::try_from(encoded_samples_per_channel)
+                    .map_err(|_| OutputError::new("Opus frame sample count exceeds u32"))?,
                 media_samples_per_channel,
                 start_sample,
             },
@@ -198,7 +215,7 @@ impl OpusEncoderOutput {
         tracing::trace!(
             name: "core.opus.packet_encoded",
             target: "remedia_core::opus",
-            encoded_samples_per_channel = OPUS_FRAME_SAMPLES,
+            encoded_samples_per_channel,
             media_samples_per_channel,
             start_sample,
             packet_bytes,
@@ -254,8 +271,12 @@ impl OpusEncoderOutput {
                     .take()
                     .unwrap_or(frame.start_sample);
                 Self::encode_and_send(
-                    &mut state.encoder,
+                    state
+                        .encoder
+                        .as_mut()
+                        .ok_or_else(|| OutputError::new("Opus encoder is not initialized"))?,
                     &frame.samples[source_offset..source_offset + OPUS_FRAME_SCALARS],
+                    OPUS_FRAME_SAMPLES,
                     OPUS_FRAME_SAMPLES,
                     start_sample,
                     sink,
@@ -278,8 +299,12 @@ impl OpusEncoderOutput {
                     .take()
                     .unwrap_or(frame.start_sample);
                 Self::encode_and_send(
-                    &mut state.encoder,
+                    state
+                        .encoder
+                        .as_mut()
+                        .ok_or_else(|| OutputError::new("Opus encoder is not initialized"))?,
                     &state.partial,
+                    OPUS_FRAME_SAMPLES,
                     OPUS_FRAME_SAMPLES,
                     start_sample,
                     sink,
@@ -306,7 +331,12 @@ impl MediaOutput for OpusEncoderOutput {
     ) -> Result<(), OutputError> {
         self.ensure_active(cancellation)?;
         let mut state = lock(&self.state);
+        self.initialize_encoder(&mut state)?;
         Self::write_pcm(&mut state, frame, &*self.sink, cancellation)
+    }
+
+    fn encoded_opus_output(&self) -> Option<&dyn EncodedOpusOutput> {
+        Some(self)
     }
 
     fn flush(
@@ -325,10 +355,9 @@ impl MediaOutput for OpusEncoderOutput {
         self.ensure_active(cancellation)?;
         self.sink.flush_samples(sample_position, cancellation)?;
         let mut state = lock(&self.state);
-        state
-            .encoder
-            .reset_state()
-            .map_err(OutputError::with_source)?;
+        if let Some(encoder) = state.encoder.as_mut() {
+            encoder.reset_state().map_err(OutputError::with_source)?;
+        }
         state.partial_scalars = 0;
         state.partial_start_sample = None;
         state.next_input_sample = Some(sample_position);
@@ -396,9 +425,14 @@ impl MediaOutput for OpusEncoderOutput {
                 );
             });
             let padded = state.partial;
+            let encoder = state
+                .encoder
+                .as_mut()
+                .ok_or_else(|| OutputError::new("Opus encoder is not initialized"))?;
             Self::encode_and_send(
-                &mut state.encoder,
+                encoder,
                 &padded,
+                OPUS_FRAME_SAMPLES,
                 media_samples,
                 start_sample,
                 &*self.sink,
@@ -425,6 +459,110 @@ impl MediaOutput for OpusEncoderOutput {
 
     fn played_position(&self) -> Option<Duration> {
         self.sink.played_position()
+    }
+}
+
+impl EncodedOpusOutput for OpusEncoderOutput {
+    fn supports_encoded_packet(&self, packet: &EncodedOpusPacket) -> bool {
+        matches!(
+            packet.samples_per_channel,
+            120 | 240 | 480 | 960 | 1_920 | 2_880 | 5_760
+        ) && packet.media_samples_per_channel == packet.samples_per_channel
+            && !packet.bytes.is_empty()
+            && self.sink.supports_passthrough_packet(packet)
+    }
+
+    fn write_encoded_packet(
+        &self,
+        packet: EncodedOpusPacket,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OutputError> {
+        self.ensure_active(cancellation)?;
+        if !self.supports_encoded_packet(&packet) {
+            return Err(OutputError::new(
+                "Opus packet is not compatible with this output sink",
+            ));
+        }
+        let mut state = lock(&self.state);
+        if state.finished {
+            return Err(OutputError::new(
+                "Opus packet written after output finished",
+            ));
+        }
+        if state.partial_scalars != 0 {
+            return Err(OutputError::new(
+                "cannot pass through Opus while a partial PCM frame is pending",
+            ));
+        }
+        if let Some(expected) = state.next_input_sample
+            && expected != packet.start_sample
+        {
+            tracing::error!(
+                name: "core.opus.packet_discontinuity",
+                target: "remedia_core::opus",
+                expected_sample = expected,
+                received_sample = packet.start_sample,
+                "Opus output rejected a discontinuous encoded packet timeline"
+            );
+            return Err(OutputError::new(format!(
+                "Opus timeline is discontinuous: expected sample {expected}, received {}",
+                packet.start_sample
+            )));
+        }
+        let end_sample = packet
+            .start_sample
+            .saturating_add(u64::from(packet.media_samples_per_channel));
+        self.sink.send_packet(packet, cancellation)?;
+        state.next_input_sample = Some(end_sample);
+        Ok(())
+    }
+
+    fn prepare_passthrough(
+        &self,
+        next_sample_position: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OutputError> {
+        self.ensure_active(cancellation)?;
+        let mut state = lock(&self.state);
+        if let Some(expected) = state.next_input_sample
+            && expected != next_sample_position
+        {
+            return Err(OutputError::new(format!(
+                "passthrough transition expected sample {expected}, received {next_sample_position}"
+            )));
+        }
+        if state.partial_scalars != 0 {
+            let media_samples = state.partial_scalars / 2;
+            let encoded_samples = [120, 240, 480, OPUS_FRAME_SAMPLES]
+                .into_iter()
+                .find(|samples| *samples >= media_samples)
+                .ok_or_else(|| OutputError::new("partial Opus frame is too large to flush"))?;
+            let encoded_scalars = encoded_samples * 2;
+            let partial_scalars = state.partial_scalars;
+            state.partial[partial_scalars..encoded_scalars].fill(0.0);
+            let start_sample = state.partial_start_sample.unwrap_or(next_sample_position);
+            let pcm = state.partial;
+            let encoder = state
+                .encoder
+                .as_mut()
+                .ok_or_else(|| OutputError::new("Opus encoder is not initialized"))?;
+            Self::encode_and_send(
+                encoder,
+                &pcm[..encoded_scalars],
+                encoded_samples,
+                media_samples,
+                start_sample,
+                &*self.sink,
+                cancellation,
+            )?;
+            state.partial_scalars = 0;
+            state.partial_start_sample = None;
+        }
+        if let Some(encoder) = state.encoder.as_mut() {
+            encoder.reset_state().map_err(OutputError::with_source)?;
+        }
+        state.next_input_sample = Some(next_sample_position);
+        Ok(())
     }
 }
 
@@ -516,6 +654,32 @@ mod tests {
             samples_per_channel,
             start_sample,
         }
+    }
+
+    #[test]
+    fn encoded_packet_delivery_keeps_libopus_encoder_uninitialized() {
+        let sink = CaptureSink::default();
+        let state = Arc::clone(&sink.0);
+        let output = OpusEncoderOutput::new(sink).unwrap();
+        let cancellation = CancellationToken::new();
+        assert!(lock(&output.state).encoder.is_none());
+
+        EncodedOpusOutput::write_encoded_packet(
+            &output,
+            EncodedOpusPacket {
+                bytes: vec![0xF8, 0xFF, 0xFE],
+                samples_per_channel: 960,
+                media_samples_per_channel: 960,
+                start_sample: 0,
+            },
+            &cancellation,
+        )
+        .unwrap();
+
+        assert!(lock(&output.state).encoder.is_none());
+        let packets = &lock(&state).packets;
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].bytes, [0xF8, 0xFF, 0xFE]);
     }
 
     #[test]

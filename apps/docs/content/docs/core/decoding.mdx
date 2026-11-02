@@ -29,6 +29,30 @@ later.
 twice that many scalar `f32` values. `start_sample` is the frame's start position on the 48 kHz output
 timeline. The decoder's `output_format()` returns the shared `PcmFormat::NORMALIZED` constant.
 
+Playback sessions with an Opus-capable encoded output can automatically bypass PCM decoding for a
+restricted set of compatible source Opus packets. The decoder still owns the same demuxer and
+selected stream; it reads compressed packets first and constructs libavcodec and libswresample
+contexts only if the session needs PCM. The public `AudioDecoder` pull API continues to initialize
+and return PCM as before.
+
+The passthrough path is conservative. It requires an Opus stream with a supported OpusHead (48 kHz,
+mono or stereo, family-zero mapping, zero pre-skip, and zero OpusHead output gain), matching
+stream/OpusHead channel counts, no initial or trailing padding, and complete Opus packets whose
+actual duration and output compatibility checks succeed. Packets with skip-sample side data or a container duration shorter than the encoded
+Opus packet are decoded instead. An output may also reject packets that exceed its duration or size
+limits. MP3, AAC, Vorbis, trimmed Opus, and any source sent to a PCM-only output use the regular
+decode/resample path. Failure of an eligibility check is a normal fallback, not an error.
+
+For a passthrough source that later needs PCM processing, Remedia keeps the open demuxer and replays
+a rolling maximum of 120 ms and 512 KiB of preceding Opus packets into a newly initialized decoder.
+The bounded history is intended to provide decoder warm-up while remaining suitable for non-seekable
+inputs; it is not a claim that every possible Opus stream has identical decoder preroll needs.
+Decoded warm-up samples before the transition boundary are discarded. The transition never reopens
+a URL or restarts a one-shot byte stream. Seeking still uses FFmpeg decoding to trim an arbitrary
+target precisely and disables passthrough for the remainder of that source. See
+[RFC 7845](https://www.rfc-editor.org/rfc/rfc7845.html) for Ogg Opus pre-roll and granule-position
+semantics.
+
 ## Open and consume a file
 
 Choose a source variant explicitly. A string is never guessed to be a file path or URL.
@@ -164,6 +188,6 @@ cargo run -p remedia-core --example decode -- url https://example.com/audio.mp3
 
 The example prints source metadata and the decoded sample count and duration. The decoder supports
 seeking when the input demuxer can seek. Playback sessions and generic PCM outputs are documented
-separately. Device output, filters, and remote stream uploads are not implemented; Opus encoding is
-available through the core adapter described in the playback guide. Supported codecs and containers
-depend on the native FFmpeg libraries installed on the system.
+separately. Device output and remote stream uploads are not implemented; filters and Opus encoding
+are available through the core adapters described in the playback guide. Supported codecs and
+containers depend on the native FFmpeg libraries installed on the system.
