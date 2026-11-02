@@ -22,6 +22,12 @@ but is not yet connected to the engine.
   `davey` currently supports DAVE protocol version 1; other negotiated versions fail explicitly.
   The connection API additionally requires the voice channel ID because DAVE binds its MLS group to
   that channel. No live Discord bot connection has been verified in CI.
+- **`remedia-observability`** provides validated environment configuration, local tracing
+  dispatchers, bounded structured diagnostic routing, and optional OTLP trace and metric exporters.
+  Core and Discord emit `tracing` spans and events but never initialize a subscriber or global
+  OpenTelemetry provider themselves. Applications can pass an `ObservabilityHandle` to playback
+  sessions and voice connections, or explicitly request a process-global subscriber when they own
+  that lifecycle. Export is off by default; the crate does not export OTLP logs.
 - **`remedia-server`** is intended to run the engine as a standalone remote service and expose
   operations over a WebSocket RPC protocol.
 - **`remedia-node`** contains the Rust N-API crate. It is intended to call the engine directly in the
@@ -31,6 +37,12 @@ but is not yet connected to the engine.
 The core decoder, playback, Opus, and outbound Discord transport APIs exist. Server RPC, N-API
 playback integration, receiving audio, and device output remain design intentions. Add crates or
 packages only when implementation needs them.
+
+The bounded `DiagnosticReceiver` in `remedia-observability` is an internal Rust event-routing seam
+for a future N-API bridge. It does not emit JavaScript events. A future Node binding may forward
+those structured events through a bounded `ThreadsafeFunction` pump; no JavaScript debug-event API
+is implemented yet. The standalone server can initialize the same shared context when server
+runtime work begins.
 
 ## Embedded and remote integration
 
@@ -81,6 +93,21 @@ prior producer without disconnecting voice. Voice Gateway v8 Resume is attempted
 close or heartbeat timeout. A rejected Resume fails the connection; the caller must obtain fresh
 voice session information and connect again. The outer bot Gateway, REST/channel joining, inbound
 voice, RTCP, video, Opus receiving, and remote audio upload are not implemented.
+
+## Observability
+
+Rust libraries use `tracing` and remain subscriber-neutral. A native application can use a local
+`ObservabilityHandle` for selected Remedia components without changing process-global diagnostics.
+`try_install_global()` is explicit, succeeds only when no global subscriber exists, and reports a
+typed error instead of replacing an application's subscriber. Since tracing cannot uninstall the
+process-global subscriber, an owner that installs it should remain alive until application shutdown
+and flush it only after Remedia activity ends. Local handles can coexist with a host subscriber
+without taking ownership. The console writer and structured
+event queue are bounded and lossy so logging cannot block audio workers. OTLP traces and metrics
+require `REMEDIA_OTEL_ENABLED=true`; the default creates no network exporters. Applications should
+flush and shut down owned providers during normal application shutdown, never from an audio callback.
+See the [observability guide](../apps/docs/content/docs/observability/configuration.mdx) for
+environment variables, event fields, metric semantics, and current limitations.
 
 Building `remedia-core` requires native libavformat, libavcodec, libavutil, libswresample, and
 libopus development libraries. CI installs these libraries on Ubuntu. No FFmpeg executable is used

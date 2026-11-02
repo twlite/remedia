@@ -131,6 +131,48 @@ impl AudioDecoder {
         source: InputSource,
         options: DecoderOptions,
     ) -> Result<Self, DecoderError> {
+        let source_kind = source.kind();
+        let span = tracing::info_span!(
+            target: "remedia_core::decoder",
+            "core.media.open",
+            source_kind = source_kind,
+            otel.status_code = tracing::field::Empty,
+            error.type = tracing::field::Empty,
+        );
+        span.in_scope(|| {
+            let result = Self::open_inner(source, options);
+            match &result {
+                Ok(decoder) => {
+                    span.record("otel.status_code", "OK");
+                    tracing::info!(
+                        name: "core.media.opened",
+                        target: "remedia_core::decoder",
+                        source_kind,
+                        stream_index = decoder.info.stream_index,
+                        codec = %decoder.info.codec,
+                        source_sample_rate = decoder.info.sample_rate,
+                        source_channels = decoder.info.channels,
+                        duration_known = decoder.info.duration.is_some(),
+                        "audio stream selected"
+                    );
+                }
+                Err(error) => {
+                    span.record("otel.status_code", "ERROR");
+                    span.record("error.type", error.kind());
+                    tracing::error!(
+                        name: "core.media.open_failed",
+                        target: "remedia_core::decoder",
+                        source_kind,
+                        error_kind = error.kind(),
+                        "media input could not be opened"
+                    );
+                }
+            }
+            result
+        })
+    }
+
+    fn open_inner(source: InputSource, options: DecoderOptions) -> Result<Self, DecoderError> {
         if options.io_timeout.is_zero() {
             return Err(DecoderError::InvalidOptions(
                 "I/O timeout must be greater than zero",

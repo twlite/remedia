@@ -54,3 +54,35 @@ pub enum VoiceError {
     #[error("voice connection worker failed: {0}")]
     Worker(String),
 }
+
+impl VoiceError {
+    /// Stable, low-cardinality category suitable for structured diagnostics.
+    pub(crate) const fn kind(&self) -> &'static str {
+        match self {
+            Self::InvalidEndpoint => "invalid_endpoint",
+            Self::Timeout(_) => "timeout",
+            Self::Protocol(_) => "protocol",
+            Self::WebSocket(_) => "websocket",
+            Self::Io(_) => "io",
+            Self::Json(_) => "json",
+            Self::Url(_) => "url",
+            Self::EncryptionUnavailable => "encryption_unavailable",
+            Self::EncryptionModeMismatch => "encryption_mode_mismatch",
+            Self::InvalidSessionKey => "invalid_session_key",
+            Self::Encryption(_) => "encryption",
+            Self::DaveRequired => "dave_required",
+            Self::UnsupportedDaveVersion(_) => "unsupported_dave_version",
+            Self::DaveNotReady => "dave_not_ready",
+            Self::Dave(_) => "dave",
+            Self::InvalidOpusDuration(_) => "invalid_opus_duration",
+            Self::PacketTooLarge { .. } => "packet_too_large",
+            Self::Disconnected => "disconnected",
+            Self::Reconnecting => "reconnecting",
+            Self::ResumeFailed(_) => "resume_failed",
+            Self::Cancelled => "cancelled",
+            Self::Superseded => "superseded",
+            Self::OutputFinished => "output_finished",
+            Self::Worker(_) => "worker",
+        }
+    }
+}

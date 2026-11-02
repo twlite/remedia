@@ -114,6 +114,14 @@ concurrently to unblock them. A custom output must make `cancel` safe alongside
 and then joins the worker. The current implementation uses one OS thread per
 active session and does not introduce a global scheduler or real-time pacing.
 
+## Structured diagnostics
+
+`PlaybackSession::with_observability(handle)` attaches a session to the shared local tracing
+dispatcher and metrics provider. Each playback start receives its own internal `playback_id`; events
+include lifecycle transitions and failures without recording source paths or URLs. See the
+[observability guide](/docs/observability/configuration) for subscriber ownership, event routing,
+environment configuration, and OTLP export.
+
 ## Errors
 
 Startup errors are returned from `play()`. Errors after startup set the state to

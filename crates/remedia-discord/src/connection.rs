@@ -11,6 +11,7 @@ use rand::random;
 use remedia_core::{
     CancellationToken as CoreCancellationToken, EncodedOpusPacket, OpusPacketSink, OutputError,
 };
+use remedia_observability::{ObservabilityHandle, next_correlation_id};
 use serde_json::{Value, json};
 use tokio::net::UdpSocket;
 use tokio::sync::watch;
@@ -19,6 +20,8 @@ use tokio::time::{self, Instant, MissedTickBehavior};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 use tokio_util::sync::CancellationToken as TokioCancellationToken;
+use tracing::Instrument;
+use tracing::instrument::WithSubscriber;
 use url::Url;
 
 use crate::crypto::EncryptionMode;
@@ -28,6 +31,7 @@ use crate::protocol::{
     GatewayMessage, ip_discovery_request, json_message, parse_ip_discovery_response, parse_u16,
 };
 use crate::rtp::{RtpSender, validate_opus_packet};
+use crate::with_dispatch;
 
 const GATEWAY_VERSION: u16 = 8;
 const DAVE_PROTOCOL_VERSION: u16 = davey::DAVE_PROTOCOL_VERSION;
@@ -69,7 +73,7 @@ impl fmt::Debug for VoiceConnectionInfo {
             .field("user_id", &self.user_id)
             .field("session_id", &"[redacted]")
             .field("token", &"[redacted]")
-            .field("endpoint", &self.endpoint)
+            .field("endpoint", &"[redacted]")
             .finish()
     }
 }
@@ -102,6 +106,8 @@ pub struct DiscordVoiceConnection {
 }
 
 struct ConnectionInner {
+    voice_connection_id: u64,
+    observability: ObservabilityHandle,
     state: watch::Sender<ConnectionState>,
     failure: Arc<Mutex<Option<Arc<VoiceError>>>>,
     packet_tx: Sender<QueuedPacket>,
@@ -117,6 +123,14 @@ struct ConnectionInner {
 
 impl Drop for ConnectionInner {
     fn drop(&mut self) {
+        with_dispatch(&self.observability, || {
+            tracing::debug!(
+                name: "discord.connection.handle_dropped",
+                target: "remedia_discord::connection",
+                voice_connection_id = self.voice_connection_id,
+                "last voice connection handle dropped; transport cancellation requested"
+            );
+        });
         self.cancellation.cancel();
     }
 }
@@ -161,14 +175,88 @@ struct PendingBarrier {
     ack: Option<mpsc::SyncSender<Result<(), VoiceError>>>,
 }
 
+struct RtpSendObservability {
+    voice_connection_id: u64,
+    metrics: remedia_observability::RemediaMetrics,
+}
+
 impl DiscordVoiceConnection {
     /// Connect to Discord voice using session information from an external
     /// Gateway client. This performs the voice WebSocket handshake, UDP IP
     /// discovery, encryption selection, and DAVE setup.
     pub async fn connect(info: VoiceConnectionInfo) -> Result<Self, VoiceError> {
+        Self::connect_with_observability(info, ObservabilityHandle::default()).await
+    }
+
+    /// Connect using an application-owned Remedia observability context.
+    ///
+    /// The context is attached only to this connection's work and does not install or replace a
+    /// process-global tracing subscriber.
+    pub async fn connect_with_observability(
+        info: VoiceConnectionInfo,
+        observability: ObservabilityHandle,
+    ) -> Result<Self, VoiceError> {
+        let voice_connection_id = next_correlation_id();
+        let started_at = Instant::now();
+        let metrics = observability.metrics();
+        metrics.voice_connection_attempt();
+        let dispatch = observability.dispatch().cloned();
+        let span = with_dispatch(&observability, || {
+            tracing::info_span!(
+                target: "remedia_discord::connection",
+                "discord.connection.establish",
+                voice_connection_id,
+                otel.status_code = tracing::field::Empty,
+                error.type = tracing::field::Empty,
+            )
+        });
+        let run = async move {
+            tracing::info!(
+                name: "discord.connection.attempt",
+                target: "remedia_discord::connection",
+                voice_connection_id,
+                "Discord voice connection attempt started"
+            );
+            let result = Self::connect_inner(
+                info,
+                observability,
+                voice_connection_id,
+                started_at,
+                metrics.clone(),
+            )
+            .await;
+            if let Err(error) = &result {
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::Span::current().record("error.type", error.kind());
+                tracing::error!(
+                    name: "discord.connection.failed",
+                    target: "remedia_discord::connection",
+                    voice_connection_id,
+                    error_kind = error.kind(),
+                    "Discord voice connection attempt failed"
+                );
+            } else {
+                tracing::Span::current().record("otel.status_code", "OK");
+            }
+            result
+        }
+        .instrument(span);
+        match dispatch {
+            Some(dispatch) => run.with_subscriber(dispatch).await,
+            None => run.await,
+        }
+    }
+
+    async fn connect_inner(
+        info: VoiceConnectionInfo,
+        observability: ObservabilityHandle,
+        connection_id: u64,
+        started_at: Instant,
+        metrics: remedia_observability::RemediaMetrics,
+    ) -> Result<Self, VoiceError> {
         let endpoint = voice_endpoint(&info.endpoint)?;
         let (mut websocket, hello_interval, ready, early_messages, session_data, udp, sequence_ack) =
-            establish_voice_session(&endpoint, &info).await?;
+            establish_voice_session(&endpoint, &info, connection_id).await?;
 
         let dave_version = session_data
             .get("dave_protocol_version")
@@ -182,6 +270,13 @@ impl DiscordVoiceConnection {
         if dave_version != DAVE_PROTOCOL_VERSION {
             return Err(VoiceError::UnsupportedDaveVersion(dave_version));
         }
+        tracing::info!(
+            name: "discord.dave.protocol_negotiated",
+            target: "remedia_discord::connection",
+            voice_connection_id = connection_id,
+            protocol_version = dave_version,
+            "mandatory DAVE protocol version negotiated"
+        );
         let secret_key = parse_secret_key(&session_data)?;
         let mode_name = session_data
             .get("mode")
@@ -193,10 +288,69 @@ impl DiscordVoiceConnection {
         if mode.wire_name() != mode_name {
             return Err(VoiceError::EncryptionModeMismatch);
         }
+        tracing::info!(
+            name: "discord.transport.encryption_negotiated",
+            target: "remedia_discord::connection",
+            voice_connection_id = connection_id,
+            mode = mode.wire_name(),
+            "voice transport encryption mode negotiated"
+        );
 
-        let mut dave = DaveProtocol::new(dave_version, info.user_id, info.channel_id)?;
-        let initial_key_package = dave.create_key_package()?;
-        send_ws_message(&mut websocket, Message::Binary(initial_key_package.into())).await?;
+        let dave_span = tracing::info_span!(
+            target: "remedia_discord::connection",
+            "discord.dave.initialize",
+            voice_connection_id = connection_id,
+            protocol_version = dave_version,
+            otel.status_code = tracing::field::Empty,
+            error.type = tracing::field::Empty,
+        );
+        let dave_init = dave_span.in_scope(|| {
+            let mut dave = DaveProtocol::new(dave_version, info.user_id, info.channel_id)?;
+            let key_package = dave.create_key_package()?;
+            Ok::<_, VoiceError>((dave, key_package))
+        });
+        let (dave, initial_key_package) = match dave_init {
+            Ok(initialized) => {
+                dave_span.record("otel.status_code", "OK");
+                initialized
+            }
+            Err(error) => {
+                dave_span.record("otel.status_code", "ERROR");
+                dave_span.record("error.type", error.kind());
+                tracing::error!(
+                    name: "discord.dave.initialization_failed",
+                    target: "remedia_discord::connection",
+                    voice_connection_id = connection_id,
+                    error_kind = error.kind(),
+                    "DAVE session initialization failed"
+                );
+                return Err(error);
+            }
+        };
+        if let Err(error) =
+            send_ws_message(&mut websocket, Message::Binary(initial_key_package.into()))
+                .instrument(dave_span.clone())
+                .await
+        {
+            dave_span.record("otel.status_code", "ERROR");
+            dave_span.record("error.type", error.kind());
+            tracing::error!(
+                name: "discord.dave.initialization_failed",
+                target: "remedia_discord::connection",
+                voice_connection_id = connection_id,
+                error_kind = error.kind(),
+                "DAVE key package could not be sent"
+            );
+            return Err(error);
+        }
+        dave_span.record("otel.status_code", "OK");
+        tracing::info!(
+            name: "discord.dave.initialized",
+            target: "remedia_discord::connection",
+            voice_connection_id = connection_id,
+            protocol_version = dave_version,
+            "DAVE session initialized; awaiting MLS readiness"
+        );
         let dave = Arc::new(Mutex::new(dave));
 
         // Some gateways can send DAVE events close to session establishment.
@@ -217,9 +371,22 @@ impl DiscordVoiceConnection {
         let actor_state = state.clone();
         let actor_cancel = cancellation.clone();
         let actor_cancelled_generation = Arc::clone(&cancelled_generation);
-
-        let worker = tokio::spawn(async move {
+        let actor_id = connection_id;
+        let actor_metrics = metrics.clone();
+        let actor_span = with_dispatch(&observability, || {
+            tracing::info_span!(
+                target: "remedia_discord::connection",
+                "discord.connection.worker",
+                voice_connection_id = actor_id,
+                otel.status_code = tracing::field::Empty,
+                error.type = tracing::field::Empty,
+            )
+        });
+        let actor_future = async move {
             let result = voice_actor(VoiceActorSetup {
+                voice_connection_id: actor_id,
+                metrics: actor_metrics.clone(),
+                active_guard: ActiveVoiceConnection::new(actor_metrics),
                 websocket,
                 udp,
                 udp_server: socket_addr,
@@ -239,15 +406,35 @@ impl DiscordVoiceConnection {
             })
             .await;
             if let Err(error) = result {
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::Span::current().record("error.type", error.kind());
+                tracing::error!(
+                    name: "discord.connection.worker_failed",
+                    target: "remedia_discord::connection",
+                    voice_connection_id = actor_id,
+                    error_kind = error.kind(),
+                    "Discord voice connection worker failed"
+                );
                 *lock(&actor_failure) = Some(Arc::new(error));
-                actor_state.send_replace(ConnectionState::Failed);
-            } else if actor_state.borrow().eq(&ConnectionState::Connected) {
-                actor_state.send_replace(ConnectionState::Disconnected);
+                set_connection_state(&actor_state, ConnectionState::Failed, actor_id);
+            } else {
+                tracing::Span::current().record("otel.status_code", "OK");
+                if actor_state.borrow().eq(&ConnectionState::Connected) {
+                    set_connection_state(&actor_state, ConnectionState::Disconnected, actor_id);
+                }
             }
-        });
+        }
+        .instrument(actor_span);
+        let actor_dispatch = observability.dispatch().cloned();
+        let worker = match actor_dispatch {
+            Some(dispatch) => tokio::spawn(actor_future.with_subscriber(dispatch)),
+            None => tokio::spawn(actor_future),
+        };
 
         let connection = Self {
             inner: Arc::new(ConnectionInner {
+                voice_connection_id: connection_id,
+                observability: observability.clone(),
                 state,
                 failure,
                 packet_tx,
@@ -285,7 +472,18 @@ impl DiscordVoiceConnection {
         })
         .await;
         match readiness {
-            Ok(Ok(())) => Ok(connection),
+            Ok(Ok(())) => {
+                let establishment_seconds = started_at.elapsed().as_secs_f64();
+                metrics.voice_connection_established(establishment_seconds);
+                tracing::info!(
+                    name: "discord.connection.established",
+                    target: "remedia_discord::connection",
+                    voice_connection_id = connection_id,
+                    establishment_seconds,
+                    "Discord voice transport established with DAVE ready"
+                );
+                Ok(connection)
+            }
             Ok(Err(error)) => {
                 connection.inner.cancellation.cancel();
                 connection.join_worker().await;
@@ -304,6 +502,12 @@ impl DiscordVoiceConnection {
         *self.inner.state.borrow()
     }
 
+    /// Return this connection's internal, process-unique diagnostic correlation ID.
+    /// This is unrelated to Discord's voice session ID.
+    pub fn voice_connection_id(&self) -> u64 {
+        self.inner.voice_connection_id
+    }
+
     /// Return the latest transport failure, if the connection failed.
     pub fn failure(&self) -> Option<Arc<VoiceError>> {
         lock(&self.inner.failure).clone()
@@ -318,6 +522,15 @@ impl DiscordVoiceConnection {
     pub fn opus_sender(&self) -> DiscordOpusSender {
         let generation = self.inner.generation.fetch_add(1, Ordering::AcqRel) + 1;
         self.inner.generation_tx.send_replace(generation);
+        with_dispatch(&self.inner.observability, || {
+            tracing::info!(
+                name: "discord.rtp_sender.started",
+                target: "remedia_discord::connection",
+                voice_connection_id = self.inner.voice_connection_id,
+                generation,
+                "playback-scoped Opus sender started"
+            );
+        });
         DiscordOpusSender {
             inner: Arc::clone(&self.inner),
             generation: AtomicU64::new(generation),
@@ -329,6 +542,21 @@ impl DiscordVoiceConnection {
     /// Close the transport worker and wait for its sockets and DAVE state to be
     /// released. This operation is idempotent.
     pub async fn disconnect(&self) -> Result<(), VoiceError> {
+        let dispatch = self.inner.observability.dispatch().cloned();
+        let run = with_dispatch(&self.inner.observability, || self.disconnect_inner());
+        match dispatch {
+            Some(dispatch) => run.with_subscriber(dispatch).await,
+            None => run.await,
+        }
+    }
+
+    #[tracing::instrument(
+        name = "discord.connection.disconnect",
+        target = "remedia_discord::connection",
+        skip(self),
+        fields(voice_connection_id = self.inner.voice_connection_id)
+    )]
+    async fn disconnect_inner(&self) -> Result<(), VoiceError> {
         if self.state() == ConnectionState::Disconnected {
             self.join_worker().await;
             return Ok(());
@@ -339,9 +567,19 @@ impl DiscordVoiceConnection {
             return Ok(());
         }
 
-        self.inner
-            .state
-            .send_replace(ConnectionState::Disconnecting);
+        with_dispatch(&self.inner.observability, || {
+            set_connection_state(
+                &self.inner.state,
+                ConnectionState::Disconnecting,
+                self.inner.voice_connection_id,
+            );
+            tracing::info!(
+                name: "discord.connection.disconnect_requested",
+                target: "remedia_discord::connection",
+                voice_connection_id = self.inner.voice_connection_id,
+                "voice transport disconnection requested"
+            );
+        });
         self.inner.cancellation.cancel();
         self.join_worker().await;
         Ok(())
@@ -352,7 +590,13 @@ impl DiscordVoiceConnection {
         if let Some(worker) = worker {
             if let Err(error) = worker.await {
                 *lock(&self.inner.failure) = Some(Arc::new(VoiceError::Worker(error.to_string())));
-                self.inner.state.send_replace(ConnectionState::Failed);
+                with_dispatch(&self.inner.observability, || {
+                    set_connection_state(
+                        &self.inner.state,
+                        ConnectionState::Failed,
+                        self.inner.voice_connection_id,
+                    );
+                });
             }
             return;
         }
@@ -524,6 +768,15 @@ impl OpusPacketSink for DiscordOpusSender {
             .wrapping_add(1);
         self.generation.store(generation, Ordering::Release);
         self.inner.generation_tx.send_replace(generation);
+        with_dispatch(&self.inner.observability, || {
+            tracing::info!(
+                name: "discord.rtp_sender.flushed",
+                target: "remedia_discord::connection",
+                voice_connection_id = self.inner.voice_connection_id,
+                generation,
+                "queued pre-seek RTP frames invalidated"
+            );
+        });
         self.request_barrier(|ack| Control::Flush { generation, ack }, cancellation)
             .map_err(OutputError::with_source)
     }
@@ -550,6 +803,14 @@ impl OpusPacketSink for DiscordOpusSender {
         self.request_barrier(|ack| Control::Finish { target_id, ack }, cancellation)
             .map_err(OutputError::with_source)?;
         self.finished.store(true, Ordering::Release);
+        with_dispatch(&self.inner.observability, || {
+            tracing::info!(
+                name: "discord.rtp_sender.finished",
+                target: "remedia_discord::connection",
+                voice_connection_id = self.inner.voice_connection_id,
+                "playback-scoped RTP sender finished"
+            );
+        });
         Ok(())
     }
 
@@ -571,6 +832,14 @@ impl OpusPacketSink for DiscordOpusSender {
                 generation: old_generation,
             });
         }
+        with_dispatch(&self.inner.observability, || {
+            tracing::debug!(
+                name: "discord.rtp_sender.cancelled",
+                target: "remedia_discord::connection",
+                voice_connection_id = self.inner.voice_connection_id,
+                "playback-scoped RTP sender cancelled"
+            );
+        });
     }
 }
 
@@ -578,6 +847,55 @@ impl Drop for DiscordOpusSender {
     fn drop(&mut self) {
         self.cancel();
     }
+}
+
+struct ActiveVoiceConnection {
+    metrics: remedia_observability::RemediaMetrics,
+    active: bool,
+}
+
+impl ActiveVoiceConnection {
+    fn new(metrics: remedia_observability::RemediaMetrics) -> Self {
+        Self {
+            metrics,
+            active: false,
+        }
+    }
+
+    fn mark_connected(&mut self) {
+        if !self.active {
+            self.active = true;
+            self.metrics.voice_connection_active(true);
+        }
+    }
+}
+
+impl Drop for ActiveVoiceConnection {
+    fn drop(&mut self) {
+        if self.active {
+            self.metrics.voice_connection_active(false);
+        }
+    }
+}
+
+fn set_connection_state(
+    state: &watch::Sender<ConnectionState>,
+    next: ConnectionState,
+    voice_connection_id: u64,
+) {
+    let previous = *state.borrow();
+    if previous == next {
+        return;
+    }
+    state.send_replace(next);
+    tracing::info!(
+        name: "discord.connection.state_changed",
+        target: "remedia_discord::connection",
+        voice_connection_id,
+        previous_state = ?previous,
+        state = ?next,
+        "Discord voice connection state changed"
+    );
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -614,6 +932,7 @@ struct VoiceReady {
 async fn establish_voice_session(
     endpoint: &Url,
     info: &VoiceConnectionInfo,
+    voice_connection_id: u64,
 ) -> Result<
     (
         VoiceWebSocket,
@@ -626,9 +945,24 @@ async fn establish_voice_session(
     ),
     VoiceError,
 > {
+    tracing::info!(
+        name: "discord.voice.websocket_connecting",
+        target: "remedia_discord::connection",
+        voice_connection_id,
+        gateway_version = GATEWAY_VERSION,
+        "connecting to Discord voice gateway"
+    );
+    let websocket_started = Instant::now();
     let (mut websocket, _) = time::timeout(CONNECT_TIMEOUT, connect_async(endpoint.as_str()))
         .await
         .map_err(|_| VoiceError::Timeout("connecting to the voice gateway"))??;
+    tracing::info!(
+        name: "discord.voice.websocket_connected",
+        target: "remedia_discord::connection",
+        voice_connection_id,
+        elapsed_seconds = websocket_started.elapsed().as_secs_f64(),
+        "voice gateway websocket connected"
+    );
     send_json(
         &mut websocket,
         &json_message(
@@ -675,7 +1009,16 @@ async fn establish_voice_session(
                     GatewayMessage::Json {
                         opcode: 2, data, ..
                     } => {
-                        ready = Some(parse_ready(data)?);
+                        let parsed = parse_ready(data)?;
+                        tracing::info!(
+                            name: "discord.voice.ready_received",
+                            target: "remedia_discord::connection",
+                            voice_connection_id,
+                            ssrc = parsed.ssrc,
+                            encryption_mode_count = parsed.modes.len(),
+                            "voice gateway Ready received"
+                        );
+                        ready = Some(parsed);
                     }
                     GatewayMessage::Json {
                         opcode: 8, data, ..
@@ -699,9 +1042,31 @@ async fn establish_voice_session(
     let heartbeat_interval =
         hello_interval.ok_or_else(|| VoiceError::Protocol("voice Hello was missing".into()))?;
 
+    tracing::info!(
+        name: "discord.voice.udp_discovery_started",
+        target: "remedia_discord::connection",
+        voice_connection_id,
+        "starting UDP IP discovery"
+    );
+    let udp_started = Instant::now();
     let (udp, external) = establish_udp(&ready).await?;
+    tracing::info!(
+        name: "discord.voice.udp_discovery_completed",
+        target: "remedia_discord::connection",
+        voice_connection_id,
+        elapsed_seconds = udp_started.elapsed().as_secs_f64(),
+        address_family = if external.0.is_ipv4() { "ipv4" } else { "ipv6" },
+        "UDP IP discovery completed"
+    );
     let mode = EncryptionMode::choose(&ready.modes)?;
     select_protocol(&mut websocket, external, mode).await?;
+    tracing::debug!(
+        name: "discord.voice.protocol_selected",
+        target: "remedia_discord::connection",
+        voice_connection_id,
+        encryption_mode = mode.wire_name(),
+        "voice UDP protocol selected"
+    );
 
     let mut session_data = None;
     while session_data.is_none() {
@@ -881,7 +1246,17 @@ fn is_dave_message(message: &GatewayMessage) -> bool {
     }
 }
 
+fn gateway_opcode(message: &GatewayMessage) -> u64 {
+    match message {
+        GatewayMessage::Json { opcode, .. } => *opcode,
+        GatewayMessage::Binary { opcode, .. } => u64::from(*opcode),
+    }
+}
+
 struct VoiceActorSetup {
+    voice_connection_id: u64,
+    metrics: remedia_observability::RemediaMetrics,
+    active_guard: ActiveVoiceConnection,
     websocket: VoiceWebSocket,
     udp: UdpSocket,
     udp_server: SocketAddr,
@@ -902,6 +1277,9 @@ struct VoiceActorSetup {
 
 async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
     let VoiceActorSetup {
+        voice_connection_id,
+        metrics,
+        mut active_guard,
         mut websocket,
         udp,
         udp_server,
@@ -919,6 +1297,10 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
         cancellation,
         state,
     } = setup;
+    let packet_observability = RtpSendObservability {
+        voice_connection_id,
+        metrics: metrics.clone(),
+    };
     let mut active_generation = *generation_rx.borrow();
     let mut queued = VecDeque::with_capacity(QUEUE_CAPACITY);
     let mut processed_id = 0_u64;
@@ -934,9 +1316,10 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     for message in pending_gateway_messages.drain(..) {
-        process_gateway_message(&mut websocket, &dave, message).await?;
+        process_gateway_message(&mut websocket, &dave, message, voice_connection_id).await?;
         if lock(&dave).is_ready() {
-            state.send_replace(ConnectionState::Connected);
+            active_guard.mark_connected();
+            set_connection_state(&state, ConnectionState::Connected, voice_connection_id);
         }
     }
 
@@ -964,39 +1347,77 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
 
         match event {
             Event::Cancel => {
-                let _ = send_speaking(&mut websocket, ssrc, false).await;
-                state.send_replace(ConnectionState::Disconnected);
+                let _ = send_speaking(&mut websocket, ssrc, false, voice_connection_id).await;
+                set_connection_state(&state, ConnectionState::Disconnected, voice_connection_id);
+                tracing::info!(
+                    name: "discord.connection.disconnected",
+                    target: "remedia_discord::connection",
+                    voice_connection_id,
+                    "voice transport worker stopped"
+                );
                 return Ok(());
             }
             Event::Socket(None) | Event::Socket(Some(Ok(Message::Close(_)))) => {
-                state.send_replace(ConnectionState::Reconnecting);
+                metrics.voice_reconnect_attempt();
+                set_connection_state(&state, ConnectionState::Reconnecting, voice_connection_id);
+                tracing::warn!(
+                    name: "discord.connection.reconnect_started",
+                    target: "remedia_discord::connection",
+                    voice_connection_id,
+                    reason = "gateway_closed",
+                    "voice gateway connection closed; attempting resume"
+                );
                 let Some(resumed) = resume_for_actor(&info, sequence_ack, &cancellation).await?
                 else {
-                    state.send_replace(ConnectionState::Disconnected);
+                    set_connection_state(
+                        &state,
+                        ConnectionState::Disconnected,
+                        voice_connection_id,
+                    );
                     return Ok(());
                 };
                 websocket = resumed;
-                state.send_replace(if lock(&dave).is_ready() {
+                let resumed_state = if lock(&dave).is_ready() {
                     ConnectionState::Connected
                 } else {
                     ConnectionState::NegotiatingDave
-                });
+                };
+                if resumed_state == ConnectionState::Connected {
+                    active_guard.mark_connected();
+                }
+                set_connection_state(&state, resumed_state, voice_connection_id);
                 last_heartbeat_ack = Instant::now();
                 pending_heartbeat_nonce = None;
             }
             Event::Socket(Some(Err(_))) => {
-                state.send_replace(ConnectionState::Reconnecting);
+                metrics.voice_reconnect_attempt();
+                set_connection_state(&state, ConnectionState::Reconnecting, voice_connection_id);
+                tracing::warn!(
+                    name: "discord.connection.reconnect_started",
+                    target: "remedia_discord::connection",
+                    voice_connection_id,
+                    reason = "websocket_error",
+                    "voice gateway websocket failed; attempting resume"
+                );
                 let Some(resumed) = resume_for_actor(&info, sequence_ack, &cancellation).await?
                 else {
-                    state.send_replace(ConnectionState::Disconnected);
+                    set_connection_state(
+                        &state,
+                        ConnectionState::Disconnected,
+                        voice_connection_id,
+                    );
                     return Ok(());
                 };
                 websocket = resumed;
-                state.send_replace(if lock(&dave).is_ready() {
+                let resumed_state = if lock(&dave).is_ready() {
                     ConnectionState::Connected
                 } else {
                     ConnectionState::NegotiatingDave
-                });
+                };
+                if resumed_state == ConnectionState::Connected {
+                    active_guard.mark_connected();
+                }
+                set_connection_state(&state, resumed_state, voice_connection_id);
                 last_heartbeat_ack = Instant::now();
                 pending_heartbeat_nonce = None;
             }
@@ -1022,9 +1443,20 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                     } else if matches!(message, GatewayMessage::Json { opcode: 9, .. }) {
                         // Opcode 9 is a successful Resume and carries null data.
                     } else {
-                        process_gateway_message(&mut websocket, &dave, message).await?;
+                        process_gateway_message(
+                            &mut websocket,
+                            &dave,
+                            message,
+                            voice_connection_id,
+                        )
+                        .await?;
                         if lock(&dave).is_ready() {
-                            state.send_replace(ConnectionState::Connected);
+                            active_guard.mark_connected();
+                            set_connection_state(
+                                &state,
+                                ConnectionState::Connected,
+                                voice_connection_id,
+                            );
                         }
                     }
                 }
@@ -1037,12 +1469,22 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                         next_send_at = Some(Instant::now());
                     }
                 } else {
+                    metrics.rtp_packet_dropped();
+                    tracing::trace!(
+                        name: "discord.rtp.packet_dropped",
+                        target: "remedia_discord::connection",
+                        voice_connection_id,
+                        reason = "stale_generation",
+                        samples_per_channel = packet.packet.samples_per_channel,
+                        "queued RTP packet discarded after output generation changed"
+                    );
                     processed_id = processed_id.max(packet.id);
                 }
             }
             Event::Packet(Err(_)) => return Err(VoiceError::Disconnected),
             Event::Control(Ok(Control::Flush { generation, ack })) => {
                 active_generation = generation;
+                metrics.rtp_packet_dropped_by(u64::try_from(queued.len()).unwrap_or(u64::MAX));
                 while let Some(packet) = queued.pop_front() {
                     processed_id = processed_id.max(packet.id);
                 }
@@ -1071,7 +1513,7 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                 } else {
                     paused = false;
                     playback_active = true;
-                    send_speaking(&mut websocket, ssrc, true).await?;
+                    send_speaking(&mut websocket, ssrc, true, voice_connection_id).await?;
                     speaking = true;
                     next_send_at = None;
                     let _ = ack.send(Ok(()));
@@ -1108,19 +1550,38 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
             Event::Control(Err(_)) => return Ok(()),
             Event::Heartbeat => {
                 if heartbeat_expired(last_heartbeat_ack, Instant::now(), heartbeat_interval) {
-                    state.send_replace(ConnectionState::Reconnecting);
+                    metrics.voice_reconnect_attempt();
+                    set_connection_state(
+                        &state,
+                        ConnectionState::Reconnecting,
+                        voice_connection_id,
+                    );
+                    tracing::warn!(
+                        name: "discord.voice.heartbeat_timeout",
+                        target: "remedia_discord::connection",
+                        voice_connection_id,
+                        "voice heartbeat acknowledgement timed out"
+                    );
                     let Some(resumed) =
                         resume_for_actor(&info, sequence_ack, &cancellation).await?
                     else {
-                        state.send_replace(ConnectionState::Disconnected);
+                        set_connection_state(
+                            &state,
+                            ConnectionState::Disconnected,
+                            voice_connection_id,
+                        );
                         return Ok(());
                     };
                     websocket = resumed;
-                    state.send_replace(if lock(&dave).is_ready() {
+                    let resumed_state = if lock(&dave).is_ready() {
                         ConnectionState::Connected
                     } else {
                         ConnectionState::NegotiatingDave
-                    });
+                    };
+                    if resumed_state == ConnectionState::Connected {
+                        active_guard.mark_connected();
+                    }
+                    set_connection_state(&state, resumed_state, voice_connection_id);
                     last_heartbeat_ack = Instant::now();
                     pending_heartbeat_nonce = None;
                 } else {
@@ -1151,6 +1612,8 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                             udp_server,
                             &mut rtp,
                             &dave,
+                            &packet_observability,
+                            now.saturating_duration_since(scheduled_deadline),
                             &EncodedOpusPacket {
                                 bytes: SILENCE_PACKET.to_vec(),
                                 samples_per_channel: 960,
@@ -1169,7 +1632,7 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                     }
 
                     let action = barrier.take().expect("barrier exists");
-                    send_speaking(&mut websocket, ssrc, false).await?;
+                    send_speaking(&mut websocket, ssrc, false, voice_connection_id).await?;
                     speaking = false;
                     match action.kind {
                         BarrierKind::Pause => {
@@ -1198,7 +1661,7 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                     continue;
                 }
                 if !speaking {
-                    send_speaking(&mut websocket, ssrc, true).await?;
+                    send_speaking(&mut websocket, ssrc, true, voice_connection_id).await?;
                     speaking = true;
                 }
 
@@ -1207,6 +1670,7 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                     .is_some_and(|packet| packet.generation != active_generation)
                 {
                     if let Some(packet) = queued.pop_front() {
+                        metrics.rtp_packet_dropped();
                         processed_id = processed_id.max(packet.id);
                         rtp.skip_packet_duration(packet.packet.samples_per_channel);
                     }
@@ -1219,6 +1683,16 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                     );
                     match packet_deadline(scheduled_deadline, now, duration) {
                         None => {
+                            metrics.rtp_packet_dropped();
+                            tracing::trace!(
+                                name: "discord.rtp.packet_dropped",
+                                target: "remedia_discord::connection",
+                                voice_connection_id,
+                                reason = "late_deadline",
+                                late_by_ms = now.saturating_duration_since(scheduled_deadline).as_secs_f64() * 1_000.0,
+                                samples_per_channel = packet.packet.samples_per_channel,
+                                "late RTP packet dropped to avoid catch-up bursts"
+                            );
                             rtp.skip_packet_duration(packet.packet.samples_per_channel);
                             processed_id = processed_id.max(packet.id);
                             next_send_at = Some(now + duration);
@@ -1229,6 +1703,8 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                                 udp_server,
                                 &mut rtp,
                                 &dave,
+                                &packet_observability,
+                                now.saturating_duration_since(scheduled_deadline),
                                 &packet.packet,
                             )
                             .await?;
@@ -1237,13 +1713,29 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                         }
                     }
                 } else {
+                    metrics.packet_underrun();
+                    tracing::trace!(
+                        name: "discord.rtp.packet_underrun",
+                        target: "remedia_discord::connection",
+                        voice_connection_id,
+                        "RTP send deadline reached with no audio packet queued"
+                    );
                     let silence = EncodedOpusPacket {
                         bytes: SILENCE_PACKET.to_vec(),
                         samples_per_channel: 960,
                         media_samples_per_channel: 960,
                         start_sample: 0,
                     };
-                    send_transport_packet(&udp, udp_server, &mut rtp, &dave, &silence).await?;
+                    send_transport_packet(
+                        &udp,
+                        udp_server,
+                        &mut rtp,
+                        &dave,
+                        &packet_observability,
+                        now.saturating_duration_since(scheduled_deadline),
+                        &silence,
+                    )
+                    .await?;
                     next_send_at = Some(paced_deadline(
                         scheduled_deadline,
                         now,
@@ -1253,6 +1745,7 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
             }
             Event::Generation(Ok(())) => {
                 active_generation = *generation_rx.borrow_and_update();
+                let before = queued.len();
                 queued.retain(|packet| {
                     let keep = packet.generation == active_generation;
                     if !keep {
@@ -1260,6 +1753,8 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                     }
                     keep
                 });
+                let dropped = before.saturating_sub(queued.len());
+                metrics.rtp_packet_dropped_by(u64::try_from(dropped).unwrap_or(u64::MAX));
                 if cancelled_generation.load(Ordering::Acquire) == active_generation {
                     begin_output_cancel(
                         &mut queued,
@@ -1281,8 +1776,73 @@ async fn process_gateway_message(
     websocket: &mut VoiceWebSocket,
     dave: &Arc<Mutex<DaveProtocol>>,
     message: GatewayMessage,
+    voice_connection_id: u64,
 ) -> Result<(), VoiceError> {
-    let outgoing = lock(dave).handle(&message)?;
+    let gateway_opcode = gateway_opcode(&message);
+    let (ready_before, epoch_before, outgoing) = {
+        let mut dave = lock(dave);
+        let ready_before = dave.is_ready();
+        let epoch_before = dave.epoch();
+        let outgoing = dave.handle(&message);
+        (ready_before, epoch_before, outgoing)
+    };
+    let outgoing = match outgoing {
+        Ok(outgoing) => outgoing,
+        Err(error) => {
+            tracing::error!(
+                name: "discord.dave.transition_failed",
+                target: "remedia_discord::connection",
+                voice_connection_id,
+                gateway_opcode,
+                error_kind = error.kind(),
+                "DAVE gateway transition failed"
+            );
+            return Err(error);
+        }
+    };
+    let (ready_after, epoch_after, member_count) = {
+        let dave = lock(dave);
+        (dave.is_ready(), dave.epoch(), dave.member_count())
+    };
+    tracing::debug!(
+        name: "discord.dave.gateway_transition",
+        target: "remedia_discord::connection",
+        voice_connection_id,
+        gateway_opcode,
+        epoch_before,
+        epoch_after,
+        member_count,
+        ready_before,
+        ready_after,
+        "DAVE gateway transition processed"
+    );
+    if !ready_before && ready_after {
+        tracing::info!(
+            name: "discord.dave.ready",
+            target: "remedia_discord::connection",
+            voice_connection_id,
+            epoch = epoch_after,
+            "DAVE media encryption is ready"
+        );
+    } else if epoch_before != epoch_after {
+        tracing::info!(
+            name: "discord.dave.epoch_changed",
+            target: "remedia_discord::connection",
+            voice_connection_id,
+            previous_epoch = epoch_before,
+            epoch = epoch_after,
+            "DAVE media encryption epoch changed"
+        );
+    }
+    if matches!(gateway_opcode, 11 | 13) {
+        tracing::info!(
+            name: "discord.dave.membership_changed",
+            target: "remedia_discord::connection",
+            voice_connection_id,
+            member_count,
+            "DAVE group membership changed"
+        );
+    }
     for message in outgoing {
         match message {
             OutgoingGatewayMessage::Json(value) => send_json(websocket, &value).await?,
@@ -1338,6 +1898,7 @@ async fn send_speaking(
     websocket: &mut VoiceWebSocket,
     ssrc: u32,
     speaking: bool,
+    voice_connection_id: u64,
 ) -> Result<(), VoiceError> {
     send_json(
         websocket,
@@ -1351,6 +1912,15 @@ async fn send_speaking(
         ),
     )
     .await
+    .map(|()| {
+        tracing::info!(
+            name: "discord.voice.speaking_changed",
+            target: "remedia_discord::connection",
+            voice_connection_id,
+            speaking,
+            "Discord speaking state changed"
+        );
+    })
 }
 
 async fn send_transport_packet(
@@ -1358,18 +1928,71 @@ async fn send_transport_packet(
     server: SocketAddr,
     rtp: &mut RtpSender,
     dave: &Arc<Mutex<DaveProtocol>>,
+    observability: &RtpSendObservability,
+    scheduling_delay: Duration,
     packet: &EncodedOpusPacket,
 ) -> Result<(), VoiceError> {
-    let bytes = rtp.encode_packet(packet, &mut lock(dave))?;
-    let sent = time::timeout(Duration::from_secs(2), udp.send_to(&bytes, server))
+    let bytes = match rtp.encode_packet(packet, &mut lock(dave)) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            observability.metrics.rtp_packet_dropped();
+            tracing::error!(
+                name: "discord.rtp.packet_encryption_failed",
+                target: "remedia_discord::connection",
+                voice_connection_id = observability.voice_connection_id,
+                error_kind = error.kind(),
+                "could not encrypt or packetize Opus frame"
+            );
+            return Err(error);
+        }
+    };
+    let bytes_len = bytes.len();
+    let send_result = time::timeout(Duration::from_secs(2), udp.send_to(&bytes, server))
         .await
-        .map_err(|_| VoiceError::Timeout("sending an RTP packet"))??;
-    if sent != bytes.len() {
-        return Err(VoiceError::Io(std::io::Error::new(
+        .map_err(|_| VoiceError::Timeout("sending an RTP packet"))
+        .and_then(|result| result.map_err(VoiceError::from));
+    let sent = match send_result {
+        Ok(sent) => sent,
+        Err(error) => {
+            observability.metrics.rtp_packet_dropped();
+            tracing::error!(
+                name: "discord.rtp.packet_send_failed",
+                target: "remedia_discord::connection",
+                voice_connection_id = observability.voice_connection_id,
+                error_kind = error.kind(),
+                "UDP RTP packet send failed"
+            );
+            return Err(error);
+        }
+    };
+    if sent != bytes_len {
+        observability.metrics.rtp_packet_dropped();
+        let error = VoiceError::Io(std::io::Error::new(
             std::io::ErrorKind::WriteZero,
             "UDP socket did not send a complete RTP packet",
-        )));
+        ));
+        tracing::error!(
+            name: "discord.rtp.packet_send_failed",
+            target: "remedia_discord::connection",
+            voice_connection_id = observability.voice_connection_id,
+            error_kind = error.kind(),
+            "UDP RTP packet send was incomplete"
+        );
+        return Err(error);
     }
+    observability.metrics.rtp_packet_sent();
+    observability
+        .metrics
+        .record_scheduling_delay(scheduling_delay.as_secs_f64());
+    tracing::trace!(
+        name: "discord.rtp.packet_sent",
+        target: "remedia_discord::connection",
+        voice_connection_id = observability.voice_connection_id,
+        samples_per_channel = packet.samples_per_channel,
+        packet_bytes = bytes_len,
+        scheduling_delay_ms = scheduling_delay.as_secs_f64() * 1_000.0,
+        "encrypted RTP packet sent"
+    );
     Ok(())
 }
 
@@ -1496,11 +2119,12 @@ mod tests {
             user_id: 3,
             session_id: "private-session-value".into(),
             token: "private-token-value".into(),
-            endpoint: "voice.example.test".into(),
+            endpoint: "voice.example.test/?token=private-endpoint-value".into(),
         };
         let debug = format!("{info:?}");
         assert!(!debug.contains("private-session-value"));
         assert!(!debug.contains("private-token-value"));
+        assert!(!debug.contains("private-endpoint-value"));
         assert!(debug.contains("[redacted]"));
     }
 
@@ -1655,7 +2279,7 @@ mod tests {
             endpoint: ws_address.to_string(),
         };
         let (websocket, interval, ready, early, session, udp, sequence_ack) =
-            establish_voice_session(&endpoint, &info).await.unwrap();
+            establish_voice_session(&endpoint, &info, 1).await.unwrap();
         assert_eq!(interval, Duration::from_secs(1));
         assert_eq!(ready.ssrc, 0x1020_3040);
         assert_eq!(early.len(), 1);
@@ -1776,6 +2400,8 @@ mod tests {
         let (generation_tx, _generation_rx) = watch::channel(0);
         let (state, _) = watch::channel(ConnectionState::Connected);
         let inner = Arc::new(ConnectionInner {
+            voice_connection_id: 1,
+            observability: ObservabilityHandle::default(),
             state,
             failure: Arc::new(Mutex::new(None)),
             packet_tx,

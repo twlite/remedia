@@ -59,6 +59,39 @@ pub enum DecoderError {
     },
 }
 
+impl DecoderError {
+    /// Stable, low-cardinality category for structured diagnostic fields.
+    pub(crate) const fn kind(&self) -> &'static str {
+        match self {
+            Self::Initialization(_) => "initialization",
+            Self::InvalidUrl(_) => "invalid_url",
+            Self::UnsupportedUrlScheme => "unsupported_url_scheme",
+            Self::NonUnicodePath => "non_unicode_path",
+            Self::InvalidSource => "invalid_source",
+            Self::SourceNotFound => "source_not_found",
+            Self::SourceInaccessible => "source_inaccessible",
+            Self::UnsupportedMedia(_) => "unsupported_media",
+            Self::InvalidMedia(_) => "invalid_media",
+            Self::InputTimeout => "input_timeout",
+            Self::Cancelled => "cancelled",
+            Self::HttpStatus(_) => "http_status",
+            Self::OpenInput(_) => "open_input",
+            Self::NoAudioStream => "no_audio_stream",
+            Self::DecoderUnavailable(_) => "decoder_unavailable",
+            Self::DecoderInitialization(_) => "decoder_initialization",
+            Self::NetworkFailure(_) => "network_failure",
+            Self::Decode(_) => "decode",
+            Self::Resample(_) => "resample",
+            Self::InvalidOptions(_) => "invalid_options",
+            Self::InvalidAudioFormat => "invalid_audio_format",
+            Self::FormatChanged => "format_changed",
+            Self::FrameTooLarge => "frame_too_large",
+            Self::UnsupportedSeeking(_) => "unsupported_seeking",
+            Self::SeekOutOfRange { .. } => "seek_out_of_range",
+        }
+    }
+}
+
 pub(crate) fn ffmpeg_error(
     error: ffmpeg_next::Error,
     operation: &'static str,

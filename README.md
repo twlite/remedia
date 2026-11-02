@@ -30,12 +30,14 @@ not working features.
 apps/docs/                 Next.js and Fumadocs documentation site
 crates/remedia-core/       Core engine; see its README for decoding, playback, and Opus output
 crates/remedia-discord/    Discord transport; see its README for current support and limits
+crates/remedia-observability/ Shared tracing, bounded diagnostics, and optional OTLP export
 crates/remedia-server/     Future remote server; currently a placeholder crate
 packages/remedia-node/     N-API scaffold; see its README for current package status
 ```
 
 Component guides: [core](crates/remedia-core/README.md),
 [Discord transport](crates/remedia-discord/README.md),
+[observability](crates/remedia-observability/README.md),
 [server](crates/remedia-server/README.md), and [Node.js bindings](packages/remedia-node/README.md).
 
 The core uses native FFmpeg libraries for media processing; it does not spawn FFmpeg subprocesses.
@@ -46,8 +48,9 @@ RTP, encryption, UDP, and real-time pacing. See
 [decoding guide](apps/docs/content/docs/core/decoding.mdx),
 [playback guide](apps/docs/content/docs/core/playback.mdx), and
 [Discord voice guide](apps/docs/content/docs/discord/voice-output.mdx) for API details and current
-limitations. The [Fumadocs overview](apps/docs/content/docs/index.mdx) groups documentation by
-workspace module.
+limitations. The [observability guide](apps/docs/content/docs/observability/configuration.mdx)
+covers structured logs, bounded diagnostic routing, and opt-in OTLP traces and metrics. The
+[Fumadocs overview](apps/docs/content/docs/index.mdx) groups documentation by workspace module.
 
 ## Development
 

@@ -18,3 +18,6 @@ cargo run -p remedia-server
 
 See the [remote server topic](../../apps/docs/content/docs/server/overview.mdx) and
 [`docs/architecture.md`](../../docs/architecture.md) for the intended boundary and current status.
+When server runtime work begins, it can initialize the shared
+[`remedia-observability`](../remedia-observability/README.md) context; the placeholder does not
+currently configure logging or telemetry.

@@ -3,14 +3,16 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use remedia_observability::{ObservabilityHandle, next_correlation_id};
 use thiserror::Error;
 
 use crate::decoder::{AudioDecoder, AudioStreamInfo, DecoderOptions, PcmFrame};
 use crate::error::DecoderError;
 use crate::output::{MediaOutput, OutputError};
 use crate::source::{CancellationToken, InputSource};
+use crate::with_dispatch;
 
 /// Lifecycle state for one playback session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,11 +121,13 @@ pub struct PlaybackSession {
 struct SessionShared {
     data: Mutex<SessionData>,
     changed: Condvar,
+    observability: ObservabilityHandle,
 }
 
 struct SessionData {
     state: PlaybackState,
     generation: u64,
+    playback_id: u64,
     duration: Option<Duration>,
     info: Option<AudioStreamInfo>,
     submitted_position: Duration,
@@ -159,11 +163,20 @@ impl Default for PlaybackSession {
 impl PlaybackSession {
     /// Create an idle playback session. Sessions do not share playback state.
     pub fn new() -> Self {
+        Self::with_observability(ObservabilityHandle::default())
+    }
+
+    /// Create an idle session attached to an application-owned observability context.
+    ///
+    /// The handle controls which local tracing subscriber and metric provider receive events. It
+    /// does not install a process-global subscriber.
+    pub fn with_observability(observability: ObservabilityHandle) -> Self {
         Self {
             shared: Arc::new(SessionShared {
                 data: Mutex::new(SessionData {
                     state: PlaybackState::Idle,
                     generation: 0,
+                    playback_id: 0,
                     duration: None,
                     info: None,
                     submitted_position: Duration::ZERO,
@@ -175,6 +188,7 @@ impl PlaybackSession {
                     stopping: false,
                 }),
                 changed: Condvar::new(),
+                observability,
             }),
             worker: Mutex::new(None),
             start_lock: Mutex::new(()),
@@ -207,7 +221,8 @@ impl PlaybackSession {
         let cancellation = CancellationToken::new();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
 
-        let generation = {
+        let source_kind = source.kind();
+        let (generation, playback_id) = {
             let mut data = lock(&self.shared.data);
             if data.stopping {
                 return Err(PlaybackError::InvalidState {
@@ -224,6 +239,8 @@ impl PlaybackSession {
 
             data.generation = data.generation.wrapping_add(1);
             let generation = data.generation;
+            let playback_id = next_correlation_id();
+            data.playback_id = playback_id;
             data.state = PlaybackState::Starting;
             data.duration = None;
             data.info = None;
@@ -237,24 +254,51 @@ impl PlaybackSession {
             let shared = Arc::clone(&self.shared);
             let worker_output = Arc::clone(&output);
             let worker_cancellation = cancellation.clone();
+            let worker_observability = self.shared.observability.clone();
             let thread_result = thread::Builder::new()
                 .name(format!("remedia-playback-{generation}"))
                 .spawn(move || {
-                    worker_entry(
-                        shared,
-                        generation,
-                        source,
-                        worker_output,
-                        worker_cancellation,
-                        ready_tx,
-                    );
+                    with_dispatch(&worker_observability, || {
+                        let span = tracing::info_span!(
+                            target: "remedia_core::playback",
+                            "core.playback.session",
+                            playback_id,
+                            generation,
+                            otel.status_code = tracing::field::Empty,
+                            error.type = tracing::field::Empty,
+                        );
+                        let _entered = span.enter();
+                        let span_shared = Arc::clone(&shared);
+                        worker_entry(
+                            shared,
+                            generation,
+                            source,
+                            worker_output,
+                            worker_cancellation,
+                            ready_tx,
+                        );
+                        let data = lock(&span_shared.data);
+                        if data.generation == generation {
+                            match data.state {
+                                PlaybackState::Completed => {
+                                    span.record("otel.status_code", "OK");
+                                }
+                                PlaybackState::Failed => {
+                                    span.record("otel.status_code", "ERROR");
+                                    if let Some(error) = &data.last_error {
+                                        span.record("error.type", playback_error_kind(error));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    });
                 });
 
             match thread_result {
                 Ok(worker) => {
                     *lock(&self.worker) = Some(worker);
                     self.shared.changed.notify_all();
-                    generation
                 }
                 Err(error) => {
                     let playback_error = PlaybackError::WorkerInitialization(Arc::new(error));
@@ -265,13 +309,33 @@ impl PlaybackSession {
                     self.shared.changed.notify_all();
                     drop(data);
                     drop(start_guard);
+                    self.shared.observability.metrics().playback_failed();
+                    with_dispatch(&self.shared.observability, || {
+                        tracing::error!(
+                            name: "core.playback.worker_initialization_failed",
+                            target: "remedia_core::playback",
+                            playback_id,
+                            error_kind = "worker_initialization",
+                            "playback worker could not be started"
+                        );
+                    });
                     let _ = safe_cancel(&output);
                     return Err(playback_error);
                 }
-            }
+            };
+            (generation, playback_id)
         };
 
         drop(start_guard);
+        with_dispatch(&self.shared.observability, || {
+            tracing::info!(
+                name: "core.playback.starting",
+                target: "remedia_core::playback",
+                playback_id,
+                source_kind,
+                "playback source opening"
+            );
+        });
 
         match ready_rx.recv() {
             Ok(Ok(info)) => {
@@ -283,6 +347,17 @@ impl PlaybackSession {
                 data.info = Some(info.clone());
                 data.state = PlaybackState::Playing;
                 self.shared.changed.notify_all();
+                drop(data);
+                with_dispatch(&self.shared.observability, || {
+                    tracing::info!(
+                        name: "core.playback.started",
+                        target: "remedia_core::playback",
+                        playback_id,
+                        codec = %info.codec,
+                        duration_known = info.duration.is_some(),
+                        "playback started"
+                    );
+                });
                 Ok(info)
             }
             Ok(Err(error)) => Err(error),
@@ -372,7 +447,7 @@ impl PlaybackSession {
     /// The call waits for the decoder and output to discard pre-seek data.
     pub fn seek(&self, position: Duration) -> Result<(), PlaybackError> {
         let (response_tx, response_rx) = mpsc::sync_channel(1);
-        {
+        let playback_id = {
             let mut data = lock(&self.shared.data);
             if !matches!(data.state, PlaybackState::Playing | PlaybackState::Paused) {
                 return Err(PlaybackError::InvalidState {
@@ -397,7 +472,17 @@ impl PlaybackSession {
                 response: response_tx,
             });
             self.shared.changed.notify_all();
-        }
+            data.playback_id
+        };
+        with_dispatch(&self.shared.observability, || {
+            tracing::info!(
+                name: "core.playback.seek_requested",
+                target: "remedia_core::playback",
+                playback_id,
+                position_ms = position.as_millis() as u64,
+                "playback seek requested"
+            );
+        });
 
         response_rx.recv().unwrap_or_else(|_| {
             Err(lock(&self.shared.data)
@@ -413,7 +498,7 @@ impl PlaybackSession {
     /// harmless. `Completed` and `Failed` remain terminal so their outcome and
     /// error remain observable.
     pub fn stop(&self) -> Result<(), PlaybackError> {
-        let (needs_cleanup, active, cancellation, output, pending_seek) = {
+        let (needs_cleanup, active, playback_id, cancellation, output, pending_seek) = {
             let mut data = lock(&self.shared.data);
             while data.stopping {
                 data = wait(&self.shared.changed, data);
@@ -438,14 +523,30 @@ impl PlaybackSession {
             };
             let output = data.output.take();
             let pending_seek = data.pending_seek.take();
+            let playback_id = data.playback_id;
             self.shared.changed.notify_all();
-            (needs_cleanup, active, cancellation, output, pending_seek)
+            (
+                needs_cleanup,
+                active,
+                playback_id,
+                cancellation,
+                output,
+                pending_seek,
+            )
         };
 
         if let Some(request) = pending_seek {
             let _ = request.response.send(Err(PlaybackError::Cancelled));
         }
         if let Some(cancellation) = &cancellation {
+            with_dispatch(&self.shared.observability, || {
+                tracing::debug!(
+                    name: "core.playback.cancellation_requested",
+                    target: "remedia_core::playback",
+                    playback_id,
+                    "playback cancellation requested"
+                );
+            });
             cancellation.cancel();
         }
         let output_cancel_panicked = cancellation.is_some()
@@ -476,7 +577,20 @@ impl PlaybackSession {
         if active {
             data.state = PlaybackState::Stopped;
         }
+        let terminal_state = data.state;
         self.shared.changed.notify_all();
+        drop(data);
+        if needs_cleanup {
+            with_dispatch(&self.shared.observability, || {
+                tracing::info!(
+                    name: "core.playback.stopped",
+                    target: "remedia_core::playback",
+                    playback_id,
+                    state = %terminal_state,
+                    "playback worker stopped and resources released"
+                );
+            });
+        }
         Ok(())
     }
 
@@ -581,13 +695,17 @@ fn worker_loop(
     cancellation: CancellationToken,
     ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
 ) {
-    let mut decoder = match AudioDecoder::open_with_options(
+    let decoder_started = Instant::now();
+    let decoder_result = AudioDecoder::open_with_options(
         source,
         DecoderOptions {
             cancellation: cancellation.clone(),
             ..DecoderOptions::default()
         },
-    ) {
+    );
+    let metrics = shared.observability.metrics();
+    metrics.record_decoder_startup(decoder_started.elapsed().as_secs_f64());
+    let mut decoder = match decoder_result {
         Ok(decoder) => decoder,
         Err(error) => {
             let error = if is_stopped(&shared, generation) {
@@ -610,6 +728,15 @@ fn worker_loop(
     if !wait_for_start(&shared, generation) {
         return;
     }
+    metrics.playback_started();
+    let _active_playback = ActivePlaybackGuard { metrics };
+    let playback_id = lock(&shared.data).playback_id;
+    tracing::debug!(
+        name: "core.playback.worker_ready",
+        target: "remedia_core::playback",
+        playback_id,
+        "playback worker entered decode loop"
+    );
 
     let mut pending_frame = None;
     let mut input_finished = false;
@@ -658,13 +785,22 @@ fn worker_loop(
             WorkerAction::Pause => match output.pause(&cancellation) {
                 Ok(()) => {
                     let mut data = lock(&shared.data);
-                    if data.generation == generation
+                    let paused = data.generation == generation
                         && !data.stopping
-                        && data.state == PlaybackState::Pausing
-                    {
+                        && data.state == PlaybackState::Pausing;
+                    if paused {
                         data.state = PlaybackState::Paused;
                     }
                     shared.changed.notify_all();
+                    drop(data);
+                    if paused {
+                        tracing::info!(
+                            name: "core.playback.paused",
+                            target: "remedia_core::playback",
+                            playback_id,
+                            "playback paused at frame boundary"
+                        );
+                    }
                 }
                 Err(_) if is_stopped(&shared, generation) => return,
                 Err(error) => {
@@ -681,13 +817,22 @@ fn worker_loop(
             WorkerAction::Resume => match output.resume(&cancellation) {
                 Ok(()) => {
                     let mut data = lock(&shared.data);
-                    if data.generation == generation
+                    let resumed = data.generation == generation
                         && !data.stopping
-                        && data.state == PlaybackState::Resuming
-                    {
+                        && data.state == PlaybackState::Resuming;
+                    if resumed {
                         data.state = PlaybackState::Playing;
                     }
                     shared.changed.notify_all();
+                    drop(data);
+                    if resumed {
+                        tracing::info!(
+                            name: "core.playback.resumed",
+                            target: "remedia_core::playback",
+                            playback_id,
+                            "playback resumed"
+                        );
+                    }
                 }
                 Err(_) if is_stopped(&shared, generation) => return,
                 Err(error) => {
@@ -714,6 +859,13 @@ fn worker_loop(
                                 data.played_position = played;
                             }
                             let _ = request.response.send(Ok(()));
+                            tracing::info!(
+                                name: "core.playback.seek_completed",
+                                target: "remedia_core::playback",
+                                playback_id,
+                                position_ms = request.position.as_millis() as u64,
+                                "playback seek applied"
+                            );
                         }
                         Err(_) if is_stopped(&shared, generation) => {
                             let _ = request.response.send(Err(PlaybackError::Cancelled));
@@ -721,6 +873,13 @@ fn worker_loop(
                         }
                         Err(error) => {
                             let playback_error = PlaybackError::Output(error);
+                            tracing::error!(
+                                name: "core.playback.seek_failed",
+                                target: "remedia_core::playback",
+                                playback_id,
+                                error_kind = playback_error_kind(&playback_error),
+                                "playback seek failed in output"
+                            );
                             let _ = request.response.send(Err(playback_error.clone()));
                             fail_session(
                                 &shared,
@@ -743,6 +902,14 @@ fn worker_loop(
                         playback_error,
                         PlaybackError::UnsupportedSeeking(_) | PlaybackError::SeekOutOfRange { .. }
                     );
+                    tracing::warn!(
+                        name: "core.playback.seek_failed",
+                        target: "remedia_core::playback",
+                        playback_id,
+                        error_kind = playback_error_kind(&playback_error),
+                        recoverable,
+                        "playback seek was not applied"
+                    );
                     let _ = request.response.send(Err(playback_error.clone()));
                     if !recoverable && !is_stopped(&shared, generation) {
                         fail_session(&shared, generation, playback_error, &cancellation, &output);
@@ -762,6 +929,14 @@ fn worker_loop(
                         data.state = PlaybackState::Completed;
                     }
                     shared.changed.notify_all();
+                    drop(data);
+                    shared.observability.metrics().playback_completed();
+                    tracing::info!(
+                        name: "core.playback.completed",
+                        target: "remedia_core::playback",
+                        playback_id,
+                        "playback reached end of stream"
+                    );
                     return;
                 }
                 Err(_) if is_stopped(&shared, generation) => return,
@@ -842,7 +1017,7 @@ fn fail_session(
 
     cancellation.cancel();
     let _ = safe_cancel(output);
-    let pending_seek = {
+    let (pending_seek, playback_id) = {
         let mut data = lock(&shared.data);
         if data.generation != generation
             || matches!(
@@ -854,12 +1029,45 @@ fn fail_session(
         }
         data.state = PlaybackState::Failed;
         data.last_error = Some(error.clone());
+        let playback_id = data.playback_id;
         let pending_seek = data.pending_seek.take();
         shared.changed.notify_all();
-        pending_seek
+        (pending_seek, playback_id)
     };
+    shared.observability.metrics().playback_failed();
+    tracing::error!(
+        name: "core.playback.failed",
+        target: "remedia_core::playback",
+        playback_id,
+        error_kind = playback_error_kind(&error),
+        "playback failed"
+    );
     if let Some(request) = pending_seek {
         let _ = request.response.send(Err(error));
+    }
+}
+
+struct ActivePlaybackGuard {
+    metrics: remedia_observability::RemediaMetrics,
+}
+
+impl Drop for ActivePlaybackGuard {
+    fn drop(&mut self) {
+        self.metrics.playback_stopped();
+    }
+}
+
+fn playback_error_kind(error: &PlaybackError) -> &'static str {
+    match error {
+        PlaybackError::Decoder(error) => error.kind(),
+        PlaybackError::Output(_) => "output",
+        PlaybackError::InvalidState { .. } => "invalid_state",
+        PlaybackError::WorkerInitialization(_) => "worker_initialization",
+        PlaybackError::WorkerPanicked => "worker_panicked",
+        PlaybackError::Cancelled => "cancelled",
+        PlaybackError::SeekPending => "seek_pending",
+        PlaybackError::UnsupportedSeeking(_) => "unsupported_seeking",
+        PlaybackError::SeekOutOfRange { .. } => "seek_out_of_range",
     }
 }
 
@@ -930,6 +1138,8 @@ mod tests {
     use std::sync::{Arc, Barrier, Condvar, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
+
+    use remedia_observability::{Observability, ObservabilityConfig};
 
     use super::{
         PlaybackError, PlaybackSession, PlaybackState, SessionData, SessionShared, lock, wait,
@@ -1350,13 +1560,39 @@ mod tests {
     fn separate_sessions_progress_independently_under_backpressure() {
         let source_a = TempWave::constant(24_000, 3000);
         let source_b = TempWave::constant(24_000, 6000);
-        let session_a = PlaybackSession::new();
-        let session_b = PlaybackSession::new();
+        let observability = Observability::new(
+            ObservabilityConfig::default()
+                .with_filter("info")
+                .expect("valid test filter"),
+        )
+        .expect("create observability context");
+        let diagnostics = observability.diagnostics();
+        let handle = observability.handle();
+        let session_a = PlaybackSession::with_observability(handle.clone());
+        let session_b = PlaybackSession::with_observability(handle);
         let (output_a, gate_a) = GateOutput::new();
         let (output_b, gate_b) = GateOutput::new();
 
         session_a.play(source_a.source(), output_a).unwrap();
         session_b.play(source_b.source(), output_b).unwrap();
+        let mut playback_ids = std::collections::HashSet::new();
+        let mut events_seen = Vec::new();
+        while playback_ids.len() < 2 {
+            let event = diagnostics
+                .recv_timeout(TEST_TIMEOUT)
+                .unwrap_or_else(|error| {
+                    panic!("playback start diagnostics arrive; saw events {events_seen:?}: {error}")
+                });
+            events_seen.push(event.event.clone());
+            if event.event == "core.playback.starting" {
+                playback_ids.insert(event.playback_id.expect("playback ID field"));
+            }
+        }
+        assert_eq!(
+            playback_ids.len(),
+            2,
+            "sessions must have distinct correlation IDs"
+        );
         assert!(gate_a.wait_for_calls(1));
         assert!(gate_b.wait_for_calls(1));
         assert!(gate_a.snapshot().accepted.is_empty());

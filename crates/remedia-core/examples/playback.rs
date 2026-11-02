@@ -10,10 +10,12 @@ use remedia_core::{
     AudioStreamInfo, InputSource, MediaOutput, NullOutput, NullOutputStatsHandle, OutputError,
     PcmFrame, PlaybackError, PlaybackSession, PlaybackState,
 };
+use remedia_observability::Observability;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let source = parse_source()?;
-    let session = PlaybackSession::new();
+    let mut observability = Observability::from_env()?;
+    let session = PlaybackSession::with_observability(observability.handle());
     let (output, stats) = PacedNullOutput::new(Duration::from_millis(50));
     let info = session.play(source, output)?;
     print_info(&info);
@@ -65,6 +67,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     session.stop()?;
     println!("Session stopped and its worker/resources were released.");
+    observability.force_flush()?;
+    observability.shutdown()?;
     Ok(())
 }
 

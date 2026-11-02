@@ -11,7 +11,9 @@ ffmpeg-next = { version = "=7.1.0", default-features = false, features = [
   "software-resampling",
 ] }
 opus2 = { version = "=0.4.0", default-features = false, features = ["backend-libopus", "dynamic"] }
+remedia-observability = { path = "../remedia-observability" }
 thiserror = "2.0"
+tracing = "0.1.41"
 url = "2.5"
 
 [lints]

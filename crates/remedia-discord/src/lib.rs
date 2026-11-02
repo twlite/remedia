@@ -12,6 +12,15 @@ mod error;
 mod protocol;
 mod rtp;
 
+use remedia_observability::ObservabilityHandle;
+
+pub(crate) fn with_dispatch<T>(handle: &ObservabilityHandle, callback: impl FnOnce() -> T) -> T {
+    match handle.dispatch() {
+        Some(dispatch) => tracing::dispatcher::with_default(dispatch, callback),
+        None => callback(),
+    }
+}
+
 pub use connection::{
     ConnectionState, DiscordOpusSender, DiscordVoiceConnection, VoiceConnectionInfo,
 };

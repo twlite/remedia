@@ -13,6 +13,8 @@ Opus encoder output.
 - `MediaOutput` consumes owned PCM frames. `NullOutput` is provided for tests and benchmarks.
 - `OpusEncoderOutput` converts variable-sized PCM frames to owned 20 ms Opus packets and forwards
   them to an `OpusPacketSink`. It does not pace packets or depend on a transport.
+- `PlaybackSession::with_observability` attaches lifecycle events and metrics to an application-owned
+  Remedia observability context. The core never installs a global subscriber.
 
 Discord networking belongs to `remedia-discord`; this crate has no Discord dependency.
 
@@ -35,4 +37,6 @@ cargo run -p remedia-core --example playback -- file ./media/track.wav
 
 See the [decoding guide](../../apps/docs/content/docs/core/decoding.mdx) and
 [playback guide](../../apps/docs/content/docs/core/playback.mdx) for public API examples and
-behavior details.
+behavior details. See the
+[observability guide](../../apps/docs/content/docs/observability/configuration.mdx) for shared
+tracing, event routing, and OTLP setup.

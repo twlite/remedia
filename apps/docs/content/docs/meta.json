@@ -10,6 +10,8 @@
     "---Node.js bindings---",
     "node",
     "---Remote server---",
-    "server"
+    "server",
+    "---Observability---",
+    "observability"
   ]
 }

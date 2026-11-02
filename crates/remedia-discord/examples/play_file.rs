@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use remedia_core::{InputSource, OpusEncoderOutput, PlaybackSession, PlaybackState};
 use remedia_discord::{DiscordVoiceConnection, VoiceConnectionInfo};
+use remedia_observability::Observability;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -23,11 +24,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    let connection = DiscordVoiceConnection::connect(info).await?;
+    let mut observability = Observability::from_env()?;
+    let handle = observability.handle();
+    let connection =
+        DiscordVoiceConnection::connect_with_observability(info, handle.clone()).await?;
     println!("voice connection state: {:?}", connection.state());
 
-    let session = Arc::new(PlaybackSession::new());
-    let output = OpusEncoderOutput::new(connection.opus_sender())?;
+    let session = Arc::new(PlaybackSession::with_observability(handle.clone()));
+    let output = OpusEncoderOutput::new_with_observability(connection.opus_sender(), handle)?;
     let starting_session = Arc::clone(&session);
     let metadata =
         tokio::task::spawn_blocking(move || starting_session.play(source, output)).await??;
@@ -48,6 +52,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     session.stop()?;
     connection.disconnect().await?;
+    observability.force_flush()?;
+    observability.shutdown()?;
     Ok(())
 }
 

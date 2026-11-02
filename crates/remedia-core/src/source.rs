@@ -23,6 +23,14 @@ impl InputSource {
     pub fn http_url(url: impl Into<String>) -> Self {
         Self::HttpUrl(url.into())
     }
+
+    /// Return a safe, low-cardinality source kind for structured diagnostics.
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::File(_) => "file",
+            Self::HttpUrl(_) => "http",
+        }
+    }
 }
 
 /// A thread-safe signal that can interrupt a decoder while FFmpeg is blocked

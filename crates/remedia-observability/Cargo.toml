@@ -1,0 +1,39 @@
+[package]
+name = "remedia-observability"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flume = "0.11"
+opentelemetry = { version = "0.33.1", default-features = false, features = ["metrics", "trace"] }
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = [
+  "trace",
+  "metrics",
+  "http-proto",
+  "http-json",
+  "reqwest-blocking-client",
+  "grpc-tonic",
+  "tls-ring",
+  "tls-webpki-roots",
+] }
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = [
+  "trace",
+  "metrics",
+] }
+thiserror = "2.0"
+tokio = { version = "1.48", default-features = false, features = ["rt"] }
+tracing = { version = "0.1.41", features = ["attributes"] }
+tracing-appender = "0.2.3"
+tracing-opentelemetry = "0.34.0"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt", "json", "registry"] }
+
+[dev-dependencies]
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = [
+  "trace",
+  "metrics",
+  "testing",
+] }
+
+[lints]
+workspace = true

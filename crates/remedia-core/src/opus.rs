@@ -3,10 +3,12 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use opus2::{Application, Channels, Encoder};
+use remedia_observability::ObservabilityHandle;
 
 use crate::decoder::{OUTPUT_SAMPLE_RATE_HZ, PcmFrame};
 use crate::output::{MediaOutput, OutputError};
 use crate::source::CancellationToken;
+use crate::with_dispatch;
 
 const OPUS_FRAME_SAMPLES: usize = 960;
 const OPUS_FRAME_SCALARS: usize = OPUS_FRAME_SAMPLES * 2;
@@ -79,6 +81,7 @@ pub struct OpusEncoderOutput {
     state: Mutex<EncoderState>,
     sink: Box<dyn OpusPacketSink>,
     cancelled: AtomicBool,
+    observability: ObservabilityHandle,
 }
 
 struct EncoderState {
@@ -93,8 +96,40 @@ struct EncoderState {
 impl OpusEncoderOutput {
     /// Create the native stereo encoder and attach an owned packet sink.
     pub fn new(sink: impl OpusPacketSink) -> Result<Self, OutputError> {
-        let encoder = Encoder::new(OUTPUT_SAMPLE_RATE_HZ, Channels::Stereo, Application::Audio)
-            .map_err(OutputError::with_source)?;
+        Self::new_with_observability(sink, ObservabilityHandle::default())
+    }
+
+    /// Create the encoder with an application-owned local diagnostic context.
+    pub fn new_with_observability(
+        sink: impl OpusPacketSink,
+        observability: ObservabilityHandle,
+    ) -> Result<Self, OutputError> {
+        let encoder =
+            match Encoder::new(OUTPUT_SAMPLE_RATE_HZ, Channels::Stereo, Application::Audio) {
+                Ok(encoder) => encoder,
+                Err(error) => {
+                    with_dispatch(&observability, || {
+                        tracing::error!(
+                            name: "core.opus.encoder_initialization_failed",
+                            target: "remedia_core::opus",
+                            error_kind = "native_encoder",
+                            "libopus encoder initialization failed"
+                        );
+                    });
+                    return Err(OutputError::with_source(error));
+                }
+            };
+
+        with_dispatch(&observability, || {
+            tracing::info!(
+                name: "core.opus.encoder_initialized",
+                target: "remedia_core::opus",
+                sample_rate_hz = OUTPUT_SAMPLE_RATE_HZ,
+                channels = 2_u16,
+                frame_samples_per_channel = OPUS_FRAME_SAMPLES,
+                "libopus encoder initialized"
+            );
+        });
 
         Ok(Self {
             state: Mutex::new(EncoderState {
@@ -107,6 +142,7 @@ impl OpusEncoderOutput {
             }),
             sink: Box::new(sink),
             cancelled: AtomicBool::new(false),
+            observability,
         })
     }
 
@@ -127,21 +163,38 @@ impl OpusEncoderOutput {
         cancellation: &CancellationToken,
     ) -> Result<(), OutputError> {
         let mut bytes = vec![0; MAX_OPUS_PACKET_BYTES];
-        let len = encoder
-            .encode_float(pcm, &mut bytes)
-            .map_err(OutputError::with_source)?;
+        let len = encoder.encode_float(pcm, &mut bytes).map_err(|error| {
+            tracing::error!(
+                name: "core.opus.encode_failed",
+                target: "remedia_core::opus",
+                error_kind = "native_encode",
+                "libopus could not encode a PCM frame"
+            );
+            OutputError::with_source(error)
+        })?;
         bytes.truncate(len);
-
+        let media_samples_per_channel = u32::try_from(media_samples_per_channel)
+            .map_err(|_| OutputError::new("Opus frame sample count exceeds u32"))?;
+        let packet_bytes = bytes.len();
         sink.send_packet(
             EncodedOpusPacket {
                 bytes,
                 samples_per_channel: OPUS_FRAME_SAMPLES as u32,
-                media_samples_per_channel: u32::try_from(media_samples_per_channel)
-                    .map_err(|_| OutputError::new("Opus frame sample count exceeds u32"))?,
+                media_samples_per_channel,
                 start_sample,
             },
             cancellation,
-        )
+        )?;
+        tracing::trace!(
+            name: "core.opus.packet_encoded",
+            target: "remedia_core::opus",
+            encoded_samples_per_channel = OPUS_FRAME_SAMPLES,
+            media_samples_per_channel,
+            start_sample,
+            packet_bytes,
+            "Opus packet encoded and accepted by sink"
+        );
+        Ok(())
     }
 
     fn write_pcm(
@@ -279,6 +332,16 @@ impl MediaOutput for OpusEncoderOutput {
             let partial_scalars = state.partial_scalars;
             state.partial[partial_scalars..].fill(0.0);
             let start_sample = state.partial_start_sample.take().unwrap_or(0);
+            with_dispatch(&self.observability, || {
+                tracing::debug!(
+                    name: "core.opus.final_frame_padded",
+                    target: "remedia_core::opus",
+                    media_samples_per_channel = media_samples,
+                    encoded_samples_per_channel = OPUS_FRAME_SAMPLES,
+                    start_sample,
+                    "final partial PCM frame padded for Opus encoding"
+                );
+            });
             let padded = state.partial;
             Self::encode_and_send(
                 &mut state.encoder,
@@ -298,6 +361,13 @@ impl MediaOutput for OpusEncoderOutput {
     fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
         self.sink.cancel();
+        with_dispatch(&self.observability, || {
+            tracing::debug!(
+                name: "core.opus.output_cancelled",
+                target: "remedia_core::opus",
+                "Opus output cancelled"
+            );
+        });
     }
 
     fn played_position(&self) -> Option<Duration> {

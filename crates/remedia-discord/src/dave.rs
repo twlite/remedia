@@ -54,6 +54,14 @@ impl DaveProtocol {
         self.session.can_encrypt()
     }
 
+    pub(crate) fn epoch(&self) -> Option<u64> {
+        self.session.epoch().map(|epoch| epoch.as_u64())
+    }
+
+    pub(crate) fn member_count(&self) -> usize {
+        self.recognized_user_ids.len()
+    }
+
     pub(crate) fn encrypt_opus<'a>(
         &mut self,
         opus: &'a [u8],
