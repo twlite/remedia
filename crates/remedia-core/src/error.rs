@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -48,6 +50,13 @@ pub enum DecoderError {
     FormatChanged,
     #[error("the decoded audio frame is too large")]
     FrameTooLarge,
+    #[error("seeking is not supported by this media source: {0}")]
+    UnsupportedSeeking(String),
+    #[error("seek position {target:?} is beyond media duration {duration:?}")]
+    SeekOutOfRange {
+        target: Duration,
+        duration: Duration,
+    },
 }
 
 pub(crate) fn ffmpeg_error(

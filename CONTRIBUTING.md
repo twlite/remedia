@@ -69,14 +69,17 @@ cargo test --workspace
 The docs app can be run with `pnpm --filter docs dev` and built with
 `pnpm --filter docs build`. `pnpm --filter @remedia/node test` builds and checks the native smoke
 binding. `cargo test -p remedia-core` runs deterministic file and local-HTTP decoder tests. The
-core example can be run with `cargo run -p remedia-core --example decode -- file <path>` or
-`cargo run -p remedia-core --example decode -- url <http(s)-url>`.
+core tests cover decoder conversion, seeking, session lifecycle, backpressure, and stop cleanup. The
+examples can be run with `cargo run -p remedia-core --example decode -- file <path>`,
+`cargo run -p remedia-core --example decode -- url <http(s)-url>`, or
+`cargo run -p remedia-core --example playback -- file <path>`.
 
 ## Where code belongs
 
 - Add a Rust crate under `crates/` when it has an independently useful boundary in the engine,
-  transport, or server. `remedia-core` owns source opening, demuxing, decoding, resampling, and PCM
-  output. Add crates to the Cargo workspace only when they exist and are needed.
+  transport, or server. `remedia-core` owns source opening, demuxing, decoding, resampling, playback
+  sessions, and generic PCM output. Add crates to the Cargo workspace only when they exist and are
+  needed.
 - Add a JavaScript or TypeScript package under `packages/` when it has a distinct package boundary.
   Keep an N-API crate alongside its owning Node package: `packages/remedia-node` is included in the
   root Cargo workspace and currently contains a smoke test, but is not connected to the Remedia

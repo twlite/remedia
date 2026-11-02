@@ -101,6 +101,9 @@ requests more frames. Drop the decoder to close its native resources.
 
 ## Example and current limits
 
+For playback state, output consumers, pause/resume, session seeking, and cleanup,
+see the [playback session guide](/docs/playback).
+
 Run the example from the repository root:
 
 ```sh
@@ -108,7 +111,7 @@ cargo run -p remedia-core --example decode -- file ./media/track.flac
 cargo run -p remedia-core --example decode -- url https://example.com/audio.mp3
 ```
 
-The example prints source metadata and the decoded sample count and duration. The current API does
-not expose seeking, playback scheduling, device output, filters, Opus encoding, or remote stream
-uploads. Supported codecs and containers depend on the native FFmpeg libraries installed on the
-system.
+The example prints source metadata and the decoded sample count and duration. The decoder supports
+seeking when the input demuxer can seek. Playback sessions and generic PCM outputs are documented
+separately; device output, filters, Opus encoding, and remote stream uploads are not implemented.
+Supported codecs and containers depend on the native FFmpeg libraries installed on the system.

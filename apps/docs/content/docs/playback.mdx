@@ -1,0 +1,134 @@
+---
+title: Playback sessions
+description: Manage playback state, output delivery, position, and worker cleanup.
+---
+
+# Playback sessions
+
+`PlaybackSession` manages one source and one output instance. It uses a dedicated
+blocking worker for that session, while `AudioDecoder` remains unpaced and
+pull-based. Discord, Node.js, server RPC, device output, and Opus encoding are not
+implemented here.
+
+## Start and observe playback
+
+Choose an explicit file or HTTP(S) source and move an output into the session.
+`play()` blocks until FFmpeg has opened the input and initialized the audio
+decoder; it returns the selected stream metadata only after that succeeds.
+Decoding and frame delivery then run on the session worker.
+
+```rust
+use remedia_core::{InputSource, NullOutput, PlaybackSession, PlaybackState};
+
+let session = PlaybackSession::new();
+let output = NullOutput::new();
+let stats = output.stats_handle();
+let info = session.play(InputSource::file("media/track.wav"), output)?;
+
+println!("{}; duration: {:?}", info.codec, session.duration());
+println!("state: {}", session.state());
+let terminal_state = session.wait();
+assert_eq!(terminal_state, PlaybackState::Completed);
+
+let position = session.position();
+println!("submitted: {:?}; consumed: {:?}", position.submitted, position.played);
+println!("output statistics: {:?}", stats.snapshot());
+session.stop()?; // joins and releases the finished worker/output
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The null output consumes frames as fast as decoding permits. It is useful for
+tests, examples, and benchmarks; it does not pace playback in real time. See
+`crates/remedia-core/examples/playback.rs` for a runnable example that uses an
+example-only paced null output so pause and seek are observable with short files.
+
+## States and operations
+
+| State       | Meaning                                                                 |
+| ----------- | ----------------------------------------------------------------------- |
+| `Idle`      | No source has been started.                                             |
+| `Starting`  | The worker is opening the source and decoder.                           |
+| `Playing`   | The worker may decode and deliver frames.                               |
+| `Pausing`   | Pause was requested and is waiting for the current operation to finish. |
+| `Paused`    | The worker waits on a condition variable and does not decode ahead.     |
+| `Stopping`  | Cancellation is in progress and the worker is being joined.             |
+| `Stopped`   | Active work was cancelled and its worker joined.                        |
+| `Completed` | Natural end-of-stream and output finish both succeeded.                 |
+| `Failed`    | A decoder, output, or worker error stopped playback.                    |
+
+`pause()` waits until the worker reaches a frame boundary. It can wait for the
+current native input read or output write to return. `resume()` wakes the worker;
+repeating pause while paused or resume while playing is harmless. `stop()` cancels
+network reads and output work, clears pending seek requests, and joins the worker.
+Stopping an idle session changes it to `Stopped`. Stopping a completed or failed
+session releases retained output resources while preserving its terminal state.
+
+A session holds only one active source. A second `play()` call while it is
+starting, playing, pausing, paused, or stopping returns
+`PlaybackError::InvalidState`. To replace a source, call `stop()` and then
+`play()` with the new source and a new output value. There are no playlists or
+automatic next-source transitions.
+
+## Seeking and position
+
+`seek(Duration)` is supported while playing or paused. The decoder uses FFmpeg's
+demuxer seek, flushes codec/resampler state, discards decoded samples before the
+target, and clears its pending frames. The session asks the output to flush its
+buffered audio before it resumes delivery. A known duration is checked before
+the request is sent. HTTP sources may not support seeking; the server must support
+the range behavior required by its FFmpeg protocol. Unsupported sources return
+`PlaybackError::UnsupportedSeeking` and keep the current playback state.
+
+`position()` distinguishes two positions:
+
+- `submitted` is the end of the latest frame accepted by the output.
+- `played` is an optional position reported by the output. It is `None` when an
+  output can only report submission or buffering, and should not be interpreted
+  as audible playback progress.
+
+`NullOutput` consumes a frame immediately, so its played position follows its
+consumed sample count. Its statistics distinguish scalar interleaved `f32`
+values from sample frames per channel; duration is based on total consumed sample
+frames, including audio consumed again after a seek.
+
+## Media output contract
+
+Implement `MediaOutput` for an output consumer. Each session owns one output
+instance. `write_frame` takes ownership of a `PcmFrame` and returns after that
+frame is accepted. This synchronous call applies backpressure directly: while an
+output is full, the session worker does not decode more audio. An output may use
+its own buffer, but it must bound that buffer and honor cancellation.
+
+Outputs implement `flush` to discard pre-seek audio, `finish` for natural
+end-of-stream, and thread-safe `cancel` to interrupt an in-progress operation
+during stop or failure. `played_position` may report a consumed/audible timeline;
+return `None` when the output cannot provide one. The session holds no lock while
+calling output methods.
+
+Output methods execute on the playback worker, except `cancel`, which can run
+concurrently to unblock them. A custom output must make `cancel` safe alongside
+`write_frame`, `flush`, and `finish`. `stop()` waits for those methods to return
+and then joins the worker. The current implementation uses one OS thread per
+active session and does not introduce a global scheduler or real-time pacing.
+
+## Errors
+
+Startup errors are returned from `play()`. Errors after startup set the state to
+`Failed` and remain available from `last_error()`. `PlaybackError` distinguishes
+decoder failures, output failures, invalid state operations, worker startup or
+panic, cancellation, seek range errors, and unsupported seeking. The original
+decoder or output error remains available as the error source where possible.
+
+## Runnable example
+
+From the repository root, run:
+
+```sh
+cargo run -p remedia-core --example playback -- file ./media/track.wav
+cargo run -p remedia-core --example playback -- url https://example.com/audio.mp3
+```
+
+The example prints metadata, state, submitted/played position, and null-output
+statistics; it requests pause, attempts a midpoint seek, resumes, observes
+completion, and stops the session. It reports unsupported seeking for sources
+that cannot seek.

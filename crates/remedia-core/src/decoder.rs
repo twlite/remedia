@@ -11,7 +11,7 @@ use crate::error::{DecoderError, ffmpeg_error};
 use crate::input::{self, OpenedInput};
 use crate::source::{CancellationToken, InputSource};
 
-const OUTPUT_SAMPLE_RATE: u32 = 48_000;
+pub(crate) const OUTPUT_SAMPLE_RATE_HZ: u32 = 48_000;
 const OUTPUT_CHANNELS: u16 = 2;
 const OUTPUT_SAMPLE_FORMAT: ffmpeg::format::Sample =
     ffmpeg::format::Sample::F32(SampleType::Planar);
@@ -27,7 +27,7 @@ pub struct PcmFormat {
 
 impl PcmFormat {
     pub const NORMALIZED: Self = Self {
-        sample_rate: OUTPUT_SAMPLE_RATE,
+        sample_rate: OUTPUT_SAMPLE_RATE_HZ,
         channels: OUTPUT_CHANNELS,
     };
 
@@ -106,6 +106,7 @@ pub struct AudioDecoder {
     resampler: Option<ResamplerState>,
     pending_frames: VecDeque<PcmFrame>,
     next_sample_position: Option<u64>,
+    seek_target_sample: Option<u64>,
     demux_finished: bool,
     finished: bool,
 }
@@ -198,6 +199,7 @@ impl AudioDecoder {
             resampler: None,
             pending_frames: VecDeque::new(),
             next_sample_position: None,
+            seek_target_sample: None,
             demux_finished: false,
             finished: false,
         })
@@ -216,6 +218,46 @@ impl AudioDecoder {
     /// Clone the token used to interrupt this decoder from another thread.
     pub fn cancellation_token(&self) -> CancellationToken {
         self.cancellation.clone()
+    }
+
+    /// Seek to a media position. FFmpeg may seek to an earlier keyframe; audio
+    /// before the requested output sample is discarded after decoding. The
+    /// operation fails with [`DecoderError::UnsupportedSeeking`] when the
+    /// demuxer or source cannot seek.
+    pub fn seek(&mut self, position: Duration) -> Result<(), DecoderError> {
+        self.check_cancelled()?;
+        if let Some(duration) = self.info.duration
+            && position > duration
+        {
+            return Err(DecoderError::SeekOutOfRange {
+                target: position,
+                duration,
+            });
+        }
+
+        let timestamp = i64::try_from(position.as_micros()).map_err(|_| {
+            DecoderError::UnsupportedSeeking(
+                "the target exceeds FFmpeg's timestamp range".to_owned(),
+            )
+        })?;
+        let target_sample = duration_to_sample_position(position).map_err(|_| {
+            DecoderError::UnsupportedSeeking("the target exceeds the output timeline".to_owned())
+        })?;
+        if let Err(error) = self.input.seek(timestamp, ..) {
+            if self.cancellation.is_cancelled() {
+                return Err(DecoderError::Cancelled);
+            }
+            return Err(DecoderError::UnsupportedSeeking(error.to_string()));
+        }
+
+        self.decoder.flush();
+        self.resampler = None;
+        self.pending_frames.clear();
+        self.next_sample_position = None;
+        self.seek_target_sample = Some(target_sample);
+        self.demux_finished = false;
+        self.finished = false;
+        Ok(())
     }
 
     /// Decode and return the next normalized PCM block, or `Ok(None)` after
@@ -329,7 +371,7 @@ impl AudioDecoder {
                 input_rate,
                 OUTPUT_SAMPLE_FORMAT,
                 ChannelLayout::STEREO,
-                OUTPUT_SAMPLE_RATE,
+                OUTPUT_SAMPLE_RATE_HZ,
             )
             .map_err(|error| DecoderError::Resample(error.to_string()))?;
             self.resampler = Some(ResamplerState {
@@ -347,7 +389,7 @@ impl AudioDecoder {
         let capacity = output_capacity(decoded.samples(), input_rate, delay)?;
         let mut output =
             ffmpeg::frame::Audio::new(OUTPUT_SAMPLE_FORMAT, capacity, ChannelLayout::STEREO);
-        output.set_rate(OUTPUT_SAMPLE_RATE);
+        output.set_rate(OUTPUT_SAMPLE_RATE_HZ);
         resampler
             .context
             .run(&normalized_input, &mut output)
@@ -368,7 +410,7 @@ impl AudioDecoder {
                     capacity,
                     ChannelLayout::STEREO,
                 );
-                output.set_rate(OUTPUT_SAMPLE_RATE);
+                output.set_rate(OUTPUT_SAMPLE_RATE_HZ);
                 resampler
                     .context
                     .flush(&mut output)
@@ -402,10 +444,33 @@ impl AudioDecoder {
             return Err(DecoderError::InvalidAudioFormat);
         }
 
-        let start_sample = *self.next_sample_position.get_or_insert_with(|| {
-            timestamp_to_output_sample(source_timestamp, self.stream_time_base, OUTPUT_SAMPLE_RATE)
-                .unwrap_or(0)
-        });
+        let source_start = timestamp_to_output_sample(
+            source_timestamp,
+            self.stream_time_base,
+            OUTPUT_SAMPLE_RATE_HZ,
+        );
+        let (start_sample, trim_samples) = if let Some(target_sample) = self.seek_target_sample {
+            let source_start = source_start.unwrap_or(target_sample);
+            let source_end = source_start.saturating_add(samples_per_channel as u64);
+            if source_end <= target_sample {
+                return Ok(());
+            }
+            let trim_samples = target_sample.saturating_sub(source_start) as usize;
+            let start_sample = source_start.max(target_sample);
+            self.seek_target_sample = None;
+            (start_sample, trim_samples)
+        } else {
+            (
+                *self
+                    .next_sample_position
+                    .get_or_insert_with(|| source_start.unwrap_or(0)),
+                0,
+            )
+        };
+        let samples_per_channel = samples_per_channel.saturating_sub(trim_samples);
+        if samples_per_channel == 0 {
+            return Ok(());
+        }
         let sample_count = samples_per_channel
             .checked_mul(usize::from(OUTPUT_CHANNELS))
             .ok_or(DecoderError::FrameTooLarge)?;
@@ -413,7 +478,7 @@ impl AudioDecoder {
         samples
             .try_reserve_exact(sample_count)
             .map_err(|_| DecoderError::FrameTooLarge)?;
-        for index in 0..samples_per_channel {
+        for index in trim_samples..trim_samples + samples_per_channel {
             samples.push(normalize_sample(left[index]));
             samples.push(normalize_sample(right[index]));
         }
@@ -478,7 +543,7 @@ fn output_capacity(
     delay: usize,
 ) -> Result<usize, DecoderError> {
     let numerator = (input_samples as u128)
-        .checked_mul(u128::from(OUTPUT_SAMPLE_RATE))
+        .checked_mul(u128::from(OUTPUT_SAMPLE_RATE_HZ))
         .ok_or(DecoderError::FrameTooLarge)?;
     let converted = numerator
         .checked_add(u128::from(input_rate) - 1)
@@ -499,7 +564,7 @@ fn resampler_delay_output(context: &Resampler) -> usize {
     // SAFETY: `context` owns a live SwrContext and the call only reads its
     // current delay. Decoder access is exclusive while this helper runs.
     let delay = unsafe {
-        ffmpeg::ffi::swr_get_delay(context.as_ptr() as *mut _, i64::from(OUTPUT_SAMPLE_RATE))
+        ffmpeg::ffi::swr_get_delay(context.as_ptr() as *mut _, i64::from(OUTPUT_SAMPLE_RATE_HZ))
     };
     delay.max(0) as usize
 }
@@ -551,6 +616,13 @@ fn timestamp_to_output_sample(
 
 fn duration_from_av_time_base(duration: i64) -> Option<Duration> {
     (duration > 0).then(|| Duration::from_micros(duration as u64))
+}
+
+fn duration_to_sample_position(position: Duration) -> Result<u64, DecoderError> {
+    let samples = position.as_nanos() * u128::from(OUTPUT_SAMPLE_RATE_HZ) / 1_000_000_000;
+    u64::try_from(samples).map_err(|_| {
+        DecoderError::UnsupportedSeeking("the target exceeds the output timeline".to_owned())
+    })
 }
 
 trait CheckedDuration {

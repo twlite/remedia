@@ -10,12 +10,18 @@ it opens local files and HTTP(S) URLs, decodes audio with native FFmpeg librarie
 normalized PCM frames incrementally.
 
 The output is interleaved 48 kHz stereo `f32` in Front Left / Front Right order. Discord transport,
-playback scheduling, filters, seeking, remote RPC, and the Node.js binding are not implemented yet.
+Discord transport, Opus encoding, filters, remote RPC, and the Node.js binding are not implemented
+yet. Core playback sessions provide pause, resume, stop, and seeking with generic PCM outputs.
 
 <Cards>
   <Card
     title="Decode audio"
     href="/docs/decoding"
     description="Learn the Rust input, metadata, cancellation, and PCM frame APIs."
+  />
+  <Card
+    title="Playback sessions"
+    href="/docs/playback"
+    description="Manage playback state, outputs, seeking, and worker cleanup."
   />
 </Cards>

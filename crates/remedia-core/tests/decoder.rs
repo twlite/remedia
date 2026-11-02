@@ -143,6 +143,32 @@ fn reports_sample_positions_and_stable_end_of_stream() {
 }
 
 #[test]
+fn seeks_forward_and_discards_audio_before_the_requested_position() {
+    let input = pcm16_wave(48_000, &[vec![4096; 48_000]]);
+    let file = TempFile::new("seek.wav", &input);
+    let mut decoder = AudioDecoder::open(InputSource::file(&file.path)).unwrap();
+
+    assert!(decoder.next_frame().unwrap().is_some());
+    decoder.seek(Duration::from_millis(500)).unwrap();
+    let frames = collect_frames(&mut decoder);
+
+    assert_eq!(frames.first().unwrap().start_sample, 24_000);
+    assert_eq!(frame_count(&frames), 24_000);
+}
+
+#[test]
+fn rejects_seek_positions_past_a_known_duration() {
+    let input = pcm16_wave(48_000, &[vec![4096; 480]]);
+    let file = TempFile::new("short-seek.wav", &input);
+    let mut decoder = AudioDecoder::open(InputSource::file(&file.path)).unwrap();
+
+    assert!(matches!(
+        decoder.seek(Duration::from_millis(20)),
+        Err(DecoderError::SeekOutOfRange { .. })
+    ));
+}
+
+#[test]
 fn unsupported_or_missing_files_return_errors_without_panicking() {
     let missing = std::env::temp_dir().join("remedia-does-not-exist-音声.wav");
     assert!(matches!(
