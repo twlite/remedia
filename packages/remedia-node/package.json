@@ -1,0 +1,13 @@
+{
+    "name": "@remedia/node",
+    "version": "0.0.0",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "type": "module",
+    "scripts": {},
+    "repository": "https://github.com/twlite/remedia.git",
+    "author": "Twilight <hello@twlite.dev>",
+    "license": "MIT",
+    "devDependencies": {},
+    "dependencies": {}
+}
