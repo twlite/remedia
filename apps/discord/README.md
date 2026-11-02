@@ -9,6 +9,9 @@ up to 100 upcoming tracks.
 Playback replies prefer the title returned in Remedia's media metadata and
 fall back to a URL with credentials and query parameters removed. Queue entries
 show URLs until Remedia opens them and returns metadata.
+Slash command responses use consistent Remedia embeds, with colored error
+embeds when a command fails. `/nowplaying` shows a proportional progress bar
+against the original media duration and marks estimated positions with `~`.
 
 Create `.env` with `DISCORD_TOKEN` and `APPLICATION_ID`, then run from the
 repository root:

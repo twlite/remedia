@@ -1,5 +1,24 @@
-import { MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
+import { EmbedBuilder, MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
 import type { AudioStreamInfo } from '@remedia/node';
+
+const REMEDIA_BLURPLE = 0x5865f2;
+const REMEDIA_RED = 0xed4245;
+
+const COMMAND_TITLES: Readonly<Record<string, string>> = {
+  disconnect: 'Voice disconnected',
+  filter: 'Audio filter',
+  pause: 'Playback paused',
+  ping: 'Remedia is online',
+  play: 'Playback',
+  queue: 'Playback queue',
+  resume: 'Playback resumed',
+  seek: 'Playback position',
+  skip: 'Track skipped',
+  stop: 'Playback stopped',
+  volume: 'Master volume',
+};
+
+export type CommandResponse = string | EmbedBuilder;
 
 export interface VoiceCommandContext {
   guildId: string;
@@ -29,21 +48,54 @@ export function getVoiceCommandContext(
   };
 }
 
-export async function withVoiceReply(
+export async function withCommandReply(
   interaction: ChatInputCommandInteraction,
-  action: () => Promise<string>,
+  action: () => Promise<CommandResponse>,
   ephemeral = false,
 ): Promise<void> {
   await interaction.deferReply(ephemeral ? { flags: MessageFlags.Ephemeral } : {});
   try {
-    await interaction.editReply({ content: await action(), allowedMentions: { parse: [] } });
+    const response = await action();
+    await interaction.editReply({
+      embeds: [
+        response instanceof EmbedBuilder ? response : createCommandEmbed(interaction, response),
+      ],
+      allowedMentions: { parse: [] },
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await interaction.editReply({
-      content: `Remedia: ${message}`,
+      embeds: [createErrorEmbed(interaction, message)],
       allowedMentions: { parse: [] },
     });
   }
+}
+
+export function createCommandEmbed(
+  interaction: ChatInputCommandInteraction,
+  description: string,
+): EmbedBuilder {
+  const command = interaction.commandName;
+  return new EmbedBuilder()
+    .setColor(REMEDIA_BLURPLE)
+    .setAuthor({ name: 'Remedia' })
+    .setTitle(COMMAND_TITLES[command] ?? `/${command}`)
+    .setDescription(description)
+    .setFooter({ text: `/${command}` })
+    .setTimestamp();
+}
+
+export function createErrorEmbed(
+  interaction: ChatInputCommandInteraction,
+  message: string,
+): EmbedBuilder {
+  return new EmbedBuilder()
+    .setColor(REMEDIA_RED)
+    .setAuthor({ name: 'Remedia' })
+    .setTitle('Command failed')
+    .setDescription(message)
+    .setFooter({ text: `/${interaction.commandName}` })
+    .setTimestamp();
 }
 
 export function parseHttpUrl(input: string): string {

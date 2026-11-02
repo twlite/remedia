@@ -51,7 +51,9 @@ voice session IDs, tokens, or endpoints.
 - `/skip` stops the current item and starts the next queued URL, showing titles
   when Remedia metadata is available.
 - `/nowplaying` shows the Remedia title when available, playback state, and
-  submitted position.
+  a proportional progress bar against the original media duration. Estimated
+  source positions are prefixed with `~`; unknown durations do not imply a
+  percentage.
 - `/stop` stops playback and clears the queue while keeping the voice
   connection open.
 - `/disconnect` stops playback, clears the queue, and leaves the voice channel.
@@ -81,6 +83,11 @@ an active track, and carry over to queued tracks and skips. Filter changes do
 not change volume, and volume changes do not rebuild the graph. A disconnect or
 bot shutdown disposes the guild player and drops both settings. Engine callers
 can use arbitrary trusted filtergraphs instead of these names.
+
+Slash command replies use consistent Remedia embeds, including colored error
+embeds when an operation fails. `/nowplaying` formats source time and duration
+around a compact progress bar; estimated source positions are prefixed with
+`~`.
 
 Queue operations are serialized per guild. Skip stops and joins the current
 playback before opening the next URL while retaining the connected voice

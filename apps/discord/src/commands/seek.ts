@@ -1,6 +1,10 @@
 import type { Command } from './index.js';
 import { VoiceRuntime } from '../voice/runtime.js';
-import { displayTrack, getVoiceCommandContext, withVoiceReply } from '../voice/command-helpers.js';
+import {
+  displayTrack,
+  getVoiceCommandContext,
+  withCommandReply,
+} from '../voice/command-helpers.js';
 
 export default {
   data: {
@@ -17,7 +21,7 @@ export default {
     ],
   },
   async execute(interaction) {
-    await withVoiceReply(interaction, async () => {
+    await withCommandReply(interaction, async () => {
       const { guildId, channelId } = getVoiceCommandContext(interaction);
       const seconds = interaction.options.getNumber('seconds', true);
       const playback = VoiceRuntime.current.playback;

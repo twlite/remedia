@@ -1,7 +1,7 @@
 import type { Command } from './index.js';
 import { VoiceRuntime } from '../voice/runtime.js';
 import { FILTER_PRESET_NAMES, type FilterPresetName } from '../voice/filter-presets.js';
-import { getVoiceCommandContext, withVoiceReply } from '../voice/command-helpers.js';
+import { getVoiceCommandContext, withCommandReply } from '../voice/command-helpers.js';
 
 export default {
   data: {
@@ -27,7 +27,7 @@ export default {
     ],
   },
   async execute(interaction) {
-    await withVoiceReply(interaction, async () => {
+    await withCommandReply(interaction, async () => {
       const { guildId, channelId } = getVoiceCommandContext(interaction);
       const manager = VoiceRuntime.current.playback;
       const action = interaction.options.getSubcommand();

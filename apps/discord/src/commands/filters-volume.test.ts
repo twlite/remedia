@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { ChatInputCommandInteraction } from 'discord.js';
+import { EmbedBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import type { DiscordSession, PlaybackState, Remedia } from '@remedia/node';
 import filterCommand from './filter.js';
 import volumeCommand from './volume.js';
@@ -22,29 +22,34 @@ test('filter and volume slash commands read and change the guild playback settin
     });
 
     let response = await invoke(filterCommand, 'set', 'nightcore');
-    assert.equal(response, 'Applied the nightcore filter.');
+    assert.equal(response.description, 'Applied the nightcore filter.');
+    assert.equal(response.color, 0x5865f2);
     assert.equal(session.filters.graph, 'asetrate=60000,aresample=48000');
 
     response = await invoke(filterCommand, 'list');
-    assert.match(response, /8d, bassboost, nightcore, vaporwave, tremolo, vibrato/);
-    assert.match(response, /Current: nightcore/);
+    assert.match(
+      response.description ?? '',
+      /8d, bassboost, nightcore, vaporwave, tremolo, vibrato/,
+    );
+    assert.match(response.description ?? '', /Current: nightcore/);
     response = await invoke(filterCommand, 'set', 'not-a-preset');
-    assert.match(response, /Unknown filter preset/i);
+    assert.match(response.description ?? '', /Unknown filter preset/i);
+    assert.equal(response.color, 0xed4245);
     assert.equal(session.filters.graph, 'asetrate=60000,aresample=48000');
 
     response = await invoke(volumeCommand, undefined, undefined, undefined);
-    assert.equal(response, 'Current volume: 100%.');
+    assert.equal(response.description, 'Current volume: 100%.');
     response = await invoke(volumeCommand, undefined, undefined, 75);
-    assert.equal(response, 'Volume set to 75%.');
+    assert.equal(response.description, 'Volume set to 75%.');
     assert.equal(session.volume, 0.75);
 
     response = await invoke(filterCommand, 'clear');
-    assert.equal(response, 'Audio filter cleared.');
+    assert.equal(response.description, 'Audio filter cleared.');
     assert.equal(session.filters.graph, null);
     assert.equal(session.volume, 0.75);
 
     response = await invoke(volumeCommand, undefined, undefined, 201);
-    assert.match(response, /integer from 0 to 200 percent/i);
+    assert.match(response.description ?? '', /integer from 0 to 200 percent/i);
   } finally {
     await runtime.close();
   }
@@ -55,9 +60,10 @@ async function invoke(
   subcommand?: string,
   preset?: string,
   percent?: number,
-): Promise<string> {
-  let response = '';
+): Promise<ReturnType<EmbedBuilder['toJSON']>> {
+  let response: ReturnType<EmbedBuilder['toJSON']> | undefined;
   const interaction = {
+    commandName: command.data.name,
     inGuild: () => true,
     guildId: 'guild',
     guild: { voiceStates: { cache: new Map([['user', { channelId: 'channel' }]]) } },
@@ -69,11 +75,12 @@ async function invoke(
       getInteger: () => percent ?? null,
     },
     deferReply: async () => {},
-    editReply: async ({ content }: { content: string }) => {
-      response = content;
+    editReply: async ({ embeds }: { embeds: EmbedBuilder[] }) => {
+      response = embeds[0]?.toJSON();
     },
   } as unknown as ChatInputCommandInteraction;
   await command.execute(interaction);
+  assert.ok(response, 'command should respond with an embed');
   return response;
 }
 

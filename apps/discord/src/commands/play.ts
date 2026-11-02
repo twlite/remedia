@@ -4,7 +4,7 @@ import {
   displayTrack,
   getVoiceCommandContext,
   parseHttpUrl,
-  withVoiceReply,
+  withCommandReply,
 } from '../voice/command-helpers.js';
 
 export default {
@@ -21,7 +21,7 @@ export default {
     ],
   },
   async execute(interaction) {
-    await withVoiceReply(interaction, async () => {
+    await withCommandReply(interaction, async () => {
       const context = getVoiceCommandContext(interaction);
       const url = parseHttpUrl(interaction.options.getString('url', true));
       const result = await VoiceRuntime.current.playback.enqueue(
