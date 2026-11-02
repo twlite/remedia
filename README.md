@@ -34,7 +34,7 @@ work.
 
 ```text
 apps/docs/                    Next.js and Fumadocs documentation site
-apps/discord/                 Manual Discord bot integration harness
+apps/discord/                 Manual discord.js playback and voice-command harness
 crates/remedia-core/          Core decoder, playback, PCM output, and Opus encoding
 crates/remedia-discord/       Discord voice transport for encoded Opus
 crates/remedia-observability/ Shared tracing, bounded diagnostics, and optional OTLP export

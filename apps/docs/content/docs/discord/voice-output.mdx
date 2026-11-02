@@ -33,7 +33,9 @@ The Node.js binding includes a small adapter for applications that already own
 a Discord Gateway client. It sends the required channel join request and
 collects the voice state/server dispatches; see the
 [Node.js Gateway adapter guide](/docs/node/bindings#discord-gateway-adapter).
-Rust callers continue to provide `VoiceConnectionInfo` directly.
+Rust callers continue to provide `VoiceConnectionInfo` directly. The repository's
+[manual bot harness](/docs/discord/bot-harness) demonstrates this adapter with
+`discord.js` and app-level playback commands.
 
 ```rust
 use std::error::Error;

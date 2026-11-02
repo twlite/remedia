@@ -5,20 +5,23 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
     "lint": "oxlint src --deny-warnings",
-    "deploy": "node --env-file=.env dist/util/deploy.js",
+    "deploy": "node --env-file=.env --import tsx src/util/deploy.ts",
     "format": "oxfmt .",
     "format:check": "oxfmt . --check",
-    "start": "node --env-file=.env dist/index.js",
+    "prestart": "pnpm --filter @remedia/node build",
+    "start": "node --env-file=.env --import tsx src/index.ts",
+    "test": "node --import tsx --test src/voice/playback-manager.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@discordjs/core": "^2.3.0",
+    "@remedia/node": "workspace:*",
     "discord.js": "^14.24.0"
   },
   "devDependencies": {
     "@types/node": "^22.18.8",
+    "tsx": "^4.23.15",
     "typescript": "~5.9.3",
     "zod": "^3.25.76"
   },

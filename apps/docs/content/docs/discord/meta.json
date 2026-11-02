@@ -1,4 +1,4 @@
 {
   "title": "Discord transport",
-  "pages": ["voice-output"]
+  "pages": ["voice-output", "bot-harness"]
 }

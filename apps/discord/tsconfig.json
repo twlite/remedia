@@ -7,10 +7,12 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "target": "ESNext",
-    "rootDir": "src",
-    "outDir": "dist",
-    "noEmit": false,
-    "types": ["node"]
+    "noEmit": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@remedia/node": ["../../packages/remedia-node/lib/index.ts"]
+    }
   },
   "include": ["src/**/*.ts"]
 }

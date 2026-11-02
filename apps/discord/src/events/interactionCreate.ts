@@ -8,7 +8,7 @@ const commands = await loadCommands(new URL('../commands/', import.meta.url));
 export default {
   name: Events.InteractionCreate,
   async execute(interaction) {
-    if (interaction.isCommand()) {
+    if (interaction.isChatInputCommand()) {
       const command = commands.get(interaction.commandName);
 
       if (!command) {

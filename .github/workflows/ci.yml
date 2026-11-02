@@ -30,6 +30,7 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm format:check
+      - run: pnpm --filter discord-app test
       - run: pnpm --filter docs build
 
   rust:

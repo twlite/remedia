@@ -1,4 +1,7 @@
-import type { RESTPostAPIApplicationCommandsJSONBody, CommandInteraction } from 'discord.js';
+import type {
+  ChatInputCommandInteraction,
+  RESTPostAPIApplicationCommandsJSONBody,
+} from 'discord.js';
 import { z } from 'zod';
 import type { StructurePredicate } from '../util/loaders.js';
 
@@ -15,7 +18,7 @@ export type Command = {
    *
    * @param interaction - The interaction of the command
    */
-  execute(interaction: CommandInteraction): Promise<void> | void;
+  execute(interaction: ChatInputCommandInteraction): Promise<void> | void;
 };
 
 /**

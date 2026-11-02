@@ -54,6 +54,11 @@ exist. The Node package adapts an externally owned Discord Gateway but does not 
 connectivity, REST, or channel commands. Server RPC, receiving audio, and device output remain design
 intentions. Add crates or packages only when implementation needs them.
 
+`apps/discord` is a manual discord.js integration harness over `@remedia/node`. It forwards raw
+Gateway dispatches, sends OP 4 through the owning shard, and provides app-level slash commands with
+an in-memory per-guild URL queue. Queueing stays out of the core and Node playback APIs. The bot
+runs its TypeScript source with `tsx`; `tsc --noEmit` remains its type check.
+
 The bounded `DiagnosticReceiver` in `remedia-observability` is connected to the Node wrapper by one
 dedicated forwarding worker and a bounded N-API `ThreadsafeFunction`. The receiver is per
 `Remedia` context; clones compete for events and are not broadcasts. The wrapper exposes structured

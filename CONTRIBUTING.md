@@ -60,6 +60,8 @@ pnpm format           # format supported files with Oxfmt
 pnpm format:check     # check formatting without changing files
 pnpm typecheck        # run each workspace package's typecheck command
 pnpm check            # run the full local validation sequence
+pnpm --filter discord-app test
+pnpm --filter discord-app start  # manual Discord integration; requires apps/discord/.env
 
 cargo fmt --all
 cargo fmt --all -- --check
@@ -72,6 +74,10 @@ The docs app can be run with `pnpm --filter docs dev` and built with
 the TypeScript integration tests with Vitest. Add tests under `packages/remedia-node/tests/` and
 split them by behavior; `typecheck` checks both library and test TypeScript. The package keeps Rust
 code in `src/`, TypeScript library code in `lib/`, and generated TypeScript output in `dist/`.
+The Discord harness runs TypeScript directly with `tsx`; its `typecheck` script uses `tsc --noEmit`,
+and its local queue tests run with Node's built-in test runner. To start the bot, run
+`pnpm --filter discord-app start`. This builds the native Node package first and reads
+`DISCORD_TOKEN` and `APPLICATION_ID` from `apps/discord/.env`.
 `cargo test -p remedia-core` runs deterministic file, in-memory, streaming, and local-HTTP decoder tests. The
 core tests cover decoder conversion, seeking, playback lifecycle, Opus framing, backpressure, and
 stop cleanup. `remedia-discord` tests parsing, fail-closed DAVE behavior, RTP, transport encryption,

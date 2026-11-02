@@ -1,0 +1,79 @@
+---
+title: Discord bot harness
+description: Run the manual discord.js app that exercises Remedia voice playback.
+---
+
+# Discord bot harness
+
+`apps/discord` is a small manual integration app for testing the Node.js
+Gateway adapter and native Discord voice sender. It uses discord.js for the
+outer bot Gateway and slash commands; `@remedia/node` handles voice joining,
+decoding, Opus, DAVE, and outbound transport. It is not a general bot framework
+or a media extractor.
+
+## Setup and run
+
+Create `apps/discord/.env` with the bot token and application ID:
+
+```dotenv
+DISCORD_TOKEN=your-bot-token
+APPLICATION_ID=your-application-id
+```
+
+Install the workspace and native dependencies described in the
+[Node.js binding setup](/docs/node/bindings#build-prerequisites), then build the
+Node addon, register commands, and start the source through `tsx`:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm --filter @remedia/node build
+pnpm --filter discord-app deploy
+pnpm --filter discord-app start
+```
+
+The Discord application requires the `Guilds` and `GuildVoiceStates` Gateway
+intents. It forwards raw Gateway dispatches to Remedia and sends OP 4 through
+the discord.js shard that owns the target guild. It does not collect or expose
+voice session IDs, tokens, or endpoints.
+
+## Commands
+
+- `/play url:<http-or-https-url>` joins the command user's current voice
+  channel and starts the URL. If another track is playing, the URL is appended
+  to that server's in-memory queue.
+- `/pause` and `/resume` control the current track.
+- `/seek seconds:<number>` seeks to a position in seconds.
+- `/queue list` shows the current item and up to ten upcoming URLs;
+  `/queue clear` removes upcoming items but keeps the current track.
+- `/skip` stops the current item and starts the next queued URL.
+- `/nowplaying` shows the source, playback state, and submitted position.
+- `/stop` stops playback and clears the queue while keeping the voice
+  connection open.
+- `/disconnect` stops playback, clears the queue, and leaves the voice channel.
+
+The queue belongs to this sample application, not `remedia-core` or
+`@remedia/node`. It is held in memory per guild and is lost when the bot exits.
+It holds up to 100 upcoming tracks in addition to the current track.
+When a track reaches natural end-of-stream, the app advances to the next queued
+URL. A track that fails to open or decode is skipped; the failure is retained
+in the playback snapshot and shown by `/nowplaying`; the process log reports
+the guild without printing the media URL. Commands are
+restricted to users currently in the same voice channel as the bot. The bot
+does not move an existing session to another channel implicitly; disconnect
+first, then issue `/play` from the new channel.
+
+Only direct HTTP(S) media URLs are accepted. The installed FFmpeg libraries
+must support the container and codec. There is no search, URL resolution,
+playlist import, client stream upload, or file-path command. Displayed URLs
+omit query strings and credentials, while the original URL is passed to the
+decoder.
+
+`stop` leaves Discord connected so another `/play` can reuse the session.
+`disconnect` or process shutdown releases the playback session and native voice
+transport. Playback is unpaced by the decoder; the Discord transport schedules
+encoded packets in real time. See the [voice output guide](/docs/discord/voice-output)
+for Opus, DAVE, transport encryption, and protocol limitations.
+
+This harness is intended for manual integration with a configured bot. The
+automated tests use mock sessions and do not establish a live Discord
+connection; hosted or live compatibility must be verified separately.

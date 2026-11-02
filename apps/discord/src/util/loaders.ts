@@ -36,14 +36,14 @@ export async function loadStructures<Structure>(
   // Create an empty array to store the structures
   const structures: Structure[] = [];
 
-  // Create a glob pattern to match the .js files
+  // Load source files directly through tsx during development and .js files in compatible builds.
   const basePath = dir instanceof URL ? fileURLToPath(dir) : dir.toString();
-  const pattern = resolve(basePath, recursive ? '**/*.js' : '*.js');
+  const pattern = resolve(basePath, recursive ? '**/*.{ts,js}' : '*.{ts,js}');
 
   // Loop through all the matching files in the directory
   for await (const file of glob(pattern)) {
-    // If the file is index.js, skip the file
-    if (file.endsWith('/index.js')) {
+    // Index files define shared command/event types and must not be loaded as structures.
+    if (/\/index\.(?:ts|js)$/.test(file)) {
       continue;
     }
 
