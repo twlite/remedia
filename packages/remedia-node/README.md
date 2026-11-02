@@ -8,7 +8,9 @@ The TypeScript entrypoint exports `Remedia`, `PlaybackSession`, and `DiscordSess
 accepts local files, HTTP(S) URLs, in-memory `Buffer`/`Uint8Array` media, and binary Node.js
 `Readable` streams. Standalone playback currently decodes into a null output; Discord sessions
 encode PCM to Opus in `remedia-core` and send packets through the existing voice transport. The
-application must obtain Discord voice session data through its own Gateway client.
+application supplies its Discord Gateway send function and forwards raw Gateway packets to
+`Remedia.receive()`; the TypeScript adapter handles OP 4 and collects matching voice dispatches
+before opening the native transport. Session tokens and endpoints remain internal details.
 
 Each `Remedia` owns an isolated observability context. Rust diagnostics are forwarded through a
 bounded callback queue with `on('debug', listener)`; use `close()` to stop sessions, disconnect

@@ -19,8 +19,10 @@ The intended integrations have different boundaries:
 
 - **Embedded Node.js:** `packages/remedia-node` calls the Rust engine directly through N-API. It
   supports file, HTTP(S), Buffer/Uint8Array, and binary Readable playback plus Discord voice
-  sessions using externally obtained voice credentials. Readables feed a bounded native byte queue
-  with backpressure; Remedia detaches on cancellation and does not destroy the caller's stream.
+  sessions through an adapter for the application's Discord Gateway client. The application sends
+  Gateway payloads and forwards raw dispatch packets; Remedia requests channel joins and manages the
+  voice transport lifecycle. Readables feed a bounded native byte queue with backpressure; Remedia
+  detaches on cancellation and does not destroy the caller's stream.
 - **Remote server:** a future standalone server will expose the engine over a remote protocol.
   Initially, it is intended to accept files and HTTP URLs that the server itself can access.
 

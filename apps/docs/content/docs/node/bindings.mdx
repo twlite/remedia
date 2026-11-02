@@ -14,8 +14,9 @@ The package is under development and is currently private. It supports local
 files, HTTP(S) URLs, in-memory `Buffer`/`Uint8Array` data, and Node.js binary
 `Readable` streams. A standalone playback session decodes into a null output
 for inspection and testing; a Discord session connects the existing Opus
-output to the voice transport. A local audio device, server RPC, and a Discord
-Gateway or REST client are not implemented by these bindings.
+output to the voice transport. A local audio device, server RPC, full Discord
+Gateway connection, and REST client are not implemented by these bindings; the
+Node package adapts a Gateway client supplied by the application.
 
 ## Build prerequisites
 
@@ -186,44 +187,77 @@ quickly. A Discord transport currently cannot report audible playback time;
 its `playedMs` is `null`. `durationMs` is `null` when the source does not
 provide a duration.
 
-## Discord voice sessions
+## Discord Gateway adapter
 
-The application must use its own Discord Gateway integration to join the
-channel and obtain the voice session ID, token, and endpoint. It passes
-Discord snowflakes as decimal strings, preserving their full `u64` precision.
-The transport performs voice Gateway negotiation, UDP discovery, transport
-encryption, and required DAVE setup. DAVE protocol version support and live
-Discord verification are described in the [Discord voice guide](/docs/discord/voice-output).
+The application still owns its Discord Gateway client and decides when to
+join a channel. Remedia now adapts that client: supply a function that sends a
+Gateway payload for a guild, then forward raw Gateway packets to
+`remedia.receive()`. Remedia sends OP 4, collects the matching
+`VOICE_STATE_UPDATE` and `VOICE_SERVER_UPDATE` in either order, and calls the
+native transport only after both are valid. `connect()` resolves after the
+voice WebSocket, UDP transport, encryption, and required DAVE setup are ready.
 
 ```ts
-const voice = await remedia.connectVoice({
+import { Remedia } from '@remedia/node';
+
+const remedia = await Remedia.create({
+  send(guildId, payload) {
+    return sendToShard(guildId, payload);
+  },
+});
+
+discord.on('raw', (packet) => remedia.receive(packet));
+
+const voice = remedia.createDiscordSession({
   guildId: '123456789012345678',
   channelId: '234567890123456789',
   userId: '345678901234567890',
-  sessionId: process.env.DISCORD_VOICE_SESSION_ID!,
-  token: process.env.DISCORD_VOICE_TOKEN!,
-  endpoint: process.env.DISCORD_VOICE_ENDPOINT!,
 });
 
 try {
+  await voice.connect();
   await voice.play({ url: 'https://example.org/audio.mp3' });
   console.log(voice.connectionState, await voice.wait());
   await voice.stop(); // leaves the voice connection open
 } finally {
   await voice.disconnect();
+  await remedia.close();
 }
 ```
 
-`DiscordSession` extends playback controls and exposes `connectionState` and
-`connectionError`. `disconnect()` stops its current playback and releases the
-voice transport while leaving connection state inspectable. `dispose()` also
-forgets the disconnected voice and playback session. Stopping playback alone
-keeps the connection available for another source. Closing the
-owning `Remedia` instance disconnects all remaining sessions.
+Snowflakes remain decimal strings in JavaScript and are validated before any
+Gateway request. `connect()` defaults to a 45-second timeout and accepts
+`{ timeoutMs, signal }` for per-attempt timeout and `AbortSignal` cancellation.
+An interrupted connection sends OP 4 with `channel_id: null` and discards the
+pending credentials. `disconnect()` also sends this leave request, stops active
+playback, closes the native transport, and leaves the wrapper reusable for a
+later `connect()` with fresh Gateway events. `dispose()` disconnects and removes
+the session from its `Remedia` instance. Only one live wrapper per guild is
+allowed in an instance. Gateway responses are not persisted or logged; the
+server token and endpoint are discarded after native setup, and pending data is
+reset before each new exchange and on disconnect.
 
-This package does not implement channel joining, commands, REST calls, client
-streams, or server RPC. Do not log or persist the supplied voice token or
-session ID.
+An abort or timeout rejects the pending `connect()` and requests a Gateway
+leave. If native voice setup has already started, its network handshake cannot
+be interrupted mid-operation; `disconnect()` waits for the transport's bounded
+timeouts and disposes any late native connection result.
+
+`Remedia.receive(packet)` ignores non-voice packets and voice updates for other
+guilds, users, or channels. A voice server/session change starts a fresh OP 4
+request and waits for a new state/server pair; dispatch sequence numbers are
+used to reject packets older than that request when the client includes them.
+The native transport is replaced only after the new credentials arrive. Any
+active playback is stopped during replacement; start it again after
+`connectionState` returns to `connected`. Voice Gateway WebSocket Resume is
+handled inside the native transport and does not send a bot Gateway OP 4.
+
+The application remains responsible for authenticating its Gateway client and
+forwarding its raw dispatch packets. The binding does not implement Gateway
+connectivity, REST calls, channel commands, or bot authentication. The native
+credential-based function is internal to the package; applications do not
+collect or pass voice session IDs, tokens, or endpoints. See the
+[Discord transport guide](/docs/discord/voice-output) for DAVE support and
+protocol limitations.
 
 ## Structured diagnostics
 

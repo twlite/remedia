@@ -33,7 +33,13 @@ playback, Discord session, and diagnostics APIs.
   operations over a WebSocket RPC protocol.
 - **`remedia-node`** contains the Rust N-API crate and thin TypeScript wrapper. `Remedia` owns
   isolated native playback sessions, Discord voice connections, and one bounded diagnostics
-  forwarder. Native playback methods run on NAPI-RS's managed Tokio runtime; blocking core methods
+  forwarder. Its TypeScript `DiscordGatewayAdapter` accepts the host application's Gateway send
+  function and routes raw `VOICE_STATE_UPDATE`/`VOICE_SERVER_UPDATE` dispatches to one session per
+  guild. A join sends OP 4 and waits for both fresh dispatches before invoking the existing native
+  credential-based transport API; credentials are not part of the public Node API. A voice server
+  or session change requests a fresh Gateway pair before replacing the native transport, stopping
+  active playback during replacement. Ordinary voice WebSocket Resume is handled natively and does
+  not send a bot Gateway request. Native playback methods run on NAPI-RS's managed Tokio runtime; blocking core methods
   are dispatched to blocking workers. A caller-owned cancellation token covers the gap before a
   scheduled decoder worker starts, so concurrent stop, dispose, or close cannot leave a late
   playback worker behind. Standalone sessions currently decode into `NullOutput`,
@@ -44,8 +50,9 @@ playback, Discord session, and diagnostics APIs.
   private and under development and does not implement server RPC.
 
 The core decoder, playback, Opus, outbound Discord transport, and first N-API playback integration
-exist. Server RPC, receiving audio, and device output remain design intentions. Add crates or
-packages only when implementation needs them.
+exist. The Node package adapts an externally owned Discord Gateway but does not implement Gateway
+connectivity, REST, or channel commands. Server RPC, receiving audio, and device output remain design
+intentions. Add crates or packages only when implementation needs them.
 
 The bounded `DiagnosticReceiver` in `remedia-observability` is connected to the Node wrapper by one
 dedicated forwarding worker and a bounded N-API `ThreadsafeFunction`. The receiver is per
@@ -102,9 +109,9 @@ unknown while `submitted` tracks decoded frames accepted by the Opus output.
 Each Discord connection owns one WebSocket, one UDP socket, one DAVE session, and one sender task.
 Playback output instances are connection-scoped producers; creating another output supersedes the
 prior producer without disconnecting voice. Voice Gateway v8 Resume is attempted after a WebSocket
-close or heartbeat timeout. A rejected Resume fails the connection; the caller must obtain fresh
-voice session information and connect again. The outer bot Gateway, REST/channel joining, inbound
-voice, RTCP, video, Opus receiving, and remote audio upload are not implemented.
+close or heartbeat timeout. A rejected Resume fails the connection; the Node adapter does not send
+another bot Gateway OP 4 for this native Resume. The outer bot Gateway connection, REST/channel
+commands, inbound voice, RTCP, video, Opus receiving, and remote audio upload are not implemented.
 
 ## Observability
 

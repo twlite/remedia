@@ -49,19 +49,17 @@ test('keeps independent playback sessions isolated after one fails', async () =>
   }
 });
 
-test('validates Discord snowflakes before attempting a network connection', async () => {
-  const remedia = await Remedia.create();
+test('validates Discord snowflakes before creating a voice session', async () => {
+  const remedia = await Remedia.create({ send: () => {} });
 
   try {
-    await assert.rejects(
-      remedia.connectVoice({
-        guildId: 'not-a-snowflake',
-        channelId: '1',
-        userId: '2',
-        sessionId: 'voice-session',
-        token: 'not-a-real-token',
-        endpoint: '127.0.0.1:9',
-      }),
+    assert.throws(
+      () =>
+        remedia.createDiscordSession({
+          guildId: 'not-a-snowflake',
+          channelId: '1',
+          userId: '2',
+        }),
       /guildId.*snowflake/i,
     );
   } finally {

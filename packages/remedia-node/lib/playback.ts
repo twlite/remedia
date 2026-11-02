@@ -15,34 +15,34 @@ import {
 
 /** Controls one playback session. Local sessions decode into a no-op output. */
 export class PlaybackSession {
-  protected readonly native: NativeRemedia;
-  protected readonly playbackId: string;
+  readonly #native: NativeRemedia;
+  readonly #playbackId: string;
   readonly #onDispose: (() => void) | undefined;
   #input: ReadableInputHandle | undefined;
   #disposed = false;
 
   /** @internal */
   constructor(native: NativeRemedia, playbackId: string, onDispose?: () => void) {
-    this.native = native;
-    this.playbackId = playbackId;
+    this.#native = native;
+    this.#playbackId = playbackId;
     this.#onDispose = onDispose;
   }
 
   get state(): PlaybackState {
-    return this.native.playbackState(this.playbackId) as PlaybackState;
+    return this.#native.playbackState(this.#playbackId) as PlaybackState;
   }
 
   get position(): PlaybackPosition {
-    const position = this.native.playbackPosition(this.playbackId);
+    const position = this.#native.playbackPosition(this.#playbackId);
     return { submittedMs: position.submittedMs, playedMs: position.playedMs ?? null };
   }
 
   get durationMs(): number | null {
-    return this.native.playbackDurationMs(this.playbackId) ?? null;
+    return this.#native.playbackDurationMs(this.#playbackId) ?? null;
   }
 
   get error(): string | null {
-    return this.native.playbackError(this.playbackId) ?? null;
+    return this.#native.playbackError(this.#playbackId) ?? null;
   }
 
   async play(source: MediaSource): Promise<AudioStreamInfo> {
@@ -55,7 +55,7 @@ export class PlaybackSession {
     let input: ReadableInputHandle | undefined;
     let nativeSource: NativeMediaSource;
     if ('stream' in source) {
-      input = createReadableInput(this.native, source.stream);
+      input = createReadableInput(this.#native, source.stream);
       nativeSource = input.source;
       this.#input = input;
     } else {
@@ -63,7 +63,7 @@ export class PlaybackSession {
     }
 
     try {
-      return toStreamInfo(await this.native.play(this.playbackId, nativeSource));
+      return toStreamInfo(await this.#native.play(this.#playbackId, nativeSource));
     } catch (error) {
       await this.#releaseInput();
       throw error;
@@ -72,23 +72,23 @@ export class PlaybackSession {
 
   async pause(): Promise<void> {
     this.#assertActive();
-    await this.native.pause(this.playbackId);
+    await this.#native.pause(this.#playbackId);
   }
 
   async resume(): Promise<void> {
     this.#assertActive();
-    await this.native.resume(this.playbackId);
+    await this.#native.resume(this.#playbackId);
   }
 
   async seek(positionMs: number): Promise<void> {
     this.#assertActive();
-    await this.native.seek(this.playbackId, positionMs);
+    await this.#native.seek(this.#playbackId, positionMs);
   }
 
   async stop(): Promise<void> {
     this.#assertActive();
     try {
-      await this.native.stop(this.playbackId);
+      await this.#native.stop(this.#playbackId);
     } finally {
       await this.#releaseInput();
     }
@@ -97,7 +97,7 @@ export class PlaybackSession {
   async wait(): Promise<PlaybackState> {
     this.#assertActive();
     try {
-      return (await this.native.wait(this.playbackId)) as PlaybackState;
+      return (await this.#native.wait(this.#playbackId)) as PlaybackState;
     } finally {
       await this.#releaseInput();
     }
@@ -107,7 +107,7 @@ export class PlaybackSession {
   async dispose(): Promise<void> {
     if (this.#disposed) return;
     try {
-      await this.native.disposePlaybackSession(this.playbackId);
+      await this.#native.disposePlaybackSession(this.#playbackId);
     } finally {
       await this.#releaseInput();
       this.markDisposed();

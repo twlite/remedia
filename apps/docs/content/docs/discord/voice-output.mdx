@@ -29,6 +29,12 @@ group, in addition to the guild ID used by the voice Gateway Identify message.
 These values are connection credentials: `VoiceConnectionInfo` redacts session
 ID and token in its `Debug` output, and the library does not log or persist them.
 
+The Node.js binding includes a small adapter for applications that already own
+a Discord Gateway client. It sends the required channel join request and
+collects the voice state/server dispatches; see the
+[Node.js Gateway adapter guide](/docs/node/bindings#discord-gateway-adapter).
+Rust callers continue to provide `VoiceConnectionInfo` directly.
+
 ```rust
 use std::error::Error;
 use std::sync::Arc;

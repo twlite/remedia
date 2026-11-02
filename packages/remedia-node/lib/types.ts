@@ -1,4 +1,4 @@
-import type { NativeDiagnosticEvent, NativeStreamInfo, NativeVoiceOptions } from '../native.js';
+import type { NativeDiagnosticEvent, NativeStreamInfo } from '../native.js';
 
 export type PlaybackState =
   | 'idle'
@@ -13,21 +13,13 @@ export type PlaybackState =
   | 'failed';
 
 export type VoiceConnectionState =
+  | 'connecting'
   | 'negotiatingDave'
   | 'connected'
   | 'reconnecting'
   | 'disconnecting'
   | 'disconnected'
   | 'failed';
-
-export interface VoiceConnectionOptions {
-  guildId: string;
-  channelId: string;
-  userId: string;
-  sessionId: string;
-  token: string;
-  endpoint: string;
-}
 
 export interface AudioStreamInfo {
   streamIndex: number;
@@ -65,17 +57,6 @@ export interface DiagnosticEvent {
 }
 
 export type DebugListener = (event: DiagnosticEvent) => void;
-
-export function toNativeVoiceOptions(options: VoiceConnectionOptions): NativeVoiceOptions {
-  return {
-    guildId: options.guildId,
-    channelId: options.channelId,
-    userId: options.userId,
-    sessionId: options.sessionId,
-    token: options.token,
-    endpoint: options.endpoint,
-  };
-}
 
 export function toStreamInfo(info: NativeStreamInfo): AudioStreamInfo {
   return {
