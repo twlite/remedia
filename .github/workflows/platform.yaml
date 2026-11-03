@@ -503,6 +503,13 @@ jobs:
           "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
           "VCPKG_INSTALL_ROOT=$installRoot" >> $env:GITHUB_ENV
           "VCPKG_TARGET_TRIPLET=$triplet" >> $env:GITHUB_ENV
+          # Git for Windows also provides a link.exe (GNU coreutils). Pin
+          # Cargo's linker to MSVC instead of relying on PATH resolution.
+          $msvcTarget = if ($triplet -eq 'x86-windows') { 'x86' } else { 'arm64' }
+          $msvcLinker = Join-Path $env:VCToolsInstallDir "bin\\Hostx64\\$msvcTarget\\link.exe"
+          if (!(Test-Path -LiteralPath $msvcLinker)) { throw "MSVC linker not found: $msvcLinker" }
+          $rustTriple = if ($triplet -eq 'x86-windows') { 'I686_PC_WINDOWS_MSVC' } else { 'AARCH64_PC_WINDOWS_MSVC' }
+          "CARGO_TARGET_${rustTriple}_LINKER=$msvcLinker" >> $env:GITHUB_ENV
       - name: Configure Windows target FFmpeg and host libclang paths
         if: inputs.os == 'windows'
         shell: pwsh
@@ -622,7 +629,7 @@ jobs:
           git -C "$ffmpeg_source" checkout --quiet --detach FETCH_HEAD
           (
             cd "$ffmpeg_source"
-            ./configure --prefix=/usr/local --enable-shared --disable-static --disable-programs --disable-doc --disable-debug --disable-autodetect --enable-network --enable-pic
+            ./configure --cc=cc --host-cc=cc --prefix=/usr/local --enable-shared --disable-static --disable-programs --disable-doc --disable-debug --disable-autodetect --enable-network --enable-pic
             gmake -j3
             sudo gmake install
           )
