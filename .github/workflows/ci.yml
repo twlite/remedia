@@ -162,11 +162,31 @@ jobs:
         run: |
           $ffmpegRoot = Join-Path $env:CONDA_PREFIX 'Library'
           $pkgConfigPath = Join-Path $ffmpegRoot 'lib\pkgconfig'
-          $libclangPath = Join-Path $env:CONDA_PREFIX 'Library\bin'
+          $libclangPath = Join-Path $ffmpegRoot 'bin'
+          $libclangDll = Join-Path $libclangPath 'libclang.dll'
+
+          if (!(Test-Path -LiteralPath $libclangDll)) {
+            $versionedLibclangDll = Get-ChildItem -LiteralPath $libclangPath -Filter 'libclang-*.dll' -File |
+              Where-Object { $_.Name -match '^libclang-\d+\.dll$' } |
+              Select-Object -First 1
+
+            if (!$versionedLibclangDll) {
+              throw "Neither libclang.dll nor a versioned libclang DLL was found in $libclangPath"
+            }
+
+            Copy-Item -LiteralPath $versionedLibclangDll.FullName -Destination $libclangDll -ErrorAction Stop
+            Write-Host "Created bindgen-compatible libclang.dll from $($versionedLibclangDll.Name)"
+          }
+
+          if (!(Test-Path -LiteralPath $libclangDll)) {
+            throw "bindgen-compatible libclang.dll was not created at $libclangDll"
+          }
+
           "FFMPEG_DIR=$ffmpegRoot" >> $env:GITHUB_ENV
           "PKG_CONFIG_PATH=$pkgConfigPath" >> $env:GITHUB_ENV
           "LIBCLANG_PATH=$libclangPath" >> $env:GITHUB_ENV
-          "PATH=$(Join-Path $ffmpegRoot 'bin');$env:PATH" >> $env:GITHUB_ENV
+          "PATH=$libclangPath;$env:PATH" >> $env:GITHUB_ENV
+          Write-Host "Using libclang: $libclangDll"
 
       - name: Configure macOS native library paths
         if: matrix.os == 'macos'

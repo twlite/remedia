@@ -33,6 +33,14 @@ for (const [library, expectedMajor] of expectedMajors) {
 }
 
 if (process.platform === 'win32') {
+  const libclangPath = process.env.LIBCLANG_PATH;
+  if (!libclangPath) throw new Error('LIBCLANG_PATH must identify the Windows libclang directory');
+  const libclangDll = join(libclangPath, 'libclang.dll');
+  if (!existsSync(libclangDll)) {
+    throw new Error(`bindgen requires libclang.dll; expected it at ${libclangDll}`);
+  }
+  console.log(`bindgen libclang: ${libclangDll}`);
+
   for (const filename of [
     'avcodec.lib',
     'avformat.lib',
