@@ -13,60 +13,61 @@ follow the intended boundaries in [`docs/architecture.md`](docs/architecture.md)
 - pnpm 12.16.1, selected by the root `package.json`.
 - Git.
 
-`remedia-core` links native FFmpeg libraries through `ffmpeg-next` and `ffmpeg-sys-next`. Its Opus
-adapter links native libopus, and playback filters use libavfilter. Install development headers
-for libavformat, libavcodec, libavutil, libavfilter, libswresample, and libopus, plus `pkg-config`
-and Clang/libclang for the bindings build.
+`remedia-core` dynamically links FFmpeg libraries through `ffmpeg-next` and `ffmpeg-sys-next`. Its
+Opus adapter builds libopus from bundled source and links it statically. Playback filters use
+libavfilter. Install development headers for libavformat, libavcodec, libavutil, libavfilter, and
+libswresample, plus `pkg-config` and Clang/libclang for the bindings build. Remedia does not require
+system libopus headers or libraries.
 Native target status is tracked separately from the workflow definition; adding a matrix entry does
 not by itself establish runtime support:
 
-| Target                                           | Status                                                                                                                                              |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Linux x86_64 GNU                                 | Native build and runtime tests configured; the previous Linux run reached Rust tests but a pause test exceeded its 3-second frame-boundary timeout. |
-| Linux ARM64 GNU                                  | Native build and runtime tests configured; hosted result pending.                                                                                   |
-| macOS x86_64                                     | Native build and runtime tests configured; hosted result pending.                                                                                   |
-| macOS ARM64                                      | Native build and runtime tests configured; locally built and tested on the development host.                                                        |
-| Windows x86_64 MSVC                              | Native build and runtime tests configured; hosted result pending.                                                                                   |
-| Windows ARM64 MSVC                               | Unsupported for now: the pinned FFmpeg 7 package set does not provide the required Windows ARM64 development libraries.                             |
-| musl, Android, WASI, FreeBSD, and 32-bit targets | Unsupported and not tested.                                                                                                                         |
+| Target                                           | Status                                                                                                                  |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| Linux x86_64 GNU                                 | Native build and runtime tests configured; bundled-Opus CI fixes await a hosted rerun.                                  |
+| Linux ARM64 GNU                                  | Native build and runtime tests configured; bundled-Opus CI fixes await a hosted rerun.                                  |
+| macOS x86_64                                     | Native build and runtime tests configured; bundled-Opus and LLVM 19 bindgen fixes await a hosted rerun.                 |
+| macOS ARM64                                      | Native build and runtime tests configured; bundled-Opus and LLVM 19 bindgen fixes await a hosted rerun.                 |
+| Windows x86_64 MSVC                              | Native build and runtime tests configured; bundled-Opus fixes await a hosted rerun.                                     |
+| Windows ARM64 MSVC                               | Unsupported for now: the pinned FFmpeg 7 package set does not provide the required Windows ARM64 development libraries. |
+| musl, Android, WASI, FreeBSD, and 32-bit targets | Unsupported and not tested.                                                                                             |
 
 The configured native CI matrix uses native runners and tests the same addon artifact with Node.js
 22.18, 24, and 26. Promote a target to fully tested support only after its native build and runtime
 jobs pass. No target is build-only in the current matrix.
 
-Remedia targets the FFmpeg 7 ABI and dynamically links FFmpeg and libopus. FFmpeg executables are
-used only for dependency/version checks; Remedia does not spawn them for playback. The CI dependency
-specifications are in `.github/native-deps/` and pin FFmpeg 7.1.1, libopus 1.5.2, and pkg-config
-0.29.2 for Linux and Windows.
+Remedia targets the FFmpeg 7 ABI and dynamically links FFmpeg. Its Opus adapter builds libopus from
+the locked bundled source and statically links it into native binaries. FFmpeg executables are used
+only for dependency/version checks; Remedia does not spawn them for playback. The CI dependency
+specifications are in `.github/native-deps/` and pin FFmpeg 7.1.1 and pkg-config 0.29.2 for Linux
+and Windows.
 
 ### macOS
 
-Install Xcode Command Line Tools and the versioned Homebrew formula:
+Install Xcode Command Line Tools, versioned FFmpeg 7, and LLVM 19.1.7 for the
+repository's bindgen version:
 
 ```sh
-brew install ffmpeg@7 opus pkg-config llvm
+brew install ffmpeg@7 pkg-config llvm@19
 export FFMPEG_DIR="$(brew --prefix ffmpeg@7)"
-export OPUS_LIB_DIR="$(brew --prefix opus)"
-export PKG_CONFIG_PATH="$FFMPEG_DIR/lib/pkgconfig:$OPUS_LIB_DIR/lib/pkgconfig"
-export LIBCLANG_PATH="$(brew --prefix llvm)/lib"
-export DYLD_LIBRARY_PATH="$FFMPEG_DIR/lib:$OPUS_LIB_DIR/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+export PKG_CONFIG_PATH="$FFMPEG_DIR/lib/pkgconfig"
+export LIBCLANG_PATH="$(brew --prefix llvm@19)/lib"
+export DYLD_LIBRARY_PATH="$FFMPEG_DIR/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 ```
 
 The versioned formula keeps the FFmpeg major version explicit. After a Homebrew upgrade, rerun the
 `brew --prefix` assignments in the current shell; do not retain a path into a versioned Cellar
-directory. If bindgen reports that it cannot load libclang, confirm that the LLVM prefix still
-contains `lib/libclang.dylib` and refresh `LIBCLANG_PATH`.
+directory. Keep the versioned LLVM 19 formula installed and confirm that its prefix contains
+`lib/libclang.dylib` if bindgen reports missing or incompatible FFmpeg layouts.
 
 ### Linux
 
-Install Clang/libclang, then create the pinned dynamic FFmpeg/Opus environment used by CI:
+Install Clang/libclang, then create the pinned dynamic FFmpeg environment used by CI:
 
 ```sh
 sudo apt-get install clang libclang-dev
 micromamba create --name remedia-ffmpeg7 --file .github/native-deps/ffmpeg7.yml
 micromamba activate remedia-ffmpeg7
 export FFMPEG_DIR="$CONDA_PREFIX"
-export OPUS_LIB_DIR="$CONDA_PREFIX"
 export PKG_CONFIG_PATH="$CONDA_PREFIX/lib/pkgconfig"
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 ```
@@ -83,7 +84,6 @@ micromamba. Use the pinned x64 development packages:
 micromamba create --name remedia-ffmpeg7 --file .github/native-deps/ffmpeg7-windows.yml
 micromamba activate remedia-ffmpeg7
 $env:FFMPEG_DIR = Join-Path $env:CONDA_PREFIX 'Library'
-$env:OPUS_LIB_DIR = $env:FFMPEG_DIR
 $env:PKG_CONFIG_PATH = Join-Path $env:FFMPEG_DIR 'lib\pkgconfig'
 $env:LIBCLANG_PATH = Join-Path $env:CONDA_PREFIX 'Library\bin'
 $env:PATH = (Join-Path $env:FFMPEG_DIR 'bin') + ';' + $env:PATH
@@ -161,7 +161,8 @@ built addon and server executable, so a missing environment variable cannot sile
 test.
 
 Compiling `@remedia/node` from source requires the pinned Rust toolchain, target-compatible FFmpeg 7
-development libraries, dynamic libopus, and libclang. Installing a prebuilt platform addon from a
+development libraries, and libclang. The bundled Opus source is built and statically linked by
+Cargo. Installing a prebuilt platform addon from a
 future published package would not need those build tools and does not install FFmpeg during package
 installation. The current repository package is private, and no FFmpeg or native compilation is
 attached to npm/pnpm install hooks.

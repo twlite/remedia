@@ -326,8 +326,18 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
         this.#emitTerminal(state, generation, error);
       }
     } catch (error) {
-      if (!this.#disposed && this.state === 'failed') {
-        this.#emitTerminal('failed', generation, asError(error));
+      if (!this.#disposed) {
+        // Native disposal can remove the session before this generation-bound
+        // wait settles. In that race, reading playbackState also rejects; the
+        // disposal lifecycle event is authoritative and no terminal event is
+        // needed for the removed session.
+        let state: PlaybackState | undefined;
+        try {
+          state = this.state;
+        } catch {
+          state = undefined;
+        }
+        if (state === 'failed') this.#emitTerminal('failed', generation, asError(error));
       }
     } finally {
       this.#metadata.delete(generation);

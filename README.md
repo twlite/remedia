@@ -80,8 +80,8 @@ covers structured logs, bounded diagnostic routing, and opt-in OTLP traces and m
 You need Rust via rustup, Node.js 22.18 or newer, and pnpm 12.16.1. The workspace declares Rust
 1.88 as its minimum supported version and pins Rust 1.99.1 for development. FFmpeg development
 headers and libraries for libavformat, libavcodec, libavutil, libavfilter, and libswresample are
-required to build `remedia-core`. Building the Opus adapter also requires native libopus development
-files.
+required to build `remedia-core`. The Opus adapter builds libopus from bundled source and links it
+statically, so a separate system libopus development package is not required.
 
 ```sh
 pnpm install --frozen-lockfile

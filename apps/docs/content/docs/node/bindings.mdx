@@ -28,7 +28,9 @@ only consumers do not need native FFmpeg or N-API dependencies.
 
 Use the repository's pinned Rust toolchain, Node.js 22.18 or newer, and pnpm
 12.16.1. Building the native addon requires the FFmpeg development libraries
-used by `remedia-core` and native libopus. From the repository root:
+used by `remedia-core`. The Opus encoder is built from bundled source and linked
+statically, so a separate system libopus development package is not required.
+From the repository root:
 
 ```sh
 pnpm install --frozen-lockfile

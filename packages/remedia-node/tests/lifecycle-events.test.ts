@@ -65,7 +65,9 @@ test('emits generation-correlated lifecycle events and retains arbitrary metadat
 });
 
 test('emits pause/resume and configuration transitions only after successful changes', async () => {
-  const held = await createHeldAudioServer(makeWave(5));
+  // Keep the source genuinely incremental so an unpaced test output cannot
+  // reach EOF before the lifecycle operations run.
+  const held = await createHeldAudioServer(makeWave(60));
   const remedia = await Remedia.create();
   const playback = remedia.createPlaybackSession();
   const events: string[] = [];
@@ -88,18 +90,27 @@ test('emits pause/resume and configuration transitions only after successful cha
     const starting = playback.play({ url: held.url });
     await held.ready;
     await starting;
+    // The fixture deliberately keeps the HTTP response open. Wait until pause
+    // is queued, then release bounded chunks until the decoder reaches a frame
+    // boundary. The rest of the long source remains unread for the test.
+    const pausing = playback.pause();
+    for (let attempt = 0; playback.state !== 'paused' && attempt < 64; attempt++) {
+      held.sendNext(16 * 1024);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    assert.equal(playback.state, 'paused');
+    await pausing;
     await playback.pause();
-    await playback.pause();
+    await playback.filters.set('anull');
+    await playback.filters.set('anull');
+    await playback.setVolume(0.75);
+    await playback.setVolume(0.75);
     await playback.resume();
-    await playback.filters.set('anull');
-    await playback.filters.set('anull');
-    await playback.setVolume(0.75);
-    await playback.setVolume(0.75);
     assert.deepEqual(events, [
       PlaybackSessionEvents.playbackPaused,
-      PlaybackSessionEvents.playbackResumed,
       PlaybackSessionEvents.filterChanged,
       PlaybackSessionEvents.volumeChanged,
+      PlaybackSessionEvents.playbackResumed,
     ]);
 
     const stopped = once(playback, PlaybackSessionEvents.playbackStopped);

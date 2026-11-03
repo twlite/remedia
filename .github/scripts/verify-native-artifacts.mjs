@@ -34,10 +34,11 @@ if (process.platform === 'linux') {
         'libavutil.so.59',
         'libavfilter.so.10',
         'libswresample.so.5',
-        'libopus.so.0',
       ],
       binary,
     );
+    const directDependencies = execFileSync('readelf', ['-d', binary], { encoding: 'utf8' });
+    rejectDynamicOpus(directDependencies, binary, /libopus\.so(?:\.\d+)?/i);
   }
 } else if (process.platform === 'darwin') {
   for (const binary of binaries) {
@@ -49,16 +50,10 @@ if (process.platform === 'linux') {
     }
     requireDependencies(
       dependencies,
-      [
-        'libavcodec.61',
-        'libavformat.61',
-        'libavutil.59',
-        'libavfilter.10',
-        'libswresample.5',
-        'libopus.0',
-      ],
+      ['libavcodec.61', 'libavformat.61', 'libavutil.59', 'libavfilter.10', 'libswresample.5'],
       binary,
     );
+    rejectDynamicOpus(dependencies, binary, /libopus(?:\.\d+)?\.dylib/i);
   }
 } else if (process.platform === 'win32') {
   for (const binary of binaries) {
@@ -70,16 +65,10 @@ if (process.platform === 'linux') {
     }
     requireDependencies(
       dependencies.toLowerCase(),
-      [
-        'avcodec-61.dll',
-        'avformat-61.dll',
-        'avutil-59.dll',
-        'avfilter-10.dll',
-        'swresample-5.dll',
-        'opus.dll',
-      ],
+      ['avcodec-61.dll', 'avformat-61.dll', 'avutil-59.dll', 'avfilter-10.dll', 'swresample-5.dll'],
       binary,
     );
+    rejectDynamicOpus(dependencies, binary, /opus\.dll/i);
   }
 } else {
   throw new Error(`Native artifact inspection is not configured for ${process.platform}`);
@@ -90,5 +79,13 @@ function requireDependencies(output, names, binary) {
     if (!output.toLowerCase().includes(name.toLowerCase())) {
       throw new Error(`${binary} does not declare the expected dynamic dependency ${name}`);
     }
+  }
+}
+
+function rejectDynamicOpus(output, binary, pattern) {
+  if (pattern.test(output)) {
+    throw new Error(
+      `${binary} unexpectedly depends on dynamically linked libopus; the addon bundles it`,
+    );
   }
 }

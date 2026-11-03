@@ -15,10 +15,12 @@ and diagnostics APIs. `@remedia/client` orchestrates direct embedded and remote 
   `AudioDecoder` continues to return normalized PCM. For an encoded-Opus-capable output, playback
   can forward a conservative subset of untrimmed 48 kHz mono/stereo family-zero Opus packets
   directly; other sources, outputs, and processing configurations use PCM and, when applicable,
-  native libopus encoding. It uses native FFmpeg libraries rather than starting FFmpeg subprocesses.
+  the bundled libopus encoder. It uses native FFmpeg libraries rather than starting FFmpeg
+  subprocesses.
   Playback sessions manage one source, lifecycle state, seeking, optional native libavfilter
   graphs, linear master gain, and frame delivery to a generic output. With no graph configured,
-  PCM bypasses libavfilter. The generic Opus output adapter uses native libopus lazily, accumulates
+  PCM bypasses libavfilter. The generic Opus output adapter uses its statically linked libopus
+  encoder lazily, accumulates
   variable PCM blocks into 20 ms stereo Opus packets, and marks a padded final packet's actual media
   duration. It shares one encoded packet sink between source passthrough and PCM encoding. Dynamic
   changes retain the demuxer and transport; up to 120 ms / 512 KiB of compressed history warms a
@@ -226,6 +228,8 @@ previous-callback getter, so Remedia cannot chain an arbitrary custom native cal
 FFmpeg worker-thread messages also cannot always be attributed to the Remedia operation that
 created them. These process-global logging limits are documented in the observability guide.
 
-Building `remedia-core` requires native libavformat, libavcodec, libavutil, libswresample, and
-libopus development libraries. CI installs these libraries on Ubuntu. No FFmpeg executable is used
-at runtime.
+Building `remedia-core` requires the FFmpeg 7 development libraries (libavformat, libavcodec,
+libavutil, libavfilter, and libswresample). Cargo builds libopus from the `opus2` bundled source
+and statically links the Opus adapter into Remedia binaries, so a separate system libopus development
+package is not required. CI installs FFmpeg development/runtime libraries on each platform. No
+FFmpeg executable is used at runtime.

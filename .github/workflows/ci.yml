@@ -91,8 +91,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2.9.3
         with:
-          shared-key: ${{ matrix.target }}-ffmpeg7-dynamic
-          key: release-no-incremental-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'packages/remedia-node/Cargo.toml', '.github/native-deps/ffmpeg7.yml', '.github/native-deps/ffmpeg7-windows.yml') }}
+          shared-key: ${{ matrix.target }}-ffmpeg7-bundled-opus
+          key: release-no-incremental-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'crates/remedia-core/Cargo.toml', 'packages/remedia-node/Cargo.toml', '.github/native-deps/ffmpeg7.yml', '.github/native-deps/ffmpeg7-windows.yml') }}
 
       - name: Install Linux build tools
         if: matrix.os == 'linux'
@@ -100,7 +100,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends clang libclang-dev
 
-      - name: Install Linux FFmpeg 7 and Opus
+      - name: Install Linux FFmpeg 7
         if: matrix.os == 'linux'
         uses: mamba-org/setup-micromamba@v3
         with:
@@ -111,7 +111,7 @@ jobs:
           cache-environment-key: ffmpeg7-${{ matrix.target }}-${{ hashFiles('.github/native-deps/ffmpeg7.yml') }}
           cache-downloads: true
 
-      - name: Install Windows FFmpeg 7, Opus, and libclang
+      - name: Install Windows FFmpeg 7 and libclang
         if: matrix.os == 'windows'
         uses: mamba-org/setup-micromamba@v3
         with:
@@ -126,9 +126,9 @@ jobs:
         if: matrix.os == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Install macOS FFmpeg 7 and Opus
+      - name: Install macOS FFmpeg 7
         if: matrix.os == 'macos'
-        run: brew install ffmpeg@7 opus pkg-config llvm
+        run: brew install ffmpeg@7 pkg-config llvm@19
 
       - name: Configure Linux native library paths
         if: matrix.os == 'linux'
@@ -136,7 +136,6 @@ jobs:
         run: |
           set -euo pipefail
           echo "FFMPEG_DIR=$CONDA_PREFIX" >> "$GITHUB_ENV"
-          echo "OPUS_LIB_DIR=$CONDA_PREFIX" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_PATH=$CONDA_PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
           libclang_path="$(find /usr/lib/llvm-* -name libclang.so -print -quit)"
@@ -151,7 +150,6 @@ jobs:
           $pkgConfigPath = Join-Path $ffmpegRoot 'lib\pkgconfig'
           $libclangPath = Join-Path $env:CONDA_PREFIX 'Library\bin'
           "FFMPEG_DIR=$ffmpegRoot" >> $env:GITHUB_ENV
-          "OPUS_LIB_DIR=$ffmpegRoot" >> $env:GITHUB_ENV
           "PKG_CONFIG_PATH=$pkgConfigPath" >> $env:GITHUB_ENV
           "LIBCLANG_PATH=$libclangPath" >> $env:GITHUB_ENV
           "PATH=$(Join-Path $ffmpegRoot 'bin');$env:PATH" >> $env:GITHUB_ENV
@@ -162,13 +160,11 @@ jobs:
         run: |
           set -euo pipefail
           ffmpeg_prefix="$(brew --prefix ffmpeg@7)"
-          opus_prefix="$(brew --prefix opus)"
-          llvm_prefix="$(brew --prefix llvm)"
+          llvm_prefix="$(brew --prefix llvm@19)"
           echo "FFMPEG_DIR=$ffmpeg_prefix" >> "$GITHUB_ENV"
-          echo "OPUS_LIB_DIR=$opus_prefix" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$ffmpeg_prefix/lib/pkgconfig:$opus_prefix/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$ffmpeg_prefix/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "LIBCLANG_PATH=$llvm_prefix/lib" >> "$GITHUB_ENV"
-          echo "DYLD_LIBRARY_PATH=$ffmpeg_prefix/lib:$opus_prefix/lib:${DYLD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=$ffmpeg_prefix/lib:${DYLD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
           echo "$ffmpeg_prefix/bin" >> "$GITHUB_PATH"
 
       - uses: pnpm/action-setup@v6.1.0
@@ -216,9 +212,9 @@ jobs:
         env:
           RUST_TARGET: ${{ matrix.target }}
         run: |
-          $host = (rustc -vV | Select-String '^host: ').ToString().Substring(6)
-          Write-Host "Rust host: $host"
-          if ($host -ne $env:RUST_TARGET) { throw "Expected $env:RUST_TARGET but found $host" }
+          $rustHost = (rustc -vV | Select-String '^host: ').ToString().Substring(6)
+          Write-Host "Rust host: $rustHost"
+          if ($rustHost -ne $env:RUST_TARGET) { throw "Expected $env:RUST_TARGET but found $rustHost" }
 
       - name: Run Rust workspace tests in release profile
         if: matrix.os != 'windows'
@@ -420,7 +416,7 @@ jobs:
 
       - name: Install macOS FFmpeg 7 runtime libraries
         if: matrix.os == 'macos'
-        run: brew install ffmpeg@7 opus pkg-config llvm
+        run: brew install ffmpeg@7 pkg-config
 
       - uses: pnpm/action-setup@v6.1.0
         with:
@@ -449,7 +445,6 @@ jobs:
         shell: micromamba-shell {0}
         run: |
           echo "FFMPEG_DIR=$CONDA_PREFIX" >> "$GITHUB_ENV"
-          echo "OPUS_LIB_DIR=$CONDA_PREFIX" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_PATH=$CONDA_PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
 
@@ -459,7 +454,6 @@ jobs:
         run: |
           $ffmpegRoot = Join-Path $env:CONDA_PREFIX 'Library'
           "FFMPEG_DIR=$ffmpegRoot" >> $env:GITHUB_ENV
-          "OPUS_LIB_DIR=$ffmpegRoot" >> $env:GITHUB_ENV
           "PKG_CONFIG_PATH=$(Join-Path $ffmpegRoot 'lib\pkgconfig')" >> $env:GITHUB_ENV
           "PATH=$(Join-Path $ffmpegRoot 'bin');$env:PATH" >> $env:GITHUB_ENV
 
@@ -468,11 +462,10 @@ jobs:
         shell: bash
         run: |
           ffmpeg_prefix="$(brew --prefix ffmpeg@7)"
-          opus_prefix="$(brew --prefix opus)"
           echo "FFMPEG_DIR=$ffmpeg_prefix" >> "$GITHUB_ENV"
-          echo "OPUS_LIB_DIR=$opus_prefix" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$ffmpeg_prefix/lib/pkgconfig:$opus_prefix/lib/pkgconfig" >> "$GITHUB_ENV"
-          echo "DYLD_LIBRARY_PATH=$ffmpeg_prefix/lib:$opus_prefix/lib:${DYLD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$ffmpeg_prefix/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=$ffmpeg_prefix/lib:${DYLD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "$ffmpeg_prefix/bin" >> "$GITHUB_PATH"
 
       - name: Make the downloaded server executable
         if: matrix.os != 'windows'

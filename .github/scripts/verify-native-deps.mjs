@@ -11,12 +11,8 @@ const expectedMajors = new Map([
 ]);
 
 const ffmpegDir = process.env.FFMPEG_DIR;
-const opusDir = process.env.OPUS_LIB_DIR ?? process.env.LIBOPUS_LIB_DIR;
-if (!ffmpegDir || !opusDir) {
-  throw new Error('FFMPEG_DIR and OPUS_LIB_DIR must identify the FFmpeg and Opus prefixes');
-}
+if (!ffmpegDir) throw new Error('FFMPEG_DIR must identify the FFmpeg prefix');
 console.log(`FFMPEG_DIR: ${ffmpegDir}`);
-console.log(`OPUS_LIB_DIR: ${opusDir}`);
 
 const ffmpegVersion = execFileSync('ffmpeg', ['-version'], { encoding: 'utf8' }).split('\n')[0];
 console.log(`FFmpeg executable: ${ffmpegVersion}`);
@@ -36,17 +32,6 @@ for (const [library, expectedMajor] of expectedMajors) {
   }
 }
 
-const opusVersion = pkgConfig('--modversion', 'opus');
-const opusLibdir = pkgConfig('--variable=libdir', 'opus');
-console.log(`opus: ${opusVersion} (${opusLibdir})`);
-if (!opusVersion.startsWith('1.')) throw new Error(`Unexpected libopus version: ${opusVersion}`);
-if (!existsSync(join(opusDir, 'lib'))) {
-  throw new Error(`Missing the lib directory under OPUS_LIB_DIR=${opusDir}`);
-}
-if (!existsSync(join(opusDir, 'include', 'opus', 'opus.h'))) {
-  throw new Error(`Missing the Opus headers under OPUS_LIB_DIR=${opusDir}`);
-}
-
 if (process.platform === 'win32') {
   for (const filename of [
     'avcodec.lib',
@@ -59,11 +44,7 @@ if (process.platform === 'win32') {
       throw new Error(`Missing MSVC import library ${join(ffmpegDir, 'lib', filename)}`);
     }
   }
-  if (!existsSync(join(opusDir, 'lib', 'opus.lib'))) {
-    throw new Error(`Missing MSVC Opus import library ${join(opusDir, 'lib', 'opus.lib')}`);
-  }
   console.log(`Windows FFmpeg include/lib root: ${ffmpegDir}`);
-  console.log(`Windows Opus include/lib root: ${opusDir}`);
 }
 
 function pkgConfig(...args) {

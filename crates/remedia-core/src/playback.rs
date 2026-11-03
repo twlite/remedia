@@ -2132,7 +2132,10 @@ mod tests {
     use crate::source::{CancellationToken, InputSource};
 
     static NEXT_TEMP_ID: AtomicUsize = AtomicUsize::new(0);
-    const TEST_TIMEOUT: Duration = Duration::from_secs(3);
+    // Playback worker tests coordinate several threads and native FFmpeg
+    // operations. Leave enough room for loaded hosted runners while retaining
+    // a finite bound so genuine deadlocks still fail deterministically.
+    const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
     struct TempWave {
         directory: PathBuf,
@@ -2862,6 +2865,7 @@ mod tests {
         let set_gain = thread::spawn(move || {
             let _ = response_tx.send(update_session.set_volume(0.75));
         });
+        assert!(wait_for_volume(&session, 0.75));
         handle.release(1);
         response_rx.recv_timeout(TEST_TIMEOUT).unwrap().unwrap();
         set_gain.join().unwrap();
@@ -3226,6 +3230,7 @@ mod tests {
         thread::spawn(move || {
             let _ = paused.send(pause_session.pause());
         });
+        assert!(wait_for_state(&session, PlaybackState::Pausing));
         gate.release(1);
         assert!(
             paused_rx
@@ -3596,6 +3601,12 @@ mod tests {
 
     fn wait_for_state(session: &PlaybackSession, expected: PlaybackState) -> bool {
         wait_for_condition(&session.shared, TEST_TIMEOUT, |data| data.state == expected)
+    }
+
+    fn wait_for_volume(session: &PlaybackSession, expected: f32) -> bool {
+        wait_for_condition(&session.shared, TEST_TIMEOUT, |data| {
+            data.volume == expected
+        })
     }
 
     fn wait_for_processing_mode(

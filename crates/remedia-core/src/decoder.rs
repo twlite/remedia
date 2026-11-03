@@ -1198,7 +1198,10 @@ unsafe fn av_channel_layout_description(layout: &ffmpeg::ffi::AVChannelLayout) -
         return None;
     }
 
-    let mut buffer = [0_i8; 128];
+    // `char` signedness is target-dependent (notably `c_char` is unsigned on
+    // some Linux targets), so use the platform C ABI alias expected by the
+    // generated FFmpeg bindings.
+    let mut buffer = [0 as std::ffi::c_char; 128];
     // SAFETY: the caller passes a valid AVChannelLayout and `buffer` is
     // writable for the supplied size.
     let result = unsafe {

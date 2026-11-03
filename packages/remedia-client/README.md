@@ -65,5 +65,5 @@ pnpm --filter @remedia/client typecheck
 pnpm --filter @remedia/client test
 ```
 
-The hybrid-node test additionally builds the native addon and requires FFmpeg and libopus development
-libraries; see the repository contributor guide.
+The hybrid-node test additionally builds the native addon and requires FFmpeg development libraries;
+libopus is built from bundled source and statically linked. See the repository contributor guide.

@@ -305,8 +305,8 @@ native encoder before sending frames from the new timeline.
 Each Opus output owns its encoder and sink. The sink contract is synchronous and
 backpressured: implementations should use bounded storage and make `cancel`
 safe alongside a blocked send. The adapter does not expose Discord types and can
-be used with other packet consumers. It requires native libopus development
-files at build time.
+be used with other packet consumers. Cargo builds libopus from bundled source
+and statically links it; a system libopus development package is not required.
 
 ## Runnable example
 

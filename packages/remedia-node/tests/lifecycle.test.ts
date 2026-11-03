@@ -212,7 +212,10 @@ test('completion waiters remain bound to the source active when wait was called'
     await playback.stop();
     await playback.play({ buffer: fixture.wave });
     assert.equal(await oldWait, 'stopped');
-    assert.equal(playback.state, 'playing');
+    // The tiny generated fixture can reach EOF before this JS continuation is
+    // scheduled on a loaded runner. Either nonterminal playback or its natural
+    // completion proves the old waiter did not overwrite the new generation.
+    assert.ok(playback.state === 'playing' || playback.state === 'completed');
     assert.equal(await playback.wait(), 'completed');
   } finally {
     await playback.dispose();
