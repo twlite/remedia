@@ -2814,7 +2814,7 @@ mod tests {
         let update_session = Arc::clone(&session);
         let (response_tx, response_rx) = mpsc::sync_channel(1);
         let first_update = thread::spawn(move || {
-            let _ = response_tx.send(update_session.set_filter_graph(Some("bass=g=8")));
+            let _ = response_tx.send(update_session.set_filter_graph(Some("bass=gain=8")));
         });
         assert!(handle.wait_for_pending_filter(&session));
         handle.release(1);

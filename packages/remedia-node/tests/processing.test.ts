@@ -20,10 +20,10 @@ test('configures raw filtergraphs and independent master gain before playback', 
   const second = remedia.createPlaybackSession();
 
   try {
-    await first.filters.set('bass=g=8:f=110,volume=0.8');
+    await first.filters.set('bass=gain=8:frequency=110,volume=0.8');
     await first.setVolume(0.75);
     await second.setVolume(0.5);
-    assert.equal(first.filters.graph, 'bass=g=8:f=110,volume=0.8');
+    assert.equal(first.filters.graph, 'bass=gain=8:frequency=110,volume=0.8');
     assert.equal(first.volume, 0.75);
     assert.equal(second.filters.graph, null);
     assert.equal(second.volume, 0.5);

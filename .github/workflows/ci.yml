@@ -126,6 +126,20 @@ jobs:
         if: matrix.os == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Select the MSVC linker explicitly
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $linkerDirectory = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64'
+          $msvcLinker = Join-Path $linkerDirectory 'link.exe'
+          if (!(Test-Path $msvcLinker)) { throw "MSVC linker not found at $msvcLinker" }
+          # Git for Windows also ships a Unix `link.exe`, which can shadow the
+          # MSVC linker on PATH. Pin Cargo to the native tool and prioritize it
+          # for build tools such as CMake as well.
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$msvcLinker" >> $env:GITHUB_ENV
+          "PATH=$linkerDirectory;$env:PATH" >> $env:GITHUB_ENV
+          Write-Host "Using MSVC linker: $msvcLinker"
+
       - name: Install macOS FFmpeg 7
         if: matrix.os == 'macos'
         run: brew install ffmpeg@7 pkg-config llvm@19

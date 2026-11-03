@@ -106,7 +106,7 @@ options, connections, and negotiated output format. Whitespace-only input is
 rejected with `FilterGraphError::Empty`; pass `None` to clear filtering.
 
 ```rust
-session.set_filter_graph(Some("bass=g=8,treble=g=-2"))?;
+session.set_filter_graph(Some("bass=gain=8,treble=gain=-2"))?;
 session.set_volume(0.75)?; // 75% linear master gain, independent of graph filters
 println!("graph={:?}, gain={}", session.filter_graph(), session.volume());
 session.set_filter_graph(Some("tremolo=f=5:d=0.6"))?; // replace while active

@@ -42,7 +42,7 @@ discord.on('raw', (packet) => remedia.receive(packet));
 const voice = remedia.createDiscordSession({ guildId, channelId, userId });
 await voice.connect();
 await voice.play({ url: 'https://media.example.net/audio.mp3' });
-await voice.filters.set('bass=g=8');
+await voice.filters.set('bass=gain=8');
 await voice.setVolume(0.8);
 ```
 

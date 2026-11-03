@@ -73,7 +73,7 @@ describe('hybrid client lifecycle events and pre-play hooks', () => {
       await voice.pause();
       await voice.resume();
       await voice.seek(900);
-      await voice.filters.set('bass=g=8');
+      await voice.filters.set('bass=gain=8');
       await voice.setVolume(0.75);
       server.setPlaybackState(GUILD_ID, 'completed');
       server.sendEvent(GUILD_ID, 'player.completed', { generation: 2 });

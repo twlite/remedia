@@ -499,7 +499,7 @@ mod tests {
     fn bot_preset_graph_expressions_are_valid_native_filtergraphs() {
         for expression in [
             "apulsator=mode=sine:hz=0.125:amount=0.7",
-            "volume=0.75,bass=g=8:f=110",
+            "volume=0.75,bass=gain=8:frequency=110",
             "asetrate=60000,aresample=48000",
             "asetrate=38400,aresample=48000",
             "tremolo=f=5:d=0.6",
@@ -658,8 +658,8 @@ mod tests {
 
     #[test]
     fn bass_and_stereo_modulation_change_generated_audio() {
-        let low = process("bass=g=8:f=110", sine(48_000, 80.0), 1.0);
-        let high = process("bass=g=8:f=110", sine(48_000, 1_000.0), 1.0);
+        let low = process("bass=gain=8:frequency=110", sine(48_000, 80.0), 1.0);
+        let high = process("bass=gain=8:frequency=110", sine(48_000, 1_000.0), 1.0);
         assert!(
             rms(&low) > rms(&high) * 1.3,
             "low={}, high={}",

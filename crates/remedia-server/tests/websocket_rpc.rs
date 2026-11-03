@@ -423,7 +423,7 @@ async fn real_local_media_playback_and_cleanup_use_the_core_engine() {
         &mut socket,
         "set-filter",
         "player.filter.set",
-        json!({"guildId": guild, "graph": "bass=g=6"}),
+        json!({"guildId": guild, "graph": "bass=gain=6"}),
     )
     .await;
     assert_eq!(filter["ok"], true, "{filter}");
@@ -450,7 +450,7 @@ async fn real_local_media_playback_and_cleanup_use_the_core_engine() {
         json!({"guildId": guild}),
     )
     .await;
-    assert_eq!(configured_state["result"]["filterGraph"], "bass=g=6");
+    assert_eq!(configured_state["result"]["filterGraph"], "bass=gain=6");
     assert_eq!(configured_state["result"]["volume"], 0.75);
 
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -485,7 +485,7 @@ async fn real_local_media_playback_and_cleanup_use_the_core_engine() {
         state["result"]["generation"].as_u64(),
         Some(playback_generation)
     );
-    assert_eq!(state["result"]["filterGraph"], "bass=g=6");
+    assert_eq!(state["result"]["filterGraph"], "bass=gain=6");
     assert_eq!(state["result"]["volume"], 0.75);
     let stopped = rpc(
         &mut socket,

@@ -157,7 +157,7 @@ describe('hybrid embedded and remote node pool', () => {
       });
 
       await remotePlayback.play({ url: 'https://media.example.test/hybrid.mp3' });
-      await remotePlayback.setFilterGraph('bass=g=8');
+      await remotePlayback.setFilterGraph('bass=gain=8');
       await remotePlayback.setVolume(0.75);
       await remotePlayback.pause();
       await remotePlayback.resume();

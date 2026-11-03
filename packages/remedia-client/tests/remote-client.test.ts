@@ -134,7 +134,7 @@ describe('remote Discord playback', () => {
       await expect(
         voice.play({ url: 'https://media.example.test/song.mp3' }),
       ).resolves.toMatchObject({ codec: 'mp3' });
-      await voice.filters.set('bass=g=8');
+      await voice.filters.set('bass=gain=8');
       await voice.setVolume(0.75);
       await voice.pause();
       expect(voice.state).toBe('paused');

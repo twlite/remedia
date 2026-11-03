@@ -81,7 +81,7 @@ async fn main() -> ExampleResult<()> {
         rpc(
             &mut socket,
             "player.filter.set",
-            json!({"guildId": guild_id, "graph": "bass=g=6"}),
+            json!({"guildId": guild_id, "graph": "bass=gain=6"}),
         )
         .await?;
         rpc(
