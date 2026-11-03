@@ -2892,10 +2892,15 @@ mod tests {
         let fixture = include_bytes!("../tests/fixtures/generated-opus-passthrough.ogg");
         let (source, producer) = InputSource::byte_stream(1_024).unwrap();
         let source_bytes = fixture.to_vec();
+        // Keep the byte stream open until all live transitions have completed.
+        // Otherwise the demuxer can observe EOF and settle the session before
+        // the clear-filter operation gets a chance to restore passthrough.
+        let (finish_tx, finish_rx) = mpsc::sync_channel::<()>(0);
         let producer_thread = thread::spawn(move || {
             for chunk in source_bytes.chunks(317) {
                 producer.write(chunk).unwrap();
             }
+            finish_rx.recv().unwrap();
             producer.finish().unwrap();
         });
         let (sink, handle) = StepPacketSink::new();
@@ -2996,6 +3001,7 @@ mod tests {
             "unity gain returns to passthrough while playback remains active"
         );
         handle.release(1_000);
+        finish_tx.send(()).unwrap();
         response_rx.recv_timeout(TEST_TIMEOUT).unwrap().unwrap();
         restore_gain.join().unwrap();
         assert_eq!(
