@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -449,18 +449,28 @@ fn rejects_unsupported_input_schemes_before_network_access() {
 fn reports_connection_failures_as_network_errors() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
-    drop(listener);
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream.shutdown(Shutdown::Both).unwrap();
+    });
 
-    assert!(matches!(
-        AudioDecoder::open_with_options(
-            InputSource::http_url(format!("http://{address}/audio.wav")),
-            DecoderOptions {
-                io_timeout: Duration::from_secs(2),
-                cancellation: CancellationToken::new(),
-            }
-        ),
-        Err(DecoderError::NetworkFailure(_))
-    ));
+    let result = AudioDecoder::open_with_options(
+        InputSource::http_url(format!("http://{address}/audio.wav")),
+        DecoderOptions {
+            io_timeout: Duration::from_secs(2),
+            cancellation: CancellationToken::new(),
+        },
+    );
+    server.join().unwrap();
+
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("the peer closed before returning an HTTP response"),
+    };
+    assert!(
+        matches!(error, DecoderError::NetworkFailure(_)),
+        "expected a network error after the peer closed the connection, got {error:?}"
+    );
 }
 
 #[test]
