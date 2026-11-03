@@ -212,7 +212,7 @@ export function safeText(value: string, maximumLength: number): string {
     : sanitized || 'No details were provided.';
 }
 
-function stripControlCharacters(value: string): string {
+export function stripControlCharacters(value: string): string {
   return Array.from(value, (character) => {
     const code = character.charCodeAt(0);
     return code < 0x20 || code === 0x7f ? ' ' : character;

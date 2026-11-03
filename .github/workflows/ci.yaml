@@ -77,6 +77,9 @@ jobs:
           libclang_path="$(find /usr/lib/llvm-* -name libclang.so -print -quit)"
           test -n "$libclang_path"
           echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
+      - name: Verify FFmpeg 7 build dependencies
+        shell: micromamba-shell {0}
+        run: node .github/scripts/verify-native-deps.mjs --build
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm format:check
@@ -130,7 +133,7 @@ jobs:
       release_version: ${{ needs.release-detection.outputs.version }}
 
   experimental-platforms:
-    name: Experimental target probes
+    name: Experimental build-only targets
     needs: release-detection
     strategy:
       fail-fast: false
@@ -140,42 +143,34 @@ jobs:
             target: x86_64-unknown-linux-musl
             runner: ubuntu-24.04
             os: linux
-            blocker: No target-built FFmpeg 7 musl headers and libraries are supplied by the current conda-forge recipe.
           - label: Linux ARM64 musl
             target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
             os: linux
-            blocker: No target-built FFmpeg 7 ARM64 musl headers and libraries are supplied; cargo-zigbuild only supplies the Rust/C linker path.
           - label: Linux ARMv7 GNU
             target: armv7-unknown-linux-gnueabihf
             runner: ubuntu-24.04
             os: linux
-            blocker: The pinned FFmpeg 7 dependency recipe has no ARMv7 sysroot or cross pkg-config files.
           - label: Windows x86 MSVC
             target: i686-pc-windows-msvc
             runner: windows-2022
             os: windows
-            blocker: The pinned FFmpeg 7 Windows recipe only contains x64 MSVC headers, import libraries, and DLLs.
           - label: Windows ARM64 MSVC
             target: aarch64-pc-windows-msvc
-            runner: windows-11-arm
+            runner: windows-2022
             os: windows
-            blocker: The pinned FFmpeg 7 Windows recipe has no ARM64 MSVC import libraries or matching DLLs.
           - label: Android ARM64
             target: aarch64-linux-android
             runner: ubuntu-24.04
             os: android
-            blocker: Android NDK API 24 linkers can be configured, but this repository has no FFmpeg 7 build for the Android sysroot.
           - label: Android ARMv7
             target: armv7-linux-androideabi
             runner: ubuntu-24.04
             os: android
-            blocker: Android NDK API 24 linkers can be configured, but this repository has no ARMv7 FFmpeg 7 build for the Android sysroot.
           - label: FreeBSD x86_64
             target: x86_64-unknown-freebsd
             runner: ubuntu-24.04
             os: freebsd
-            blocker: FreeBSD VM dependencies must provide FFmpeg 7 development libraries; the current recipes only configure Linux and Windows.
     uses: ./.github/workflows/platform.yaml
     with:
       label: ${{ matrix.label }}
@@ -183,7 +178,6 @@ jobs:
       runner: ${{ matrix.runner }}
       os: ${{ matrix.os }}
       tier: experimental
-      blocker: ${{ matrix.blocker }}
       release_version: ${{ needs.release-detection.outputs.version }}
 
   package-release:

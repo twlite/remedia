@@ -1924,9 +1924,13 @@ fn fail_session(
     let (pending_seek, pending_filter, playback_id, output_sample) = {
         let mut data = lock(&shared.data);
         if data.generation != generation
+            || data.stopping
             || matches!(
                 data.state,
-                PlaybackState::Stopped | PlaybackState::Completed
+                PlaybackState::Stopping
+                    | PlaybackState::Stopped
+                    | PlaybackState::Completed
+                    | PlaybackState::Failed
             )
         {
             return;
@@ -2047,7 +2051,9 @@ fn playback_error_kind(error: &PlaybackError) -> &'static str {
 
 fn is_stopped(shared: &SessionShared, generation: u64) -> bool {
     let data = lock(&shared.data);
-    data.generation != generation || data.stopping || data.state == PlaybackState::Stopped
+    data.generation != generation
+        || data.stopping
+        || matches!(data.state, PlaybackState::Stopping | PlaybackState::Stopped)
 }
 
 fn is_active(state: PlaybackState) -> bool {

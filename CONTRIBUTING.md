@@ -28,13 +28,13 @@ release builds and runtime tests; experimental jobs cannot publish packages or b
 | macOS x86_64            | Required     | Native FFmpeg 7 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
 | macOS ARM64             | Required     | Native FFmpeg 7 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
 | Windows x86_64 MSVC     | Required     | Native FFmpeg 7 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
-| Linux x86_64 musl       | Experimental | cargo-zigbuild is configured; target-compatible FFmpeg 7 libraries are missing                 |
-| Linux ARM64 musl        | Experimental | cargo-zigbuild is configured; target-compatible FFmpeg 7 libraries are missing                 |
-| Linux ARMv7 GNU         | Experimental | Cross toolchain and QEMU are configured; the FFmpeg 7 recipe has no ARMv7 sysroot              |
-| Windows x86 MSVC        | Experimental | Target build is attempted; the FFmpeg 7 recipe contains x64 libraries only                     |
-| Windows ARM64 MSVC      | Experimental | Native ARM runner is configured; matching FFmpeg 7 import libraries and DLLs are missing       |
-| Android ARM64 and ARMv7 | Experimental | NDK 27.2 with API 24 linkers is configured; target-built FFmpeg 7 libraries are missing        |
-| FreeBSD x86_64          | Experimental | FreeBSD 15 VM attempts FFmpeg 7 installation, native build, and runtime tests                  |
+| Linux x86_64 musl       | Experimental | Build-only; pinned FFmpeg 7.1.1 cross-build with Zig; runtime compatibility is unverified      |
+| Linux ARM64 musl        | Experimental | Build-only; pinned FFmpeg 7.1.1 cross-build with Zig; runtime compatibility is unverified      |
+| Linux ARMv7 GNU         | Experimental | Build-only; pinned FFmpeg 7.1.1 uses the hard-float GNU cross toolchain and sysroot            |
+| Windows x86 MSVC        | Experimental | Build-only; target-specific FFmpeg 7.1.1 x86 libraries use pinned vcpkg                        |
+| Windows ARM64 MSVC      | Experimental | Build-only cross-compile; target-specific FFmpeg 7.1.1 ARM64 libraries use pinned vcpkg        |
+| Android ARM64 and ARMv7 | Experimental | Build-only; pinned NDK 27.2, API 24 linkers, and target-built FFmpeg 7.1.1                     |
+| FreeBSD x86_64          | Experimental | FreeBSD 15.1 VM installs FFmpeg 7 and runs native build and runtime tests                      |
 
 The experimental N-API and server artifacts are excluded from package publication. WASI is not in
 the workflow. Promote an experimental target only after its FFmpeg 7 dependency pipeline, runtime
@@ -44,7 +44,12 @@ Remedia targets the FFmpeg 7 ABI and dynamically links FFmpeg. Its Opus adapter 
 the locked bundled source and statically links it into native binaries. FFmpeg executables are used
 only for dependency/version checks; Remedia does not spawn them for playback. The CI dependency
 specifications are in `.github/native-deps/` and pin FFmpeg 7.1.1 and pkg-config 0.29.2 for Linux
-and Windows.
+and Windows. The Linux and Android cross-build recipe is in
+`.github/scripts/build-ffmpeg-cross.sh`; Windows x86 and ARM64 use the pinned target triplets in
+`.github/native-deps/windows-cross/vcpkg.json`. Experimental targets are not runtime-verified except
+for the FreeBSD VM job, and none of their artifacts are published as platform packages. A successful
+cross-build alone does not establish that the target runtime can load the addon or its FFmpeg shared
+libraries.
 
 ### macOS
 
@@ -94,12 +99,13 @@ $env:LIBCLANG_PATH = Join-Path $env:CONDA_PREFIX 'Library\bin'
 $env:PATH = (Join-Path $env:FFMPEG_DIR 'bin') + ';' + $env:PATH
 ```
 
-The FFmpeg package must include MSVC import libraries, headers, and matching x64 DLLs. Keep the
-runtime DLL directory on `PATH` when running tests and applications. MinGW libraries are not
-compatible with the MSVC target. Windows builds use MSVC's dynamic CRT to match the bundled Opus
-CMake configuration; if the runtime machine does not already have a compatible Microsoft Visual
-C++ v14 runtime, install the current Visual C++ Redistributable. Remedia does not bundle that
-runtime, and the N-API package does not promise static CRT linkage.
+The supported x64 FFmpeg package must include MSVC import libraries, headers, and matching x64 DLLs.
+Keep the runtime DLL directory on `PATH` when running tests and applications. Experimental x86 and
+ARM64 builds use isolated, target-specific vcpkg triplets; never reuse the x64 libraries for those
+targets. MinGW libraries are not compatible with the MSVC target. Windows builds use MSVC's dynamic
+CRT to match the bundled Opus CMake configuration. If the runtime machine does not already have a
+compatible Microsoft Visual C++ v14 runtime, install the current Visual C++ Redistributable.
+Remedia does not bundle that runtime, and the N-API package does not promise static CRT linkage.
 
 ## Set up the repository
 

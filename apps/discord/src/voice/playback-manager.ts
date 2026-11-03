@@ -6,7 +6,7 @@ import type {
   RemediaClient,
 } from '@remedia/client';
 import { PlaybackSessionEvents, VoiceSessionEvents } from '@remedia/client';
-import { displayTrack } from './command-helpers.js';
+import { displayTrack, stripControlCharacters } from './command-helpers.js';
 import { FILTER_PRESETS, type FilterPresetName } from './filter-presets.js';
 
 const MAX_QUEUED_TRACKS = 100;
@@ -752,11 +752,7 @@ function safeLifecycleError(message: string): string {
 }
 
 function sanitizeLifecycleText(value: string, limit: number): string {
-  const clean = Array.from(value, (character) => {
-    const code = character.charCodeAt(0);
-    return code < 0x20 || code === 0x7f ? ' ' : character;
-  })
-    .join('')
+  const clean = stripControlCharacters(value)
     .replace(/@(everyone|here)/gi, '@\u200b$1')
     .trim();
   return clean.length > limit ? `${clean.slice(0, limit - 1)}…` : clean;

@@ -185,18 +185,20 @@ test('propagates a Readable producer error while FFmpeg is probing', async () =>
 });
 
 test('stop and close cancel blocked Readable probes without destroying caller streams', async () => {
-  const encoded = makeWave(1);
   const makeStalledSource = () => {
-    let sent = false;
-    return new Readable({
+    let resolveReadRequested!: () => void;
+    const readRequested = new Promise<void>((resolve) => {
+      resolveReadRequested = resolve;
+    });
+    const stream = new Readable({
       objectMode: false,
       read() {
-        if (!sent) {
-          sent = true;
-          this.push(encoded);
-        }
+        // No bytes and no EOF: FFmpeg's initial input probe remains blocked
+        // until native cancellation interrupts the byte-source read.
+        resolveReadRequested();
       },
     });
+    return { stream, readRequested };
   };
 
   const remedia = await Remedia.create();
@@ -206,27 +208,34 @@ test('stop and close cancel blocked Readable probes without destroying caller st
   const closedSource = makeStalledSource();
 
   try {
-    const stoppingPlay = stoppedPlayback.play({ stream: stoppedSource }).then(
+    const stoppingPlay = stoppedPlayback.play({ stream: stoppedSource.stream }).then(
       () => 'resolved' as const,
       () => 'rejected' as const,
     );
-    await waitFor(() => (stoppedPlayback.state === 'starting' ? true : undefined));
+    await Promise.all([
+      stoppedSource.readRequested,
+      waitFor(() => (stoppedPlayback.state === 'starting' ? true : undefined)),
+    ]);
     await stoppedPlayback.stop();
     assert.equal(await stoppingPlay, 'rejected');
     assert.equal(stoppedPlayback.state, 'stopped');
-    assert.equal(stoppedSource.destroyed, false);
+    assert.equal(stoppedSource.stream.destroyed, false);
 
-    const closingPlay = closedPlayback.play({ stream: closedSource }).then(
+    const closingPlay = closedPlayback.play({ stream: closedSource.stream }).then(
       () => 'resolved' as const,
       () => 'rejected' as const,
     );
-    await waitFor(() => (closedPlayback.state === 'starting' ? true : undefined));
+    await Promise.all([
+      closedSource.readRequested,
+      waitFor(() => (closedPlayback.state === 'starting' ? true : undefined)),
+    ]);
     await remedia.close();
     assert.equal(await closingPlay, 'rejected');
-    assert.equal(closedSource.destroyed, false);
+    assert.equal(closedPlayback.state, 'stopped');
+    assert.equal(closedSource.stream.destroyed, false);
   } finally {
-    stoppedSource.destroy();
-    closedSource.destroy();
+    stoppedSource.stream.destroy();
+    closedSource.stream.destroy();
     await Promise.all([stoppedPlayback.dispose(), closedPlayback.dispose()]);
     await remedia.close();
   }

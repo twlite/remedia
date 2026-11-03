@@ -103,7 +103,7 @@ test('native opening work does not stall the Node event loop', async () => {
 });
 
 test('pause and resume gate playback while an HTTP source is held open', async () => {
-  const held = await createHeldAudioServer(makeWave(10));
+  const held = await createHeldAudioServer(makeWave(30));
   const remedia = await Remedia.create();
   const playback = remedia.createPlaybackSession();
 
@@ -116,10 +116,13 @@ test('pause and resume gate playback while an HTTP source is held open', async (
     await waitFor(() =>
       playback.state === 'pausing' || playback.state === 'paused' ? true : undefined,
     );
-    held.finish();
+    // Release enough bytes for any in-flight HTTP read to return, but keep the
+    // response open. EOF is sent only after pause has been acknowledged.
+    assert.ok(held.sendNext(512 * 1024) > 0);
     await pausing;
     assert.equal(playback.state, 'paused');
 
+    held.finish();
     await playback.resume();
     assert.equal(playback.state, 'playing');
     assert.equal(await playback.wait(), 'completed');

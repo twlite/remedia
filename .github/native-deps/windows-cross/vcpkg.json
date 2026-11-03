@@ -1,0 +1,19 @@
+{
+  "name": "remedia-ffmpeg-cross",
+  "version-string": "0.1.0",
+  "builtin-baseline": "afa249f12f52ed8a3b919f195495ba8b330288d1",
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": ["avcodec", "avfilter", "avformat", "swresample"]
+    }
+  ],
+  "overrides": [
+    {
+      "name": "ffmpeg",
+      "version": "7.1.1",
+      "port-version": 6
+    }
+  ]
+}

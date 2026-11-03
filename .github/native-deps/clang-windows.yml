@@ -1,0 +1,8 @@
+name: remedia-native-build-tools
+channels:
+  - conda-forge
+channel_priority: strict
+dependencies:
+  - pkg-config=0.29.2
+  - clang=19.1.7
+  - libclang=19.1.7
