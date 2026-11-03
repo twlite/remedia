@@ -108,6 +108,53 @@ async fn rpc(socket: &mut TestSocket, id: &str, command: &str, params: Value) ->
     }
 }
 
+async fn rpc_collect_events(
+    socket: &mut TestSocket,
+    id: &str,
+    command: &str,
+    params: Value,
+) -> (Value, Vec<Value>) {
+    socket
+        .send(Message::Text(
+            json!({"version": 1, "id": id, "command": command, "params": params})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let mut events = Vec::new();
+    loop {
+        let message = socket.next().await.unwrap().unwrap();
+        let Message::Text(text) = message else {
+            continue;
+        };
+        let value: Value = serde_json::from_str(text.as_str()).unwrap();
+        if value.get("id").and_then(Value::as_str) == Some(id) {
+            return (value, events);
+        }
+        if value.get("event").is_some() {
+            events.push(value);
+        }
+    }
+}
+
+async fn next_event(socket: &mut TestSocket, name: &str) -> Value {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let message = socket.next().await.unwrap().unwrap();
+            let Message::Text(text) = message else {
+                continue;
+            };
+            let value: Value = serde_json::from_str(text.as_str()).unwrap();
+            if value.get("event").and_then(Value::as_str) == Some(name) {
+                return value;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for lifecycle event {name}"))
+}
+
 async fn create_client(socket: &mut TestSocket) -> (String, String) {
     let response = rpc(socket, "client-create", "client.create", json!({})).await;
     assert_eq!(response["ok"], true, "{response}");
@@ -358,6 +405,68 @@ async fn real_local_media_playback_and_cleanup_use_the_core_engine() {
     assert_eq!(destroyed["ok"], true, "{destroyed}");
     let closed = rpc(&mut socket, "close", "client.close", json!({})).await;
     assert_eq!(closed["ok"], true, "{closed}");
+    drop(socket);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn lifecycle_events_include_stable_generations_and_keep_protocol_v1_volume_field() {
+    let server = RunningServer::start(60, 4).await;
+    let mut socket = server.connect("bot-a", "password-a").await.unwrap();
+    create_client(&mut socket).await;
+    let guild = "200000000000000012";
+    assert_eq!(
+        rpc(
+            &mut socket,
+            "event-guild",
+            "guild.create",
+            json!({"guildId": guild})
+        )
+        .await["ok"],
+        true
+    );
+
+    let (volume_response, mut volume_events) = rpc_collect_events(
+        &mut socket,
+        "event-volume",
+        "player.volume.set",
+        json!({"guildId": guild, "gain": 0.75}),
+    )
+    .await;
+    assert_eq!(volume_response["ok"], true, "{volume_response}");
+    let volume_event = match volume_events
+        .drain(..)
+        .find(|event| event["event"] == "player.volume_changed")
+    {
+        Some(event) => event,
+        None => next_event(&mut socket, "player.volume_changed").await,
+    };
+    assert_eq!(volume_event["data"]["volume"], 0.75);
+    assert_eq!(volume_event["data"]["gain"], 0.75);
+
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../remedia-core/tests/fixtures/generated-opus-passthrough.ogg")
+        .canonicalize()
+        .unwrap();
+    let (play_response, mut play_events) = rpc_collect_events(
+        &mut socket,
+        "event-play",
+        "player.play",
+        json!({"guildId": guild, "source": {"type":"file", "path": fixture}}),
+    )
+    .await;
+    assert_eq!(play_response["ok"], true, "{play_response}");
+    let started_event = match play_events
+        .drain(..)
+        .find(|event| event["event"] == "player.started")
+    {
+        Some(event) => event,
+        None => next_event(&mut socket, "player.started").await,
+    };
+    assert_eq!(
+        started_event["data"]["generation"],
+        play_response["result"]["generation"]
+    );
     drop(socket);
     server.shutdown().await;
 }

@@ -55,6 +55,7 @@ pub(crate) struct GuildSession {
     pub(crate) playback_operations: Arc<tokio::sync::Mutex<()>>,
     pub(crate) voice_operations: Arc<tokio::sync::Mutex<()>>,
     pub(crate) source_generation: AtomicU64,
+    pub(crate) terminal_generation: AtomicU64,
     pub(crate) closed: AtomicBool,
 }
 
@@ -310,6 +311,7 @@ impl ServerInner {
             playback_operations: Arc::new(tokio::sync::Mutex::new(())),
             voice_operations: Arc::new(tokio::sync::Mutex::new(())),
             source_generation: AtomicU64::new(0),
+            terminal_generation: AtomicU64::new(0),
             closed: AtomicBool::new(false),
         });
         guilds.insert(guild_id, Arc::clone(&guild));
@@ -471,6 +473,25 @@ impl GuildSession {
             Err(StateError::UnknownSession)
         } else {
             Ok(())
+        }
+    }
+
+    /// Claim the single terminal lifecycle notification for an RPC source generation.
+    pub(crate) fn claim_terminal_event(&self, generation: u64) -> bool {
+        let mut previous = self.terminal_generation.load(Ordering::Acquire);
+        loop {
+            if previous >= generation {
+                return false;
+            }
+            match self.terminal_generation.compare_exchange_weak(
+                previous,
+                generation,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(current) => previous = current,
+            }
         }
     }
 

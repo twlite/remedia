@@ -1,5 +1,9 @@
-import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
+import { RemediaEventEmitter } from './events.js';
+import {
+  PlaybackSessionEvents as PlaybackEvent,
+  VoiceSessionEvents as VoiceEvent,
+} from './types.js';
 import {
   DiscordBotMismatchError,
   NodeUnavailableError,
@@ -26,7 +30,7 @@ import type {
   ServerLifecycleEvent,
   VoiceConnectionState,
 } from './types.js';
-import type { GuildBackend, NodeAdapter } from './adapters.js';
+import type { GuildBackend, GuildBackendEvents, NodeAdapter } from './adapters.js';
 
 const PROTOCOL_VERSION = 1;
 const MAX_TERMINAL_EVENTS = 128;
@@ -34,12 +38,36 @@ const RESUME_ATTEMPTS = 4;
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const HEARTBEAT_TIMEOUT_MS = 10_000;
 
+export const RemoteNodeEvent = {
+  status: 'status',
+  lifecycle: 'lifecycle',
+  resumed: 'resumed',
+  sessionLost: 'sessionLost',
+  guildLost: 'guildLost',
+} as const;
+
+const RemoteProtocolEvents = {
+  voiceStateChanged: 'voice.state_changed',
+  voiceFailed: 'voice.failed',
+  playerStarted: 'player.started',
+  playerCompleted: 'player.completed',
+  playerFailed: 'player.failed',
+  playerStopped: 'player.stopped',
+  playerPaused: 'player.paused',
+  playerResumed: 'player.resumed',
+  playerSeeked: 'player.seeked',
+  playerFilterChanged: 'player.filter_changed',
+  playerVolumeChanged: 'player.volume_changed',
+} as const;
+
 interface RemoteNodeEvents {
-  status: [{ snapshot: NodeSnapshot; error: Error | null }];
-  lifecycle: [ServerLifecycleEvent];
-  resumed: [{ snapshot: NodeSnapshot; guildIds: readonly string[] }];
-  sessionLost: [{ snapshot: NodeSnapshot; guildIds: readonly string[]; reason: string }];
-  guildLost: [{ guildId: string }];
+  [RemoteNodeEvent.status]: [{ snapshot: NodeSnapshot; error: Error | null }];
+  [RemoteNodeEvent.lifecycle]: [ServerLifecycleEvent];
+  [RemoteNodeEvent.resumed]: [{ snapshot: NodeSnapshot; guildIds: readonly string[] }];
+  [RemoteNodeEvent.sessionLost]: [
+    { snapshot: NodeSnapshot; guildIds: readonly string[]; reason: string },
+  ];
+  [RemoteNodeEvent.guildLost]: [{ guildId: string }];
 }
 
 interface NodeInfo {
@@ -85,7 +113,10 @@ export interface RemoteNodeOptions {
 }
 
 /** Direct protocol-v1 adapter for one resumable remedia-server node. */
-export class RemoteNodeAdapter extends EventEmitter<RemoteNodeEvents> implements NodeAdapter {
+export class RemoteNodeAdapter
+  extends RemediaEventEmitter<RemoteNodeEvents>
+  implements NodeAdapter
+{
   readonly id: string;
   readonly type = 'remote' as const;
   readonly #endpoint: ReturnType<typeof parseRemoteEndpoint>;
@@ -389,7 +420,7 @@ export class RemoteNodeAdapter extends EventEmitter<RemoteNodeEvents> implements
         this.#guilds.delete(guildId);
         this.#knownGuildSnapshots.delete(guildId);
         this.#lostGuilds.add(guildId);
-        this.emit('guildLost', { guildId });
+        this.emit(RemoteNodeEvent.guildLost, { guildId });
       } else {
         const guild = await this.getGuild(guildId);
         const playback = parsePlaybackSnapshot(guild.playback, this.id);
@@ -520,9 +551,12 @@ export class RemoteNodeAdapter extends EventEmitter<RemoteNodeEvents> implements
       if (this.#closed) return;
       this.#startHeartbeat(socket);
       if (didResume) {
-        this.emit('resumed', { snapshot: this.snapshot, guildIds: [...this.#guilds] });
+        this.emit(RemoteNodeEvent.resumed, {
+          snapshot: this.snapshot,
+          guildIds: [...this.#guilds],
+        });
       }
-      this.emit('status', { snapshot: this.snapshot, error: null });
+      this.emit(RemoteNodeEvent.status, { snapshot: this.snapshot, error: null });
     } catch (error) {
       this.#rpc?.fail(asError(error));
       if (socket && socket.readyState !== WebSocket.CLOSED) socket.close(1011, 'connection failed');
@@ -614,7 +648,7 @@ export class RemoteNodeAdapter extends EventEmitter<RemoteNodeEvents> implements
         for (const guildId of [...this.#guilds]) {
           if (!resumedGuilds.has(guildId)) {
             this.#lostGuilds.add(guildId);
-            this.emit('guildLost', { guildId });
+            this.emit(RemoteNodeEvent.guildLost, { guildId });
           }
         }
         this.#guilds.clear();
@@ -656,7 +690,7 @@ export class RemoteNodeAdapter extends EventEmitter<RemoteNodeEvents> implements
     for (const backend of this.#backends.values()) backend.markSessionLost(reason);
     this.#status = 'session_lost';
     this.#lastError = reason;
-    this.emit('sessionLost', { snapshot: this.snapshot, guildIds, reason });
+    this.emit(RemoteNodeEvent.sessionLost, { snapshot: this.snapshot, guildIds, reason });
   }
 
   async #reconcileAfterConnect(resumed: boolean): Promise<void> {
@@ -673,7 +707,7 @@ export class RemoteNodeAdapter extends EventEmitter<RemoteNodeEvents> implements
           this.#guilds.delete(guildId);
           this.#knownGuildSnapshots.delete(guildId);
           this.#lostGuilds.add(guildId);
-          this.emit('guildLost', { guildId });
+          this.emit(RemoteNodeEvent.guildLost, { guildId });
           continue;
         }
         const guild = parseGuildSnapshot(
@@ -705,7 +739,7 @@ export class RemoteNodeAdapter extends EventEmitter<RemoteNodeEvents> implements
       sequence: event.sequence,
       data: event.data,
     };
-    this.emit('lifecycle', lifecycle);
+    this.emit(RemoteNodeEvent.lifecycle, lifecycle);
     if (event.event === 'client.events_lost') {
       const count = asNonnegativeInteger(event.data.count) ?? 0;
       this.#setLastError(`${count} server lifecycle events were lost`);
@@ -716,14 +750,14 @@ export class RemoteNodeAdapter extends EventEmitter<RemoteNodeEvents> implements
     const generation = asNonnegativeInteger(event.data.generation);
     if (!guildId || generation === undefined) return;
     if (
-      event.event === 'player.completed' ||
-      event.event === 'player.failed' ||
-      event.event === 'player.stopped'
+      event.event === RemoteProtocolEvents.playerCompleted ||
+      event.event === RemoteProtocolEvents.playerFailed ||
+      event.event === RemoteProtocolEvents.playerStopped
     ) {
       const state = event.event.slice('player.'.length) as 'completed' | 'failed' | 'stopped';
       this.#recordTerminal({ guildId, generation, state });
       this.#backends.get(guildId)?.applyTerminalEvent(event.event, generation, event.data);
-    } else if (event.event === 'player.started') {
+    } else if (event.event === RemoteProtocolEvents.playerStarted) {
       for (const waiter of this.#waiters) {
         if (waiter.guildId === guildId && waiter.generation < generation) {
           this.#finishWaiter(waiter, { generation: waiter.generation, state: 'stopped' });
@@ -744,7 +778,7 @@ export class RemoteNodeAdapter extends EventEmitter<RemoteNodeEvents> implements
       if (!current.has(guildId)) {
         this.#guilds.delete(guildId);
         this.#lostGuilds.add(guildId);
-        this.emit('guildLost', { guildId });
+        this.emit(RemoteNodeEvent.guildLost, { guildId });
         continue;
       }
       const guild = parseGuildSnapshot(
@@ -875,7 +909,7 @@ export class RemoteNodeAdapter extends EventEmitter<RemoteNodeEvents> implements
     if (this.#status === status && (error?.message ?? null) === this.#lastError) return;
     this.#status = status;
     this.#lastError = error?.message ?? null;
-    this.emit('status', { snapshot: this.snapshot, error });
+    this.emit(RemoteNodeEvent.status, { snapshot: this.snapshot, error });
   }
 
   #setLastError(message: string): void {
@@ -887,7 +921,7 @@ export class RemoteNodeAdapter extends EventEmitter<RemoteNodeEvents> implements
   }
 }
 
-class RemoteGuildBackend implements GuildBackend {
+class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> implements GuildBackend {
   readonly nodeType = 'remote' as const;
   readonly #node: RemoteNodeAdapter;
   readonly #options: DiscordSessionOptions;
@@ -900,8 +934,14 @@ class RemoteGuildBackend implements GuildBackend {
   #guildCreated = false;
   #disposed = false;
   #lost = false;
+  #sessionId = 'pending';
+  #hasSnapshot = false;
+  #voiceFailureEmitted = false;
+  readonly #startedGenerations = new Set<number>();
+  readonly #terminalGenerations = new Set<number>();
 
   constructor(node: RemoteNodeAdapter, options: DiscordSessionOptions, onDispose: () => void) {
+    super();
     this.#node = node;
     this.#options = options;
     this.#onDispose = onDispose;
@@ -911,8 +951,8 @@ class RemoteGuildBackend implements GuildBackend {
         this.#connectionState = 'reconnecting';
       }
     };
-    node.on('lifecycle', this.#lifecycleListener);
-    node.on('status', this.#statusListener);
+    node.on(RemoteNodeEvent.lifecycle, this.#lifecycleListener);
+    node.on(RemoteNodeEvent.status, this.#statusListener);
   }
 
   get nodeId(): string {
@@ -965,7 +1005,9 @@ class RemoteGuildBackend implements GuildBackend {
     const configuredVolume = this.#snapshot.volume;
     const guild = await this.#node.createGuild(this.#options.guildId);
     this.#guildCreated = true;
+    this.#sessionId = guild.guildSessionId;
     this.#snapshot = parsePlaybackSnapshot(guild.playback, this.#node.id);
+    this.#hasSnapshot = true;
     this.#snapshot = { ...this.#snapshot, filterGraph: configuredFilter, volume: configuredVolume };
     if (this.#snapshot.filterGraph !== null) {
       await this.#node.control(this.#options.guildId, 'player.filter.set', {
@@ -977,15 +1019,17 @@ class RemoteGuildBackend implements GuildBackend {
         gain: this.#snapshot.volume,
       });
     }
-    this.#connectionState = 'negotiating_dave';
+    this.#voiceFailureEmitted = false;
+    this.#setVoiceState('negotiating_dave');
     try {
       await this.#node.connectVoice(this.#options.guildId, this.#options.channelId, credentials);
-      this.#connectionState = 'connected';
+      this.#setVoiceState('connected');
       this.#connectionError = null;
       await this.refresh();
     } catch (error) {
-      this.#connectionState = 'failed';
       this.#connectionError = asError(error).message;
+      this.#setVoiceState('failed');
+      this.#emitVoiceFailure(asError(error));
       throw error;
     }
   }
@@ -996,7 +1040,7 @@ class RemoteGuildBackend implements GuildBackend {
       if (this.#node.status === 'healthy') await this.#node.disconnectVoice(this.#options.guildId);
       else this.#node.deferVoiceDisconnect(this.#options.guildId);
     }
-    this.#connectionState = 'disconnected';
+    this.#setVoiceState('disconnected');
     if (this.#snapshot.state === 'playing' || this.#snapshot.state === 'paused') {
       this.#snapshot = { ...this.#snapshot, state: 'stopped' };
     }
@@ -1005,11 +1049,12 @@ class RemoteGuildBackend implements GuildBackend {
   async dispose(): Promise<void> {
     if (this.#disposed) return;
     this.#disposed = true;
-    this.#node.off('lifecycle', this.#lifecycleListener);
-    this.#node.off('status', this.#statusListener);
+    this.#node.off(RemoteNodeEvent.lifecycle, this.#lifecycleListener);
+    this.#node.off(RemoteNodeEvent.status, this.#statusListener);
     try {
       await this.#node.destroyGuild(this.#options.guildId);
     } finally {
+      this.removeAllListeners();
       this.#onDispose();
     }
   }
@@ -1091,8 +1136,9 @@ class RemoteGuildBackend implements GuildBackend {
   async refresh(): Promise<PlaybackSnapshot> {
     this.#assertGuildReady();
     const guild = await this.#node.guildSnapshot(this.#options.guildId);
-    this.#snapshot = parsePlaybackSnapshot(guild.playback, this.#node.id);
-    this.#connectionState = normalizeVoiceState(guild.voiceState);
+    this.#sessionId = guild.guildSessionId;
+    this.#replaceSnapshot(parsePlaybackSnapshot(guild.playback, this.#node.id), true);
+    this.#setVoiceState(normalizeVoiceState(guild.voiceState));
     this.#connectionError = null;
     return this.#snapshot;
   }
@@ -1101,8 +1147,9 @@ class RemoteGuildBackend implements GuildBackend {
   applySnapshot(guild: GuildSnapshot): void {
     this.#guildCreated = true;
     this.#lost = false;
-    this.#snapshot = parsePlaybackSnapshot(guild.playback, this.#node.id);
-    this.#connectionState = normalizeVoiceState(guild.voiceState);
+    this.#sessionId = guild.guildSessionId;
+    this.#replaceSnapshot(parsePlaybackSnapshot(guild.playback, this.#node.id), true);
+    this.#setVoiceState(normalizeVoiceState(guild.voiceState));
     this.#connectionError = null;
   }
 
@@ -1115,6 +1162,7 @@ class RemoteGuildBackend implements GuildBackend {
     if (generation < this.#snapshot.generation) return;
     const state = event.slice('player.'.length) as 'completed' | 'failed' | 'stopped';
     const code = typeof data.code === 'string' ? data.code : 'playback_failed';
+    const previousState = this.#snapshot.state;
     this.#snapshot = {
       ...this.#snapshot,
       generation,
@@ -1126,29 +1174,52 @@ class RemoteGuildBackend implements GuildBackend {
             ? null
             : this.#snapshot.lastError,
     };
+    this.#emitTerminal(state, generation, previousState, data, false);
   }
 
   markSessionLost(reason: string): void {
+    const previousState = this.#snapshot.state;
+    const generation = this.#snapshot.generation;
+    const playbackWasActive = isActiveState(previousState);
     this.#lost = true;
-    this.#connectionState = 'failed';
     this.#connectionError = reason;
     this.#snapshot = {
       ...this.#snapshot,
       state: 'failed',
       lastError: { code: 'unknown_session', message: 'The remote server session was lost.' },
     };
+    const error = new SessionLostError(this.#node.id, [this.#options.guildId], reason);
+    this.#setVoiceState('failed');
+    this.#emitVoiceFailure(error);
+    if (playbackWasActive) {
+      this.#emitTerminal('failed', generation, previousState, {}, true, error);
+    }
   }
 
   #handleEvent(event: ServerLifecycleEvent): void {
     if (event.data.guildId !== this.#options.guildId) return;
-    if (event.event === 'voice.state_changed' && typeof event.data.state === 'string') {
-      this.#connectionState = normalizeVoiceState(event.data.state);
-    } else if (event.event === 'voice.failed') {
-      this.#connectionState = 'failed';
+    const eventGeneration = asNonnegativeInteger(event.data.generation);
+    const isNewStart = event.event === RemoteProtocolEvents.playerStarted;
+    if (
+      eventGeneration !== undefined &&
+      eventGeneration !== this.#snapshot.generation &&
+      !isNewStart
+    ) {
+      return;
+    }
+    if (
+      event.event === RemoteProtocolEvents.voiceStateChanged &&
+      typeof event.data.state === 'string'
+    ) {
+      this.#setVoiceState(normalizeVoiceState(event.data.state));
+    } else if (event.event === RemoteProtocolEvents.voiceFailed) {
+      this.#setVoiceState('failed');
       this.#connectionError = 'Discord voice transport failed';
-    } else if (event.event === 'player.started') {
+      const code = typeof event.data.code === 'string' ? event.data.code : 'transport_failed';
+      this.#emitVoiceFailure(new Error(`Discord voice transport failed (${code})`));
+    } else if (event.event === RemoteProtocolEvents.playerStarted) {
       const generation = asNonnegativeInteger(event.data.generation);
-      if (generation !== undefined) {
+      if (generation !== undefined && generation >= this.#snapshot.generation) {
         const source = isRecord(event.data.source) ? event.data.source : undefined;
         this.#snapshot = {
           ...this.#snapshot,
@@ -1158,29 +1229,193 @@ class RemoteGuildBackend implements GuildBackend {
           durationMs: source ? nullableNumber(source.durationMs) : this.#snapshot.durationMs,
           lastError: null,
         };
+        this.#hasSnapshot = true;
+        if (source && !this.#startedGenerations.has(generation)) {
+          this.#startedGenerations.add(generation);
+          this.emit(PlaybackEvent.playbackStarted, {
+            sessionId: this.#sessionId,
+            guildId: this.#options.guildId,
+            nodeId: this.#node.id,
+            generation,
+            state: 'playing',
+            info: toStreamInfo(source, this.#node.id),
+          });
+        }
       }
     } else if (
-      event.event === 'player.completed' ||
-      event.event === 'player.failed' ||
-      event.event === 'player.stopped'
+      event.event === RemoteProtocolEvents.playerCompleted ||
+      event.event === RemoteProtocolEvents.playerFailed ||
+      event.event === RemoteProtocolEvents.playerStopped
     ) {
       const generation = asNonnegativeInteger(event.data.generation);
       if (generation === this.#snapshot.generation) {
         const state =
-          event.event === 'player.completed'
+          event.event === RemoteProtocolEvents.playerCompleted
             ? 'completed'
-            : event.event === 'player.failed'
+            : event.event === RemoteProtocolEvents.playerFailed
               ? 'failed'
               : 'stopped';
-        this.#snapshot = { ...this.#snapshot, state };
+        const previousState = this.#snapshot.state;
+        this.#snapshot = {
+          ...this.#snapshot,
+          state,
+          lastError:
+            state === 'failed'
+              ? {
+                  code: typeof event.data.code === 'string' ? event.data.code : 'playback_failed',
+                  message: 'Remote playback failed; see server diagnostics for details.',
+                }
+              : state === 'completed'
+                ? null
+                : this.#snapshot.lastError,
+        };
+        this.#emitTerminal(state, generation, previousState, event.data, false);
       }
-    } else if (event.event === 'player.paused') {
+    } else if (event.event === RemoteProtocolEvents.playerPaused) {
+      const previousState = this.#snapshot.state;
       this.#snapshot = { ...this.#snapshot, state: 'paused' };
-    } else if (event.event === 'player.resumed') {
+      if (previousState !== 'paused') {
+        this.emit(PlaybackEvent.playbackPaused, {
+          ...this.#playbackIdentity(event.data),
+          previousState,
+          state: 'paused',
+        });
+      }
+    } else if (event.event === RemoteProtocolEvents.playerResumed) {
+      const previousState = this.#snapshot.state;
       this.#snapshot = { ...this.#snapshot, state: 'playing' };
-    } else if (event.event === 'player.volume_changed' && typeof event.data.gain === 'number') {
-      this.#snapshot = { ...this.#snapshot, volume: event.data.gain };
+      if (previousState !== 'playing') {
+        this.emit(PlaybackEvent.playbackResumed, {
+          ...this.#playbackIdentity(event.data),
+          previousState,
+          state: 'playing',
+        });
+      }
+    } else if (event.event === RemoteProtocolEvents.playerSeeked) {
+      const positionMs = asNonnegativeInteger(event.data.positionMs);
+      if (positionMs !== undefined) {
+        this.emit(PlaybackEvent.playbackSeeked, {
+          ...this.#playbackIdentity(event.data),
+          positionMs,
+          previousPositionMs: nullableNumber(event.data.previousPositionMs),
+        });
+      }
+    } else if (event.event === RemoteProtocolEvents.playerFilterChanged) {
+      const previousGraph = nullableString(event.data.previousGraph);
+      const graph = nullableString(event.data.graph);
+      this.#snapshot = { ...this.#snapshot, filterGraph: graph };
+      if (previousGraph !== graph) {
+        this.emit(PlaybackEvent.filterChanged, {
+          ...this.#playbackIdentity(event.data),
+          previousGraph,
+          graph,
+        });
+      }
+    } else if (
+      event.event === RemoteProtocolEvents.playerVolumeChanged &&
+      typeof (event.data.volume ?? event.data.gain) === 'number'
+    ) {
+      const volume = (event.data.volume ?? event.data.gain) as number;
+      const previousVolume = this.#snapshot.volume;
+      this.#snapshot = { ...this.#snapshot, volume };
+      if (previousVolume !== volume) {
+        this.emit(PlaybackEvent.volumeChanged, {
+          ...this.#playbackIdentity(event.data),
+          previousVolume: nullableNumber(event.data.previousVolume) ?? previousVolume,
+          volume,
+        });
+      }
     }
+  }
+
+  #replaceSnapshot(snapshot: PlaybackSnapshot, reconcile: boolean): void {
+    const previous = this.#snapshot;
+    this.#snapshot = snapshot;
+    if (reconcile && this.#hasSnapshot && isTerminalState(snapshot.state)) {
+      if (isActiveState(previous.state) || snapshot.generation > previous.generation) {
+        this.#emitTerminal(snapshot.state, snapshot.generation, previous.state, {}, true);
+      }
+    }
+    this.#hasSnapshot = true;
+  }
+
+  #emitTerminal(
+    state: 'completed' | 'failed' | 'stopped',
+    generation: number,
+    previousState: PlaybackState,
+    data: Readonly<Record<string, unknown>>,
+    reconstructed: boolean,
+    error?: Error,
+  ): void {
+    if (this.#terminalGenerations.has(generation)) return;
+    this.#terminalGenerations.add(generation);
+    while (this.#terminalGenerations.size > 16) {
+      const oldest = this.#terminalGenerations.values().next().value;
+      if (oldest === undefined) break;
+      this.#terminalGenerations.delete(oldest);
+    }
+    const identity = this.#playbackIdentity(data, generation);
+    const base = reconstructed ? { ...identity, reconstructed: true } : identity;
+    if (state === 'completed') {
+      this.emit(PlaybackEvent.playbackCompleted, {
+        ...base,
+        state,
+        position: this.#snapshot.position,
+      });
+    } else if (state === 'stopped') {
+      this.emit(PlaybackEvent.playbackStopped, {
+        ...base,
+        state,
+        ...(typeof data.reason === 'string' ? { reason: data.reason } : {}),
+      });
+    } else {
+      const failure =
+        error ??
+        new Error(
+          typeof data.code === 'string'
+            ? `Remote playback failed (${data.code})`
+            : 'Remote playback failed; see server diagnostics for details.',
+        );
+      this.emit(PlaybackEvent.playbackFailed, { ...base, state, error: failure });
+    }
+    this.#startedGenerations.delete(generation);
+    void previousState;
+  }
+
+  #playbackIdentity(data: Readonly<Record<string, unknown>>, forcedGeneration?: number) {
+    const generation =
+      forcedGeneration ?? asNonnegativeInteger(data.generation) ?? this.#snapshot.generation;
+    return {
+      sessionId: this.#sessionId,
+      guildId: this.#options.guildId,
+      nodeId: this.#node.id,
+      generation,
+    };
+  }
+
+  #setVoiceState(state: VoiceConnectionState): void {
+    if (state === this.#connectionState) return;
+    const previousState = this.#connectionState;
+    this.#connectionState = state;
+    this.emit(VoiceEvent.voiceStateChanged, {
+      sessionId: this.#sessionId,
+      guildId: this.#options.guildId,
+      nodeId: this.#node.id,
+      previousState,
+      state,
+    });
+  }
+
+  #emitVoiceFailure(error: Error): void {
+    if (this.#voiceFailureEmitted) return;
+    this.#voiceFailureEmitted = true;
+    this.emit(VoiceEvent.voiceFailed, {
+      sessionId: this.#sessionId,
+      guildId: this.#options.guildId,
+      nodeId: this.#node.id,
+      state: 'failed',
+      error,
+    });
   }
 
   #assertOpen(): void {
@@ -1430,6 +1665,23 @@ function isPlaybackState(value: unknown): value is PlaybackSnapshot['state'] {
     value === 'completed' ||
     value === 'failed'
   );
+}
+
+function isActiveState(state: PlaybackState): boolean {
+  return (
+    state === 'starting' ||
+    state === 'playing' ||
+    state === 'pausing' ||
+    state === 'resuming' ||
+    state === 'paused' ||
+    state === 'stopping'
+  );
+}
+
+function isTerminalState(
+  state: PlaybackState,
+): state is Extract<PlaybackState, 'completed' | 'failed' | 'stopped'> {
+  return state === 'completed' || state === 'failed' || state === 'stopped';
 }
 
 function parseGuildList(value: unknown, nodeId: string): GuildSnapshot[] {

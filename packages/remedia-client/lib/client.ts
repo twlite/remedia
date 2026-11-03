@@ -1,8 +1,14 @@
 import { EventEmitter } from 'node:events';
 import { EmbeddedNodeAdapter } from './embedded-node.js';
 import { NodeSelectionError, asError } from './errors.js';
-import { RemoteNodeAdapter } from './remote-node.js';
+import { RemoteNodeAdapter, RemoteNodeEvent } from './remote-node.js';
 import { DiscordSession, parseGatewayDispatch, type DiscordSessionRuntime } from './discord.js';
+import { RemediaEventEmitter } from './events.js';
+import {
+  PlaybackSessionEvents as PlaybackEvent,
+  RemediaClientEventNames as ClientEvent,
+  VoiceSessionEvents as VoiceEvent,
+} from './types.js';
 import type { NodeAdapter } from './adapters.js';
 import type {
   DiscordGatewayPacket,
@@ -17,14 +23,21 @@ import type {
   RemediaNodeConfig,
 } from './types.js';
 
+interface ManagedDiscordSession {
+  readonly guildId: string;
+  dispose(): Promise<void>;
+  receiveGatewayDispatch(event: string, data: Record<string, unknown>, sequence?: number): void;
+  markSessionLost(reason: string): void;
+}
+
 /** High-level orchestration across embedded N-API and remote WebSocket Remedia nodes. */
 export class RemediaClient
-  extends EventEmitter<RemediaClientEvents>
+  extends RemediaEventEmitter<RemediaClientEvents>
   implements DiscordSessionRuntime
 {
   readonly #send: DiscordGatewaySend;
   readonly #nodes = new Map<string, NodeAdapter>();
-  readonly #sessions = new Map<string, DiscordSession>();
+  readonly #sessions = new Map<string, ManagedDiscordSession>();
   readonly #assignments = new Map<string, GuildAssignment>();
   readonly #selectNode: NodeSelection | undefined;
   #assignmentWork: Promise<void> = Promise.resolve();
@@ -89,12 +102,15 @@ export class RemediaClient
     return assignment ? { ...assignment } : undefined;
   }
 
-  createDiscordSession(options: DiscordSessionOptions): DiscordSession {
+  createDiscordSession<Metadata = unknown>(
+    options: DiscordSessionOptions,
+  ): DiscordSession<Metadata> {
     this.#assertOpen();
     if (this.#sessions.has(options.guildId))
       throw new Error(`a Discord session already exists for guild ${options.guildId}`);
-    const session = new DiscordSession(this, options);
+    const session = new DiscordSession<Metadata>(this, options);
     this.#sessions.set(options.guildId, session);
+    forwardSessionEvents(session, this);
     return session;
   }
 
@@ -189,7 +205,7 @@ export class RemediaClient
         status: 'assigned',
       };
       this.#assignments.set(options.guildId, assignment);
-      this.emit('guildAssigned', { ...assignment });
+      this.emit(ClientEvent.guildAssigned, { ...assignment });
       try {
         return node.createGuildSession(options, onDispose);
       } catch (error) {
@@ -200,12 +216,12 @@ export class RemediaClient
   }
 
   /** @internal */
-  releaseSession(session: DiscordSession): void {
+  releaseSession(session: { readonly guildId: string }): void {
     this.#sessions.delete(session.guildId);
     const assignment = this.#assignments.get(session.guildId);
     if (assignment) {
       this.#assignments.delete(session.guildId);
-      this.emit('guildReleased', { ...assignment });
+      this.emit(ClientEvent.guildReleased, { ...assignment });
     }
   }
 
@@ -295,27 +311,29 @@ export class RemediaClient
   }
 
   #wireRemote(node: RemoteNodeAdapter): void {
-    node.on('status', ({ snapshot, error }) => this.#handleNodeStatus(snapshot, error));
-    node.on('lifecycle', (event) => {
-      this.emit('nodeEvent', event);
+    node.on(RemoteNodeEvent.status, ({ snapshot, error }) =>
+      this.#handleNodeStatus(snapshot, error),
+    );
+    node.on(RemoteNodeEvent.lifecycle, (event) => {
+      this.emit(ClientEvent.nodeEvent, event);
       if (event.event === 'client.events_lost') {
         const count = typeof event.data.count === 'number' ? event.data.count : 0;
-        this.emit('eventsLost', { nodeId: node.id, count });
+        this.emit(ClientEvent.eventsLost, { nodeId: node.id, count });
       }
     });
-    node.on('resumed', ({ snapshot, guildIds }) =>
-      this.emit('sessionResumed', { node: snapshot, guildIds }),
+    node.on(RemoteNodeEvent.resumed, ({ snapshot, guildIds }) =>
+      this.emit(ClientEvent.sessionResumed, { node: snapshot, guildIds }),
     );
-    node.on('sessionLost', ({ snapshot, guildIds, reason }) => {
+    node.on(RemoteNodeEvent.sessionLost, ({ snapshot, guildIds, reason }) => {
       for (const guildId of guildIds) {
         const assignment = this.#assignments.get(guildId);
         if (assignment?.nodeId === node.id)
           this.#assignments.set(guildId, { ...assignment, status: 'lost' });
         this.#sessions.get(guildId)?.markSessionLost(reason);
       }
-      this.emit('sessionLost', { node: snapshot, guildIds, reason });
+      this.emit(ClientEvent.sessionLost, { node: snapshot, guildIds, reason });
     });
-    node.on('guildLost', ({ guildId }) => {
+    node.on(RemoteNodeEvent.guildLost, ({ guildId }) => {
       const assignment = this.#assignments.get(guildId);
       if (assignment?.nodeId === node.id)
         this.#assignments.set(guildId, { ...assignment, status: 'lost' });
@@ -326,9 +344,9 @@ export class RemediaClient
   }
 
   #handleNodeStatus(snapshot: NodeSnapshot, error: Error | null): void {
-    if (snapshot.status === 'healthy') this.emit('nodeConnected', snapshot);
+    if (snapshot.status === 'healthy') this.emit(ClientEvent.nodeConnected, snapshot);
     else if (snapshot.status === 'disconnected' || snapshot.status === 'session_lost') {
-      this.emit('nodeDisconnected', { node: snapshot, error });
+      this.emit(ClientEvent.nodeDisconnected, { node: snapshot, error });
     }
   }
 
@@ -350,6 +368,41 @@ export class RemediaClient
       release();
     }
   }
+}
+
+function forwardSessionEvents<Metadata>(
+  session: DiscordSession<Metadata>,
+  target: RemediaClient,
+): void {
+  const names = [
+    PlaybackEvent.playbackStarted,
+    PlaybackEvent.playbackCompleted,
+    PlaybackEvent.playbackStopped,
+    PlaybackEvent.playbackFailed,
+    PlaybackEvent.playbackPaused,
+    PlaybackEvent.playbackResumed,
+    PlaybackEvent.playbackSeeked,
+    PlaybackEvent.filterChanged,
+    PlaybackEvent.volumeChanged,
+    PlaybackEvent.sessionDisposed,
+    VoiceEvent.voiceStateChanged,
+    VoiceEvent.voiceFailed,
+  ] as const;
+  const source = session as unknown as EventEmitter;
+  const destination = target as unknown as EventEmitter;
+  const unsubs: Array<() => void> = [];
+  for (const name of names) {
+    const listener = (payload: unknown): void => {
+      destination.emit(name, payload);
+    };
+    source.on(name, listener);
+    unsubs.push(() => source.off(name, listener));
+  }
+  const detach = (): void => {
+    source.off(PlaybackEvent.sessionDisposed, detach);
+    for (const unsubscribe of unsubs.splice(0)) unsubscribe();
+  };
+  source.once(PlaybackEvent.sessionDisposed, detach);
 }
 
 function validateOptions(options: RemediaClientOptions): void {

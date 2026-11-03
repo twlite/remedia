@@ -69,6 +69,16 @@ and diagnostics APIs. `@remedia/client` orchestrates direct embedded and remote 
   Readable without destroying it. The addon does not install a global tracing subscriber. It is
   private and under development and does not implement server RPC.
 
+TypeScript wrappers use Node's typed `EventEmitter<T>` contract. Exported
+`PlaybackSessionEvents`, `VoiceSessionEvents`, and `RemediaEvents` `as const` objects provide the
+canonical event names; matching string-union types and payload maps keep `on`, `once`, and `off`
+type-safe. Lifecycle events are emitted after successful observed transitions and carry source
+generations. Started means processing began, and completed means natural EOF was processed, not
+that transport buffers drained. Application `customMetadata` stays in JavaScript, is associated
+with one generation, and is released at terminal state/disposal. Awaited `beforePlay` hooks run
+before native start and may cancel it. The high-level wrappers isolate synchronous listener throws
+from engine/runtime work and surface a process warning.
+
 The core decoder, playback, Opus, outbound Discord transport, server RPC, and N-API playback
 integration exist. The Node package adapts an externally owned Discord Gateway but does not
 implement Gateway connectivity, REST, or channel commands. Receiving audio and device output remain
@@ -84,7 +94,12 @@ on its assigned node. Events and snapshots expose node identity, health and assi
 Buffer and Readable inputs are not uploaded; those sources require an embedded assignment. A client
 or server process restart cannot automatically restore an in-memory session, and expired assignments
 are reported lost rather than migrated. Cross-node recovery requires application-managed fresh
-Discord voice credentials and is not implemented.
+Discord voice credentials and is not implemented. The high-level client exposes the same typed
+playback/voice lifecycle event contract plus node/session health events. Remote event gaps are
+reconciled against authoritative snapshots; if a terminal transition is learned from a snapshot,
+one terminal event is emitted with `reconstructed: true`, without inventing historical starts.
+Application metadata is never sent over RPC or stored by the server. Neither package emits track,
+queue, or extractor events; those remain application policy.
 
 `apps/discord` is a manual discord.js integration harness over `@remedia/client`. It forwards raw
 Gateway dispatches, sends OP 4 through the owning shard, and provides app-level slash commands with

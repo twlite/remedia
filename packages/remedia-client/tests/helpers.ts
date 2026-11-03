@@ -60,6 +60,7 @@ export class FakeServerNode {
   #guildSequence = 0;
   #closed = false;
   finishBeforePlayResponse = false;
+  playerPlayRequests = 0;
   nodeIdentity: string;
   url = '';
 
@@ -116,6 +117,16 @@ export class FakeServerNode {
 
   closeSockets(): void {
     for (const socket of this.#socketSessions.keys()) socket.close(1011, 'test socket reset');
+  }
+
+  setPlaybackState(guildId: string, state: FakePlayback['state']): void {
+    const guild = this.#findGuild(guildId);
+    if (guild) guild.playback.state = state;
+  }
+
+  sendEvent(guildId: string, name: string, data: Record<string, unknown> = {}): void {
+    const session = [...this.sessions.values()].find((item) => item.guilds.has(guildId));
+    if (session) this.#event(session, name, { guildId, ...data });
   }
 
   async close(): Promise<void> {
@@ -287,6 +298,7 @@ export class FakeServerNode {
           result = this.#guild(socket, String(params.guildId)).playback;
           break;
         case 'player.play': {
+          this.playerPlayRequests += 1;
           const session = this.#session(socket);
           const guild = this.#guild(socket, String(params.guildId));
           const generation = ++guild.playback.generation;
@@ -335,16 +347,32 @@ export class FakeServerNode {
           this.#event(session, eventName, {
             guildId: guild.guildId,
             generation: guild.playback.generation,
+            previousState:
+              command === 'player.pause'
+                ? 'playing'
+                : command === 'player.resume'
+                  ? 'paused'
+                  : 'playing',
+            state,
+            ...(command === 'player.stop' ? { reason: 'stop' } : {}),
           });
           result = { state };
           break;
         }
         case 'player.seek': {
+          const session = this.#session(socket);
           const guild = this.#guild(socket, String(params.guildId));
+          const previousPositionMs = guild.playback.position.media?.positionMs ?? null;
           guild.playback.position.media = {
             positionMs: Number(params.positionMs),
             accuracy: 'timestamp',
           };
+          this.#event(session, 'player.seeked', {
+            guildId: guild.guildId,
+            generation: guild.playback.generation,
+            positionMs: Number(params.positionMs),
+            previousPositionMs,
+          });
           result = { ...guild.playback.position };
           break;
         }
@@ -354,7 +382,9 @@ export class FakeServerNode {
           guild.playback.filterGraph = String(params.graph);
           this.#event(session, 'player.filter_changed', {
             guildId: guild.guildId,
-            configured: true,
+            generation: guild.playback.generation,
+            previousGraph: null,
+            graph: guild.playback.filterGraph,
           });
           result = { filterGraph: guild.playback.filterGraph };
           break;
@@ -362,10 +392,13 @@ export class FakeServerNode {
         case 'player.filter.clear': {
           const session = this.#session(socket);
           const guild = this.#guild(socket, String(params.guildId));
+          const previousGraph = guild.playback.filterGraph;
           guild.playback.filterGraph = null;
           this.#event(session, 'player.filter_changed', {
             guildId: guild.guildId,
-            configured: false,
+            generation: guild.playback.generation,
+            previousGraph,
+            graph: null,
           });
           result = { filterGraph: null };
           break;
@@ -373,9 +406,13 @@ export class FakeServerNode {
         case 'player.volume.set': {
           const session = this.#session(socket);
           const guild = this.#guild(socket, String(params.guildId));
+          const previousVolume = guild.playback.volume;
           guild.playback.volume = Number(params.gain);
           this.#event(session, 'player.volume_changed', {
             guildId: guild.guildId,
+            generation: guild.playback.generation,
+            previousVolume,
+            volume: guild.playback.volume,
             gain: guild.playback.volume,
           });
           result = { volume: guild.playback.volume };
@@ -409,6 +446,14 @@ export class FakeServerNode {
     const guild = this.#session(socket).guilds.get(guildId);
     if (!guild) throw new Error('no guild session');
     return guild;
+  }
+
+  #findGuild(guildId: string): FakeGuild | undefined {
+    for (const session of this.sessions.values()) {
+      const guild = session.guilds.get(guildId);
+      if (guild) return guild;
+    }
+    return undefined;
   }
 
   #newGuild(guildId: string, botUserId: string): FakeGuild {

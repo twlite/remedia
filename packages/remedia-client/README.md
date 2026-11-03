@@ -39,6 +39,14 @@ Disposing a guild while its remote node is temporarily unavailable defers remote
 same node session resumes. If the client closes while that node is unreachable, server resources
 expire with the configured session-resumption timeout.
 
+`DiscordSession` and `RemediaClient` expose typed Node `EventEmitter` lifecycle events using the
+exported `PlaybackSessionEvents`, `VoiceSessionEvents`, and `RemediaClientEventNames` constants.
+Playback events carry a source generation and optional local `customMetadata`; awaited
+`hooks.beforePlay()` can cancel a start before it reaches a node. Event completion reflects engine
+EOF, not necessarily drained Discord buffers. See the
+[hybrid client guide](../../apps/docs/content/docs/client/overview.mdx) for event payloads,
+reconnection reconciliation, and metadata lifetime.
+
 See the [Fumadocs client guide](../../apps/docs/content/docs/client/overview.mdx) for connection
 strings, configuration, lifecycle, and recovery semantics.
 

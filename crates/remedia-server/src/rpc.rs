@@ -209,7 +209,7 @@ pub(crate) async fn execute(
             };
             session.emit(
                 "voice.state_changed",
-                json!({"guildId": guild.guild_id, "state": "connecting"}),
+                json!({"guildId": guild.guild_id, "previousState": "disconnected", "state": "connecting"}),
             );
             let voice = match DiscordVoiceConnection::connect_with_observability(
                 connection_info,
@@ -220,8 +220,12 @@ pub(crate) async fn execute(
                 Ok(voice) => voice,
                 Err(_) => {
                     session.emit(
+                        "voice.state_changed",
+                        json!({"guildId": guild.guild_id, "previousState": "connecting", "state": "failed"}),
+                    );
+                    session.emit(
                         "voice.failed",
-                        json!({"guildId": guild.guild_id, "code": "transport_failed"}),
+                        json!({"guildId": guild.guild_id, "state": "failed", "code": "transport_failed"}),
                     );
                     return Err(RpcError::new(
                         "transport_failed",
@@ -240,7 +244,7 @@ pub(crate) async fn execute(
             *lock(&guild.voice) = Some(voice);
             session.emit(
                 "voice.state_changed",
-                json!({"guildId": guild.guild_id, "state": initial_state}),
+                json!({"guildId": guild.guild_id, "previousState": "connecting", "state": initial_state}),
             );
             spawn_voice_monitor(Arc::clone(&guild), Arc::downgrade(&session));
             Ok(json!({ "guildId": guild.guild_id, "state": initial_state }))
@@ -269,6 +273,16 @@ pub(crate) async fn execute(
             guild.ensure_open().map_err(state_error)?;
             stop_playback(&guild).await?;
             let voice = { lock(&guild.voice).take() };
+            let previous_voice_state = voice
+                .as_ref()
+                .map(|voice| voice_state_name(voice.state()))
+                .unwrap_or("disconnected");
+            if previous_voice_state != "disconnected" {
+                session.emit(
+                    "voice.state_changed",
+                    json!({"guildId": guild.guild_id, "previousState": previous_voice_state, "state": "disconnecting"}),
+                );
+            }
             if let Some(voice) = voice {
                 let disconnect = tokio::spawn(async move {
                     let _voice_operation = voice_operation;
@@ -280,15 +294,17 @@ pub(crate) async fn execute(
                     .map_err(|_| {
                         session.emit(
                             "voice.failed",
-                            json!({"guildId": guild.guild_id, "code": "transport_failed"}),
+                            json!({"guildId": guild.guild_id, "state": "failed", "code": "transport_failed"}),
                         );
                         RpcError::new("transport_failed", "Discord voice disconnection failed")
                     })?;
             }
-            session.emit(
-                "voice.state_changed",
-                json!({"guildId": guild.guild_id, "state": "disconnected"}),
-            );
+            if previous_voice_state != "disconnected" {
+                session.emit(
+                    "voice.state_changed",
+                    json!({"guildId": guild.guild_id, "previousState": "disconnecting", "state": "disconnected"}),
+                );
+            }
             Ok(json!({ "guildId": guild.guild_id, "state": "disconnected" }))
         }
         "player.play" => {
@@ -372,16 +388,23 @@ pub(crate) async fn execute(
                 cancel_guard.completed = true;
                 lock(&guild.play_cancellation).take();
                 let info = result.map_err(|error| {
+                    let _ = guild.claim_terminal_event(generation);
                     session.emit(
                         "player.failed",
                         json!({"guildId": guild.guild_id, "generation": generation, "code": playback_error_code(&error)}),
                     );
                     RpcError::new("playback_failed", "media playback could not be started")
                 })?;
-                spawn_playback_monitor(Arc::clone(&guild), Arc::downgrade(&session), generation);
+                let core_generation = guild.playback.completion_generation();
                 session.emit(
                     "player.started",
                     json!({"guildId": guild.guild_id, "generation": generation, "source": stream_info_json(info.clone())}),
+                );
+                spawn_playback_monitor(
+                    Arc::clone(&guild),
+                    Arc::downgrade(&session),
+                    generation,
+                    core_generation,
                 );
                 return Ok(playback_start_json(info, generation));
             };
@@ -397,6 +420,7 @@ pub(crate) async fn execute(
                 Ok(info) => info,
                 Err(error) => {
                     lock(&guild.play_cancellation).take();
+                    let _ = guild.claim_terminal_event(generation);
                     session.emit("player.failed", json!({"guildId": guild.guild_id, "generation": generation, "code": playback_error_code(&error)}));
                     return Err(RpcError::new(
                         "playback_failed",
@@ -404,10 +428,16 @@ pub(crate) async fn execute(
                     ));
                 }
             };
-            spawn_playback_monitor(Arc::clone(&guild), Arc::downgrade(&session), generation);
+            let core_generation = guild.playback.completion_generation();
             session.emit(
                 "player.started",
                 json!({"guildId": guild.guild_id, "generation": generation, "source": stream_info_json(info.clone())}),
+            );
+            spawn_playback_monitor(
+                Arc::clone(&guild),
+                Arc::downgrade(&session),
+                generation,
+                core_generation,
             );
             Ok(playback_start_json(info, generation))
         }
@@ -460,6 +490,7 @@ async fn execute_player_control(
         "player.pause" => {
             decode_params::<GuildParams>(request.params)?;
             let playback = Arc::clone(&guild.playback);
+            let previous_state = playback.state();
             tokio::task::spawn_blocking(move || {
                 let _operation = operation;
                 playback.pause()
@@ -467,12 +498,24 @@ async fn execute_player_control(
             .await
             .map_err(|_| RpcError::new("playback_failed", "playback worker failed"))?
             .map_err(playback_error)?;
-            session.emit("player.paused", json!({"guildId": guild.guild_id}));
+            let state = guild.playback.state();
+            if previous_state != PlaybackState::Paused && state == PlaybackState::Paused {
+                session.emit(
+                    "player.paused",
+                    json!({
+                        "guildId": guild.guild_id,
+                        "generation": guild.source_generation.load(Ordering::Acquire),
+                        "previousState": playback_state_name(previous_state),
+                        "state": "paused",
+                    }),
+                );
+            }
             Ok(json!({"state": playback_state_name(guild.playback.state())}))
         }
         "player.resume" => {
             decode_params::<GuildParams>(request.params)?;
             let playback = Arc::clone(&guild.playback);
+            let previous_state = playback.state();
             tokio::task::spawn_blocking(move || {
                 let _operation = operation;
                 playback.resume()
@@ -480,12 +523,24 @@ async fn execute_player_control(
             .await
             .map_err(|_| RpcError::new("playback_failed", "playback worker failed"))?
             .map_err(playback_error)?;
-            session.emit("player.resumed", json!({"guildId": guild.guild_id}));
+            let state = guild.playback.state();
+            if previous_state == PlaybackState::Paused && state == PlaybackState::Playing {
+                session.emit(
+                    "player.resumed",
+                    json!({
+                        "guildId": guild.guild_id,
+                        "generation": guild.source_generation.load(Ordering::Acquire),
+                        "previousState": "paused",
+                        "state": "playing",
+                    }),
+                );
+            }
             Ok(json!({"state": playback_state_name(guild.playback.state())}))
         }
         "player.stop" => {
             decode_params::<GuildParams>(request.params)?;
             let playback = Arc::clone(&guild.playback);
+            let previous_state = playback.state();
             tokio::task::spawn_blocking(move || {
                 let _operation = operation;
                 playback.stop()
@@ -494,13 +549,24 @@ async fn execute_player_control(
             .map_err(|_| RpcError::new("playback_failed", "playback worker failed"))?
             .map_err(playback_error)?;
             lock(&guild.play_cancellation).take();
-            session.emit(
-                "player.stopped",
-                json!({
-                    "guildId": guild.guild_id,
-                    "generation": guild.source_generation.load(Ordering::Acquire),
-                }),
-            );
+            let generation = guild.source_generation.load(Ordering::Acquire);
+            if !matches!(
+                previous_state,
+                PlaybackState::Stopped | PlaybackState::Completed | PlaybackState::Failed
+            ) && guild.playback.state() == PlaybackState::Stopped
+                && guild.claim_terminal_event(generation)
+            {
+                session.emit(
+                    "player.stopped",
+                    json!({
+                        "guildId": guild.guild_id,
+                        "generation": generation,
+                        "previousState": playback_state_name(previous_state),
+                        "state": "stopped",
+                        "reason": "stop",
+                    }),
+                );
+            }
             Ok(json!({"state": playback_state_name(guild.playback.state())}))
         }
         "player.seek" => {
@@ -508,6 +574,7 @@ async fn execute_player_control(
             ensure_param_guild(&params.guild_id, &guild_id)?;
             let playback = Arc::clone(&guild.playback);
             let position = Duration::from_millis(params.position_ms);
+            let previous_position_ms = playback.position().media.map(|p| p.position.as_millis());
             tokio::task::spawn_blocking(move || {
                 let _operation = operation;
                 playback.seek(position)
@@ -515,10 +582,17 @@ async fn execute_player_control(
             .await
             .map_err(|_| RpcError::new("playback_failed", "playback worker failed"))?
             .map_err(playback_error)?;
-            session.emit(
-                "player.seeked",
-                json!({"guildId": guild.guild_id, "positionMs": params.position_ms}),
-            );
+            if previous_position_ms != Some(u128::from(params.position_ms)) {
+                session.emit(
+                    "player.seeked",
+                    json!({
+                        "guildId": guild.guild_id,
+                        "generation": guild.source_generation.load(Ordering::Acquire),
+                        "positionMs": params.position_ms,
+                        "previousPositionMs": previous_position_ms,
+                    }),
+                );
+            }
             Ok(playback_snapshot(
                 &guild.playback,
                 guild.source_generation.load(Ordering::Acquire),
@@ -530,6 +604,7 @@ async fn execute_player_control(
             ensure_param_guild(&params.guild_id, &guild_id)?;
             let playback = Arc::clone(&guild.playback);
             let graph = params.graph;
+            let previous_graph = playback.filter_graph();
             tokio::task::spawn_blocking(move || {
                 let _operation = operation;
                 playback.set_filter_graph(Some(&graph))
@@ -537,15 +612,24 @@ async fn execute_player_control(
             .await
             .map_err(|_| RpcError::new("playback_failed", "filtergraph worker failed"))?
             .map_err(playback_error)?;
-            session.emit(
-                "player.filter_changed",
-                json!({"guildId": guild.guild_id, "configured": true}),
-            );
+            let graph = guild.playback.filter_graph();
+            if previous_graph != graph {
+                session.emit(
+                    "player.filter_changed",
+                    json!({
+                        "guildId": guild.guild_id,
+                        "generation": guild.source_generation.load(Ordering::Acquire),
+                        "previousGraph": previous_graph,
+                        "graph": graph,
+                    }),
+                );
+            }
             Ok(json!({"filterGraph": guild.playback.filter_graph()}))
         }
         "player.filter.clear" => {
             decode_params::<GuildParams>(request.params)?;
             let playback = Arc::clone(&guild.playback);
+            let previous_graph = playback.filter_graph();
             tokio::task::spawn_blocking(move || {
                 let _operation = operation;
                 playback.set_filter_graph(None)
@@ -553,10 +637,17 @@ async fn execute_player_control(
             .await
             .map_err(|_| RpcError::new("playback_failed", "filtergraph worker failed"))?
             .map_err(playback_error)?;
-            session.emit(
-                "player.filter_changed",
-                json!({"guildId": guild.guild_id, "configured": false}),
-            );
+            if previous_graph.is_some() {
+                session.emit(
+                    "player.filter_changed",
+                    json!({
+                        "guildId": guild.guild_id,
+                        "generation": guild.source_generation.load(Ordering::Acquire),
+                        "previousGraph": previous_graph,
+                        "graph": null,
+                    }),
+                );
+            }
             Ok(json!({"filterGraph": null}))
         }
         "player.volume.set" => {
@@ -569,6 +660,7 @@ async fn execute_player_control(
                 ));
             }
             let playback = Arc::clone(&guild.playback);
+            let previous_volume = playback.volume();
             let gain = params.gain as f32;
             tokio::task::spawn_blocking(move || {
                 let _operation = operation;
@@ -577,10 +669,18 @@ async fn execute_player_control(
             .await
             .map_err(|_| RpcError::new("playback_failed", "volume worker failed"))?
             .map_err(playback_error)?;
-            session.emit(
-                "player.volume_changed",
-                json!({"guildId": guild.guild_id, "gain": params.gain}),
-            );
+            if f64::from(previous_volume) != params.gain {
+                session.emit(
+                    "player.volume_changed",
+                    json!({
+                        "guildId": guild.guild_id,
+                        "generation": guild.source_generation.load(Ordering::Acquire),
+                        "previousVolume": previous_volume,
+                        "volume": params.gain,
+                        "gain": params.gain,
+                    }),
+                );
+            }
             Ok(json!({"volume": guild.playback.volume()}))
         }
         _ => Err(RpcError::new("invalid_request", "unknown player command")),
@@ -772,44 +872,40 @@ fn spawn_playback_monitor(
     guild: Arc<GuildSession>,
     session: std::sync::Weak<ClientSession>,
     generation: u64,
+    core_generation: u64,
 ) {
+    let waiter = guild.playback.completion_for_generation(core_generation);
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(200));
-        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        loop {
-            interval.tick().await;
-            if guild.closed.load(Ordering::Acquire) {
-                return;
-            }
-            match guild.playback.state() {
-                PlaybackState::Completed => {
-                    if let Some(session) = session.upgrade()
-                        && guild.source_generation.load(Ordering::Acquire) == generation
-                    {
-                        session.emit(
-                            "player.completed",
-                            json!({"guildId": guild.guild_id, "generation": generation}),
-                        );
-                    }
-                    lock(&guild.play_cancellation).take();
-                    return;
-                }
-                PlaybackState::Failed => {
-                    if let Some(session) = session.upgrade()
-                        && guild.source_generation.load(Ordering::Acquire) == generation
-                    {
-                        session.emit("player.failed", json!({"guildId": guild.guild_id, "generation": generation, "code": "playback_failed"}));
-                    }
-                    lock(&guild.play_cancellation).take();
-                    return;
-                }
-                PlaybackState::Stopped => {
-                    lock(&guild.play_cancellation).take();
-                    return;
-                }
+        let state = tokio::task::spawn_blocking(move || waiter.wait()).await;
+        if guild.closed.load(Ordering::Acquire) {
+            return;
+        }
+        if guild.source_generation.load(Ordering::Acquire) != generation {
+            return;
+        }
+        let Ok(state) = state else {
+            return;
+        };
+        if guild.claim_terminal_event(generation)
+            && let Some(session) = session.upgrade()
+        {
+            match state {
+                PlaybackState::Completed => session.emit(
+                    "player.completed",
+                    json!({"guildId": guild.guild_id, "generation": generation, "state": "completed"}),
+                ),
+                PlaybackState::Failed => session.emit(
+                    "player.failed",
+                    json!({"guildId": guild.guild_id, "generation": generation, "state": "failed", "code": "playback_failed"}),
+                ),
+                PlaybackState::Stopped => session.emit(
+                    "player.stopped",
+                    json!({"guildId": guild.guild_id, "generation": generation, "state": "stopped", "reason": "stopped"}),
+                ),
                 _ => {}
             }
         }
+        lock(&guild.play_cancellation).take();
     });
 }
 
@@ -832,12 +928,16 @@ fn spawn_voice_monitor(guild: Arc<GuildSession>, session: std::sync::Weak<Client
                 if let (Some(session), Some(state)) = (session.upgrade(), state) {
                     session.emit(
                         "voice.state_changed",
-                        json!({"guildId": guild.guild_id, "state": voice_state_name(state)}),
+                        json!({
+                            "guildId": guild.guild_id,
+                            "previousState": previous.map(voice_state_name).unwrap_or("disconnected"),
+                            "state": voice_state_name(state),
+                        }),
                     );
                     if state == ConnectionState::Failed {
                         session.emit(
                             "voice.failed",
-                            json!({"guildId": guild.guild_id, "code": "transport_failed"}),
+                            json!({"guildId": guild.guild_id, "state": "failed", "code": "transport_failed"}),
                         );
                     }
                 }

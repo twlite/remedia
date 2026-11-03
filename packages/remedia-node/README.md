@@ -17,6 +17,15 @@ bounded callback queue with `on('debug', listener)`; use `close()` to stop sessi
 transports, and shut down owned telemetry. Operational errors reject API Promises and remain
 available on session state independently of diagnostic delivery.
 
+Playback and voice sessions are typed Node `EventEmitter`s. Subscribe with exported
+`PlaybackSessionEvents` and `VoiceSessionEvents` constants; `Remedia` forwards session lifecycle
+events and provides `RemediaEvents`. `playbackStarted` means native processing began, while
+`playbackCompleted` means natural EOF was processed, not that Discord buffers drained. Events are
+generation-correlated. `play(source, { customMetadata })` keeps arbitrary application metadata in
+JavaScript and includes it in that generation's lifecycle events. Ordered `hooks.beforePlay()`
+middleware can cancel or reject a start before native playback. See the
+[Node.js binding guide](../../apps/docs/content/docs/node/bindings.mdx) for payloads and semantics.
+
 ## Development
 
 Install dependencies from the repository root, then run:

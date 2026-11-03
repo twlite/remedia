@@ -201,6 +201,81 @@ null output consumes the whole stream without real-time pacing, so positions
 can advance to the end quickly. `durationMs` is `null` when the source does not
 provide a duration.
 
+## Lifecycle events and pre-play hooks
+
+`PlaybackSession`, `DiscordSession`, and their owning `Remedia` instance use
+Node's built-in typed `EventEmitter`. Stable event names are exported as
+constants, with matching string-union types:
+
+```ts
+import { PlaybackSessionEvents } from '@remedia/node';
+
+const playback = remedia.createPlaybackSession<{ trackId: string }>();
+playback.on(PlaybackSessionEvents.playbackCompleted, (event) => {
+  // event.customMetadata is { trackId: string } | undefined
+  console.log(event.generation, event.customMetadata);
+});
+```
+
+`PlaybackSessionEvents` contains `playbackStarted`, `playbackCompleted`,
+`playbackStopped`, `playbackFailed`, `playbackPaused`, `playbackResumed`,
+`playbackSeeked`, `filterChanged`, `volumeChanged`, and `sessionDisposed`.
+`VoiceSessionEvents` contains `voiceStateChanged` and `voiceFailed`. `Remedia`
+forwards lifecycle events from its sessions and also emits `debug` diagnostics.
+The constants can be used with `on`, `once`, and `off`; the event map infers
+each payload. The same-named exported type `PlaybackSessionEvents` is the union
+of event-name string literals. Operational failures use `playbackFailed` or `voiceFailed`, not
+Node's special `error` event.
+
+Events describe engine transitions, not Discord audibility. `playbackStarted`
+fires after the native media pipeline has started; it does not mean a listener
+has heard a sample. `playbackCompleted` means decoding and processing reached
+natural EOF; it does not guarantee a transport or speaker buffer has drained.
+`playbackStopped` is distinct from natural completion. Pause, resume, seek,
+filter, and volume events are emitted only after a successful change; repeated
+idempotent operations do not emit duplicates. A rejected operation does not
+emit its successful state-change event. Session disposal emits
+`sessionDisposed` once.
+
+Every playback event includes a wrapper `sessionId`, native source `generation`,
+and `nodeId` (`null` for direct `@remedia/node` sessions). Discord-session
+payloads also include `guildId`. A generation identifies one source start, so
+terminal events cannot be confused with a later source. Event listeners run
+outside native locks. Synchronous listener exceptions are isolated and reported
+as a Node process warning (`REMEDIA_LISTENER_ERROR`); they do not fail playback.
+
+Attach arbitrary application metadata to one source without serializing it:
+
+```ts
+interface MyMetadata {
+  requestedBy: string;
+  trackId: string;
+}
+
+const voice = remedia.createDiscordSession<MyMetadata>({ guildId, channelId, userId });
+await voice.play(
+  { url },
+  {
+    customMetadata: { requestedBy: interaction.user.id, trackId: 'track-123' },
+  },
+);
+```
+
+The same object reference is included in lifecycle events for that generation,
+including delayed terminal events. It remains in JavaScript memory only and is
+released when that source reaches a terminal state or the session is disposed.
+Remedia does not interpret it as track or queue data.
+
+`hooks.beforePlay()` registers awaited local middleware. Hooks run in
+registration order before native playback starts; returning
+`{ cancel: true, reason }` cancels the operation, and a thrown/rejected hook
+rejects `play()` without starting media. The context contains the source,
+metadata, and an `AbortSignal`. Aborting while hooks are running cancels the
+pending start; aborting after startup requests stop for that playback. Hooks
+are application middleware, not server authorization, and are cleared when the
+session is disposed. Unlike ordinary event listeners, hooks may delay or cancel
+playback deliberately.
+
 ## Native filters and master volume
 
 Both `PlaybackSession` and `DiscordSession` expose the core's raw FFmpeg audio

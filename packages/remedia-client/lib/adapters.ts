@@ -1,3 +1,4 @@
+import type { EventEmitter } from 'node:events';
 import type {
   AudioStreamInfo,
   DiscordSessionOptions,
@@ -10,10 +11,15 @@ import type {
   PlaybackPosition,
   PlaybackSnapshot,
   PlaybackState,
+  PlaybackLifecycleEventMap,
+  PlayOptions,
   VoiceConnectionState,
+  VoiceLifecycleEventMap,
 } from './types.js';
 
-export interface GuildBackend {
+export type GuildBackendEvents = PlaybackLifecycleEventMap<unknown> & VoiceLifecycleEventMap;
+
+export interface GuildBackend extends EventEmitter<GuildBackendEvents> {
   readonly nodeId: string;
   readonly nodeType: NodeType;
   readonly state: PlaybackState;
@@ -33,7 +39,10 @@ export interface GuildBackend {
   validateIdentity?(userId: string): void;
   disconnect(): Promise<void>;
   dispose(): Promise<void>;
-  play(source: MediaSource): Promise<{ info: AudioStreamInfo; generation: number }>;
+  play(
+    source: MediaSource,
+    options?: PlayOptions<unknown>,
+  ): Promise<{ info: AudioStreamInfo; generation: number }>;
   pause(): Promise<void>;
   resume(): Promise<void>;
   seek(positionMs: number): Promise<void>;

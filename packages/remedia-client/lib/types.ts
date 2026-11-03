@@ -1,5 +1,43 @@
 import type { Readable } from 'node:stream';
 
+/** Event names shared by embedded and remote playback-session adapters. */
+export const PlaybackSessionEvents = {
+  playbackStarted: 'playbackStarted',
+  playbackCompleted: 'playbackCompleted',
+  playbackStopped: 'playbackStopped',
+  playbackFailed: 'playbackFailed',
+  playbackPaused: 'playbackPaused',
+  playbackResumed: 'playbackResumed',
+  playbackSeeked: 'playbackSeeked',
+  filterChanged: 'filterChanged',
+  volumeChanged: 'volumeChanged',
+  sessionDisposed: 'sessionDisposed',
+} as const;
+
+export type PlaybackSessionEvents =
+  (typeof PlaybackSessionEvents)[keyof typeof PlaybackSessionEvents];
+
+export const VoiceSessionEvents = {
+  voiceStateChanged: 'voiceStateChanged',
+  voiceFailed: 'voiceFailed',
+} as const;
+
+export type VoiceSessionEvents = (typeof VoiceSessionEvents)[keyof typeof VoiceSessionEvents];
+
+export const RemediaClientEventNames = {
+  nodeConnected: 'nodeConnected',
+  nodeDisconnected: 'nodeDisconnected',
+  sessionResumed: 'sessionResumed',
+  sessionLost: 'sessionLost',
+  nodeEvent: 'nodeEvent',
+  eventsLost: 'eventsLost',
+  guildAssigned: 'guildAssigned',
+  guildReleased: 'guildReleased',
+} as const;
+
+export type RemediaClientEventNames =
+  (typeof RemediaClientEventNames)[keyof typeof RemediaClientEventNames];
+
 export type PlaybackState =
   | 'idle'
   | 'starting'
@@ -140,6 +178,81 @@ export interface DiscordSessionOptions {
   nodeId?: string;
 }
 
+export interface PlayOptions<Metadata = unknown> {
+  /** Arbitrary application-owned value retained in this process and attached to one generation. */
+  customMetadata?: Metadata;
+  /** Cancels an awaited pre-play hook or stops this generation after startup. */
+  signal?: AbortSignal;
+}
+
+export interface PlaybackEventIdentity<Metadata = unknown> {
+  sessionId: string;
+  guildId: string;
+  nodeId: string | null;
+  generation: number;
+  customMetadata?: Metadata;
+  reconstructed?: boolean;
+}
+
+export type PlaybackLifecycleEventMap<Metadata = unknown> = {
+  [PlaybackSessionEvents.playbackStarted]: [
+    PlaybackEventIdentity<Metadata> & { state: 'playing'; info: AudioStreamInfo },
+  ];
+  [PlaybackSessionEvents.playbackCompleted]: [
+    PlaybackEventIdentity<Metadata> & { state: 'completed'; position: PlaybackPosition },
+  ];
+  [PlaybackSessionEvents.playbackStopped]: [
+    PlaybackEventIdentity<Metadata> & { state: 'stopped'; reason?: string },
+  ];
+  [PlaybackSessionEvents.playbackFailed]: [
+    PlaybackEventIdentity<Metadata> & { state: 'failed'; error: Error },
+  ];
+  [PlaybackSessionEvents.playbackPaused]: [
+    PlaybackEventIdentity<Metadata> & { previousState: PlaybackState; state: 'paused' },
+  ];
+  [PlaybackSessionEvents.playbackResumed]: [
+    PlaybackEventIdentity<Metadata> & { previousState: PlaybackState; state: 'playing' },
+  ];
+  [PlaybackSessionEvents.playbackSeeked]: [
+    PlaybackEventIdentity<Metadata> & { positionMs: number; previousPositionMs: number | null },
+  ];
+  [PlaybackSessionEvents.filterChanged]: [
+    PlaybackEventIdentity<Metadata> & { previousGraph: string | null; graph: string | null },
+  ];
+  [PlaybackSessionEvents.volumeChanged]: [
+    PlaybackEventIdentity<Metadata> & { previousVolume: number; volume: number },
+  ];
+};
+
+export interface VoiceEventIdentity {
+  sessionId: string;
+  guildId: string;
+  nodeId: string | null;
+}
+
+export type VoiceLifecycleEventMap = {
+  [VoiceSessionEvents.voiceStateChanged]: [
+    VoiceEventIdentity & { previousState: VoiceConnectionState; state: VoiceConnectionState },
+  ];
+  [VoiceSessionEvents.voiceFailed]: [VoiceEventIdentity & { state: 'failed'; error: Error }];
+};
+
+export type DiscordSessionEvents<Metadata = unknown> = PlaybackLifecycleEventMap<Metadata> &
+  VoiceLifecycleEventMap & {
+    [PlaybackSessionEvents.sessionDisposed]: [VoiceEventIdentity & { generation: number }];
+  };
+
+export interface BeforePlayContext<Metadata = unknown> {
+  readonly source: MediaSource;
+  readonly customMetadata: Metadata | undefined;
+  readonly signal: AbortSignal;
+}
+
+export type BeforePlayResult = void | { cancel: true; reason?: string };
+export type BeforePlayHook<Metadata = unknown> = (
+  context: BeforePlayContext<Metadata>,
+) => BeforePlayResult | Promise<BeforePlayResult>;
+
 export interface DiscordConnectOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -185,15 +298,19 @@ export interface ServerLifecycleEvent {
   data: Readonly<Record<string, unknown>>;
 }
 
-export interface RemediaClientEvents {
-  nodeConnected: [NodeSnapshot];
-  nodeDisconnected: [{ node: NodeSnapshot; error: Error | null }];
-  sessionResumed: [{ node: NodeSnapshot; guildIds: readonly string[] }];
-  sessionLost: [{ node: NodeSnapshot; guildIds: readonly string[]; reason: string }];
-  nodeEvent: [ServerLifecycleEvent];
-  eventsLost: [{ nodeId: string; count: number }];
-  guildAssigned: [GuildAssignment];
-  guildReleased: [GuildAssignment];
+export interface RemediaClientEvents
+  extends PlaybackLifecycleEventMap<unknown>, VoiceLifecycleEventMap {
+  [RemediaClientEventNames.nodeConnected]: [NodeSnapshot];
+  [RemediaClientEventNames.nodeDisconnected]: [{ node: NodeSnapshot; error: Error | null }];
+  [RemediaClientEventNames.sessionResumed]: [{ node: NodeSnapshot; guildIds: readonly string[] }];
+  [RemediaClientEventNames.sessionLost]: [
+    { node: NodeSnapshot; guildIds: readonly string[]; reason: string },
+  ];
+  [RemediaClientEventNames.nodeEvent]: [ServerLifecycleEvent];
+  [RemediaClientEventNames.eventsLost]: [{ nodeId: string; count: number }];
+  [RemediaClientEventNames.guildAssigned]: [GuildAssignment];
+  [RemediaClientEventNames.guildReleased]: [GuildAssignment];
+  [PlaybackSessionEvents.sessionDisposed]: [VoiceEventIdentity & { generation: number }];
 }
 
 export interface PlaybackCompletion {

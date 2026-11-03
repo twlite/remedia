@@ -1,5 +1,6 @@
+import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
-import { RemediaClient } from '../lib/client.js';
+import { PlaybackSessionEvents, RemediaClient } from '../lib/index.js';
 import type { DiscordSessionOptions, RemediaClientEvents } from '../lib/types.js';
 import type { GuildBackend } from '../lib/adapters.js';
 import { FakeServerNode } from './helpers.js';
@@ -80,6 +81,82 @@ describe.skipIf(!enabled)('hybrid embedded and remote node pool', () => {
         token: 'voice-token-hybrid',
         endpoint: 'voice.example.test:443',
       });
+
+      const embeddedFilterChange = onceBackendEvent(
+        sessions[0]!.backend,
+        PlaybackSessionEvents.filterChanged,
+      );
+      const remoteFilterChange = onceBackendEvent(
+        remotePlayback,
+        PlaybackSessionEvents.filterChanged,
+      );
+      await Promise.all([
+        sessions[0]!.backend.setFilterGraph('anull'),
+        remotePlayback.setFilterGraph('anull'),
+      ]);
+      const [embeddedFilterEvent, remoteFilterEvent] = await Promise.all([
+        embeddedFilterChange,
+        remoteFilterChange,
+      ]);
+      for (const key of [
+        'sessionId',
+        'guildId',
+        'nodeId',
+        'generation',
+        'previousGraph',
+        'graph',
+      ]) {
+        expect(embeddedFilterEvent).toHaveProperty(key);
+        expect(remoteFilterEvent).toHaveProperty(key);
+      }
+      expect(embeddedFilterEvent).toMatchObject({
+        nodeId: 'embedded',
+        guildId: sessions[0]!.session.guildId,
+        previousGraph: null,
+        graph: 'anull',
+      });
+      expect(remoteFilterEvent).toMatchObject({
+        nodeId: 'remote-a',
+        guildId: sessions[1]!.session.guildId,
+        previousGraph: null,
+        graph: 'anull',
+      });
+
+      const embeddedVolumeChange = onceBackendEvent(
+        sessions[0]!.backend,
+        PlaybackSessionEvents.volumeChanged,
+      );
+      const remoteVolumeChange = onceBackendEvent(
+        remotePlayback,
+        PlaybackSessionEvents.volumeChanged,
+      );
+      await Promise.all([sessions[0]!.backend.setVolume(0.75), remotePlayback.setVolume(0.75)]);
+      const [embeddedVolumeEvent, remoteVolumeEvent] = await Promise.all([
+        embeddedVolumeChange,
+        remoteVolumeChange,
+      ]);
+      for (const key of [
+        'sessionId',
+        'guildId',
+        'nodeId',
+        'generation',
+        'previousVolume',
+        'volume',
+      ]) {
+        expect(embeddedVolumeEvent).toHaveProperty(key);
+        expect(remoteVolumeEvent).toHaveProperty(key);
+      }
+      expect(embeddedVolumeEvent).toMatchObject({
+        nodeId: 'embedded',
+        previousVolume: 1,
+        volume: 0.75,
+      });
+      expect(remoteVolumeEvent).toMatchObject({
+        nodeId: 'remote-a',
+        previousVolume: 1,
+        volume: 0.75,
+      });
+
       await remotePlayback.play({ url: 'https://media.example.test/hybrid.mp3' });
       await remotePlayback.setFilterGraph('bass=g=8');
       await remotePlayback.setVolume(0.75);
@@ -139,6 +216,17 @@ describe.skipIf(!enabled)('hybrid embedded and remote node pool', () => {
     }
   });
 });
+
+function onceBackendEvent(backend: GuildBackend, event: string): Promise<Record<string, unknown>> {
+  return new Promise((resolve) => {
+    const emitter = backend as unknown as EventEmitter;
+    const listener = (payload: Record<string, unknown>): void => {
+      emitter.off(event, listener);
+      resolve(payload);
+    };
+    emitter.once(event, listener);
+  });
+}
 
 function onceEvent<Event extends keyof RemediaClientEvents>(
   client: RemediaClient,

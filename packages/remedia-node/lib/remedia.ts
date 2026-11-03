@@ -1,6 +1,14 @@
+import { EventEmitter } from 'node:events';
+import { RemediaEventEmitter } from './events.js';
 import { NativeRemedia } from '../native.js';
 import { DiscordSession, type DiscordSessionOptions } from './discord.js';
 import { DiscordGatewayAdapter, type DiscordGatewaySend } from './gateway.js';
+import type { RemediaLifecycleEvents } from './lifecycle.js';
+import {
+  PlaybackSessionEvents as PlaybackEvent,
+  RemediaEvents as RemediaEvent,
+  VoiceSessionEvents as VoiceEvent,
+} from './lifecycle.js';
 import { PlaybackSession } from './playback.js';
 import { toDiagnosticEvent, type DebugListener, type DiagnosticEvent } from './types.js';
 
@@ -9,24 +17,35 @@ export interface RemediaOptions {
   send: DiscordGatewaySend;
 }
 
+interface PlaybackResource {
+  dispose(): Promise<void>;
+  releaseInput(): Promise<void>;
+}
+
+interface DiscordSessionResource {
+  readonly guildId: string;
+  receiveGatewayDispatch(event: string, data: Record<string, unknown>, sequence?: number): void;
+  dispose(): Promise<void>;
+}
+
 /**
  * One embedded Remedia context. Create instances with `await Remedia.create()` so native
  * observability and optional asynchronous OpenTelemetry exporters initialize on NAPI-RS's runtime.
  */
-export class Remedia {
+export class Remedia extends RemediaEventEmitter<RemediaLifecycleEvents> {
   readonly #native: NativeRemedia;
-  readonly #debugListeners = new Set<DebugListener>();
-  readonly #sessions = new Set<PlaybackSession>();
-  readonly #discordSessions = new Map<string, DiscordSession>();
+  readonly #sessions = new Set<PlaybackResource>();
+  readonly #discordSessions = new Map<string, DiscordSessionResource>();
   readonly #gateway: DiscordGatewayAdapter | undefined;
   #closed = false;
 
   private constructor(native: NativeRemedia, options?: RemediaOptions) {
+    super();
     this.#native = native;
     this.#gateway = options ? new DiscordGatewayAdapter(options.send) : undefined;
     native.setDebugCallback((event) => {
       const diagnostic = toDiagnosticEvent(event);
-      for (const listener of this.#debugListeners) listener(diagnostic);
+      this.emit(RemediaEvent.debug, diagnostic);
     });
   }
 
@@ -41,37 +60,26 @@ export class Remedia {
   }
 
   /** Register a structured native diagnostic listener. */
-  on(event: 'debug', listener: DebugListener): this {
-    this.#assertOpen();
-    if (event === 'debug') this.#debugListeners.add(listener);
-    return this;
-  }
-
-  /** Remove a previously registered diagnostic listener. */
-  off(event: 'debug', listener: DebugListener): this {
-    if (event === 'debug') this.#debugListeners.delete(listener);
-    return this;
-  }
-
-  /** Remove all diagnostic listeners. */
-  removeAllListeners(event?: 'debug'): this {
-    if (event === undefined || event === 'debug') this.#debugListeners.clear();
-    return this;
-  }
-
   /** Create a local decoder session that discards its PCM output. */
-  createPlaybackSession(): PlaybackSession {
+  createPlaybackSession<Metadata = unknown>(): PlaybackSession<Metadata> {
     this.#assertOpen();
-    let playback: PlaybackSession;
-    playback = new PlaybackSession(this.#native, this.#native.createPlaybackSession(), () => {
-      this.#sessions.delete(playback);
-    });
+    let playback: PlaybackSession<Metadata>;
+    playback = new PlaybackSession<Metadata>(
+      this.#native,
+      this.#native.createPlaybackSession(),
+      () => {
+        this.#sessions.delete(playback);
+      },
+    );
+    forwardLifecycleEvents(playback, this);
     this.#sessions.add(playback);
     return playback;
   }
 
   /** Create a Gateway-managed voice session. Call `connect()` to send OP 4 and join the channel. */
-  createDiscordSession(options: DiscordSessionOptions): DiscordSession {
+  createDiscordSession<Metadata = unknown>(
+    options: DiscordSessionOptions,
+  ): DiscordSession<Metadata> {
     this.#assertOpen();
     if (!this.#gateway) {
       throw new Error('Remedia.create() requires a Gateway send function for Discord sessions');
@@ -79,10 +87,11 @@ export class Remedia {
     if (this.#discordSessions.has(options.guildId)) {
       throw new Error(`a Discord voice session already exists for guild ${options.guildId}`);
     }
-    let session: DiscordSession;
-    session = new DiscordSession(this.#native, this.#gateway, options, () => {
+    let session: DiscordSession<Metadata>;
+    session = new DiscordSession<Metadata>(this.#native, this.#gateway, options, () => {
       this.#discordSessions.delete(session.guildId);
     });
+    forwardLifecycleEvents(session, this);
     this.#discordSessions.set(session.guildId, session);
     return session;
   }
@@ -101,11 +110,11 @@ export class Remedia {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    this.#debugListeners.clear();
     const voiceCleanup = await Promise.allSettled(
       [...this.#discordSessions.values()].map((session) => session.dispose()),
     );
     try {
+      await Promise.all([...this.#sessions].map((session) => session.dispose()));
       await this.#native.close();
     } finally {
       await Promise.all([...this.#sessions].map((session) => session.releaseInput()));
@@ -123,6 +132,42 @@ export class Remedia {
   #assertOpen(): void {
     if (this.#closed) throw new Error('Remedia instance is closed');
   }
+}
+
+function forwardLifecycleEvents<Metadata>(
+  source: PlaybackSession<Metadata> | DiscordSession<Metadata>,
+  target: Remedia,
+): void {
+  const sourceEvents = source as unknown as EventEmitter;
+  const targetEvents = target as unknown as EventEmitter;
+  const names = [
+    PlaybackEvent.playbackStarted,
+    PlaybackEvent.playbackCompleted,
+    PlaybackEvent.playbackStopped,
+    PlaybackEvent.playbackFailed,
+    PlaybackEvent.playbackPaused,
+    PlaybackEvent.playbackResumed,
+    PlaybackEvent.playbackSeeked,
+    PlaybackEvent.filterChanged,
+    PlaybackEvent.volumeChanged,
+    PlaybackEvent.sessionDisposed,
+    ...(source instanceof DiscordSession
+      ? [VoiceEvent.voiceStateChanged, VoiceEvent.voiceFailed]
+      : []),
+  ] as const;
+  const unsubs: Array<() => void> = [];
+  for (const name of names) {
+    const listener = (event: unknown): void => {
+      targetEvents.emit(name, event);
+    };
+    sourceEvents.on(name, listener);
+    unsubs.push(() => sourceEvents.off(name, listener));
+  }
+  const detach = (): void => {
+    sourceEvents.off(PlaybackEvent.sessionDisposed, detach);
+    for (const unsubscribe of unsubs.splice(0)) unsubscribe();
+  };
+  sourceEvents.once(PlaybackEvent.sessionDisposed, detach);
 }
 
 export type { DebugListener, DiagnosticEvent };

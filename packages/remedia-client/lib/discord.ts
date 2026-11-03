@@ -1,8 +1,17 @@
+import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import { RemediaEventEmitter } from './events.js';
+import {
+  PlaybackSessionEvents as PlaybackEvent,
+  VoiceSessionEvents as VoiceEvent,
+} from './types.js';
 import { SessionLostError, asError } from './errors.js';
 import { FilterControls, validateVolume } from './filters.js';
+import { PlaybackHooks } from './hooks.js';
 import type { GuildBackend } from './adapters.js';
 import type {
   AudioStreamInfo,
+  DiscordSessionEvents,
   DiscordConnectOptions,
   DiscordGatewayPacket,
   DiscordSessionOptions,
@@ -10,7 +19,10 @@ import type {
   PlaybackPosition,
   PlaybackSnapshot,
   PlaybackState,
+  PlaybackLifecycleEventMap,
+  PlayOptions,
   VoiceConnectionState,
+  VoiceLifecycleEventMap,
 } from './types.js';
 
 interface ConnectAttempt {
@@ -34,19 +46,45 @@ export interface DiscordSessionRuntime {
   sendVoicePayload(guildId: string, channelId: string | null): void | Promise<void>;
   gatewaySequence(): number | undefined;
   resolveBackend(options: DiscordSessionOptions, onDispose: () => void): Promise<GuildBackend>;
-  releaseSession(session: DiscordSession): void;
+  releaseSession(session: { readonly guildId: string }): void;
 }
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 45_000;
 
+interface BufferedPlaybackEvent {
+  event: keyof PlaybackLifecycleEventMap<unknown>;
+  payload: Record<string, unknown>;
+}
+
+interface PlaybackAbortBinding {
+  controller: AbortController;
+  signal: AbortSignal;
+  listener: () => void;
+  generation: number | undefined;
+}
+
 /** A Discord voice player with a node-sticky backend, whether embedded or remote. */
-export class DiscordSession {
+export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
+  DiscordSessionEvents<Metadata>
+> {
+  readonly sessionId = randomUUID();
   readonly guildId: string;
   readonly channelId: string;
   readonly userId: string;
   readonly #runtime: DiscordSessionRuntime;
   readonly #options: DiscordSessionOptions;
   readonly filters: FilterControls;
+  readonly hooks = new PlaybackHooks<Metadata>();
+  readonly #metadataByGeneration = new Map<number, Metadata | undefined>();
+  readonly #startedGenerations = new Set<number>();
+  readonly #terminalGenerations = new Set<number>();
+  readonly #earlyPlaybackEvents = new Map<number, BufferedPlaybackEvent[]>();
+  #pendingPlay: { metadata: Metadata | undefined } | undefined;
+  #playStarting = false;
+  #playController: AbortController | undefined;
+  #playAbortBinding: PlaybackAbortBinding | undefined;
+  #boundBackend: GuildBackend | undefined;
+  readonly #backendUnsubscribers: Array<() => void> = [];
   #backend: GuildBackend | undefined;
   #attempt: ConnectAttempt | undefined;
   #joinRequested = false;
@@ -62,8 +100,10 @@ export class DiscordSession {
   #playbackGeneration = 0;
   #playPromise: Promise<AudioStreamInfo> | undefined;
   #sessionLossReason: string | undefined;
+  #voiceFailureEmitted = false;
 
   constructor(runtime: DiscordSessionRuntime, options: DiscordSessionOptions) {
+    super();
     this.#runtime = runtime;
     this.#options = options;
     this.guildId = validateSnowflake('guildId', options.guildId);
@@ -145,24 +185,93 @@ export class DiscordSession {
 
     const attempt = this.#newAttempt(timeoutMs, options.signal, false);
     this.#attempt = attempt;
-    this.#connectionState = 'connecting';
+    this.#voiceFailureEmitted = false;
+    this.#setConnectionState('connecting');
     this.#connectionError = null;
 
     void this.#connect(attempt, options);
     return attempt.promise;
   }
 
-  play(source: MediaSource): Promise<AudioStreamInfo> {
-    this.#assertOpen();
-    if (this.connectionState !== 'connected' || !this.#backend) {
-      return Promise.reject(new Error('Discord voice session is not connected'));
-    }
-    const work = this.#backend.play(source).then(({ info, generation }) => {
-      this.#playbackGeneration = generation;
-      return info;
-    });
+  play(source: MediaSource, options: PlayOptions<Metadata> = {}): Promise<AudioStreamInfo> {
+    const work = this.#startPlayback(source, options);
     this.#playPromise = work;
     return work;
+  }
+
+  async #startPlayback(
+    source: MediaSource,
+    options: PlayOptions<Metadata>,
+  ): Promise<AudioStreamInfo> {
+    this.#assertOpen();
+    if (this.connectionState !== 'connected' || !this.#backend) {
+      throw new Error('Discord voice session is not connected');
+    }
+    if (this.#playStarting || isPlaybackActive(this.state)) {
+      throw new Error('playback is already active; stop it before starting another source');
+    }
+    if (options.signal?.aborted) throw abortError('playback was cancelled');
+
+    this.#playStarting = true;
+    const backend = this.#backend;
+    const controller = new AbortController();
+    this.#playController = controller;
+    let backendStarted = false;
+    let keepAbortBinding = false;
+    let abortBinding: PlaybackAbortBinding | undefined;
+    if (options.signal) {
+      abortBinding = {
+        controller,
+        signal: options.signal,
+        generation: undefined,
+        listener: () => {
+          if (
+            abortBinding?.generation !== undefined &&
+            abortBinding.generation !== this.#playbackGeneration
+          )
+            return;
+          controller.abort(options.signal?.reason);
+          if (backendStarted) void backend.stop().catch(() => undefined);
+        },
+      };
+      this.#playAbortBinding = abortBinding;
+      options.signal.addEventListener('abort', abortBinding.listener, { once: true });
+      // Close the check/listener-registration race. EventTarget does not replay an abort event
+      // for listeners added after the signal was aborted.
+      if (options.signal.aborted) abortBinding.listener();
+    }
+    this.#pendingPlay = { metadata: options.customMetadata };
+    this.#earlyPlaybackEvents.clear();
+    try {
+      await this.hooks.runBeforePlay(source, options.customMetadata, controller.signal);
+      this.#assertOpen();
+      if (controller.signal.aborted) throw abortError('playback was cancelled');
+      const playRequest = backend.play(source, {
+        ...(options.customMetadata === undefined ? {} : { customMetadata: options.customMetadata }),
+        signal: controller.signal,
+      });
+      backendStarted = true;
+      const result = await playRequest;
+      this.#playbackGeneration = result.generation;
+      if (abortBinding) abortBinding.generation = result.generation;
+      this.#metadataByGeneration.set(result.generation, options.customMetadata);
+      this.#boundMetadata(result.generation);
+      this.#flushEarlyEvents(result.generation);
+      if (controller.signal.aborted) throw abortError('playback was cancelled');
+      keepAbortBinding = abortBinding !== undefined && !isPlaybackTerminal(this.state);
+      return result.info;
+    } catch (error) {
+      this.#flushPendingFailure();
+      if (controller.signal.aborted) throw abortError('playback was cancelled');
+      throw error;
+    } finally {
+      this.#pendingPlay = undefined;
+      this.#playStarting = false;
+      if (!keepAbortBinding) this.#clearPlayAbortBinding(abortBinding);
+      if (this.#playController === controller) {
+        this.#playController = undefined;
+      }
+    }
   }
 
   pause(): Promise<void> {
@@ -177,7 +286,12 @@ export class DiscordSession {
     return this.#requireBackend().seek(positionMs);
   }
   stop(): Promise<void> {
-    return this.#requireBackend().stop();
+    return this.#stopPlayback();
+  }
+
+  async #stopPlayback(): Promise<void> {
+    await this.#requireBackend().stop();
+    this.#clearPlayAbortBinding();
   }
 
   async wait(): Promise<PlaybackState> {
@@ -200,7 +314,20 @@ export class DiscordSession {
     await this.#serializeConfiguration(async () => {
       if (this.#connectionState === 'disconnecting')
         throw new Error('Discord session is disconnecting');
-      await this.#backend?.setVolume(gain);
+      const previousVolume = this.volume;
+      if (previousVolume === gain) return;
+      if (this.#backend) {
+        await this.#backend.setVolume(gain);
+      } else {
+        this.#publishPlaybackEvent(PlaybackEvent.volumeChanged, {
+          sessionId: this.sessionId,
+          guildId: this.guildId,
+          nodeId: this.nodeId,
+          generation: this.#playbackGeneration,
+          previousVolume,
+          volume: gain,
+        });
+      }
       this.#volume = gain;
     });
   }
@@ -212,13 +339,28 @@ export class DiscordSession {
 
   async dispose(): Promise<void> {
     if (this.#disposed) return;
+    const abortBinding = this.#playAbortBinding;
+    this.#clearPlayAbortBinding(abortBinding);
+    (abortBinding?.controller ?? this.#playController)?.abort(
+      new Error('Discord session disposed'),
+    );
     try {
       await this.#disconnect(true);
     } finally {
       this.#disposed = true;
       try {
+        this.#detachBackend();
         await this.#backend?.dispose();
       } finally {
+        this.hooks.clear();
+        this.#metadataByGeneration.clear();
+        this.#earlyPlaybackEvents.clear();
+        this.emit(PlaybackEvent.sessionDisposed, {
+          sessionId: this.sessionId,
+          guildId: this.guildId,
+          nodeId: this.nodeId,
+          generation: this.#playbackGeneration,
+        });
         this.#backend = undefined;
         this.#runtime.releaseSession(this);
       }
@@ -245,9 +387,24 @@ export class DiscordSession {
   /** @internal */
   markSessionLost(reason: string): void {
     this.#sessionLossReason = reason;
+    const active = isPlaybackActive(this.state);
+    const abortBinding = this.#playAbortBinding;
+    this.#clearPlayAbortBinding(abortBinding);
+    (abortBinding?.controller ?? this.#playController)?.abort(new Error(reason));
     this.#backend?.markSessionLost(reason);
-    this.#connectionState = 'failed';
     this.#connectionError = reason;
+    this.#setConnectionState('failed');
+    this.#emitVoiceFailure(new SessionLostError(this.nodeId ?? 'unknown', [this.guildId], reason));
+    if (active) {
+      this.#publishPlaybackEvent(PlaybackEvent.playbackFailed, {
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+        nodeId: this.nodeId,
+        generation: this.#playbackGeneration,
+        state: 'failed',
+        error: new SessionLostError(this.nodeId ?? 'unknown', [this.guildId], reason),
+      });
+    }
     const attempt = this.#attempt;
     if (attempt)
       this.#failAttempt(attempt, new Error(`Remote Remedia session was lost: ${reason}`), false);
@@ -264,12 +421,12 @@ export class DiscordSession {
           await backend.disconnect();
           return;
         }
-        this.#connectionState = 'connected';
+        this.#setConnectionState('connected');
         this.#finishAttempt(attempt);
         attempt.resolve();
       } else {
         backend.validateIdentity?.(this.userId);
-        this.#connectionState = attempt.internal ? 'reconnecting' : 'connecting';
+        this.#setConnectionState(attempt.internal ? 'reconnecting' : 'connecting');
         this.#joinRequested = true;
         await this.#runtime.sendVoicePayload(this.guildId, this.channelId);
         if (!this.#isCurrent(attempt)) return;
@@ -309,7 +466,7 @@ export class DiscordSession {
     if (refresh) {
       this.#attempt = attempt;
       attempt.voiceServer = undefined;
-      this.#connectionState = 'reconnecting';
+      this.#setConnectionState('reconnecting');
       void Promise.resolve(this.#runtime.sendVoicePayload(this.guildId, this.channelId))
         .then(() => {
           if (this.#attempt === attempt) attempt.requestSent = true;
@@ -355,7 +512,7 @@ export class DiscordSession {
     if (refresh) {
       this.#attempt = attempt;
       attempt.voiceState = undefined;
-      this.#connectionState = 'reconnecting';
+      this.#setConnectionState('reconnecting');
       void Promise.resolve(this.#runtime.sendVoicePayload(this.guildId, this.channelId))
         .then(() => {
           if (this.#attempt === attempt) attempt.requestSent = true;
@@ -394,7 +551,7 @@ export class DiscordSession {
       this.#voiceSessionId = credentials.sessionId;
       this.#voiceServer = { token: credentials.token, endpoint: credentials.endpoint };
       this.#connectionError = null;
-      this.#connectionState = 'connected';
+      this.#setConnectionState('connected');
       this.#finishAttempt(attempt);
       attempt.resolve();
     })().catch((error: unknown) => this.#failAttempt(attempt, asError(error), true));
@@ -452,8 +609,13 @@ export class DiscordSession {
   async #disconnect(sendGatewayLeave: boolean): Promise<void> {
     const attempt = this.#attempt;
     const shouldLeave = this.#joinRequested || attempt !== undefined;
+    const abortBinding = this.#playAbortBinding;
+    this.#clearPlayAbortBinding(abortBinding);
+    (abortBinding?.controller ?? this.#playController)?.abort(
+      abortError('Discord voice session disconnected'),
+    );
     this.#joinRequested = false;
-    this.#connectionState = 'disconnecting';
+    this.#setConnectionState('disconnecting');
     if (attempt) {
       this.#finishAttempt(attempt);
       attempt.reject(abortError('Discord voice connection was cancelled by disconnect()'));
@@ -473,9 +635,10 @@ export class DiscordSession {
     }
     this.#voiceSessionId = undefined;
     this.#voiceServer = undefined;
-    this.#connectionState = errors.length ? 'failed' : 'disconnected';
+    this.#connectionError = errors.length ? errors.map((error) => error.message).join('; ') : null;
+    this.#setConnectionState(errors.length ? 'failed' : 'disconnected');
     if (errors.length) {
-      this.#connectionError = errors.map((error) => error.message).join('; ');
+      this.#emitVoiceFailure(new AggregateError(errors, 'Discord voice disconnection failed'));
       throw new AggregateError(errors, 'Discord voice disconnection failed');
     }
   }
@@ -484,23 +647,30 @@ export class DiscordSession {
     this.#joinRequested = false;
     this.#voiceSessionId = undefined;
     this.#voiceServer = undefined;
+    const abortBinding = this.#playAbortBinding;
+    this.#clearPlayAbortBinding(abortBinding);
+    (abortBinding?.controller ?? this.#playController)?.abort(
+      abortError('Discord Gateway disconnected the voice session'),
+    );
     const attempt = this.#attempt;
     if (attempt) {
       this.#finishAttempt(attempt);
       attempt.reject(new Error('Discord Gateway reported that the bot left the voice channel'));
     }
-    this.#connectionState = 'disconnected';
+    this.#setConnectionState('disconnected');
     void this.#backend?.disconnect().catch((error: unknown) => {
       this.#connectionError = asError(error).message;
-      this.#connectionState = 'failed';
+      this.#setConnectionState('failed');
+      this.#emitVoiceFailure(asError(error));
     });
   }
 
   #failAttempt(attempt: ConnectAttempt, error: Error, leaveGateway: boolean): void {
     if (this.#attempt !== attempt) return;
     this.#finishAttempt(attempt);
-    this.#connectionState = error.name === 'AbortError' ? 'disconnected' : 'failed';
     this.#connectionError = error.name === 'AbortError' ? null : error.message;
+    this.#setConnectionState(error.name === 'AbortError' ? 'disconnected' : 'failed');
+    if (error.name !== 'AbortError') this.#emitVoiceFailure(error);
     const shouldLeave = leaveGateway && this.#joinRequested;
     this.#joinRequested = false;
     attempt.reject(error);
@@ -532,6 +702,7 @@ export class DiscordSession {
       });
       this.#backend = backend;
       await this.#applyConfiguration(backend);
+      this.#bindBackend(backend);
     }
     return this.#backend;
   }
@@ -539,7 +710,20 @@ export class DiscordSession {
   async #replaceFilterGraph(graph: string | null): Promise<void> {
     this.#assertOpen();
     await this.#serializeConfiguration(async () => {
-      await this.#backend?.setFilterGraph(graph);
+      const previousGraph = this.#filterGraph;
+      if (previousGraph === graph) return;
+      if (this.#backend) {
+        await this.#backend.setFilterGraph(graph);
+      } else {
+        this.#publishPlaybackEvent(PlaybackEvent.filterChanged, {
+          sessionId: this.sessionId,
+          guildId: this.guildId,
+          nodeId: this.nodeId,
+          generation: this.#playbackGeneration,
+          previousGraph,
+          graph,
+        });
+      }
       this.#filterGraph = graph;
     });
   }
@@ -562,6 +746,195 @@ export class DiscordSession {
     if (this.#connectionState !== 'connected' || !this.#backend)
       throw new Error('Discord voice session is not connected');
     return this.#backend;
+  }
+
+  #bindBackend(backend: GuildBackend): void {
+    if (this.#boundBackend === backend) return;
+    this.#detachBackend();
+    this.#boundBackend = backend;
+    const bindPlayback = <Name extends keyof PlaybackLifecycleEventMap<unknown>>(
+      name: Name,
+    ): void => {
+      const rawBackend = backend as unknown as EventEmitter;
+      const rawListener = (payload: unknown): void => {
+        this.#publishPlaybackEvent(name, payload as unknown as Record<string, unknown>);
+      };
+      rawBackend.on(name, rawListener);
+      this.#backendUnsubscribers.push(() => rawBackend.off(name, rawListener));
+    };
+    bindPlayback(PlaybackEvent.playbackStarted);
+    bindPlayback(PlaybackEvent.playbackCompleted);
+    bindPlayback(PlaybackEvent.playbackStopped);
+    bindPlayback(PlaybackEvent.playbackFailed);
+    bindPlayback(PlaybackEvent.playbackPaused);
+    bindPlayback(PlaybackEvent.playbackResumed);
+    bindPlayback(PlaybackEvent.playbackSeeked);
+    bindPlayback(PlaybackEvent.filterChanged);
+    bindPlayback(PlaybackEvent.volumeChanged);
+
+    const onVoiceState = (event: VoiceLifecycleEventMap['voiceStateChanged'][0]): void => {
+      const state = event.state;
+      if (this.#connectionState === state) return;
+      const previousState = this.#connectionState;
+      this.#connectionState = state;
+      this.emit(VoiceEvent.voiceStateChanged, {
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+        nodeId: backend.nodeId,
+        previousState,
+        state,
+      });
+    };
+    backend.on(VoiceEvent.voiceStateChanged, onVoiceState);
+    this.#backendUnsubscribers.push(() => backend.off(VoiceEvent.voiceStateChanged, onVoiceState));
+
+    const onVoiceFailed = (event: VoiceLifecycleEventMap['voiceFailed'][0]): void => {
+      this.#emitVoiceFailure(event.error);
+    };
+    backend.on(VoiceEvent.voiceFailed, onVoiceFailed);
+    this.#backendUnsubscribers.push(() => backend.off(VoiceEvent.voiceFailed, onVoiceFailed));
+  }
+
+  #detachBackend(): void {
+    for (const unsubscribe of this.#backendUnsubscribers.splice(0)) unsubscribe();
+    this.#boundBackend = undefined;
+  }
+
+  #publishPlaybackEvent(
+    event: keyof PlaybackLifecycleEventMap<unknown>,
+    payload: Record<string, unknown>,
+  ): void {
+    const generation =
+      typeof payload.generation === 'number' && Number.isSafeInteger(payload.generation)
+        ? payload.generation
+        : this.#playbackGeneration;
+    if (event === PlaybackEvent.playbackStarted && this.#startedGenerations.has(generation)) return;
+    const terminal =
+      event === PlaybackEvent.playbackCompleted ||
+      event === PlaybackEvent.playbackStopped ||
+      event === PlaybackEvent.playbackFailed;
+    if (terminal && this.#terminalGenerations.has(generation)) return;
+
+    const hasCustomMetadata = Object.hasOwn(payload, 'customMetadata');
+    if (
+      !hasCustomMetadata &&
+      !this.#metadataByGeneration.has(generation) &&
+      this.#pendingPlay?.metadata !== undefined &&
+      generation > this.#playbackGeneration
+    ) {
+      const buffered = this.#earlyPlaybackEvents.get(generation) ?? [];
+      if (
+        buffered.length < 16 &&
+        this.#earlyPlaybackEvents.size < 8 &&
+        !buffered.some((item) => item.event === event)
+      ) {
+        buffered.push({ event, payload });
+        this.#earlyPlaybackEvents.set(generation, buffered);
+      }
+      return;
+    }
+
+    if (event === PlaybackEvent.playbackStarted) this.#startedGenerations.add(generation);
+    if (terminal) {
+      this.#clearPlayAbortBindingForGeneration(generation);
+      this.#terminalGenerations.add(generation);
+      while (this.#terminalGenerations.size > 16) {
+        const oldest = this.#terminalGenerations.values().next().value;
+        if (oldest === undefined) break;
+        this.#terminalGenerations.delete(oldest);
+      }
+    }
+
+    const metadata = hasCustomMetadata
+      ? payload.customMetadata
+      : this.#metadataByGeneration.get(generation);
+    const enriched: Record<string, unknown> = {
+      ...payload,
+      sessionId: this.sessionId,
+      guildId: this.guildId,
+      nodeId: this.nodeId,
+      generation,
+    };
+    if (metadata !== undefined) enriched.customMetadata = metadata;
+    else delete enriched.customMetadata;
+    this.#emitTypedPlaybackEvent(event, enriched);
+    if (terminal) {
+      this.#metadataByGeneration.delete(generation);
+      this.#startedGenerations.delete(generation);
+    }
+  }
+
+  #emitTypedPlaybackEvent(
+    event: keyof PlaybackLifecycleEventMap<Metadata>,
+    payload: Record<string, unknown>,
+  ): void {
+    (this as unknown as EventEmitter).emit(event, payload);
+  }
+
+  #clearPlayAbortBinding(binding = this.#playAbortBinding): void {
+    if (!binding || this.#playAbortBinding !== binding) return;
+    binding.signal.removeEventListener('abort', binding.listener);
+    this.#playAbortBinding = undefined;
+  }
+
+  #clearPlayAbortBindingForGeneration(generation: number): void {
+    const binding = this.#playAbortBinding;
+    if (binding?.generation === generation) this.#clearPlayAbortBinding(binding);
+  }
+
+  #flushEarlyEvents(generation: number): void {
+    const events = this.#earlyPlaybackEvents.get(generation) ?? [];
+    this.#earlyPlaybackEvents.delete(generation);
+    for (const item of events) this.#publishPlaybackEvent(item.event, item.payload);
+  }
+
+  #flushPendingFailure(): void {
+    if (!this.#pendingPlay) return;
+    const generation = [...this.#earlyPlaybackEvents.entries()]
+      .filter(([, events]) => events.some((event) => event.event === PlaybackEvent.playbackFailed))
+      .map(([candidate]) => candidate)
+      .sort((left, right) => left - right)[0];
+    if (generation === undefined) {
+      this.#earlyPlaybackEvents.clear();
+      return;
+    }
+    this.#metadataByGeneration.set(generation, this.#pendingPlay.metadata);
+    this.#playbackGeneration = Math.max(this.#playbackGeneration, generation);
+    this.#flushEarlyEvents(generation);
+    this.#earlyPlaybackEvents.clear();
+  }
+
+  #boundMetadata(currentGeneration: number): void {
+    while (this.#metadataByGeneration.size > 8) {
+      const oldest = this.#metadataByGeneration.keys().next().value;
+      if (oldest === undefined || oldest === currentGeneration) break;
+      this.#metadataByGeneration.delete(oldest);
+    }
+  }
+
+  #emitVoiceFailure(error: Error): void {
+    if (this.#voiceFailureEmitted) return;
+    this.#voiceFailureEmitted = true;
+    this.emit(VoiceEvent.voiceFailed, {
+      sessionId: this.sessionId,
+      guildId: this.guildId,
+      nodeId: this.nodeId,
+      state: 'failed',
+      error,
+    });
+  }
+
+  #setConnectionState(state: VoiceConnectionState): void {
+    if (this.#connectionState === state) return;
+    const previousState = this.#connectionState;
+    this.#connectionState = state;
+    this.emit(VoiceEvent.voiceStateChanged, {
+      sessionId: this.sessionId,
+      guildId: this.guildId,
+      nodeId: this.nodeId,
+      previousState,
+      state,
+    });
   }
 
   #assertOpen(): void {
@@ -635,4 +1008,19 @@ function emptySnapshot(filterGraph: string | null, volume: number): PlaybackSnap
 
 function abortError(message: string): Error {
   return new DOMException(message, 'AbortError');
+}
+
+function isPlaybackActive(state: PlaybackState): boolean {
+  return (
+    state === 'starting' ||
+    state === 'playing' ||
+    state === 'pausing' ||
+    state === 'resuming' ||
+    state === 'paused' ||
+    state === 'stopping'
+  );
+}
+
+function isPlaybackTerminal(state: PlaybackState): boolean {
+  return state === 'completed' || state === 'failed' || state === 'stopped';
 }

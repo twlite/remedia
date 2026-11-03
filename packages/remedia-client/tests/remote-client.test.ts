@@ -94,6 +94,7 @@ describe('remote Discord playback', () => {
       await voice.seek(1_500);
       expect((await voice.refresh()).position.mediaMs).toBe(1_500);
 
+      await voice.stop();
       server.finishBeforePlayResponse = true;
       await voice.play({ file: '/srv/media/next.ogg' });
       expect(voice.state).toBe('completed');

@@ -1,6 +1,8 @@
 export { RemediaClient } from './client.js';
 export { DiscordSession } from './discord.js';
 export { FilterControls } from './filters.js';
+export { PlaybackHooks } from './hooks.js';
+export { PlaybackSessionEvents, RemediaClientEventNames, VoiceSessionEvents } from './types.js';
 export {
   DiscordBotMismatchError,
   NodeSelectionError,
@@ -13,7 +15,11 @@ export {
 } from './errors.js';
 export type {
   AudioStreamInfo,
+  BeforePlayContext,
+  BeforePlayHook,
+  BeforePlayResult,
   DiscordConnectOptions,
+  DiscordSessionEvents,
   DiscordGatewayPacket,
   DiscordGatewaySend,
   DiscordGatewayVoicePayload,
@@ -26,16 +32,21 @@ export type {
   NodeStatus,
   NodeType,
   PlaybackCompletion,
+  PlaybackEventIdentity,
+  PlaybackLifecycleEventMap,
   PlaybackPosition,
   PlaybackSnapshot,
   PlaybackState,
   RemediaClientEvents,
   RemediaClientOptions,
   RemediaNodeConfig,
+  PlayOptions,
   RemoteMediaSource,
   RemoteNodeAuth,
   RemoteNodeConfig,
   RemoteNodeView,
   EmbeddedNodeConfig,
   VoiceConnectionState,
+  VoiceEventIdentity,
+  VoiceLifecycleEventMap,
 } from './types.js';

@@ -1,3 +1,10 @@
+import { EventEmitter } from 'node:events';
+import { RemediaEventEmitter } from './events.js';
+import {
+  PlaybackSessionEvents as PlaybackEvent,
+  VoiceSessionEvents as VoiceEvent,
+} from './types.js';
+import type { EventEmitter as EventEmitterType } from 'node:events';
 import type {
   AudioStreamInfo,
   DiscordSessionOptions,
@@ -9,11 +16,12 @@ import type {
   PlaybackPosition,
   PlaybackSnapshot,
   PlaybackState,
+  PlayOptions,
   VoiceConnectionState,
 } from './types.js';
-import type { GuildBackend, NodeAdapter } from './adapters.js';
+import type { GuildBackend, GuildBackendEvents, NodeAdapter } from './adapters.js';
 
-interface EmbeddedPlayback {
+interface EmbeddedPlayback extends EventEmitterType {
   readonly state: PlaybackState;
   readonly position: PlaybackPosition;
   readonly durationMs: number | null;
@@ -24,7 +32,7 @@ interface EmbeddedPlayback {
     set(graph: string): Promise<void>;
     clear(): Promise<void>;
   };
-  play(source: MediaSource): Promise<AudioStreamInfo>;
+  play(source: MediaSource, options?: PlayOptions<unknown>): Promise<AudioStreamInfo>;
   pause(): Promise<void>;
   resume(): Promise<void>;
   seek(positionMs: number): Promise<void>;
@@ -37,6 +45,8 @@ interface EmbeddedDiscordSession extends EmbeddedPlayback {
   readonly guildId: string;
   readonly connectionState: VoiceConnectionState | 'negotiatingDave';
   readonly connectionError: string | null;
+  readonly sessionId: string;
+  readonly generation: number;
   connect(options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void>;
   disconnect(): Promise<void>;
   dispose(): Promise<void>;
@@ -174,19 +184,22 @@ export class EmbeddedNodeAdapter implements NodeAdapter {
   }
 }
 
-class EmbeddedGuildBackend implements GuildBackend {
+class EmbeddedGuildBackend extends RemediaEventEmitter<GuildBackendEvents> implements GuildBackend {
   readonly nodeType = 'embedded' as const;
   readonly #node: EmbeddedNodeAdapter;
   readonly #session: EmbeddedDiscordSession;
   readonly #onDispose: () => void;
+  readonly #eventUnsubscribers: Array<() => void> = [];
   #generation = 0;
   #snapshot: PlaybackSnapshot = emptySnapshot();
   #disposed = false;
 
   constructor(node: EmbeddedNodeAdapter, session: EmbeddedDiscordSession, onDispose: () => void) {
+    super();
     this.#node = node;
     this.#session = session;
     this.#onDispose = onDispose;
+    this.#forwardEvents();
   }
 
   get nodeId(): string {
@@ -242,14 +255,19 @@ class EmbeddedGuildBackend implements GuildBackend {
     try {
       await this.#node.releaseGuild(this.#session.guildId);
     } finally {
+      for (const unsubscribe of this.#eventUnsubscribers.splice(0)) unsubscribe();
+      this.removeAllListeners();
       this.#onDispose();
     }
   }
 
-  async play(source: MediaSource): Promise<{ info: AudioStreamInfo; generation: number }> {
+  async play(
+    source: MediaSource,
+    options: PlayOptions<unknown> = {},
+  ): Promise<{ info: AudioStreamInfo; generation: number }> {
     this.#assertOpen();
-    const info = await this.#session.play(source);
-    this.#generation += 1;
+    const info = await this.#session.play(source, options);
+    this.#generation = this.#session.generation;
     this.#snapshot = {
       ...this.snapshot,
       source: info,
@@ -315,6 +333,38 @@ class EmbeddedGuildBackend implements GuildBackend {
 
   #assertOpen(): void {
     if (this.#disposed) throw new Error('Discord session has been disposed');
+  }
+
+  #forwardEvents(): void {
+    const source = this.#session as unknown as EventEmitter;
+    const add = (name: keyof GuildBackendEvents, payload: Record<string, unknown>): void => {
+      const generation =
+        typeof payload.generation === 'number' ? payload.generation : this.#generation;
+      this.#generation = Math.max(this.#generation, generation);
+      const normalized = {
+        ...payload,
+        sessionId: this.#session.sessionId,
+        guildId: this.#session.guildId,
+        nodeId: this.#node.id,
+      };
+      (this as unknown as EventEmitter).emit(name, normalized);
+    };
+    const subscribe = (name: keyof GuildBackendEvents): void => {
+      const listener = (event: Record<string, unknown>): void => add(name, event);
+      source.on(name, listener);
+      this.#eventUnsubscribers.push(() => source.off(name, listener));
+    };
+    subscribe(PlaybackEvent.playbackStarted);
+    subscribe(PlaybackEvent.playbackCompleted);
+    subscribe(PlaybackEvent.playbackStopped);
+    subscribe(PlaybackEvent.playbackFailed);
+    subscribe(PlaybackEvent.playbackPaused);
+    subscribe(PlaybackEvent.playbackResumed);
+    subscribe(PlaybackEvent.playbackSeeked);
+    subscribe(PlaybackEvent.filterChanged);
+    subscribe(PlaybackEvent.volumeChanged);
+    subscribe(VoiceEvent.voiceStateChanged);
+    subscribe(VoiceEvent.voiceFailed);
   }
 }
 

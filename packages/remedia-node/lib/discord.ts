@@ -1,5 +1,16 @@
+import { randomUUID } from 'node:crypto';
+import { RemediaEventEmitter } from './events.js';
 import { NativeRemedia, type NativeVoiceOptions, type NativeVoiceSessionIds } from '../native.js';
 import { DiscordGatewayAdapter, isSnowflake } from './gateway.js';
+import {
+  PlaybackHooks,
+  PlaybackSessionEvents as PlaybackEvent,
+  VoiceSessionEvents as VoiceEvent,
+  type LifecycleVoiceState,
+  type PlayOptions,
+  type PlaybackSessionEventMap,
+  type SessionLifecycleEvents,
+} from './lifecycle.js';
 import { PlaybackSession } from './playback.js';
 import { FilterControls, validateVolume } from './filters.js';
 import type { MediaSource } from './input.js';
@@ -57,7 +68,10 @@ interface ConnectAttempt {
  * forwards raw dispatch packets to `Remedia.receive()`; this session collects the matching voice
  * credentials and opens the native transport after both dispatches arrive.
  */
-export class DiscordSession {
+export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
+  SessionLifecycleEvents<Metadata>
+> {
+  readonly sessionId = randomUUID();
   readonly guildId: string;
   readonly channelId: string;
   readonly userId: string;
@@ -66,7 +80,9 @@ export class DiscordSession {
   readonly #gateway: DiscordGatewayAdapter;
   readonly #onDispose: () => void;
   readonly filters: FilterControls;
-  #playback: PlaybackSession | undefined;
+  readonly hooks = new PlaybackHooks<Metadata>();
+  #playback: PlaybackSession<Metadata> | undefined;
+  #playbackSubscriptions: { playback: PlaybackSession<Metadata>; detach: () => void } | undefined;
   #nativeSession: NativeVoiceSessionIds | undefined;
   #attempt: ConnectAttempt | undefined;
   #voiceState: VoiceStateCredentials | undefined;
@@ -77,6 +93,7 @@ export class DiscordSession {
   #connectionState: VoiceConnectionState = 'disconnected';
   #connectionError: string | undefined;
   #generation = 0;
+  #playbackGeneration = 0;
   #joinRequested = false;
   #disposed = false;
   #filterGraph: string | null = null;
@@ -90,6 +107,7 @@ export class DiscordSession {
     options: DiscordSessionOptions,
     onDispose: () => void,
   ) {
+    super();
     this.guildId = validateSnowflake('guildId', options.guildId);
     this.channelId = validateSnowflake('channelId', options.channelId);
     this.userId = validateSnowflake('userId', options.userId);
@@ -156,6 +174,11 @@ export class DiscordSession {
     return this.#volume;
   }
 
+  /** Current native source generation, useful to adapters that preserve event correlation. */
+  get generation(): number {
+    return this.#playback?.currentGeneration ?? this.#playbackGeneration;
+  }
+
   /** Set master gain independently of this session's configured filtergraph. */
   async setVolume(gain: number): Promise<void> {
     this.#assertNotDisposed();
@@ -164,8 +187,21 @@ export class DiscordSession {
       if (this.#connectionState === 'disconnecting') {
         throw new Error('Discord voice session is disconnecting');
       }
+      const previousVolume = this.#volume;
+      if (previousVolume === gain) return;
+      if (this.#playback) {
+        await this.#playback.setVolume(gain);
+      } else {
+        this.emit(PlaybackEvent.volumeChanged, {
+          sessionId: this.sessionId,
+          guildId: this.guildId,
+          nodeId: null,
+          generation: this.#playbackGeneration,
+          previousVolume,
+          volume: gain,
+        });
+      }
       this.#volume = gain;
-      await this.#playback?.setVolume(gain);
     });
   }
 
@@ -195,7 +231,7 @@ export class DiscordSession {
     this.#voiceState = undefined;
     this.#voiceServer = undefined;
     this.#connectionError = undefined;
-    this.#connectionState = 'connecting';
+    this.#setConnectionState('connecting');
     this.#joinRequested = true;
 
     if (attempt.signal) {
@@ -213,8 +249,13 @@ export class DiscordSession {
    * Begin playback on this connected voice session. The decoder and Opus encoder remain in core;
    * this object only associates their output with the native Discord transport.
    */
-  play(source: MediaSource): Promise<AudioStreamInfo> {
-    return this.#requirePlayback().play(source);
+  play(source: MediaSource, options: PlayOptions<Metadata> = {}): Promise<AudioStreamInfo> {
+    return this.#requirePlayback()
+      .play(source, options)
+      .then((info) => {
+        this.#playbackGeneration = this.#playback?.currentGeneration ?? this.#playbackGeneration;
+        return info;
+      });
   }
 
   pause(): Promise<void> {
@@ -259,6 +300,12 @@ export class DiscordSession {
       await this.disconnect();
     } finally {
       this.#disposed = true;
+      this.emit(PlaybackEvent.sessionDisposed, {
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+        nodeId: null,
+        generation: this.#playbackGeneration,
+      });
       this.#onDispose();
     }
   }
@@ -288,7 +335,7 @@ export class DiscordSession {
     const shouldLeaveGateway = this.#joinRequested || this.#nativeSession !== undefined;
     this.#joinRequested = false;
     this.#generation += 1;
-    this.#connectionState = 'disconnecting';
+    this.#setConnectionState('disconnecting');
     this.#voiceState = undefined;
     this.#voiceServer = undefined;
     if (attempt) {
@@ -317,7 +364,7 @@ export class DiscordSession {
     }
 
     this.#joinRequested = false;
-    this.#connectionState = 'disconnected';
+    this.#setConnectionState('disconnected');
     if (errors.length > 0) {
       this.#connectionError = errors.map((error) => error.message).join('; ');
       throw new AggregateError(errors, 'Discord voice disconnection failed');
@@ -441,7 +488,7 @@ export class DiscordSession {
     this.#attempt = attempt;
     this.#voiceState = undefined;
     this.#voiceServer = undefined;
-    this.#connectionState = 'reconnecting';
+    this.#setConnectionState('reconnecting');
     this.#connectionError = undefined;
     this.#joinRequested = true;
     this.#requestGatewayJoin(attempt);
@@ -467,7 +514,7 @@ export class DiscordSession {
     };
     const generation = ++this.#generation;
     if (attempt) attempt.generation = generation;
-    this.#connectionState = this.#nativeSession ? 'reconnecting' : 'negotiatingDave';
+    this.#setConnectionState(this.#nativeSession ? 'reconnecting' : 'negotiatingDave');
 
     const work = this.#nativeWork.then(async () => {
       if (!this.#isCurrent(generation, attempt)) return;
@@ -491,7 +538,13 @@ export class DiscordSession {
       }
 
       this.#nativeSession = nativeSession;
-      const playback = new PlaybackSession(this.#native, nativeSession.playbackId);
+      const playback = new PlaybackSession<Metadata>(
+        this.#native,
+        nativeSession.playbackId,
+        undefined,
+        this.guildId,
+        this.hooks,
+      );
       this.#playback = playback;
       await this.#serializeConfiguration(async () => {
         if (this.#playback !== playback) return;
@@ -503,7 +556,9 @@ export class DiscordSession {
         return;
       }
       this.#connectionError = undefined;
-      this.#connectionState = 'connected';
+      this.#setConnectionState('connected');
+      this.#forwardPlaybackEvents(playback);
+      this.#playbackGeneration = playback.currentGeneration;
       this.#voiceServer = undefined;
       if (attempt && this.#attempt === attempt) {
         this.#finishAttempt(attempt);
@@ -531,7 +586,7 @@ export class DiscordSession {
   ): void {
     if (!this.#isCurrent(generation, attempt)) return;
     this.#connectionError = error.message;
-    this.#connectionState = 'failed';
+    this.#setConnectionState('failed');
     const pending = this.#attempt;
     if (pending) {
       this.#finishAttempt(pending);
@@ -561,8 +616,8 @@ export class DiscordSession {
     if (this.#attempt !== attempt) return;
     this.#generation += 1;
     this.#finishAttempt(attempt);
-    this.#connectionState = error.name === 'AbortError' ? 'disconnected' : 'failed';
     this.#connectionError = error.name === 'AbortError' ? undefined : error.message;
+    this.#setConnectionState(error.name === 'AbortError' ? 'disconnected' : 'failed');
     this.#voiceState = undefined;
     this.#voiceServer = undefined;
     this.#queueCurrentNativeCleanup();
@@ -585,7 +640,7 @@ export class DiscordSession {
   async #handleGatewayDisconnect(): Promise<void> {
     const attempt = this.#attempt;
     this.#generation += 1;
-    this.#connectionState = 'disconnecting';
+    this.#setConnectionState('disconnecting');
     if (attempt) {
       this.#finishAttempt(attempt);
       attempt.reject(new Error('Discord Gateway reported that the bot left the voice channel'));
@@ -597,10 +652,10 @@ export class DiscordSession {
       await this.#nativeWork;
       await this.#backgroundCleanup;
       await this.#closeCurrentNativeSession();
-      this.#connectionState = 'disconnected';
+      this.#setConnectionState('disconnected');
     } catch (error) {
       this.#connectionError = asError(error).message;
-      this.#connectionState = 'failed';
+      this.#setConnectionState('failed');
     }
   }
 
@@ -629,7 +684,7 @@ export class DiscordSession {
 
   async #releaseNativeSession(
     nativeSession: NativeVoiceSessionIds,
-    playback: PlaybackSession | undefined,
+    playback: PlaybackSession<Metadata> | undefined,
   ): Promise<void> {
     const errors: Error[] = [];
     try {
@@ -646,6 +701,8 @@ export class DiscordSession {
       this.#native.releaseVoiceSession(nativeSession.voiceId);
     } catch (error) {
       errors.push(asError(error));
+    } finally {
+      if (playback) this.#detachPlaybackEvents(playback);
     }
     if (errors.length > 0) {
       throw new AggregateError(errors, 'could not release native Discord voice session');
@@ -660,7 +717,7 @@ export class DiscordSession {
     }
   }
 
-  #requirePlayback(): PlaybackSession {
+  #requirePlayback(): PlaybackSession<Metadata> {
     this.#assertNotDisposed();
     if (this.connectionState !== 'connected' || !this.#playback) {
       throw new Error('Discord voice session is not connected');
@@ -674,11 +731,23 @@ export class DiscordSession {
       if (this.#connectionState === 'disconnecting') {
         throw new Error('Discord voice session is disconnecting');
       }
+      const previousGraph = this.#filterGraph;
+      if (previousGraph === graph) return;
       if (graph !== null) await this.#native.validateFilterGraph(graph);
+      if (this.#playback) {
+        if (graph === null) await this.#playback.filters.clear();
+        else await this.#playback.filters.set(graph);
+      } else {
+        this.emit(PlaybackEvent.filterChanged, {
+          sessionId: this.sessionId,
+          guildId: this.guildId,
+          nodeId: null,
+          generation: this.#playbackGeneration,
+          previousGraph,
+          graph,
+        });
+      }
       this.#filterGraph = graph;
-      if (!this.#playback) return;
-      if (graph === null) await this.#playback.filters.clear();
-      else await this.#playback.filters.set(graph);
     });
   }
 
@@ -690,6 +759,128 @@ export class DiscordSession {
 
   #assertNotDisposed(): void {
     if (this.#disposed) throw new Error('Discord voice session has been disposed');
+  }
+
+  #setConnectionState(state: VoiceConnectionState): void {
+    const previousState = normalizeLifecycleVoiceState(this.#connectionState);
+    const nextState = normalizeLifecycleVoiceState(state);
+    if (previousState === nextState) return;
+    this.#connectionState = state;
+    this.emit(VoiceEvent.voiceStateChanged, {
+      sessionId: this.sessionId,
+      guildId: this.guildId,
+      nodeId: null,
+      previousState,
+      state: nextState,
+    });
+    if (nextState === 'failed') {
+      this.emit(VoiceEvent.voiceFailed, {
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+        nodeId: null,
+        state: 'failed',
+        error: new Error(this.#connectionError ?? 'Discord voice transport failed'),
+      });
+    }
+  }
+
+  #forwardPlaybackEvents(playback: PlaybackSession<Metadata>): void {
+    this.#detachPlaybackEvents();
+    const playbackEvents = playback as unknown as {
+      on<Event extends keyof PlaybackSessionEventMap<Metadata>>(
+        name: Event,
+        listener: (event: PlaybackSessionEventMap<Metadata>[Event][0]) => void,
+      ): unknown;
+      off<Event extends keyof PlaybackSessionEventMap<Metadata>>(
+        name: Event,
+        listener: (event: PlaybackSessionEventMap<Metadata>[Event][0]) => void,
+      ): unknown;
+    };
+    const unsubscribers: Array<() => void> = [];
+    const forward = <Event extends keyof PlaybackSessionEventMap<Metadata>>(
+      name: Event,
+      listener: (event: PlaybackSessionEventMap<Metadata>[Event][0]) => void,
+    ): void => {
+      playbackEvents.on(name, listener);
+      unsubscribers.push(() => playbackEvents.off(name, listener));
+    };
+    forward(PlaybackEvent.playbackStarted, (event) => {
+      this.#playbackGeneration = event.generation;
+      this.emit(PlaybackEvent.playbackStarted, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+      });
+    });
+    forward(PlaybackEvent.playbackCompleted, (event) => {
+      this.emit(PlaybackEvent.playbackCompleted, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+      });
+    });
+    forward(PlaybackEvent.playbackStopped, (event) => {
+      this.emit(PlaybackEvent.playbackStopped, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+      });
+    });
+    forward(PlaybackEvent.playbackFailed, (event) => {
+      this.emit(PlaybackEvent.playbackFailed, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+      });
+    });
+    forward(PlaybackEvent.playbackPaused, (event) => {
+      this.emit(PlaybackEvent.playbackPaused, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+      });
+    });
+    forward(PlaybackEvent.playbackResumed, (event) => {
+      this.emit(PlaybackEvent.playbackResumed, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+      });
+    });
+    forward(PlaybackEvent.playbackSeeked, (event) => {
+      this.emit(PlaybackEvent.playbackSeeked, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+      });
+    });
+    forward(PlaybackEvent.filterChanged, (event) => {
+      this.emit(PlaybackEvent.filterChanged, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+      });
+    });
+    forward(PlaybackEvent.volumeChanged, (event) => {
+      this.emit(PlaybackEvent.volumeChanged, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+      });
+    });
+    this.#playbackSubscriptions = {
+      playback,
+      detach: () => {
+        for (const unsubscribe of unsubscribers.splice(0)) unsubscribe();
+      },
+    };
+  }
+
+  #detachPlaybackEvents(playback?: PlaybackSession<Metadata>): void {
+    const subscriptions = this.#playbackSubscriptions;
+    if (!subscriptions || (playback && subscriptions.playback !== playback)) return;
+    this.#playbackSubscriptions = undefined;
+    subscriptions.detach();
   }
 }
 
@@ -708,4 +899,8 @@ function abortError(message: string): Error {
   const error = new Error(message);
   error.name = 'AbortError';
   return error;
+}
+
+function normalizeLifecycleVoiceState(state: VoiceConnectionState): LifecycleVoiceState {
+  return state === 'negotiatingDave' ? 'negotiating_dave' : state;
 }
