@@ -1,0 +1,119 @@
+---
+title: Hybrid TypeScript client
+description: Control embedded and remote Remedia nodes through one sticky Discord session API.
+---
+
+# Hybrid TypeScript client
+
+`@remedia/client` is the high-level orchestration SDK. It can assign a guild session directly to a
+local `@remedia/node` N-API engine or to a remote authenticated `remedia-server`. Embedded playback
+does not pass through WebSocket or start a local server. Remote-only consumers do not need FFmpeg
+libraries or the native addon; `@remedia/node` is an optional peer dependency used only for embedded
+node configurations.
+
+## Configure a node pool
+
+```ts
+import { RemediaClient } from '@remedia/client';
+
+const remedia = await RemediaClient.create({
+  nodes: [
+    { type: 'embedded', id: 'local', capacity: 8 },
+    {
+      type: 'remote',
+      id: 'media-a',
+      url: 'remedia://127.0.0.1:8787',
+      auth: { username: 'bot', password: process.env.REMEDIA_PASSWORD! },
+    },
+    {
+      type: 'remote',
+      id: 'media-b',
+      url: 'remedias://media.example.net',
+      auth: { username: 'bot', password: process.env.REMEDIA_PASSWORD! },
+    },
+  ],
+  send(guildId, payload) {
+    sendToShard(guildId, payload);
+  },
+});
+
+discord.on('raw', (packet) => remedia.receive(packet));
+const voice = remedia.createDiscordSession({ guildId, channelId, userId });
+await voice.connect();
+await voice.play({ url: 'https://media.example.net/audio.mp3' });
+await voice.filters.set('bass=g=8');
+await voice.setVolume(0.8);
+```
+
+The application owns the Discord Gateway connection. Remedia sends OP 4 through `send`, correlates
+the matching `VOICE_STATE_UPDATE` and `VOICE_SERVER_UPDATE`, and connects the selected node's voice
+transport after both fresh events arrive. Snowflakes are decimal strings. `voice.connect()` resolves
+after the selected backend has connected; remote mode waits for server-side voice and DAVE setup.
+Call `remedia.receive(packet)` for each raw Gateway packet and `await remedia.close()` during
+application shutdown.
+
+`remedia://` maps to `ws://`, `remedias://` maps to `wss://`, and a missing path becomes `/v1/ws`.
+Standard `ws://` and `wss://` URLs are also accepted. Configure Basic credentials with `auth`; URL
+userinfo is supported as a convenience, decoded, stripped from the URL, and sent only in the
+WebSocket `Authorization` header. TLS certificate validation remains enabled. Use `remedias://`
+for remote deployment and terminate TLS at a trusted reverse proxy; the server itself does not
+provide TLS.
+
+## Node selection and guild affinity
+
+Healthy nodes are selected by current player allocation divided by the node's reported player
+capacity, with stable ID ordering to break ties. Local assignment reservations prevent concurrent
+guild creation from overfilling a node. Nodes reporting degraded transport or processing health,
+full capacity, or a disconnected state are excluded. An optional `selectNode(nodes, { guildId })`
+callback can choose among the healthy candidates.
+
+Inspect `remedia.nodes` for client IDs, server IDs, status, health statistics, capacity, assignments,
+and the last connection error. `remedia.assignments` and `getAssignment(guildId)` expose the sticky
+guild-to-node mapping. All later playback, filter, volume, and voice operations stay on that node.
+Remote `{ url }` and `{ file }` sources are resolved by the server. `{ buffer }` and `{ stream }`
+sources require an embedded node; pin that guild with `nodeId: 'local'` or Remedia rejects the input
+instead of uploading it or silently moving the guild.
+
+## Playback and cached state
+
+`play`, `pause`, `resume`, `seek`, `stop`, `filters.set`, `filters.clear`, `setVolume`, `refresh`,
+`wait`, `disconnect`, and `dispose` use the same session surface for both adapters. `wait()` returns
+the terminal playback state (`completed`, `failed`, or `stopped`). The remote adapter associates
+completion with the server's source generation; completion from an old track cannot finish a new
+track's waiter. It queries `player.state` after reconnect or event gaps before resolving a waiter.
+
+Remote getters such as `state`, `position`, `durationMs`, and `snapshot` are cached observations,
+updated by lifecycle events and explicit `await voice.refresh()`. They are not real-time audible
+position measurements. The server snapshot distinguishes source media position, submitted output
+position, and optional played position.
+
+Operational RPC failures reject the requested operation as `RemediaRpcError` with a stable error
+code. A command rejection does not mark an otherwise healthy node disconnected. Connection failures
+use `NodeUnavailableError`; expired owner sessions use `SessionLostError`; malformed protocol
+messages use `ProtocolError`. URL userinfo, passwords, authorization headers, voice tokens, and
+resume credentials are not included in errors or logs.
+
+## Reconnection and limits
+
+An unexpected remote socket loss makes that node unavailable for new assignments. The client
+reconnects with bounded backoff and attempts `client.resume` using its in-memory credential. On
+success it retains guild affinity and reconciles guild and playback snapshots. If resumption expires
+or the server identity changes, the SDK emits `sessionLost` and marks existing assignments lost.
+Applications can observe `nodeDisconnected`, `sessionResumed`, `sessionLost`, `nodeEvent`, and
+`eventsLost` on the client.
+
+If a guild is disposed while its node is temporarily offline, the client queues its voice and guild
+cleanup and sends it after the same server session resumes. If the whole client is closed while the
+node is unreachable, the server releases those resources when its configured session-resumption
+timeout expires.
+
+There is no cross-node playback migration. A replacement node does not have the original decoder,
+filter graph, voice transport, or exact playback position, and it needs fresh Discord Gateway voice
+credentials. The application must explicitly dispose or rebuild a lost session. Session credentials
+are memory-only; restarting the client process cannot resume old sessions. A Remedia server restart
+also destroys its in-memory sessions.
+
+Each server is an independent node. The client does not proxy between nodes, coordinate them, or
+fail over an existing guild. `players.active` is treated as an allocation capacity signal, not a
+measurement of CPU work. For server configuration, authentication, and TLS guidance, see the
+[server guide](/docs/server/overview) and [deployment guide](/docs/server/deployment).

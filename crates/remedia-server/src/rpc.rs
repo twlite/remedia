@@ -383,7 +383,7 @@ pub(crate) async fn execute(
                     "player.started",
                     json!({"guildId": guild.guild_id, "generation": generation, "source": stream_info_json(info.clone())}),
                 );
-                return Ok(stream_info_json(info));
+                return Ok(playback_start_json(info, generation));
             };
             let cancellation_for_start = cancellation.clone();
             let result = tokio::task::spawn_blocking(move || {
@@ -409,7 +409,7 @@ pub(crate) async fn execute(
                 "player.started",
                 json!({"guildId": guild.guild_id, "generation": generation, "source": stream_info_json(info.clone())}),
             );
-            Ok(stream_info_json(info))
+            Ok(playback_start_json(info, generation))
         }
         "player.pause"
         | "player.resume"
@@ -425,7 +425,10 @@ pub(crate) async fn execute(
             let guild = server
                 .get_guild(&session, &params.guild_id)
                 .map_err(state_error)?;
-            Ok(playback_snapshot(&guild.playback))
+            Ok(playback_snapshot(
+                &guild.playback,
+                guild.source_generation.load(Ordering::Acquire),
+            ))
         }
         _ => Err(RpcError::new("invalid_request", "unknown command")),
     }
@@ -491,7 +494,13 @@ async fn execute_player_control(
             .map_err(|_| RpcError::new("playback_failed", "playback worker failed"))?
             .map_err(playback_error)?;
             lock(&guild.play_cancellation).take();
-            session.emit("player.stopped", json!({"guildId": guild.guild_id}));
+            session.emit(
+                "player.stopped",
+                json!({
+                    "guildId": guild.guild_id,
+                    "generation": guild.source_generation.load(Ordering::Acquire),
+                }),
+            );
             Ok(json!({"state": playback_state_name(guild.playback.state())}))
         }
         "player.seek" => {
@@ -510,7 +519,11 @@ async fn execute_player_control(
                 "player.seeked",
                 json!({"guildId": guild.guild_id, "positionMs": params.position_ms}),
             );
-            Ok(playback_snapshot(&guild.playback)["position"].clone())
+            Ok(playback_snapshot(
+                &guild.playback,
+                guild.source_generation.load(Ordering::Acquire),
+            )["position"]
+                .clone())
         }
         "player.filter.set" => {
             let params: FilterSetParams = decode_params(request.params)?;
@@ -736,6 +749,12 @@ fn stream_info_json(info: remedia_core::AudioStreamInfo) -> Value {
         "bitRate": info.bit_rate,
         "metadata": info.metadata,
     })
+}
+
+fn playback_start_json(info: remedia_core::AudioStreamInfo, generation: u64) -> Value {
+    let mut result = stream_info_json(info);
+    result["generation"] = json!(generation);
+    result
 }
 
 fn voice_state_name(state: ConnectionState) -> &'static str {

@@ -1,0 +1,48 @@
+{
+  "name": "@remedia/client",
+  "version": "0.1.0",
+  "description": "Hybrid embedded and remote client SDK for Remedia",
+  "author": "Twilight <hello@twlite.dev>",
+  "repository": "https://github.com/twlite/remedia.git",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:server": "REMEDIA_CLIENT_SERVER_TESTS=1 vitest run tests/server-integration.test.ts",
+    "test:hybrid": "REMEDIA_CLIENT_NATIVE_TESTS=1 vitest run tests/hybrid.test.ts",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit"
+  },
+  "dependencies": {
+    "ws": "^8.22.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/ws": "^8.18.2",
+    "typescript": "~5.9.3",
+    "vitest": "^5.0.5"
+  },
+  "peerDependencies": {
+    "@remedia/node": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@remedia/node": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  }
+}

@@ -1,6 +1,6 @@
 ---
 title: Remedia
-description: A native Rust audio engine with local and remote integration plans.
+description: A native Rust audio engine with embedded Node.js and remote server integrations.
 ---
 
 # Remedia
@@ -12,9 +12,10 @@ FFmpeg libraries, and yields normalized PCM frames incrementally.
 The output is interleaved 48 kHz stereo `f32` in Front Left / Front Right order. Core can encode PCM
 to transport-independent Opus packets, and `remedia-discord` can send packets over an outbound voice
 connection with DAVE encryption. The Discord transport has not yet been verified against a live
-bot. The private Node.js package provides an initial in-process API for file/URL playback, external
-Discord voice sessions, structured diagnostics, in-memory bytes, and bounded binary Readable inputs.
-The server crate is a placeholder and remote RPC is not implemented.
+bot. The private `@remedia/node` package provides an in-process API for playback, external Discord
+voice sessions, diagnostics, and local byte streams. `remedia-server` provides authenticated
+WebSocket RPC, and the pure TypeScript `@remedia/client` can orchestrate embedded nodes, remote nodes,
+or a hybrid pool.
 
 ## Core engine
 
@@ -55,8 +56,13 @@ The server crate is a placeholder and remote RPC is not implemented.
     description="Control native playback, Discord voice sessions, and structured diagnostics from Node.js."
   />
   <Card
+    title="Hybrid TypeScript client"
+    href="/docs/client/overview"
+    description="Select embedded or remote nodes, keep guild assignments sticky, and resume remote sessions."
+  />
+  <Card
     title="Remote server"
     href="/docs/server/overview"
-    description="Current server status and intended remote integration boundary."
+    description="Configure authenticated WebSocket RPC and the standalone native playback server."
   />
 </Cards>

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { AudioStreamInfo } from '@remedia/node';
+import type { AudioStreamInfo } from '@remedia/client';
 import type { PlaybackSnapshot } from '../voice/playback-manager.js';
 import { createNowPlayingEmbed, makeProgressBar } from './nowplaying.js';
 

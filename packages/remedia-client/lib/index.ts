@@ -1,0 +1,41 @@
+export { RemediaClient } from './client.js';
+export { DiscordSession } from './discord.js';
+export { FilterControls } from './filters.js';
+export {
+  DiscordBotMismatchError,
+  NodeSelectionError,
+  NodeUnavailableError,
+  ProtocolError,
+  RemediaClientError,
+  RemediaRpcError,
+  SessionLostError,
+  UnsupportedMediaSourceError,
+} from './errors.js';
+export type {
+  AudioStreamInfo,
+  DiscordConnectOptions,
+  DiscordGatewayPacket,
+  DiscordGatewaySend,
+  DiscordGatewayVoicePayload,
+  DiscordSessionOptions,
+  GuildAssignment,
+  MediaSource,
+  NodeSelection,
+  NodeSnapshot,
+  NodeStatistics,
+  NodeStatus,
+  NodeType,
+  PlaybackCompletion,
+  PlaybackPosition,
+  PlaybackSnapshot,
+  PlaybackState,
+  RemediaClientEvents,
+  RemediaClientOptions,
+  RemediaNodeConfig,
+  RemoteMediaSource,
+  RemoteNodeAuth,
+  RemoteNodeConfig,
+  RemoteNodeView,
+  EmbeddedNodeConfig,
+  VoiceConnectionState,
+} from './types.js';

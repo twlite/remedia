@@ -8,7 +8,7 @@
     "format": "oxfmt .",
     "format:check": "oxfmt . --check",
     "typecheck": "pnpm --recursive --if-present run typecheck",
-    "check": "pnpm lint && pnpm typecheck && pnpm format:check && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && pnpm --filter @remedia/node test"
+    "check": "pnpm lint && pnpm typecheck && pnpm format:check && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && pnpm --filter @remedia/node test && pnpm --filter @remedia/client test && pnpm --filter discord-app test"
   },
   "devDependencies": {
     "oxfmt": "0.75.0",

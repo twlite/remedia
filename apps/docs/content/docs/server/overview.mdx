@@ -106,8 +106,9 @@ behind, it receives `client.events_lost` with a dropped count and can request sn
 process restart does not preserve sessions or playback.
 
 Each instance is an independent node. `node.stats` reports node-local identity, capacity and host
-information where available. Node selection and routing subsequent guild operations to the same
-node belong to a future client library; the server does not coordinate nodes or migrate players.
+information where available. The pure TypeScript [`@remedia/client`](/docs/client/overview) selects
+healthy nodes for new guilds and routes later operations to the assigned node. The server does not
+coordinate nodes or migrate players.
 
 ## Security and deployment
 

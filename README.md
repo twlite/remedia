@@ -18,8 +18,11 @@ and DAVE through `davey`. It has not been verified against a live Discord bot ye
 sessions, and structured diagnostics. `crates/remedia-server` provides authenticated, in-memory
 WebSocket RPC over the same native Rust crates. Its v0 protocol supports node statistics, resumable
 client sessions, guild players, Discord voice transports using credentials obtained by the bot's
-Gateway client, and playback controls. The server is a single independent node; it does not use
-N-API or implement cross-node coordination.
+Gateway client, and playback controls. `packages/remedia-client` is a pure TypeScript orchestration
+SDK that selects between direct embedded N-API nodes and remote server nodes, with sticky guild
+routing and remote session resumption. It does not migrate active playback across nodes. The server
+is a single independent node and does not use N-API or coordinate with other servers. Remote-only
+applications do not need the client's optional `@remedia/node` peer dependency.
 
 The intended integrations have different boundaries:
 
@@ -47,12 +50,14 @@ crates/remedia-discord/       Discord voice transport for encoded Opus
 crates/remedia-observability/ Shared tracing, bounded diagnostics, and optional OTLP export
 crates/remedia-server/        Authenticated standalone WebSocket RPC server
 packages/remedia-node/        Native N-API bindings and TypeScript wrapper
+packages/remedia-client/     Hybrid embedded/remote TypeScript orchestration SDK
 ```
 
 Component guides: [core](crates/remedia-core/README.md),
 [Discord transport](crates/remedia-discord/README.md),
 [observability](crates/remedia-observability/README.md),
-[server](crates/remedia-server/README.md), and [Node.js bindings](packages/remedia-node/README.md).
+[server](crates/remedia-server/README.md), [Node.js bindings](packages/remedia-node/README.md),
+and the [hybrid TypeScript client](packages/remedia-client/README.md).
 The server's full configuration and protocol references are also available in the
 [Fumadocs server guide](apps/docs/content/docs/server/overview.mdx).
 
@@ -84,6 +89,8 @@ pnpm lint
 pnpm typecheck
 pnpm format:check
 pnpm --filter @remedia/node test
+pnpm --filter @remedia/client test
+pnpm --filter discord-app test
 
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings

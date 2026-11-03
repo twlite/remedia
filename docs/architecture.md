@@ -5,7 +5,7 @@ file, HTTP, buffer, and byte-stream decoding to PCM, playback sessions, generic 
 transport-independent Opus encoding. `remedia-discord` implements one outbound voice connection
 with DAVE and RTP transport encryption. `remedia-server` now provides authenticated, in-memory
 WebSocket RPC over the native engine. The N-API package exposes native playback, Discord session,
-and diagnostics APIs.
+and diagnostics APIs. `@remedia/client` orchestrates direct embedded and remote server nodes.
 
 ## Rust crates
 
@@ -74,7 +74,19 @@ integration exist. The Node package adapts an externally owned Discord Gateway b
 implement Gateway connectivity, REST, or channel commands. Receiving audio and device output remain
 design intentions. Add crates or packages only when implementation needs them.
 
-`apps/discord` is a manual discord.js integration harness over `@remedia/node`. It forwards raw
+`@remedia/client` is the high-level TypeScript orchestration layer. Its embedded adapter lazily loads
+the optional `@remedia/node` peer and calls the N-API engine directly without a local server. Its
+remote adapter uses authenticated WebSocket RPC, maintains one resumable server session per node,
+reconciles guild/player snapshots, bounds pending requests, and reconnects with bounded exponential
+backoff. New guilds are
+selected across healthy nodes using reported player capacity and local assignments; each guild stays
+on its assigned node. Events and snapshots expose node identity, health and assignment state. Remote
+Buffer and Readable inputs are not uploaded; those sources require an embedded assignment. A client
+or server process restart cannot automatically restore an in-memory session, and expired assignments
+are reported lost rather than migrated. Cross-node recovery requires application-managed fresh
+Discord voice credentials and is not implemented.
+
+`apps/discord` is a manual discord.js integration harness over `@remedia/client`. It forwards raw
 Gateway dispatches, sends OP 4 through the owning shard, and provides app-level slash commands with
 an in-memory per-guild URL queue. Queueing stays out of the core and Node playback APIs. The bot
 runs its TypeScript source with `tsx`; `tsc --noEmit` remains its type check. Its six named audio
@@ -103,8 +115,8 @@ URLs permitted by its explicit host policy and local files canonicalized beneath
 `allowedFileRoots`. Uploading arbitrary client-generated binary streams to the remote server is
 intentionally deferred; the local N-API byte input does not add remote transport. The server
 requires TLS termination at a trusted reverse proxy for remote deployment and uses independent
-node-local session registries. Node selection, sticky guild routing, and cross-node failover belong
-to a future client rather than the server.
+node-local session registries. `@remedia/client` performs capacity-aware selection and sticky guild
+routing across independent nodes; it does not move existing playback across nodes.
 
 ## Processing and inputs
 

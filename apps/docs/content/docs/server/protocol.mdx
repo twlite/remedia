@@ -5,9 +5,9 @@ description: Authentication, version 1 JSON messages, commands, errors, and life
 
 # WebSocket RPC protocol
 
-Connect to `ws://<host>:<port>/v1/ws` or `wss://.../v1/ws`. The custom `remedia://` and
-`remedias://` schemes belong to a future SDK; the server accepts standard WebSocket URLs. Authenticate
-the WebSocket HTTP upgrade with Basic auth:
+Connect to `ws://<host>:<port>/v1/ws` or `wss://.../v1/ws`. The server accepts standard WebSocket
+URLs. The `@remedia/client` convenience schemes `remedia://` and `remedias://` map to those URLs and
+default to `/v1/ws`. Authenticate the WebSocket HTTP upgrade with Basic auth:
 
 ```http
 Authorization: Basic base64(username:password)
@@ -72,13 +72,13 @@ a guild require an existing guild session owned by the active client session.
 | `voice.connect`                                | `{guildId, channelId, sessionId, token, endpoint}` | Connects using the bot's fresh Gateway dispatch credentials and waits for native voice/DAVE readiness; endpoint must resolve to secure `discord.media` voice host |
 | `voice.state`                                  | `{guildId}`                                        | Returns transport state and a failure flag; never returns credentials                                                                                             |
 | `voice.disconnect`                             | `{guildId}`                                        | Stops the player and disconnects the transport                                                                                                                    |
-| `player.play`                                  | `{guildId, source}`                                | Starts a server-accessible file or URL; returns selected audio stream metadata                                                                                    |
+| `player.play`                                  | `{guildId, source}`                                | Starts a server-accessible file or URL; returns selected audio stream metadata and source `generation`                                                            |
 | `player.pause`, `player.resume`, `player.stop` | `{guildId}`                                        | Controls the current source; stop keeps the voice transport connected                                                                                             |
 | `player.seek`                                  | `{guildId, positionMs}`                            | Seeks in the source media timeline when supported                                                                                                                 |
 | `player.filter.set`                            | `{guildId, graph}`                                 | Validates and applies a raw trusted FFmpeg audio graph                                                                                                            |
 | `player.filter.clear`                          | `{guildId}`                                        | Clears the graph                                                                                                                                                  |
 | `player.volume.set`                            | `{guildId, gain}`                                  | Sets finite linear gain from `0.0` through `2.0`; values above unity can clip                                                                                     |
-| `player.state`                                 | `{guildId}`                                        | State, source metadata, duration, source/submitted/played position, graph, gain, processing mode, and safe error summary                                          |
+| `player.state`                                 | `{guildId}`                                        | State, source `generation`, source metadata, duration, source/submitted/played position, graph, gain, processing mode, and safe error summary                     |
 
 Media source shapes:
 
@@ -130,6 +130,12 @@ Implemented event names include `guild.created`, `guild.destroyed`, `player.star
 `player.paused`, `player.resumed`, `player.seeked`, `player.stopped`, `player.filter_changed`,
 `player.volume_changed`, `player.completed`, `player.failed`, `voice.state_changed`, `voice.failed`,
 and `client.events_lost`.
+
+A successful `player.play` response and every `player.state` snapshot include the same monotonically
+increasing source `generation` as that playback's `player.started`, `player.completed`, and
+`player.failed` events. Consumers can bind waiters to a generation so a later source cannot complete
+an older waiter. This adds fields to protocol version 1 responses and snapshots without renaming or
+removing existing fields.
 
 Events are bounded and are not replayed while the client is detached. A slow consumer can receive
 `client.events_lost` with a dropped-event count. `client.resume`, `guild.list`, `guild.get`, and

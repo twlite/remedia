@@ -63,6 +63,8 @@ pnpm typecheck        # run each workspace package's typecheck command
 pnpm check            # run the full local validation sequence
 pnpm --filter discord-app test
 pnpm --filter discord-app start  # manual Discord integration; requires apps/discord/.env
+pnpm --filter @remedia/client test
+pnpm --filter @remedia/client build
 
 cargo fmt --all
 cargo fmt --all -- --check
@@ -81,6 +83,13 @@ The Discord harness runs TypeScript directly with `tsx`; its `typecheck` script 
 and its local queue tests run with Node's built-in test runner. To start the bot, run
 `pnpm --filter discord-app start`. This builds the native Node package first and reads
 `DISCORD_TOKEN` and `APPLICATION_ID` from `apps/discord/.env`.
+`@remedia/client` is pure TypeScript ESM. Remote-only consumers do not need the native addon;
+`@remedia/node` is an optional peer dependency for embedded nodes. Its normal tests use local
+protocol fixtures. To run the hybrid allocation test after building the native addon, use
+`pnpm --filter @remedia/node build:debug` and then
+`pnpm --filter @remedia/client test:hybrid`. The optional server interop test starts the local Rust
+server and validates playback over the SDK RPC adapter with `pnpm --filter @remedia/client
+test:server`.
 `cargo test -p remedia-core` runs deterministic file, in-memory, streaming, and local-HTTP decoder tests. The
 core tests cover decoder conversion, seeking, playback lifecycle, native FFmpeg filtergraph processing,
 master gain, Opus framing, backpressure, and stop cleanup. `remedia-discord` tests parsing, fail-closed DAVE behavior, RTP, transport encryption,

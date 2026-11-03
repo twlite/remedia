@@ -18,6 +18,12 @@ output to the voice transport. A local audio device, server RPC, full Discord
 Gateway connection, and REST client are not implemented by these bindings; the
 Node package adapts a Gateway client supplied by the application.
 
+For applications that select between direct embedded playback and one or more
+`remedia-server` nodes, use the separate pure TypeScript
+[`@remedia/client` guide](/docs/client/overview). The high-level client loads
+this native package lazily and only when an embedded node is configured; remote
+only consumers do not need native FFmpeg or N-API dependencies.
+
 ## Build prerequisites
 
 Use the repository's pinned Rust toolchain, Node.js 22.18 or newer, and pnpm

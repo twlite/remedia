@@ -1,20 +1,20 @@
-import type { Remedia } from '@remedia/node';
+import type { RemediaClient } from '@remedia/client';
 import { DiscordPlaybackManager } from './playback-manager.js';
 
 /** Owns the native engine and app-level playback lifecycle for this bot process. */
 export class VoiceRuntime {
   static #active: VoiceRuntime | undefined;
 
-  readonly #remedia: Remedia;
+  readonly #remedia: RemediaClient;
   readonly playback: DiscordPlaybackManager;
   #closePromise: Promise<void> | undefined;
 
-  private constructor(remedia: Remedia) {
+  private constructor(remedia: RemediaClient) {
     this.#remedia = remedia;
     this.playback = new DiscordPlaybackManager(remedia);
   }
 
-  static start(remedia: Remedia): VoiceRuntime {
+  static start(remedia: RemediaClient): VoiceRuntime {
     if (VoiceRuntime.#active) throw new Error('The voice runtime is already active.');
     const runtime = new VoiceRuntime(remedia);
     VoiceRuntime.#active = runtime;

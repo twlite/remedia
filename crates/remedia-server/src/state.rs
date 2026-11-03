@@ -488,13 +488,16 @@ impl GuildSession {
             "guildSessionId": self.id,
             "guildId": self.guild_id,
             "botUserId": self.bot_user_id.to_string(),
-            "playback": playback_snapshot(&self.playback),
+            "playback": playback_snapshot(
+                &self.playback,
+                self.source_generation.load(Ordering::Acquire),
+            ),
             "voiceState": voice_state,
         })
     }
 }
 
-pub(crate) fn playback_snapshot(playback: &PlaybackSession) -> serde_json::Value {
+pub(crate) fn playback_snapshot(playback: &PlaybackSession, generation: u64) -> serde_json::Value {
     let position = playback.position();
     let media = position.media.map(|media| {
         serde_json::json!({
@@ -530,6 +533,7 @@ pub(crate) fn playback_snapshot(playback: &PlaybackSession) -> serde_json::Value
     });
     serde_json::json!({
         "state": playback_state_name(playback.state()),
+        "generation": generation,
         "processingMode": processing_mode,
         "position": {
             "media": media,

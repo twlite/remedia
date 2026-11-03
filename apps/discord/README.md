@@ -1,10 +1,10 @@
 # Discord integration harness
 
-This app demonstrates `@remedia/node` using discord.js. It provides slash
+This app demonstrates `@remedia/client` using discord.js. It provides slash
 commands for HTTP(S) playback, an in-memory per-guild queue, pause, resume,
 seek, skip, stop, now playing, disconnect, six named `/filter` presets, and
-`/volume`. The app owns the queue and preset mapping; the
-native Remedia API owns decoding and voice transport. Each guild queue holds
+`/volume`. The app owns the queue and preset mapping; Remedia owns decoding and
+voice transport. Each guild queue holds
 up to 100 upcoming tracks.
 Playback replies prefer the title returned in Remedia's media metadata and
 fall back to a URL with credentials and query parameters removed. Queue entries
@@ -13,8 +13,9 @@ Slash command responses use consistent Remedia embeds, with colored error
 embeds when a command fails. `/nowplaying` shows a proportional progress bar
 against the original media duration and marks estimated positions with `~`.
 
-Create `.env` with `DISCORD_TOKEN` and `APPLICATION_ID`, then run from the
-repository root:
+Create `.env` with `DISCORD_TOKEN` and `APPLICATION_ID`, then choose a backend.
+Embedded mode is the default and calls the native Node addon directly. Build it
+once and run the bot from the repository root:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -22,6 +23,25 @@ pnpm --filter @remedia/node build
 pnpm --filter discord-app deploy
 pnpm --filter discord-app start
 ```
+
+For remote mode, set `REMEDIA_MODE=remote` and provide `REMEDIA_NODES` as a
+JSON array. Each entry contains a node `id`, `url`, and Basic auth credentials:
+
+```dotenv
+REMEDIA_MODE=remote
+REMEDIA_NODES='[
+  {"id":"node-a","url":"remedia://127.0.0.1:8787","auth":{"username":"bot","password":"secret"}},
+  {"id":"node-b","url":"remedias://media.example.com","auth":{"username":"bot","password":"secret"}}
+]'
+```
+
+Then deploy and start as usual; remote mode does not build or load the native
+addon. The bot uses the same queue and slash command logic for both backends.
+New guilds are assigned to healthy nodes using player capacity, and each guild
+stays on its original node. Temporary WebSocket loss attempts session
+resumption. An expired server session is reported and is not silently migrated
+to another node. HTTP(S) URLs and paths accessible to the server work remotely;
+Buffer and Readable sources require an embedded node.
 
 `start` runs TypeScript source with `tsx`; it does not compile the bot to
 `dist/`. `typecheck` still runs `tsc --noEmit`. The bot needs the `Guilds` and
@@ -33,7 +53,7 @@ and lifecycle details.
 `/filter set` accepts `8d`, `bassboost`, `nightcore`, `vaporwave`, `tremolo`,
 or `vibrato`; `/filter clear` and `/filter list` manage and display the current
 selection. These names are harness conveniences mapped to native FFmpeg audio
-graphs, not presets in `remedia-core` or `@remedia/node`. `/volume` reads the
+graphs, not presets in `remedia-core` or either Node package. `/volume` reads the
 current value and `/volume percent:<0..200>` applies independent linear gain;
 gains above 100% may clip. Filter and volume values stay scoped to one guild
 and carry across queued tracks and skips until the player disconnects. The

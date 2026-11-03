@@ -9,6 +9,8 @@
     "discord",
     "---Node.js bindings---",
     "node",
+    "---TypeScript client---",
+    "client",
     "---Remote server---",
     "server",
     "---Observability---",

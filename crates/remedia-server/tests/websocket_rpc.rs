@@ -294,6 +294,8 @@ async fn real_local_media_playback_and_cleanup_use_the_core_engine() {
     .await;
     assert_eq!(played["ok"], true, "{played}");
     assert_eq!(played["result"]["codec"], "opus");
+    let playback_generation = played["result"]["generation"].as_u64().unwrap();
+    assert!(playback_generation > 0);
     assert!(played["result"]["durationMs"].as_u64().unwrap() > 0);
 
     let state = rpc(
@@ -307,6 +309,10 @@ async fn real_local_media_playback_and_cleanup_use_the_core_engine() {
         state["result"]["state"].as_str(),
         Some("playing" | "completed")
     ));
+    assert_eq!(
+        state["result"]["generation"].as_u64(),
+        Some(playback_generation)
+    );
     assert_eq!(state["result"]["filterGraph"], "bass=g=6");
     assert_eq!(state["result"]["volume"], 0.75);
     let stopped = rpc(

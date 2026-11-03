@@ -9,7 +9,7 @@
     "deploy": "tsx --env-file=.env ./src/util/deploy.ts",
     "format": "oxfmt .",
     "format:check": "oxfmt . --check",
-    "prestart": "pnpm --filter @remedia/node build",
+    "prestart": "if [ \"${REMEDIA_MODE:-embedded}\" = \"embedded\" ]; then pnpm --filter @remedia/node build; fi; pnpm --filter @remedia/client build",
     "dev": "tsx --env-file=.env --watch src/index.ts",
     "start": "tsx --env-file=.env src/index.ts",
     "test": "tsx --test src/voice/*.test.ts src/commands/*.test.ts",
@@ -17,10 +17,11 @@
   },
   "dependencies": {
     "@discordjs/core": "^2.3.0",
-    "@remedia/node": "workspace:*",
+    "@remedia/client": "workspace:*",
     "discord.js": "^14.24.0"
   },
   "devDependencies": {
+    "@remedia/node": "workspace:*",
     "@types/node": "^22.18.8",
     "tsx": "^4.23.15",
     "typescript": "~5.9.3",

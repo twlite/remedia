@@ -100,5 +100,5 @@ localhost WebSocket tests and a null output rather than Discord credentials.
 
 Every process is independent and reports a node-local `nodeId`, version, active player count,
 capacity, CPU parallelism/load when available, process RSS when available, and transport/processing
-health. The server never migrates a player. A future client library must select a node when creating
-a guild session and route later commands back to that node.
+health. `@remedia/client` uses this information to select a node when creating a guild session and
+routes later commands back to that node. The server never migrates a player.

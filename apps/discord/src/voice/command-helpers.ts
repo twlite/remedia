@@ -1,5 +1,5 @@
 import { EmbedBuilder, MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
-import type { AudioStreamInfo } from '@remedia/node';
+import type { AudioStreamInfo } from '@remedia/client';
 
 const REMEDIA_BLURPLE = 0x5865f2;
 const REMEDIA_RED = 0xed4245;

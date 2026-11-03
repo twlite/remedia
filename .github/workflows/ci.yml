@@ -62,3 +62,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: pnpm --filter @remedia/node test
+      - run: pnpm --filter @remedia/client test
+      - run: pnpm --filter @remedia/client test:hybrid
+      - run: pnpm --filter @remedia/client test:server
+      - run: pnpm --filter discord-app test

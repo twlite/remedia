@@ -44,8 +44,9 @@ location /v1/ws {
 
 Clients then connect to `wss://media.example.net/v1/ws`. Keep passwords and resume credentials in
 secret storage. Do not put them in URLs, logs, shell history, or source control. The server supports
-standard `ws://` and `wss://` clients; `remedia://` and `remedias://` URL parsing with userinfo is a
-future SDK convenience and is not a server feature.
+standard `ws://` and `wss://` clients. `@remedia/client` also maps `remedia://` to `ws://` and
+`remedias://` to `wss://`; optional URL userinfo is stripped and sent only in the WebSocket Basic
+Authorization header.
 
 ## Media network policy
 
@@ -71,9 +72,10 @@ reports local capacity, player/connection counts, process uptime, CPU parallelis
 memory when the host exposes them, plus transport and processing health. Some host metrics are
 Linux-specific and may be `null` elsewhere.
 
-Multiple nodes do not share state and do not proxy commands. A future `@remedia/client` is expected
-to select a node for a new guild and route every later request for that guild back to the same node.
-Cross-node failover and player migration belong to the client/control plane, not this server.
+Multiple nodes do not share state and do not proxy commands. `@remedia/client` selects a healthy
+node for a new guild and routes later operations for that guild to the same node. It does not move
+active playback to another node; recovery requires application-managed restoration with fresh
+Discord voice credentials.
 
 ## Manual Discord test
 

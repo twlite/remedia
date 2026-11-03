@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { DiscordSession, PlaybackState, Remedia } from '@remedia/node';
+import type { DiscordSession, PlaybackState, RemediaClient } from '@remedia/client';
 import { displayTrack } from './command-helpers.js';
 import { FILTER_PRESETS, FILTER_PRESET_NAMES } from './filter-presets.js';
 import { DiscordPlaybackManager } from './playback-manager.js';
@@ -289,7 +289,7 @@ test('filter and volume state are independent between guild sessions', async () 
     createDiscordSession({ guildId }: { guildId: string }) {
       return sessions.get(guildId) as unknown as DiscordSession;
     },
-  } as unknown as Remedia;
+  } as unknown as RemediaClient;
   const manager = new DiscordPlaybackManager(remedia);
   for (const guildId of sessions.keys()) {
     await manager.enqueue(guildId, 'channel', 'bot', {
@@ -345,7 +345,7 @@ function createManager(): { manager: DiscordPlaybackManager; session: FakeDiscor
     createDiscordSession() {
       return session as unknown as DiscordSession;
     },
-  } as unknown as Remedia;
+  } as unknown as RemediaClient;
   return { manager: new DiscordPlaybackManager(remedia), session };
 }
 

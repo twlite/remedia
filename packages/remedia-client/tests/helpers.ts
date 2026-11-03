@@ -1,0 +1,441 @@
+import { createServer } from 'node:http';
+import { WebSocket, WebSocketServer } from 'ws';
+
+interface FakePlayback {
+  state: string;
+  generation: number;
+  processingMode: string | null;
+  position: {
+    media: { positionMs: number; accuracy: string } | null;
+    submittedMs: number;
+    playedMs: number | null;
+  };
+  durationMs: number | null;
+  source: Record<string, unknown> | null;
+  filterGraph: string | null;
+  volume: number;
+  lastError: { code: string; message: string } | null;
+}
+
+interface FakeGuild {
+  guildSessionId: string;
+  guildId: string;
+  botUserId: string;
+  playback: FakePlayback;
+  voiceState: string | null;
+}
+
+interface FakeSession {
+  id: string;
+  credential: string;
+  botUserId: string;
+  guilds: Map<string, FakeGuild>;
+  sequence: number;
+  attached: WebSocket | undefined;
+}
+
+export interface FakeServerOptions {
+  id: string;
+  botUserId?: string;
+  protocolVersion?: number;
+  playersMaximum?: number;
+  dropSessionsOnDisconnect?: boolean;
+  requiredAuthorization?: string;
+}
+
+/** A local protocol-v1 node fixture used by client integration tests. */
+export class FakeServerNode {
+  readonly id: string;
+  readonly botUserId: string;
+  readonly protocolVersion: number;
+  readonly playersMaximum: number;
+  readonly authorizationHeaders: string[] = [];
+  readonly sessions = new Map<string, FakeSession>();
+  readonly server = createServer();
+  readonly #websocketServer: WebSocketServer;
+  readonly #socketSessions = new Map<WebSocket, FakeSession>();
+  readonly #dropSessionsOnDisconnect: boolean;
+  readonly #requiredAuthorization: string | undefined;
+  #sessionSequence = 0;
+  #guildSequence = 0;
+  #closed = false;
+  finishBeforePlayResponse = false;
+  nodeIdentity: string;
+  url = '';
+
+  get allocatedGuildCount(): number {
+    return [...this.sessions.values()].reduce((total, session) => total + session.guilds.size, 0);
+  }
+
+  private constructor(options: FakeServerOptions, websocketServer: WebSocketServer) {
+    this.id = options.id;
+    this.nodeIdentity = `server-${options.id}`;
+    this.botUserId = options.botUserId ?? '100000000000000001';
+    this.protocolVersion = options.protocolVersion ?? 1;
+    this.playersMaximum = options.playersMaximum ?? 8;
+    this.#dropSessionsOnDisconnect = options.dropSessionsOnDisconnect ?? false;
+    this.#requiredAuthorization = options.requiredAuthorization;
+    this.#websocketServer = websocketServer;
+    websocketServer.on('connection', (socket) => {
+      socket.on('message', (message) => {
+        void this.#handle(socket, JSON.parse(message.toString()) as Record<string, unknown>);
+      });
+      socket.on('close', () => {
+        const session = this.#socketSessions.get(socket);
+        if (session?.attached === socket) session.attached = undefined;
+        this.#socketSessions.delete(socket);
+        if (session && this.#dropSessionsOnDisconnect) this.sessions.delete(session.id);
+      });
+    });
+  }
+
+  static async listen(options: FakeServerOptions): Promise<FakeServerNode> {
+    const websocketServer = new WebSocketServer({ noServer: true });
+    const node = new FakeServerNode(options, websocketServer);
+    node.server.on('upgrade', (request, socket, head) => {
+      node.authorizationHeaders.push(request.headers.authorization ?? '');
+      if (
+        node.#requiredAuthorization !== undefined &&
+        request.headers.authorization !== node.#requiredAuthorization
+      ) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      websocketServer.handleUpgrade(request, socket, head, (websocket) => {
+        websocketServer.emit('connection', websocket, request);
+      });
+    });
+    await new Promise<void>((resolve) => node.server.listen(0, '127.0.0.1', resolve));
+    const address = node.server.address();
+    if (!address || typeof address === 'string')
+      throw new Error('fake server did not bind a TCP port');
+    node.url = `ws://127.0.0.1:${address.port}/v1/ws`;
+    return node;
+  }
+
+  closeSockets(): void {
+    for (const socket of this.#socketSessions.keys()) socket.close(1011, 'test socket reset');
+  }
+
+  async close(): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.closeSockets();
+    await new Promise<void>((resolve) => this.#websocketServer.close(() => resolve()));
+    await new Promise<void>((resolve) => this.server.close(() => resolve()));
+  }
+
+  #event(session: FakeSession, name: string, data: Record<string, unknown>): void {
+    const socket = session.attached;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    session.sequence += 1;
+    socket.send(
+      JSON.stringify({
+        version: 1,
+        event: name,
+        sessionId: session.id,
+        sequence: session.sequence,
+        data,
+      }),
+    );
+  }
+
+  async #handle(socket: WebSocket, message: Record<string, unknown>): Promise<void> {
+    const id = typeof message.id === 'string' ? message.id : null;
+    const command = typeof message.command === 'string' ? message.command : '';
+    const params = isRecord(message.params) ? message.params : {};
+    let result: unknown = {};
+    let error: { code: string; message: string } | null = null;
+    try {
+      switch (command) {
+        case 'node.protocol_version':
+          result = { version: this.protocolVersion };
+          break;
+        case 'node.info':
+          result = {
+            nodeId: this.nodeIdentity,
+            version: 'test',
+            protocolVersion: this.protocolVersion,
+          };
+          break;
+        case 'node.health':
+          result = { status: 'ok' };
+          break;
+        case 'node.stats':
+          result = {
+            nodeId: this.nodeIdentity,
+            version: 'test',
+            protocolVersion: 1,
+            uptimeMs: 123,
+            connections: { active: this.sessions.size, maximum: 64 },
+            players: {
+              active: [...this.sessions.values()].reduce(
+                (count, session) => count + session.guilds.size,
+                0,
+              ),
+              maximum: this.playersMaximum,
+            },
+            cpu: { availableParallelism: 2, loadAverage1m: null },
+            memory: { residentBytes: null },
+            transportHealth: 'healthy',
+            processingHealth: 'healthy',
+          };
+          break;
+        case 'client.create': {
+          const session: FakeSession = {
+            id: `session-${this.id}-${++this.#sessionSequence}`,
+            credential: `resume-${this.id}-${this.#sessionSequence}`,
+            botUserId: this.botUserId,
+            guilds: new Map(),
+            sequence: 0,
+            attached: socket,
+          };
+          this.sessions.set(session.id, session);
+          this.#socketSessions.set(socket, session);
+          result = {
+            sessionId: session.id,
+            resumeCredential: session.credential,
+            botUserId: session.botUserId,
+          };
+          break;
+        }
+        case 'client.resume': {
+          const session = this.sessions.get(String(params.sessionId));
+          if (!session || session.credential !== params.resumeCredential || session.attached) {
+            error = { code: 'unknown_session', message: 'session unavailable' };
+            break;
+          }
+          session.attached = socket;
+          this.#socketSessions.set(socket, session);
+          result = {
+            sessionId: session.id,
+            resumeCredential: session.credential,
+            snapshot: { botUserId: session.botUserId, guilds: [...session.guilds.values()] },
+          };
+          break;
+        }
+        case 'client.close': {
+          const session = this.#socketSessions.get(socket);
+          if (session) this.sessions.delete(session.id);
+          result = { closed: true };
+          break;
+        }
+        case 'client.list':
+          result = {
+            sessions: [...this.sessions.values()].map((session) => ({
+              sessionId: session.id,
+              attached: Boolean(session.attached),
+            })),
+          };
+          break;
+        case 'guild.create': {
+          const session = this.#session(socket);
+          const guildId = String(params.guildId);
+          if (session.guilds.has(guildId)) {
+            error = { code: 'invalid_state', message: 'guild exists' };
+            break;
+          }
+          const guild = this.#newGuild(guildId, session.botUserId);
+          session.guilds.set(guildId, guild);
+          this.#event(session, 'guild.created', guild as unknown as Record<string, unknown>);
+          result = guild;
+          break;
+        }
+        case 'guild.list':
+          result = { guilds: [...this.#session(socket).guilds.values()] };
+          break;
+        case 'guild.get':
+          result = this.#guild(socket, String(params.guildId));
+          break;
+        case 'guild.destroy': {
+          const session = this.#session(socket);
+          session.guilds.delete(String(params.guildId));
+          this.#event(session, 'guild.destroyed', { guildId: params.guildId as string });
+          result = { destroyed: true };
+          break;
+        }
+        case 'voice.connect': {
+          const session = this.#session(socket);
+          const guild = this.#guild(socket, String(params.guildId));
+          guild.voiceState = 'connected';
+          this.#event(session, 'voice.state_changed', {
+            guildId: guild.guildId,
+            state: 'connected',
+          });
+          result = { guildId: guild.guildId, state: 'connected' };
+          break;
+        }
+        case 'voice.disconnect': {
+          const session = this.#session(socket);
+          const guild = this.#guild(socket, String(params.guildId));
+          guild.voiceState = 'disconnected';
+          guild.playback.state = 'stopped';
+          this.#event(session, 'voice.state_changed', {
+            guildId: guild.guildId,
+            state: 'disconnected',
+          });
+          result = { guildId: guild.guildId, state: 'disconnected' };
+          break;
+        }
+        case 'voice.state': {
+          const guild = this.#guild(socket, String(params.guildId));
+          result = { state: guild.voiceState ?? 'disconnected', failed: false };
+          break;
+        }
+        case 'player.state':
+          result = this.#guild(socket, String(params.guildId)).playback;
+          break;
+        case 'player.play': {
+          const session = this.#session(socket);
+          const guild = this.#guild(socket, String(params.guildId));
+          const generation = ++guild.playback.generation;
+          guild.playback.state = 'playing';
+          guild.playback.source = {
+            streamIndex: 0,
+            codec: 'mp3',
+            sampleRate: 44_100,
+            channels: 2,
+            channelLayout: 'stereo',
+            durationMs: 3_000,
+            bitRate: null,
+            metadata: { title: 'Fixture track' },
+          };
+          guild.playback.durationMs = 3_000;
+          this.#event(session, 'player.started', {
+            guildId: guild.guildId,
+            generation,
+            source: guild.playback.source,
+          });
+          if (this.finishBeforePlayResponse) {
+            guild.playback.state = 'completed';
+            this.#event(session, 'player.completed', { guildId: guild.guildId, generation });
+          }
+          result = { ...guild.playback.source, generation };
+          break;
+        }
+        case 'player.pause':
+        case 'player.resume':
+        case 'player.stop': {
+          const session = this.#session(socket);
+          const guild = this.#guild(socket, String(params.guildId));
+          const state =
+            command === 'player.pause'
+              ? 'paused'
+              : command === 'player.resume'
+                ? 'playing'
+                : 'stopped';
+          guild.playback.state = state;
+          const eventName =
+            command === 'player.pause'
+              ? 'player.paused'
+              : command === 'player.resume'
+                ? 'player.resumed'
+                : 'player.stopped';
+          this.#event(session, eventName, {
+            guildId: guild.guildId,
+            generation: guild.playback.generation,
+          });
+          result = { state };
+          break;
+        }
+        case 'player.seek': {
+          const guild = this.#guild(socket, String(params.guildId));
+          guild.playback.position.media = {
+            positionMs: Number(params.positionMs),
+            accuracy: 'timestamp',
+          };
+          result = { ...guild.playback.position };
+          break;
+        }
+        case 'player.filter.set': {
+          const session = this.#session(socket);
+          const guild = this.#guild(socket, String(params.guildId));
+          guild.playback.filterGraph = String(params.graph);
+          this.#event(session, 'player.filter_changed', {
+            guildId: guild.guildId,
+            configured: true,
+          });
+          result = { filterGraph: guild.playback.filterGraph };
+          break;
+        }
+        case 'player.filter.clear': {
+          const session = this.#session(socket);
+          const guild = this.#guild(socket, String(params.guildId));
+          guild.playback.filterGraph = null;
+          this.#event(session, 'player.filter_changed', {
+            guildId: guild.guildId,
+            configured: false,
+          });
+          result = { filterGraph: null };
+          break;
+        }
+        case 'player.volume.set': {
+          const session = this.#session(socket);
+          const guild = this.#guild(socket, String(params.guildId));
+          guild.playback.volume = Number(params.gain);
+          this.#event(session, 'player.volume_changed', {
+            guildId: guild.guildId,
+            gain: guild.playback.volume,
+          });
+          result = { volume: guild.playback.volume };
+          break;
+        }
+        case 'test.delay': {
+          await delay(Number(params.delayMs));
+          result = { value: params.value };
+          break;
+        }
+        default:
+          error = { code: 'invalid_request', message: 'unknown command' };
+      }
+    } catch {
+      error = { code: 'unknown_session', message: 'session or player is missing' };
+    }
+
+    const response = error
+      ? { version: 1, id, ok: false, error }
+      : { version: 1, id, ok: true, result };
+    socket.send(JSON.stringify(response));
+  }
+
+  #session(socket: WebSocket): FakeSession {
+    const session = this.#socketSessions.get(socket);
+    if (!session || session.attached !== socket) throw new Error('no client session');
+    return session;
+  }
+
+  #guild(socket: WebSocket, guildId: string): FakeGuild {
+    const guild = this.#session(socket).guilds.get(guildId);
+    if (!guild) throw new Error('no guild session');
+    return guild;
+  }
+
+  #newGuild(guildId: string, botUserId: string): FakeGuild {
+    return {
+      guildSessionId: `guild-session-${++this.#guildSequence}`,
+      guildId,
+      botUserId,
+      voiceState: 'disconnected',
+      playback: {
+        state: 'idle',
+        generation: 0,
+        processingMode: 'transcoding',
+        position: { media: null, submittedMs: 0, playedMs: null },
+        durationMs: null,
+        source: null,
+        filterGraph: null,
+        volume: 1,
+        lastError: null,
+      },
+    };
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

@@ -11,7 +11,7 @@
     "types": ["node"],
     "baseUrl": ".",
     "paths": {
-      "@remedia/node": ["../../packages/remedia-node/lib/index.ts"]
+      "@remedia/client": ["../../packages/remedia-client/lib/index.ts"]
     }
   },
   "include": ["src/**/*.ts"]

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { EmbedBuilder, type ChatInputCommandInteraction } from 'discord.js';
-import type { DiscordSession, PlaybackState, Remedia } from '@remedia/node';
+import type { DiscordSession, PlaybackState, RemediaClient } from '@remedia/client';
 import filterCommand from './filter.js';
 import volumeCommand from './volume.js';
 import { VoiceRuntime } from '../voice/runtime.js';
@@ -12,7 +12,7 @@ test('filter and volume slash commands read and change the guild playback settin
     createDiscordSession: () => session as unknown as DiscordSession,
     receive() {},
     close: async () => {},
-  } as unknown as Remedia;
+  } as unknown as RemediaClient;
   const runtime = VoiceRuntime.start(remedia);
 
   try {

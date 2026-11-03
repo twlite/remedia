@@ -1,4 +1,9 @@
-import type { AudioStreamInfo, DiscordSession, PlaybackState, Remedia } from '@remedia/node';
+import type {
+  AudioStreamInfo,
+  DiscordSession,
+  PlaybackState,
+  RemediaClient,
+} from '@remedia/client';
 import { FILTER_PRESETS, type FilterPresetName } from './filter-presets.js';
 
 const MAX_QUEUED_TRACKS = 100;
@@ -43,11 +48,11 @@ interface GuildPlayer {
 
 /** Application-owned queueing for the manual Discord harness. The native API remains single-source. */
 export class DiscordPlaybackManager {
-  readonly #remedia: Remedia;
+  readonly #remedia: RemediaClient;
   readonly #players = new Map<string, GuildPlayer>();
   #closed = false;
 
-  constructor(remedia: Remedia) {
+  constructor(remedia: RemediaClient) {
     this.#remedia = remedia;
   }
 
@@ -67,6 +72,9 @@ export class DiscordPlaybackManager {
           await this.#removePlayer(player);
           throw error;
         }
+      }
+      if (process.env.REMEDIA_DEBUG === '1' && player.session.nodeId) {
+        console.info(`Guild ${guildId} assigned to Remedia node ${player.session.nodeId}.`);
       }
 
       if (player.queue.length >= MAX_QUEUED_TRACKS) {
@@ -279,6 +287,13 @@ export class DiscordPlaybackManager {
     try {
       state = await player.session.wait();
     } catch (error) {
+      if (
+        asError(error).name === 'SessionLostError' ||
+        asError(error).name === 'NodeUnavailableError'
+      ) {
+        player.lastError = 'The assigned Remedia node is unavailable; this guild was not migrated.';
+        return;
+      }
       state = 'failed';
       player.lastError = asError(error).message;
     }

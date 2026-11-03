@@ -1,9 +1,14 @@
 import process from 'node:process';
 import { URL } from 'node:url';
 import { Client, Events, GatewayIntentBits, type Client as DiscordClient } from 'discord.js';
-import { Remedia, type DiscordGatewayVoicePayload } from '@remedia/node';
+import {
+  RemediaClient,
+  type DiscordGatewayVoicePayload,
+  type RemediaNodeConfig,
+} from '@remedia/client';
 import { loadEvents } from './util/loaders.js';
 import { VoiceRuntime } from './voice/runtime.js';
+import { remoteNodesFromEnvironment } from './voice/node-config.js';
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) throw new Error('DISCORD_TOKEN must be set in apps/discord/.env.');
@@ -13,8 +18,17 @@ process.title = 'Remedia Discord Bot';
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
 });
+const mode = process.env.REMEDIA_MODE ?? 'embedded';
+if (mode !== 'embedded' && mode !== 'remote') {
+  throw new Error('REMEDIA_MODE must be either "embedded" or "remote".');
+}
+const nodes: RemediaNodeConfig[] =
+  mode === 'embedded'
+    ? [{ type: 'embedded', id: 'embedded' }]
+    : remoteNodesFromEnvironment(process.env.REMEDIA_NODES);
 const runtime = VoiceRuntime.start(
-  await Remedia.create({
+  await RemediaClient.create({
+    nodes,
     send(guildId, payload) {
       sendGatewayVoicePayload(client, guildId, payload);
     },
