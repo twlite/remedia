@@ -2394,10 +2394,19 @@ mod tests {
         flushes: usize,
         finished: bool,
         cancelled: bool,
+        filter_update_completions: usize,
+        last_filter_update_result: Option<Result<(), String>>,
     }
 
     #[derive(Clone)]
     struct StepPacketHandle(Arc<StepSinkShared>);
+
+    enum StepSinkProgress {
+        FilterUpdateCompleted(Result<(), String>),
+        PacketBlocked(usize),
+        Cancelled,
+        TimedOut,
+    }
 
     impl StepPacketSink {
         fn new() -> (Self, StepPacketHandle) {
@@ -2418,14 +2427,90 @@ mod tests {
     }
 
     impl StepPacketHandle {
-        fn calls(&self) -> usize {
-            lock(&self.0.data).calls
-        }
-
         fn release(&self, count: usize) {
             let mut data = lock(&self.0.data);
             data.permits = data.permits.saturating_add(count);
             self.0.changed.notify_all();
+        }
+
+        fn filter_update_completions(&self) -> usize {
+            lock(&self.0.data).filter_update_completions
+        }
+
+        fn record_filter_update(&self, result: Result<(), String>) {
+            let mut data = lock(&self.0.data);
+            data.filter_update_completions += 1;
+            data.last_filter_update_result = Some(result);
+            self.0.changed.notify_all();
+        }
+
+        fn wait_for_update_or_blocked_packet(
+            &self,
+            after_calls: usize,
+            after_updates: usize,
+            timeout: Duration,
+        ) -> StepSinkProgress {
+            let data = lock(&self.0.data);
+            let (data, wait_result) = self
+                .0
+                .changed
+                .wait_timeout_while(data, timeout, |data| {
+                    data.filter_update_completions <= after_updates
+                        && (data.calls <= after_calls
+                            || data.calls <= data.packets.len()
+                            || data.permits > 0)
+                        && !data.cancelled
+                })
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+            if data.filter_update_completions > after_updates {
+                return StepSinkProgress::FilterUpdateCompleted(
+                    data.last_filter_update_result
+                        .clone()
+                        .unwrap_or_else(|| Err("filter update completed without a result".into())),
+                );
+            }
+            // send_packet increments calls before blocking and appends to
+            // packets only after consuming a permit, so this identifies the
+            // current blocked send without a separate notification channel.
+            if data.calls > after_calls && data.calls > data.packets.len() && data.permits == 0 {
+                return StepSinkProgress::PacketBlocked(data.calls);
+            }
+            if data.cancelled {
+                return StepSinkProgress::Cancelled;
+            }
+            if wait_result.timed_out() {
+                return StepSinkProgress::TimedOut;
+            }
+            StepSinkProgress::TimedOut
+        }
+
+        fn transition_diagnostics(
+            &self,
+            session: &PlaybackSession,
+            after_updates: usize,
+        ) -> String {
+            let (calls, completed_updates, update_result, cancelled) = {
+                let data = lock(&self.0.data);
+                (
+                    data.calls,
+                    data.filter_update_completions,
+                    data.last_filter_update_result.clone(),
+                    data.cancelled,
+                )
+            };
+            let update_status = if completed_updates > after_updates {
+                format!("completed: {update_result:?}")
+            } else if cancelled {
+                "pending; sink cancelled".to_owned()
+            } else {
+                "pending".to_owned()
+            };
+            format!(
+                "playback_state={:?}, processing_mode={:?}, sink_call_count={calls}, filter_update={update_status}",
+                session.state(),
+                session.processing_mode()
+            )
         }
 
         fn wait_for_calls(&self, count: usize) -> bool {
@@ -2475,6 +2560,8 @@ mod tests {
                 flushes: data.flushes,
                 finished: data.finished,
                 cancelled: data.cancelled,
+                filter_update_completions: data.filter_update_completions,
+                last_filter_update_result: data.last_filter_update_result.clone(),
             }
         }
     }
@@ -2504,6 +2591,7 @@ mod tests {
             }
             data.permits -= 1;
             data.packets.push(packet);
+            self.0.changed.notify_all();
             Ok(())
         }
 
@@ -3661,34 +3749,61 @@ mod tests {
         gate: StepPacketHandle,
         expression: Option<&'static str>,
     ) {
-        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let updates_before = gate.filter_update_completions();
+        let update_gate = gate.clone();
         let worker_session = Arc::clone(&session);
         let update_worker = thread::spawn(move || {
-            let _ = result_tx.send(worker_session.set_filter_graph(expression));
+            let result = worker_session
+                .set_filter_graph(expression)
+                .map_err(|error| error.to_string());
+            update_gate.record_filter_update(result);
         });
-        assert!(wait_for_pending_filter_update(&session));
-
-        for _ in 0..128 {
-            match result_rx.try_recv() {
-                Ok(result) => {
-                    assert!(result.is_ok(), "filter replacement failed: {result:?}");
+        let deadline = Instant::now() + TEST_TIMEOUT;
+        let mut after_calls = 0;
+        let mut released_packets = 0;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let progress =
+                gate.wait_for_update_or_blocked_packet(after_calls, updates_before, remaining);
+            match progress {
+                StepSinkProgress::FilterUpdateCompleted(result) => {
                     update_worker.join().expect("filter update worker joins");
+                    assert!(
+                        result.is_ok(),
+                        "filter replacement failed: {result:?}; {}",
+                        gate.transition_diagnostics(&session, updates_before)
+                    );
                     return;
                 }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    panic!("filter update worker exited without returning a result");
+                StepSinkProgress::PacketBlocked(call) => {
+                    if released_packets == 128 {
+                        let diagnostics = gate.transition_diagnostics(&session, updates_before);
+                        let _ = session.stop();
+                        let _ = update_worker.join();
+                        panic!(
+                            "filtergraph transition remained pending after 128 blocked packets; {diagnostics}"
+                        );
+                    }
+                    gate.release(1);
+                    after_calls = call;
+                    released_packets += 1;
                 }
-                Err(mpsc::TryRecvError::Empty) => {}
+                StepSinkProgress::Cancelled => {
+                    let diagnostics = gate.transition_diagnostics(&session, updates_before);
+                    let _ = session.stop();
+                    let _ = update_worker.join();
+                    panic!(
+                        "sink was cancelled before filtergraph transition completed; {diagnostics}"
+                    );
+                }
+                StepSinkProgress::TimedOut => {
+                    let diagnostics = gate.transition_diagnostics(&session, updates_before);
+                    let _ = session.stop();
+                    let _ = update_worker.join();
+                    panic!("timed out waiting for filtergraph transition; {diagnostics}");
+                }
             }
-
-            let next_call = gate.calls().saturating_add(1);
-            gate.release(1);
-            assert!(
-                gate.wait_for_calls(next_call),
-                "Opus sender did not reach the next packet while the update was pending"
-            );
         }
-        panic!("filter graph update did not reach a playback frame boundary");
     }
 
     fn wait_for_condition(
