@@ -42,6 +42,12 @@ The test command builds a debug addon and runs local Node integration tests.
 `build` creates the release addon and TypeScript declarations. The N-API loader
 and native declarations are generated from Rust source by `@napi-rs/cli`.
 
+Windows builds use the dynamic MSVC CRT to match bundled Opus's CMake defaults;
+Opus itself remains statically linked. A Windows runtime machine needs a
+compatible Microsoft Visual C++ v14 runtime if it is not already installed.
+The private N-API package does not bundle that runtime or guarantee static CRT
+linkage. FFmpeg's DLLs remain separate runtime dependencies.
+
 ## Create and close an instance
 
 Create each independent engine context with `await Remedia.create()`. The

@@ -91,7 +91,10 @@ $env:PATH = (Join-Path $env:FFMPEG_DIR 'bin') + ';' + $env:PATH
 
 The FFmpeg package must include MSVC import libraries, headers, and matching x64 DLLs. Keep the
 runtime DLL directory on `PATH` when running tests and applications. MinGW libraries are not
-compatible with the MSVC target.
+compatible with the MSVC target. Windows builds use MSVC's dynamic CRT to match the bundled Opus
+CMake configuration; if the runtime machine does not already have a compatible Microsoft Visual
+C++ v14 runtime, install the current Visual C++ Redistributable. Remedia does not bundle that
+runtime, and the private N-API package does not promise static CRT linkage.
 
 ## Set up the repository
 
