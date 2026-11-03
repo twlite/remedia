@@ -1,0 +1,336 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  release-detection:
+    name: Detect release commit
+    runs-on: ubuntu-24.04
+    outputs:
+      is_release: ${{ steps.detect.outputs.is_release }}
+      version: ${{ steps.detect.outputs.version }}
+      npm_tag: ${{ steps.detect.outputs.npm_tag }}
+      prerelease: ${{ steps.detect.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+      - id: detect
+        name: Parse the latest main commit subject
+        run: node .github/scripts/release.mjs detect
+
+  checks:
+    name: Lint, types, Rust checks, and docs
+    needs: release-detection
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: .github/native-deps/ffmpeg7.yml
+          environment-name: remedia-ffmpeg7
+          init-shell: bash
+          cache-environment: true
+          cache-environment-key: checks-ffmpeg7-${{ hashFiles('.github/native-deps/ffmpeg7.yml') }}
+          cache-downloads: true
+      - name: Select the repository Rust toolchain
+        run: rustup show active-toolchain
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 12.16.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Apply the release version before package installation
+        if: needs.release-detection.outputs.is_release == 'true'
+        env:
+          RELEASE_VERSION: ${{ needs.release-detection.outputs.version }}
+        run: node .github/scripts/release.mjs sync "$RELEASE_VERSION"
+      - run: pnpm install --frozen-lockfile
+      - name: Configure native dependency paths
+        shell: micromamba-shell {0}
+        run: |
+          echo "FFMPEG_DIR=$CONDA_PREFIX" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$CONDA_PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          libclang_path="$(find /usr/lib/llvm-* -name libclang.so -print -quit)"
+          test -n "$libclang_path"
+          echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm format:check
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: pnpm --filter @remedia/client test
+      - run: pnpm --filter discord-app test
+      - run: pnpm test:release
+      - run: pnpm --filter docs build
+
+  supported-platforms:
+    name: Required native targets
+    needs: release-detection
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x86_64 GNU
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            os: linux
+            server_suffix: ''
+          - label: Linux ARM64 GNU
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            os: linux
+            server_suffix: ''
+          - label: macOS x86_64
+            target: x86_64-apple-darwin
+            runner: macos-15-intel
+            os: macos
+            server_suffix: ''
+          - label: macOS ARM64
+            target: aarch64-apple-darwin
+            runner: macos-15
+            os: macos
+            server_suffix: ''
+          - label: Windows x86_64 MSVC
+            target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            os: windows
+            server_suffix: .exe
+    uses: ./.github/workflows/platform.yaml
+    with:
+      label: ${{ matrix.label }}
+      target: ${{ matrix.target }}
+      runner: ${{ matrix.runner }}
+      os: ${{ matrix.os }}
+      tier: supported
+      server_suffix: ${{ matrix.server_suffix }}
+      release_version: ${{ needs.release-detection.outputs.version }}
+
+  experimental-platforms:
+    name: Experimental target probes
+    needs: release-detection
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x86_64 musl
+            target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+            os: linux
+            blocker: No target-built FFmpeg 7 musl headers and libraries are supplied by the current conda-forge recipe.
+          - label: Linux ARM64 musl
+            target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            os: linux
+            blocker: No target-built FFmpeg 7 ARM64 musl headers and libraries are supplied; cargo-zigbuild only supplies the Rust/C linker path.
+          - label: Linux ARMv7 GNU
+            target: armv7-unknown-linux-gnueabihf
+            runner: ubuntu-24.04
+            os: linux
+            blocker: The pinned FFmpeg 7 dependency recipe has no ARMv7 sysroot or cross pkg-config files.
+          - label: Windows x86 MSVC
+            target: i686-pc-windows-msvc
+            runner: windows-2022
+            os: windows
+            blocker: The pinned FFmpeg 7 Windows recipe only contains x64 MSVC headers, import libraries, and DLLs.
+          - label: Windows ARM64 MSVC
+            target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+            os: windows
+            blocker: The pinned FFmpeg 7 Windows recipe has no ARM64 MSVC import libraries or matching DLLs.
+          - label: Android ARM64
+            target: aarch64-linux-android
+            runner: ubuntu-24.04
+            os: android
+            blocker: Android NDK API 24 linkers can be configured, but this repository has no FFmpeg 7 build for the Android sysroot.
+          - label: Android ARMv7
+            target: armv7-linux-androideabi
+            runner: ubuntu-24.04
+            os: android
+            blocker: Android NDK API 24 linkers can be configured, but this repository has no ARMv7 FFmpeg 7 build for the Android sysroot.
+          - label: FreeBSD x86_64
+            target: x86_64-unknown-freebsd
+            runner: ubuntu-24.04
+            os: freebsd
+            blocker: FreeBSD VM dependencies must provide FFmpeg 7 development libraries; the current recipes only configure Linux and Windows.
+    uses: ./.github/workflows/platform.yaml
+    with:
+      label: ${{ matrix.label }}
+      target: ${{ matrix.target }}
+      runner: ${{ matrix.runner }}
+      os: ${{ matrix.os }}
+      tier: experimental
+      blocker: ${{ matrix.blocker }}
+      release_version: ${{ needs.release-detection.outputs.version }}
+
+  package-release:
+    name: Verify and pack npm release
+    if: needs.release-detection.outputs.is_release == 'true'
+    needs: [release-detection, checks, supported-platforms]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 12.16.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Apply the release version before package installation
+        env:
+          RELEASE_VERSION: ${{ needs.release-detection.outputs.version }}
+        run: node .github/scripts/release.mjs sync "$RELEASE_VERSION"
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: bindings-*
+          path: ${{ runner.temp }}/bindings
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: server-*
+          path: ${{ runner.temp }}/servers
+          merge-multiple: true
+      - name: Verify native release artifacts
+        run: node .github/scripts/verify-release-artifacts.mjs "$RUNNER_TEMP/bindings" "$RUNNER_TEMP/servers"
+      - name: Create and inspect N-API platform packages and pnpm tarballs
+        env:
+          RELEASE_VERSION: ${{ needs.release-detection.outputs.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/npm-packages"
+          node .github/scripts/release.mjs pack "$RELEASE_VERSION" "$RUNNER_TEMP/bindings" "$RUNNER_TEMP/servers" "$RUNNER_TEMP/npm-packages"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-release-packages
+          path: ${{ runner.temp }}/npm-packages/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-server-binaries
+          path: ${{ runner.temp }}/servers/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish verified packages with npm OIDC
+    if: needs.release-detection.outputs.is_release == 'true'
+    needs: [release-detection, package-release]
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: npm-release-${{ github.repository }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+      - name: Install npm CLI with trusted publishing support
+        run: |
+          npm install --global npm@11.21.0
+          test "$(npm --version)" = "11.21.0"
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release-packages
+          path: ${{ runner.temp }}/npm-release-packages
+      - name: Publish in dependency order; skip exact versions already in npm
+        env:
+          RELEASE_VERSION: ${{ needs.release-detection.outputs.version }}
+          NPM_TAG: ${{ needs.release-detection.outputs.npm_tag }}
+        run: node .github/scripts/release.mjs publish "$RELEASE_VERSION" "$NPM_TAG" "$RUNNER_TEMP/npm-release-packages/release-packages.json"
+
+  github-release:
+    name: Create GitHub tag and release
+    if: needs.release-detection.outputs.is_release == 'true'
+    needs: [release-detection, package-release, publish]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-server-binaries
+          path: ${{ runner.temp }}/release-servers
+      - name: Create or verify the immutable release tag
+        env:
+          RELEASE_VERSION: ${{ needs.release-detection.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v$RELEASE_VERSION"
+          set +e
+          git ls-remote --exit-code origin "refs/tags/$tag" > "$RUNNER_TEMP/tag-ref"
+          result=$?
+          set -e
+          if [ "$result" -eq 0 ]; then
+            git fetch origin "refs/tags/$tag:refs/verified-tags/$tag"
+            existing_commit="$(git rev-parse "refs/verified-tags/$tag^{commit}")"
+            if [ "$existing_commit" != "$GITHUB_SHA" ]; then
+              echo "Tag $tag points to $existing_commit, expected release commit $GITHUB_SHA." >&2
+              exit 1
+            fi
+          elif [ "$result" -eq 2 ]; then
+            git tag "$tag" "$GITHUB_SHA"
+            git push origin "refs/tags/$tag"
+          else
+            echo "Unable to query the remote tag $tag." >&2
+            exit "$result"
+          fi
+      - name: Create or update the GitHub release and attach server binaries
+        env:
+          RELEASE_VERSION: ${{ needs.release-detection.outputs.version }}
+          IS_PRERELEASE: ${{ needs.release-detection.outputs.prerelease }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v$RELEASE_VERSION"
+          title="Remedia v$RELEASE_VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            if [ "$IS_PRERELEASE" = "true" ]; then
+              gh release edit "$tag" --title "$title" --prerelease=true --draft=false
+            else
+              gh release edit "$tag" --title "$title" --prerelease=false --draft=false --latest
+            fi
+          elif [ "$IS_PRERELEASE" = "true" ]; then
+            gh release create "$tag" "$RUNNER_TEMP"/release-servers/* --title "$title" --generate-notes --prerelease
+          else
+            gh release create "$tag" "$RUNNER_TEMP"/release-servers/* --title "$title" --generate-notes --latest
+          fi
+          gh release upload "$tag" "$RUNNER_TEMP"/release-servers/* --clobber

@@ -1,0 +1,519 @@
+name: Native platform
+
+on:
+  workflow_call:
+    inputs:
+      label:
+        type: string
+        required: true
+      target:
+        type: string
+        required: true
+      runner:
+        type: string
+        required: true
+      os:
+        type: string
+        required: true
+      tier:
+        type: string
+        required: true
+      blocker:
+        type: string
+        required: false
+        default: ''
+      server_suffix:
+        type: string
+        required: false
+        default: ''
+      release_version:
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  build:
+    if: inputs.tier == 'supported'
+    name: Build ${{ inputs.label }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Apply the release version before package installation
+        if: inputs.release_version != ''
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: node .github/scripts/release.mjs sync "$RELEASE_VERSION"
+      - name: Select the repository Rust toolchain
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          shared-key: ${{ inputs.target }}-ffmpeg7-bundled-opus
+          key: release-no-incremental-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'crates/remedia-core/Cargo.toml', 'packages/remedia-node/Cargo.toml', '.github/native-deps/ffmpeg7.yml', '.github/native-deps/ffmpeg7-windows.yml') }}
+      - name: Install Linux build tools
+        if: inputs.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev
+      - name: Install Linux FFmpeg 7
+        if: inputs.os == 'linux'
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: .github/native-deps/ffmpeg7.yml
+          environment-name: remedia-ffmpeg7
+          init-shell: bash
+          cache-environment: true
+          cache-environment-key: ffmpeg7-${{ inputs.target }}-${{ hashFiles('.github/native-deps/ffmpeg7.yml') }}
+          cache-downloads: true
+      - name: Install Windows FFmpeg 7 and libclang
+        if: inputs.os == 'windows'
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: .github/native-deps/ffmpeg7-windows.yml
+          environment-name: remedia-ffmpeg7
+          init-shell: powershell
+          cache-environment: true
+          cache-environment-key: ffmpeg7-${{ inputs.target }}-${{ hashFiles('.github/native-deps/ffmpeg7-windows.yml') }}
+          cache-downloads: true
+      - name: Set up the MSVC environment
+        if: inputs.os == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Select the MSVC linker explicitly
+        if: inputs.os == 'windows'
+        shell: pwsh
+        run: |
+          $linkerDirectory = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64'
+          $msvcLinker = Join-Path $linkerDirectory 'link.exe'
+          if (!(Test-Path $msvcLinker)) { throw "MSVC linker not found at $msvcLinker" }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$msvcLinker" >> $env:GITHUB_ENV
+          "PATH=$linkerDirectory;$env:PATH" >> $env:GITHUB_ENV
+          Write-Host "Using MSVC linker: $msvcLinker"
+      - name: Install macOS FFmpeg 7
+        if: inputs.os == 'macos'
+        run: brew install ffmpeg@7 pkg-config llvm@19
+      - name: Configure Linux native library paths
+        if: inputs.os == 'linux'
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          echo "FFMPEG_DIR=$CONDA_PREFIX" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$CONDA_PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          libclang_path="$(find /usr/lib/llvm-* -name libclang.so -print -quit)"
+          test -n "$libclang_path"
+          echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
+      - name: Configure Windows native library paths
+        if: inputs.os == 'windows'
+        shell: pwsh
+        run: |
+          $ffmpegRoot = Join-Path $env:CONDA_PREFIX 'Library'
+          $pkgConfigPath = Join-Path $ffmpegRoot 'lib\pkgconfig'
+          $libclangPath = Join-Path $env:CONDA_PREFIX 'Library\bin'
+          $libclangDll = Join-Path $libclangPath 'libclang.dll'
+          if (!(Test-Path -LiteralPath $libclangDll)) {
+            $versionedLibclangDll = Get-ChildItem -LiteralPath $libclangPath -Filter 'libclang-*.dll' -File |
+              Where-Object { $_.Name -match '^libclang-\d+\.dll$' } |
+              Select-Object -First 1
+            if (!$versionedLibclangDll) {
+              throw "Neither libclang.dll nor a versioned libclang DLL was found in $libclangPath"
+            }
+            Copy-Item -LiteralPath $versionedLibclangDll.FullName -Destination $libclangDll -ErrorAction Stop
+          }
+          "FFMPEG_DIR=$ffmpegRoot" >> $env:GITHUB_ENV
+          "PKG_CONFIG_PATH=$pkgConfigPath" >> $env:GITHUB_ENV
+          "LIBCLANG_PATH=$libclangPath" >> $env:GITHUB_ENV
+          "PATH=$libclangPath;$env:PATH" >> $env:GITHUB_ENV
+      - name: Configure macOS native library paths
+        if: inputs.os == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ffmpeg_prefix="$(brew --prefix ffmpeg@7)"
+          llvm_prefix="$(brew --prefix llvm@19)"
+          echo "FFMPEG_DIR=$ffmpeg_prefix" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$ffmpeg_prefix/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=$llvm_prefix/lib" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=$ffmpeg_prefix/lib:${DYLD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "$ffmpeg_prefix/bin" >> "$GITHUB_PATH"
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 12.16.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Verify FFmpeg 7 native dependencies (Linux)
+        if: inputs.os == 'linux'
+        shell: micromamba-shell {0}
+        run: node .github/scripts/verify-native-deps.mjs
+      - name: Verify FFmpeg 7 native dependencies (macOS)
+        if: inputs.os == 'macos'
+        run: node .github/scripts/verify-native-deps.mjs
+      - name: Verify FFmpeg 7 native dependencies (Windows)
+        if: inputs.os == 'windows'
+        shell: pwsh
+        run: node .github/scripts/verify-native-deps.mjs
+      - name: Verify the native Rust target
+        if: inputs.os != 'windows'
+        shell: micromamba-shell {0}
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: |
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          echo "Rust host: $host"
+          test "$host" = "$RUST_TARGET"
+      - name: Verify the native Rust target (Windows)
+        if: inputs.os == 'windows'
+        shell: pwsh
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: |
+          $rustHost = (rustc -vV | Select-String '^host: ').ToString().Substring(6)
+          if ($rustHost -ne $env:RUST_TARGET) { throw "Expected $env:RUST_TARGET but found $rustHost" }
+      - name: Run Rust workspace tests in release profile
+        if: inputs.os == 'linux'
+        shell: micromamba-shell {0}
+        run: cargo test --workspace --release --locked
+      - name: Run Rust workspace tests in release profile (macOS and Windows)
+        if: inputs.os != 'linux'
+        run: cargo test --workspace --release --locked
+      - name: Build standalone server
+        if: inputs.os != 'windows'
+        shell: micromamba-shell {0}
+        run: cargo build --release --locked -p remedia-server
+      - name: Build standalone server (Windows)
+        if: inputs.os == 'windows'
+        run: cargo build --release --locked -p remedia-server
+      - name: Build N-API addon
+        if: inputs.os == 'linux'
+        working-directory: packages/remedia-node
+        shell: micromamba-shell {0}
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target "$RUST_TARGET"
+      - name: Build N-API addon (macOS)
+        if: inputs.os == 'macos'
+        working-directory: packages/remedia-node
+        shell: bash
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target "$RUST_TARGET"
+      - name: Build N-API addon (Windows)
+        if: inputs.os == 'windows'
+        working-directory: packages/remedia-node
+        shell: pwsh
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target $env:RUST_TARGET
+      - name: Stage standalone server binary
+        if: inputs.os != 'windows'
+        shell: bash
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+          SERVER_SUFFIX: ${{ inputs.server_suffix }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/remedia-server"
+          cp "target/release/remedia-server$SERVER_SUFFIX" "$RUNNER_TEMP/remedia-server/remedia-server-$RUST_TARGET$SERVER_SUFFIX"
+      - name: Stage standalone server binary (Windows)
+        if: inputs.os == 'windows'
+        shell: pwsh
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+          SERVER_SUFFIX: ${{ inputs.server_suffix }}
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\remedia-server" | Out-Null
+          Copy-Item target\release\remedia-server.exe "$env:RUNNER_TEMP\remedia-server\remedia-server-$env:RUST_TARGET$env:SERVER_SUFFIX"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bindings-${{ inputs.target }}
+          path: |
+            packages/remedia-node/node.*.node
+            packages/remedia-node/native.js
+            packages/remedia-node/native.d.ts
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        with:
+          name: server-${{ inputs.target }}
+          path: ${{ runner.temp }}/remedia-server/remedia-server-${{ inputs.target }}${{ inputs.server_suffix }}
+          if-no-files-found: error
+          retention-days: 7
+
+  test:
+    if: inputs.tier == 'supported'
+    name: Test ${{ inputs.target }} on Node ${{ matrix.node }}
+    needs: build
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.18.0', '24', '26']
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Apply the release version before package installation
+        if: inputs.release_version != ''
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: node .github/scripts/release.mjs sync "$RELEASE_VERSION"
+      - name: Install Linux FFmpeg 7 runtime libraries
+        if: inputs.os == 'linux'
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: .github/native-deps/ffmpeg7.yml
+          environment-name: remedia-ffmpeg7
+          init-shell: bash
+          cache-environment: true
+          cache-environment-key: ffmpeg7-${{ inputs.target }}-${{ hashFiles('.github/native-deps/ffmpeg7.yml') }}
+          cache-downloads: true
+      - name: Install Windows FFmpeg 7 runtime libraries
+        if: inputs.os == 'windows'
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: .github/native-deps/ffmpeg7-windows.yml
+          environment-name: remedia-ffmpeg7
+          init-shell: powershell
+          cache-environment: true
+          cache-environment-key: ffmpeg7-${{ inputs.target }}-${{ hashFiles('.github/native-deps/ffmpeg7-windows.yml') }}
+          cache-downloads: true
+      - name: Set up the MSVC environment
+        if: inputs.os == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Install macOS FFmpeg 7 runtime libraries
+        if: inputs.os == 'macos'
+        run: brew install ffmpeg@7 pkg-config
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 12.16.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          name: bindings-${{ inputs.target }}
+          path: packages/remedia-node
+      - uses: actions/download-artifact@v8
+        with:
+          name: server-${{ inputs.target }}
+          path: ${{ runner.temp }}/remedia-server
+      - name: Configure Linux native library paths
+        if: inputs.os == 'linux'
+        shell: micromamba-shell {0}
+        run: |
+          echo "FFMPEG_DIR=$CONDA_PREFIX" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$CONDA_PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+      - name: Configure Windows native library paths
+        if: inputs.os == 'windows'
+        shell: pwsh
+        run: |
+          $ffmpegRoot = Join-Path $env:CONDA_PREFIX 'Library'
+          "FFMPEG_DIR=$ffmpegRoot" >> $env:GITHUB_ENV
+          "PKG_CONFIG_PATH=$(Join-Path $ffmpegRoot 'lib\pkgconfig')" >> $env:GITHUB_ENV
+          "PATH=$(Join-Path $ffmpegRoot 'bin');$env:PATH" >> $env:GITHUB_ENV
+      - name: Configure macOS native library paths
+        if: inputs.os == 'macos'
+        shell: bash
+        run: |
+          ffmpeg_prefix="$(brew --prefix ffmpeg@7)"
+          echo "FFMPEG_DIR=$ffmpeg_prefix" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$ffmpeg_prefix/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=$ffmpeg_prefix/lib:${DYLD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "$ffmpeg_prefix/bin" >> "$GITHUB_PATH"
+      - name: Make the downloaded server executable
+        if: inputs.os != 'windows'
+        shell: bash
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+          SERVER_SUFFIX: ${{ inputs.server_suffix }}
+        run: chmod +x "$RUNNER_TEMP/remedia-server/remedia-server-$RUST_TARGET$SERVER_SUFFIX"
+      - name: Verify installed FFmpeg 7 dependencies (Linux)
+        if: inputs.os == 'linux'
+        shell: micromamba-shell {0}
+        run: node .github/scripts/verify-native-deps.mjs
+      - name: Verify installed FFmpeg 7 dependencies (macOS)
+        if: inputs.os == 'macos'
+        run: node .github/scripts/verify-native-deps.mjs
+      - name: Verify installed FFmpeg 7 dependencies (Windows)
+        if: inputs.os == 'windows'
+        shell: pwsh
+        run: node .github/scripts/verify-native-deps.mjs
+      - name: Verify downloaded native binary architecture and dependencies
+        env:
+          REMEDIA_SERVER_BINARY: ${{ runner.temp }}/remedia-server/remedia-server-${{ inputs.target }}${{ inputs.server_suffix }}
+        run: node .github/scripts/verify-native-artifacts.mjs
+      - run: pnpm --filter @remedia/node build:types
+      - run: pnpm --filter @remedia/client build
+      - run: pnpm --filter @remedia/node test:bindings
+      - run: pnpm --filter @remedia/client test
+      - run: pnpm --filter @remedia/client test:hybrid
+      - name: Run standalone server integration using the downloaded binary
+        env:
+          REMEDIA_SERVER_BINARY: ${{ runner.temp }}/remedia-server/remedia-server-${{ inputs.target }}${{ inputs.server_suffix }}
+        run: pnpm --filter @remedia/client test:server
+
+  experimental-probe:
+    if: inputs.tier == 'experimental'
+    name: Experimental preflight ${{ inputs.target }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the requested Rust target
+        run: |
+          rustup show active-toolchain
+          rustup target add ${{ inputs.target }}
+      - uses: mlugg/setup-zig@v2
+        if: contains(inputs.target, 'musl')
+        with:
+          version: 0.14.1
+      - name: Install cargo-zigbuild for musl targets
+        if: contains(inputs.target, 'musl')
+        uses: taiki-e/install-action@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          tool: cargo-zigbuild
+      - name: Configure QEMU for ARMv7 GNU
+        if: inputs.target == 'armv7-unknown-linux-gnueabihf'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+      - name: Configure Android NDK API 24 toolchains
+        if: inputs.os == 'android'
+        uses: android-actions/setup-android@v3
+      - name: Install Android NDK and set target linkers
+        if: inputs.os == 'android'
+        shell: bash
+        run: |
+          sdkmanager "ndk;27.2.12479018"
+          ndk="$ANDROID_HOME/ndk/27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          if [ "${{ inputs.target }}" = "aarch64-linux-android" ]; then
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+          else
+            echo "CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang" >> "$GITHUB_ENV"
+          fi
+      - name: Install the MSVC target toolchain
+        if: inputs.os == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ inputs.target == 'i686-pc-windows-msvc' && 'x86' || 'arm64' }}
+      - name: Install pnpm for cross-target build probes
+        if: inputs.os != 'freebsd'
+        uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 12.16.1
+      - name: Set up Node.js for cross-target build probes
+        if: inputs.os != 'freebsd'
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Apply the release version before package installation
+        if: inputs.os != 'freebsd' && inputs.release_version != ''
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: node .github/scripts/release.mjs sync "$RELEASE_VERSION"
+      - name: Install workspace dependencies for the target build probe
+        if: inputs.os != 'freebsd'
+        run: pnpm install --frozen-lockfile
+      - name: Report known target FFmpeg dependency blocker
+        if: inputs.os != 'freebsd'
+        run: node .github/scripts/check-experimental-native-deps.mjs "${{ inputs.target }}" "${{ inputs.blocker }}"
+      - name: Attempt the Linux cross-target N-API build
+        if: inputs.os == 'linux'
+        working-directory: packages/remedia-node
+        shell: bash
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: |
+          case "$RUST_TARGET" in
+            *-musl) pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target "$RUST_TARGET" --cross-compile ;;
+            armv7-unknown-linux-gnueabihf) pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target "$RUST_TARGET" --use-napi-cross ;;
+            *) pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target "$RUST_TARGET" ;;
+          esac
+      - name: Attempt the Android N-API build
+        if: inputs.os == 'android'
+        working-directory: packages/remedia-node
+        shell: bash
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target "$RUST_TARGET"
+      - name: Attempt the Windows N-API build
+        if: inputs.os == 'windows'
+        working-directory: packages/remedia-node
+        shell: pwsh
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target $env:RUST_TARGET
+      - name: Prepare FreeBSD 15 native VM, build, and runtime tests
+        if: inputs.os == 'freebsd'
+        uses: cross-platform-actions/action@v1.6.0
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        with:
+          operating_system: freebsd
+          version: '15.0'
+          memory: 8G
+          cpu_count: 3
+          environment_variables: RELEASE_VERSION
+          shell: bash
+          run: |
+            set -euo pipefail
+            sudo pkg update -f
+            sudo pkg install -y curl node npm cmake pkgconf llvm19 ffmpeg7
+            test "$(ffmpeg -version | head -n 1 | sed -E 's/.* version ([0-9]+).*/\1/')" = 7
+            test "$(pkg-config --modversion libavcodec | cut -d. -f1)" = 61
+            curl https://sh.rustup.rs -sSf --output rustup.sh
+            sh rustup.sh -y --profile minimal --default-toolchain 1.99.1
+            source "$HOME/.cargo/env"
+            sudo npm install --global pnpm@12.16.1 --ignore-scripts
+            export FFMPEG_DIR=/usr/local
+            export PKG_CONFIG_PATH=/usr/local/libdata/pkgconfig:/usr/local/lib/pkgconfig
+            export LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH:-}
+            export LIBCLANG_PATH="$(dirname "$(find /usr/local -name libclang.so -print -quit)")"
+            if [ -n "$RELEASE_VERSION" ]; then
+              node .github/scripts/release.mjs sync "$RELEASE_VERSION"
+            fi
+            pnpm install --frozen-lockfile
+            cargo test --workspace --release --locked
+            cargo build --release --locked -p remedia-server
+            pnpm --filter @remedia/node exec napi build --platform --esm --js native.js --dts native.d.ts --release --target x86_64-unknown-freebsd
+            pnpm --filter @remedia/node build:types
+            pnpm --filter @remedia/client build
+            pnpm --filter @remedia/node test:bindings
+            pnpm --filter @remedia/client test
+            pnpm --filter @remedia/client test:hybrid
+            REMEDIA_SERVER_BINARY="$PWD/target/release/remedia-server" pnpm --filter @remedia/client test:server
+      - name: Upload experimental FreeBSD compile and runtime-tested artifacts
+        if: inputs.os == 'freebsd'
+        uses: actions/upload-artifact@v7
+        with:
+          name: experimental-${{ inputs.target }}
+          path: |
+            packages/remedia-node/node.freebsd-x64.node
+            target/release/remedia-server
+          if-no-files-found: error
+          retention-days: 7
+      - name: Report the remaining FFmpeg 7 target dependency blocker
+        run: node .github/scripts/check-experimental-native-deps.mjs "${{ inputs.target }}" "${{ inputs.blocker }}"
