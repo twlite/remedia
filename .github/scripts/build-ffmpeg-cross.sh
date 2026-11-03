@@ -85,7 +85,14 @@ else
     local_as="$tools_dir/as"
     cat > "$local_cc" <<EOF
 #!/usr/bin/env bash
-exec zig cc -target '$zig_triple' "\$@"
+set -euo pipefail
+# cc-rs adds the Rust triple as --target=...; Zig requires the normalized
+# target below and cannot parse the Rust 'unknown' vendor in that flag.
+args=()
+for arg in "\$@"; do
+  case "\$arg" in --target=*) ;; *) args+=("\$arg") ;; esac
+done
+exec zig cc -target '$zig_triple' "\${args[@]}"
 EOF
     cat > "$local_as" <<EOF
 #!/usr/bin/env bash
@@ -155,6 +162,11 @@ EOF
   )
   if [[ -n "$target_cpu" ]]; then
     configure_args+=("--cpu=$target_cpu")
+  fi
+  if [[ "$target" == 'armv7-unknown-linux-gnueabihf' ]]; then
+    # Ubuntu's ARM hard-float cross GCC needs an explicit FPU when FFmpeg
+    # sets -march=armv7-a (otherwise cc1 reports no FPU for -mfloat-abi=hard).
+    configure_args+=("--extra-cflags=-mfpu=neon -mfloat-abi=hard")
   fi
   if [[ -n "$target_sysroot" ]]; then
     configure_args+=("--sysroot=$target_sysroot")
