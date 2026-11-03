@@ -391,6 +391,28 @@ test('filter and volume state are independent between guild sessions', async () 
   await manager.close();
 });
 
+test('toggling a preset removes only that preset and clears the graph when the list empties', async () => {
+  const { manager, session } = createManager();
+  await manager.enqueue('guild', 'channel', 'bot', {
+    url: 'https://media.example/toggle.wav',
+    requestedBy: 'alice',
+  });
+  await manager.setFilters('guild', 'channel', ['bassboost', 'nightcore', 'tremolo']);
+
+  assert.equal(await manager.toggleFilter('guild', 'channel', 'nightcore'), 'removed');
+  assert.deepEqual((await manager.snapshot('guild', 'channel')).filterPresets, [
+    'bassboost',
+    'tremolo',
+  ]);
+  assert.equal(session.filters.graph, `${FILTER_PRESETS.bassboost},${FILTER_PRESETS.tremolo}`);
+
+  assert.equal(await manager.toggleFilter('guild', 'channel', 'bassboost'), 'removed');
+  assert.equal(await manager.toggleFilter('guild', 'channel', 'tremolo'), 'removed');
+  assert.deepEqual((await manager.snapshot('guild', 'channel')).filterPresets, []);
+  assert.equal(session.filters.graph, null);
+  await manager.close();
+});
+
 test('bounds the in-memory queue', async () => {
   const { manager } = createManager();
   await manager.enqueue('guild', 'channel', 'bot', {

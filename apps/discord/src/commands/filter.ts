@@ -11,7 +11,7 @@ export default {
       {
         type: 1,
         name: 'set',
-        description: 'Add an audio filter preset.',
+        description: 'Toggle an audio filter preset on or off.',
         options: [
           {
             type: 3,
@@ -35,9 +35,11 @@ export default {
         const action = interaction.options.getSubcommand();
         if (action === 'set') {
           const preset = interaction.options.getString('preset', true) as FilterPresetName;
-          await manager.setFilter(guildId, channelId, preset);
+          const result = await manager.toggleFilter(guildId, channelId, preset);
           const snapshot = await manager.snapshot(guildId, channelId);
-          return `Active filters: ${snapshot.filterPresets.join(', ')}.`;
+          const active = snapshot.filterPresets.join(', ') || 'none';
+          const status = result === 'added' ? 'Added' : 'Removed';
+          return `${status} the ${preset} filter. Active filters: ${active}.`;
         }
         if (action === 'clear') {
           await manager.clearFilters(guildId, channelId);

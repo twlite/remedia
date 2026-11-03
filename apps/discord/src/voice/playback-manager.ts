@@ -193,22 +193,33 @@ export class DiscordPlaybackManager {
       }
 
       const next = [...new Set([...player.filterPresets, ...presets])];
-      const graph = filterGraphFor(next);
-      if (graph === null) {
-        if (player.session.filters.graph !== null) await player.session.filters.clear();
-      } else if (player.session.filters.graph !== graph) {
-        await player.session.filters.set(graph);
+      await this.#applyFilterPresets(player, next);
+    });
+  }
+
+  async toggleFilter(
+    guildId: string,
+    channelId: string,
+    preset: FilterPresetName,
+  ): Promise<'added' | 'removed'> {
+    const player = this.#getPlayer(guildId, channelId);
+    return this.#serialize(player, async () => {
+      if (!Object.hasOwn(FILTER_PRESETS, preset)) {
+        throw new RangeError(`Unknown filter preset: ${preset}`);
       }
-      player.filterPresets = next;
+
+      const isActive = player.filterPresets.includes(preset);
+      const next = isActive
+        ? player.filterPresets.filter((activePreset) => activePreset !== preset)
+        : [...player.filterPresets, preset];
+      await this.#applyFilterPresets(player, next);
+      return isActive ? 'removed' : 'added';
     });
   }
 
   async clearFilters(guildId: string, channelId: string): Promise<void> {
     const player = this.#getPlayer(guildId, channelId);
-    await this.#serialize(player, async () => {
-      if (player.session.filters.graph !== null) await player.session.filters.clear();
-      player.filterPresets = [];
-    });
+    await this.#serialize(player, () => this.#clearFilterPresets(player));
   }
 
   async setVolume(guildId: string, channelId: string, percent: number): Promise<void> {
@@ -349,6 +360,21 @@ export class DiscordPlaybackManager {
       }
     }
     if (firstFailure) throw firstFailure;
+  }
+
+  async #applyFilterPresets(player: GuildPlayer, presets: FilterPresetName[]): Promise<void> {
+    if (presets.length === 0) return this.#clearFilterPresets(player);
+
+    const graph = filterGraphFor(presets);
+    if (graph !== null && player.session.filters.graph !== graph) {
+      await player.session.filters.set(graph);
+    }
+    player.filterPresets = presets;
+  }
+
+  async #clearFilterPresets(player: GuildPlayer): Promise<void> {
+    if (player.session.filters.graph !== null) await player.session.filters.clear();
+    player.filterPresets = [];
   }
 
   async #watchCompletion(player: GuildPlayer, generation: number): Promise<void> {

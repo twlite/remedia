@@ -23,28 +23,35 @@ test('filter and volume slash commands read and change the guild playback settin
     });
 
     let response = await invoke(filterCommand, 'set', 'nightcore');
-    assert.equal(response.description, 'Active filters: nightcore.');
+    assert.equal(response.description, 'Added the nightcore filter. Active filters: nightcore.');
     assert.equal(response.color, 0x5865f2);
     assert.equal(session.filters.graph, 'asetrate=60000,aresample=48000');
 
     response = await invoke(filterCommand, 'set', 'tremolo');
-    assert.equal(response.description, 'Active filters: nightcore, tremolo.');
+    assert.equal(
+      response.description,
+      'Added the tremolo filter. Active filters: nightcore, tremolo.',
+    );
     assert.equal(session.filters.graph, 'asetrate=60000,aresample=48000,tremolo=f=5:d=0.6');
 
     response = await invoke(filterCommand, 'set', 'nightcore');
-    assert.equal(response.description, 'Active filters: nightcore, tremolo.');
-    assert.equal(session.filters.graph, 'asetrate=60000,aresample=48000,tremolo=f=5:d=0.6');
+    assert.equal(response.description, 'Removed the nightcore filter. Active filters: tremolo.');
+    assert.equal(session.filters.graph, 'tremolo=f=5:d=0.6');
 
     response = await invoke(filterCommand, 'list');
     assert.match(
       response.description ?? '',
       /8d, bassboost, nightcore, vaporwave, tremolo, vibrato/,
     );
-    assert.match(response.description ?? '', /Current: nightcore, tremolo/);
+    assert.match(response.description ?? '', /Current: tremolo/);
     response = await invoke(filterCommand, 'set', 'not-a-preset');
     assert.match(response.description ?? '', /Unknown filter preset/i);
     assert.equal(response.color, 0xed4245);
-    assert.equal(session.filters.graph, 'asetrate=60000,aresample=48000,tremolo=f=5:d=0.6');
+    assert.equal(session.filters.graph, 'tremolo=f=5:d=0.6');
+
+    response = await invoke(filterCommand, 'set', 'tremolo');
+    assert.equal(response.description, 'Removed the tremolo filter. Active filters: none.');
+    assert.equal(session.filters.graph, null);
 
     response = await invoke(volumeCommand, undefined, undefined, undefined);
     assert.equal(response.description, 'Current volume: 100%.');
@@ -52,6 +59,7 @@ test('filter and volume slash commands read and change the guild playback settin
     assert.equal(response.description, 'Volume set to 75%.');
     assert.equal(session.volume, 0.75);
 
+    await invoke(filterCommand, 'set', 'nightcore');
     response = await invoke(filterCommand, 'clear');
     assert.equal(response.description, 'All audio filters cleared.');
     assert.equal(session.filters.graph, null);
