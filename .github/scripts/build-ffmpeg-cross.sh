@@ -49,7 +49,7 @@ else
       local_nm='arm-linux-gnueabihf-nm'
       local_ranlib='arm-linux-gnueabihf-ranlib'
       local_strip='arm-linux-gnueabihf-strip'
-      target_sysroot='/usr/arm-linux-gnueabihf'
+      # Let the cross-GCC driver use its own tested sysroot and multilib search paths.
       ;;
     aarch64-linux-android)
       target_os='android'
@@ -97,7 +97,7 @@ exec zig ar "$@"
 EOF
     cat > "$tools_dir/nm" <<'EOF'
 #!/usr/bin/env bash
-exec zig nm "$@"
+exec llvm-nm "$@"
 EOF
     cat > "$tools_dir/ranlib" <<'EOF'
 #!/usr/bin/env bash
@@ -105,7 +105,7 @@ exec zig ranlib "$@"
 EOF
     cat > "$tools_dir/strip" <<'EOF'
 #!/usr/bin/env bash
-exec zig strip "$@"
+exec llvm-strip "$@"
 EOF
     chmod +x "$local_cc" "$local_as" "$tools_dir/ar" "$tools_dir/nm" "$tools_dir/ranlib" "$tools_dir/strip"
     local_ar="$tools_dir/ar"
@@ -161,7 +161,10 @@ EOF
   fi
 
   pushd "$source_dir" >/dev/null
-  ./configure "${configure_args[@]}"
+  if ! ./configure "${configure_args[@]}"; then
+    cat ffbuild/config.log >&2 || true
+    exit 1
+  fi
   make -j"${FFMPEG_BUILD_JOBS:-2}"
   make install
   popd >/dev/null
