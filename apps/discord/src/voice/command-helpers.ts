@@ -109,6 +109,10 @@ export async function withCommandReply(
     }
     return;
   }
+  // The original ephemeral acknowledgement is no longer needed once the
+  // public confirmation was delivered. Cleanup failures must not turn a
+  // successful command into an error or send duplicate confirmations.
+  await interaction.deleteReply().catch(() => undefined);
 }
 
 export function createCommandEmbed(
