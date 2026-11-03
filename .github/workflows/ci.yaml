@@ -132,7 +132,6 @@ jobs:
   experimental-platforms:
     name: Experimental target probes
     needs: release-detection
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:

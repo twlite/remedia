@@ -370,6 +370,7 @@ jobs:
 
   experimental-probe:
     if: inputs.tier == 'experimental'
+    continue-on-error: true
     name: Experimental preflight ${{ inputs.target }}
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 90
