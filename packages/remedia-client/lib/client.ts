@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { EmbeddedNodeAdapter } from './embedded-node.js';
-import { NodeSelectionError, asError } from './errors.js';
+import { DiscordBotMismatchError, NodeSelectionError, asError } from './errors.js';
 import { RemoteNodeAdapter, RemoteNodeEvent } from './remote-node.js';
 import { DiscordSession, parseGatewayDispatch, type DiscordSessionRuntime } from './discord.js';
 import { RemediaEventEmitter } from './events.js';
@@ -36,6 +36,7 @@ export class RemediaClient
   implements DiscordSessionRuntime
 {
   readonly #send: DiscordGatewaySend;
+  readonly #botUserId: string | undefined;
   readonly #nodes = new Map<string, NodeAdapter>();
   readonly #sessions = new Map<string, ManagedDiscordSession>();
   readonly #assignments = new Map<string, GuildAssignment>();
@@ -49,6 +50,7 @@ export class RemediaClient
   private constructor(options: RemediaClientOptions) {
     super();
     this.#send = options.send;
+    this.#botUserId = options.botUserId;
     this.#selectNode = options.selectNode;
 
     const ids = new Set<string>();
@@ -64,6 +66,7 @@ export class RemediaClient
             )
           : new RemoteNodeAdapter({
               config,
+              botUserId: options.botUserId ?? '',
               requestTimeoutMs: options.requestTimeoutMs ?? 15_000,
               maxPendingRequests: options.maxPendingRequests ?? 128,
             });
@@ -106,6 +109,9 @@ export class RemediaClient
     options: DiscordSessionOptions,
   ): DiscordSession<Metadata> {
     this.#assertOpen();
+    if (this.#botUserId && options.userId !== this.#botUserId) {
+      throw new DiscordBotMismatchError('RemediaClient', this.#botUserId, options.userId);
+    }
     if (this.#sessions.has(options.guildId))
       throw new Error(`a Discord session already exists for guild ${options.guildId}`);
     const session = new DiscordSession<Metadata>(this, options);
@@ -410,6 +416,15 @@ function validateOptions(options: RemediaClientOptions): void {
     throw new TypeError('nodes must contain at least one node');
   if (typeof options.send !== 'function')
     throw new TypeError('send must be a Discord Gateway callback');
+  const hasRemoteNode = options.nodes.some((node) => node?.type === 'remote');
+  if (hasRemoteNode && !isSnowflake(options.botUserId ?? '')) {
+    throw new TypeError(
+      'botUserId must be a positive decimal Discord snowflake when using remote nodes',
+    );
+  }
+  if (options.botUserId !== undefined && !isSnowflake(options.botUserId)) {
+    throw new TypeError('botUserId must be a positive decimal Discord snowflake');
+  }
   if (
     options.requestTimeoutMs !== undefined &&
     (!Number.isSafeInteger(options.requestTimeoutMs) || options.requestTimeoutMs < 1)
@@ -440,7 +455,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isSnowflake(value: string): boolean {
-  if (!/^\d{1,20}$/.test(value)) return false;
+  if (typeof value !== 'string' || !/^\d{1,20}$/.test(value)) return false;
   try {
     return BigInt(value) > 0n && BigInt(value) <= 18_446_744_073_709_551_615n;
   } catch {

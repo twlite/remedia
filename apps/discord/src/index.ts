@@ -26,16 +26,13 @@ const nodes: RemediaNodeConfig[] =
   mode === 'embedded'
     ? [{ type: 'embedded', id: 'embedded' }]
     : remoteNodesFromEnvironment(process.env.REMEDIA_NODES);
-const runtime = VoiceRuntime.start(
-  await RemediaClient.create({
-    nodes,
-    send(guildId, payload) {
-      sendGatewayVoicePayload(client, guildId, payload);
-    },
-  }),
-);
-
-client.on(Events.Raw, (packet) => runtime.receive(packet));
+let runtime: VoiceRuntime | undefined;
+let resolveReady!: (readyClient: DiscordClient<true>) => void;
+const ready = new Promise<DiscordClient<true>>((resolve) => {
+  resolveReady = resolve;
+});
+client.once(Events.ClientReady, resolveReady);
+client.on(Events.Raw, (packet) => runtime?.receive(packet));
 
 // Load the events and commands
 const events = await loadEvents(new URL('events/', import.meta.url));
@@ -54,7 +51,7 @@ for (const event of events) {
 let shutdown: Promise<void> | undefined;
 async function close(): Promise<void> {
   if (shutdown) return shutdown;
-  shutdown = runtime.close().finally(() => {
+  shutdown = (runtime?.close() ?? Promise.resolve()).finally(() => {
     client.destroy();
   });
   return shutdown;
@@ -69,6 +66,16 @@ process.once('SIGTERM', () => {
 
 try {
   await client.login(token);
+  const readyClient = await ready;
+  runtime = VoiceRuntime.start(
+    await RemediaClient.create({
+      nodes,
+      botUserId: readyClient.user.id,
+      send(guildId, payload) {
+        sendGatewayVoicePayload(client, guildId, payload);
+      },
+    }),
+  );
 } catch (error) {
   await close().catch((closeError: unknown) => {
     console.error('Cleanup after Gateway login failure also failed:', closeError);

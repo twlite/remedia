@@ -13,6 +13,8 @@ use tokio_tungstenite::{WebSocketStream, connect_async, tungstenite};
 use remedia_server::{ServerConfig, ServerHandle};
 
 static NEXT_CONFIG: AtomicU64 = AtomicU64::new(1);
+const BOT_A_ID: &str = "100000000000000001";
+const BOT_B_ID: &str = "100000000000000002";
 
 struct RunningServer {
     server: ServerHandle,
@@ -32,8 +34,8 @@ impl RunningServer {
         let json = json!({
             "bind": {"host": "127.0.0.1", "port": 0},
             "users": [
-                {"username": "bot-a", "password": "password-a", "discordBotUserId": "100000000000000001"},
-                {"username": "bot-b", "password": "password-b", "discordBotUserId": "100000000000000002"}
+                {"username": "bot-a", "password": "password-a"},
+                {"username": "bot-b", "password": "password-b"}
             ],
             "sessionResumptionTimeoutSeconds": resume_seconds,
             "limits": {
@@ -68,6 +70,34 @@ impl RunningServer {
     }
 
     async fn connect(&self, username: &str, password: &str) -> Result<TestSocket, WsError> {
+        self.connect_as(username, password, BOT_A_ID).await
+    }
+
+    async fn connect_as(
+        &self,
+        username: &str,
+        password: &str,
+        bot_user_id: &str,
+    ) -> Result<TestSocket, WsError> {
+        let credentials =
+            base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
+        let mut request = self.url().into_client_request().unwrap();
+        request.headers_mut().insert(
+            AUTHORIZATION,
+            format!("Basic {credentials}").parse().unwrap(),
+        );
+        request
+            .headers_mut()
+            .insert("x-remedia-bot-id", bot_user_id.parse().unwrap());
+        let (socket, _) = connect_async(request).await?;
+        Ok(socket)
+    }
+
+    async fn connect_without_bot_id(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<TestSocket, WsError> {
         let credentials =
             base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
         let mut request = self.url().into_client_request().unwrap();
@@ -175,6 +205,22 @@ async fn websocket_auth_request_correlation_and_malformed_message_errors() {
         WsError::Http(response) => assert_eq!(response.status(), 401),
         error => panic!("expected a rejected handshake, received {error}"),
     }
+    let missing_bot_id = server
+        .connect_without_bot_id("bot-a", "password-a")
+        .await
+        .unwrap_err();
+    match missing_bot_id {
+        WsError::Http(response) => assert_eq!(response.status(), 400),
+        error => panic!("expected a rejected bot identity, received {error}"),
+    }
+    let invalid_bot_id = server
+        .connect_as("bot-a", "password-a", "0")
+        .await
+        .unwrap_err();
+    match invalid_bot_id {
+        WsError::Http(response) => assert_eq!(response.status(), 400),
+        error => panic!("expected a rejected bot identity, received {error}"),
+    }
 
     let mut socket = server.connect("bot-a", "password-a").await.unwrap();
     let response = rpc(&mut socket, "correlation-42", "node.info", json!({})).await;
@@ -206,6 +252,82 @@ async fn websocket_auth_request_correlation_and_malformed_message_errors() {
 }
 
 #[tokio::test]
+async fn authenticated_connections_supply_independent_bot_ids_in_the_handshake() {
+    let server = RunningServer::start(60, 4).await;
+    let mut first = server
+        .connect_as("bot-a", "password-a", BOT_A_ID)
+        .await
+        .unwrap();
+    let first_session = rpc(&mut first, "first-create", "client.create", json!({})).await;
+    assert_eq!(first_session["result"]["botUserId"], BOT_A_ID);
+    let first_guild = rpc(
+        &mut first,
+        "first-guild",
+        "guild.create",
+        json!({"guildId": "200000000000000001"}),
+    )
+    .await;
+    assert_eq!(first_guild["result"]["botUserId"], BOT_A_ID);
+
+    let mut second = server
+        .connect_as("bot-a", "password-a", BOT_B_ID)
+        .await
+        .unwrap();
+    let second_session = rpc(&mut second, "second-create", "client.create", json!({})).await;
+    assert_eq!(second_session["result"]["botUserId"], BOT_B_ID);
+    let second_guild = rpc(
+        &mut second,
+        "second-guild",
+        "guild.create",
+        json!({"guildId": "200000000000000001"}),
+    )
+    .await;
+    assert_eq!(second_guild["result"]["botUserId"], BOT_B_ID);
+    let first_list = rpc(&mut first, "first-list", "client.list", json!({})).await;
+    assert_eq!(
+        first_list["result"]["sessions"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        first_list["result"]["sessions"][0]["sessionId"],
+        first_session["result"]["sessionId"]
+    );
+    let second_list = rpc(&mut second, "second-list", "client.list", json!({})).await;
+    assert_eq!(
+        second_list["result"]["sessions"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        second_list["result"]["sessions"][0]["sessionId"],
+        second_session["result"]["sessionId"]
+    );
+
+    let mut owner = server
+        .connect_as("bot-a", "password-a", BOT_A_ID)
+        .await
+        .unwrap();
+    let (session_id, resume_credential) = create_client(&mut owner).await;
+    let mut wrong_bot = server
+        .connect_as("bot-a", "password-a", BOT_B_ID)
+        .await
+        .unwrap();
+    let resume = rpc(
+        &mut wrong_bot,
+        "wrong-bot-resume",
+        "client.resume",
+        json!({"sessionId": session_id, "resumeCredential": resume_credential}),
+    )
+    .await;
+    assert_eq!(resume["error"]["code"], "unknown_session");
+
+    drop(first);
+    drop(second);
+    drop(owner);
+    drop(wrong_bot);
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn client_and_guild_ownership_are_isolated_and_capacity_is_enforced() {
     let server = RunningServer::start(60, 1).await;
     let mut first = server.connect("bot-a", "password-a").await.unwrap();
@@ -227,7 +349,10 @@ async fn client_and_guild_ownership_are_isolated_and_capacity_is_enforced() {
     .await;
     assert_eq!(limited["error"]["code"], "resource_exhausted");
 
-    let mut second = server.connect("bot-b", "password-b").await.unwrap();
+    let mut second = server
+        .connect_as("bot-b", "password-b", BOT_B_ID)
+        .await
+        .unwrap();
     let unauthorized_resume = rpc(
         &mut second,
         "resume-isolation",

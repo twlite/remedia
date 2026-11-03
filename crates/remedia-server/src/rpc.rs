@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use tokio::time::MissedTickBehavior;
 use tracing::instrument::WithSubscriber;
 
-use crate::config::{AuthUser, MediaAccessError};
+use crate::config::MediaAccessError;
 use crate::protocol::{RpcError, RpcRequest};
 use crate::state::{
     ClientSession, ConnectionContext, GuildSession, ServerInner, StateError, lock,
@@ -56,13 +56,13 @@ pub(crate) async fn execute(
                     "this WebSocket already controls a client session",
                 ));
             }
-            let user = AuthUser {
-                username: connection.principal.clone(),
-                password: String::new(),
-                discord_bot_user_id: connection.bot_user_id,
-            };
             let (session, credential) = server
-                .create_client(&user, &connection.id, server.config.limits.event_buffer)
+                .create_client(
+                    &connection.principal,
+                    connection.bot_user_id,
+                    &connection.id,
+                    server.config.limits.event_buffer,
+                )
                 .map_err(state_error)?;
             connection.set_session(Some(Arc::clone(&session)));
             Ok(json!({
@@ -73,7 +73,9 @@ pub(crate) async fn execute(
         }
         "client.list" => {
             decode_params::<EmptyParams>(request.params)?;
-            Ok(json!({ "sessions": server.list_clients(&connection.principal) }))
+            Ok(json!({
+                "sessions": server.list_clients(&connection.principal, connection.bot_user_id)
+            }))
         }
         "client.resume" => {
             let params: ResumeParams = decode_params(request.params)?;
@@ -89,6 +91,7 @@ pub(crate) async fn execute(
                     &params.session_id,
                     &params.resume_credential,
                     &connection.principal,
+                    connection.bot_user_id,
                     &connection.id,
                 )
                 .map_err(state_error)?;

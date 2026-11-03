@@ -37,6 +37,8 @@ REMEDIA_NODES='[
 
 Then deploy and start as usual; remote mode does not build or load the native
 addon. The bot uses the same queue and slash command logic for both backends.
+After Discord Gateway READY, the bot sends its own user ID in the authenticated Remedia
+WebSocket handshake. No Discord bot ID belongs in the server config or node credentials.
 New guilds are assigned to healthy nodes using player capacity, and each guild
 stays on its original node. Temporary WebSocket loss attempts session
 resumption. An expired server session is reported and is not silently migrated

@@ -108,6 +108,7 @@ interface PlaybackWaiter {
 
 export interface RemoteNodeOptions {
   config: RemoteNodeConfig;
+  botUserId: string;
   requestTimeoutMs: number;
   maxPendingRequests: number;
 }
@@ -136,7 +137,7 @@ export class RemoteNodeAdapter
   #rpc: RpcClient | undefined;
   #sessionId: string | undefined;
   #resumeCredential: string | undefined;
-  #botUserId: string | undefined;
+  readonly #botUserId: string;
   #lastSequence = 0;
   #closed = false;
   #connecting = false;
@@ -157,6 +158,10 @@ export class RemoteNodeAdapter
     // the node's configured player capacity.
     this.setMaxListeners(0);
     this.id = options.config.id;
+    if (!isSnowflake(options.botUserId)) {
+      throw new TypeError('remote node botUserId must be a positive decimal Discord snowflake');
+    }
+    this.#botUserId = options.botUserId;
     this.#endpoint = parseRemoteEndpoint(options.config.url, options.config.auth);
     this.#requestTimeoutMs = options.requestTimeoutMs;
     this.#maxPendingRequests = options.maxPendingRequests;
@@ -188,7 +193,7 @@ export class RemoteNodeAdapter
     return this.#status;
   }
 
-  get botUserId(): string | undefined {
+  get botUserId(): string {
     return this.#botUserId;
   }
 
@@ -196,7 +201,7 @@ export class RemoteNodeAdapter
     return this.#guilds;
   }
 
-  get authenticatedBotUserId(): string | undefined {
+  get authenticatedBotUserId(): string {
     return this.#botUserId;
   }
 
@@ -483,6 +488,7 @@ export class RemoteNodeAdapter
         this.id,
         this.#endpoint.url,
         this.#endpoint.authorization,
+        this.#botUserId,
         this.#requestTimeoutMs,
         (openingSocket) => {
           this.#openingSocket = openingSocket;
@@ -615,9 +621,11 @@ export class RemoteNodeAdapter
     if (!created.sessionId || !created.resumeCredential || !isSnowflake(created.botUserId)) {
       throw new ProtocolError(this.id, 'client.create returned malformed session identity');
     }
+    if (created.botUserId !== this.#botUserId) {
+      throw new ProtocolError(this.id, 'client.create returned a different handshake bot identity');
+    }
     this.#sessionId = created.sessionId;
     this.#resumeCredential = created.resumeCredential;
-    this.#botUserId = created.botUserId;
   }
 
   async #resumeSession(rpc: RpcClient): Promise<boolean> {
@@ -684,7 +692,6 @@ export class RemoteNodeAdapter
     this.#pendingVoiceDisconnects.clear();
     this.#sessionId = undefined;
     this.#resumeCredential = undefined;
-    this.#botUserId = undefined;
     this.#lastSequence = 0;
     this.#rejectWaiters(new SessionLostError(this.id, guildIds, reason));
     for (const backend of this.#backends.values()) backend.markSessionLost(reason);
@@ -988,9 +995,9 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
   }
 
   validateIdentity(userId: string): void {
-    const configured = this.#node.authenticatedBotUserId;
-    if (configured !== userId) {
-      throw new DiscordBotMismatchError(this.#node.id, userId, configured ?? 'unknown');
+    const handshakeBotUserId = this.#node.authenticatedBotUserId;
+    if (handshakeBotUserId !== userId) {
+      throw new DiscordBotMismatchError(this.#node.id, userId, handshakeBotUserId);
     }
   }
 
@@ -1439,10 +1446,13 @@ async function openSocket(
   nodeId: string,
   url: string,
   authorization: string,
+  botUserId: string,
   timeoutMs: number,
   onSocketCreated: (socket: WebSocket) => void,
 ): Promise<WebSocket> {
-  const socket = new WebSocket(url, { headers: { authorization } });
+  const socket = new WebSocket(url, {
+    headers: { authorization, 'x-remedia-bot-id': botUserId },
+  });
   onSocketCreated(socket);
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -1480,6 +1490,14 @@ async function openSocket(
       if (response.statusCode === 401) {
         finish(
           new RemediaRpcError(nodeId, 'authentication_failed', 'WebSocket authentication failed'),
+        );
+      } else if (response.statusCode === 400) {
+        finish(
+          new RemediaRpcError(
+            nodeId,
+            'invalid_bot_user_id',
+            'WebSocket handshake rejected the bot identity',
+          ),
         );
       } else {
         finish(

@@ -9,6 +9,8 @@ nodes. It routes Discord sessions directly to an embedded `@remedia/node` addon 
 import { RemediaClient } from '@remedia/client';
 
 const remedia = await RemediaClient.create({
+  // Obtain this from the host Discord client's READY event.
+  botUserId: discord.user.id,
   nodes: [
     { type: 'embedded', id: 'local' },
     {
@@ -28,6 +30,11 @@ const voice = remedia.createDiscordSession({ guildId, channelId, userId });
 await voice.connect();
 await voice.play({ url: 'https://media.example.net/audio.mp3' });
 ```
+
+Remote nodes require `botUserId`. The SDK sends it as the `X-Remedia-Bot-Id` WebSocket handshake
+header and uses it to bind the server session and voice transport to this bot. A server account can
+therefore be reused by independent bot clients; each client must create its own `RemediaClient` with
+its own bot ID.
 
 Guilds are assigned to healthy nodes using player capacity and remain sticky to that node. Remote
 sessions reconnect and attempt server-side session resumption. The SDK reports expired sessions;

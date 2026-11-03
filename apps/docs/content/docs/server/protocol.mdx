@@ -7,15 +7,20 @@ description: Authentication, version 1 JSON messages, commands, errors, and life
 
 Connect to `ws://<host>:<port>/v1/ws` or `wss://.../v1/ws`. The server accepts standard WebSocket
 URLs. The `@remedia/client` convenience schemes `remedia://` and `remedias://` map to those URLs and
-default to `/v1/ws`. Authenticate the WebSocket HTTP upgrade with Basic auth:
+default to `/v1/ws`. Authenticate and identify the bot in the WebSocket HTTP upgrade:
 
 ```http
 Authorization: Basic base64(username:password)
+X-Remedia-Bot-Id: 100000000000000001
 ```
 
-Credentials in query parameters are not supported. Authentication is checked before allocating
-client, player, or voice resources. A failed handshake receives HTTP `401`; the response does not
-identify whether the username or password was wrong.
+The bot header must contain a positive decimal Discord snowflake that fits `u64`. The server binds
+it to the client session created or resumed on that socket. Reconnecting to resume a session must
+use the same bot ID. This value is supplied at runtime, not configured on the server, so separate
+bots can use the same server account. Credentials in query parameters are not supported.
+Authentication and bot identity validation happen before allocating client, player, or voice
+resources. Invalid Basic credentials receive HTTP `401`; a missing or malformed bot header receives
+HTTP `400`.
 
 ## Request and response
 
@@ -61,7 +66,7 @@ a guild require an existing guild session owned by the active client session.
 | `node.protocol_version`                        | `{}`                                               | Protocol version                                                                                                                                                  |
 | `node.health`                                  | `{}`                                               | `ok` or `shutting_down`                                                                                                                                           |
 | `node.stats`                                   | `{}`                                               | Uptime, connections, players, capacity, CPU/memory where available, health                                                                                        |
-| `client.create`                                | `{}`                                               | Creates a session; returns `sessionId`, `resumeCredential`, configured `botUserId`                                                                                |
+| `client.create`                                | `{}`                                               | Creates a session; returns `sessionId`, `resumeCredential`, and the handshake `botUserId`                                                                         |
 | `client.list`                                  | `{}`                                               | Lists sessions belonging to the authenticated username and their snapshots                                                                                        |
 | `client.resume`                                | `{sessionId, resumeCredential}`                    | Reclaims a detached session; returns its identity, stable credential, and guild snapshots                                                                         |
 | `client.close`                                 | `{}`                                               | Immediately releases all owned guild players and transports                                                                                                       |

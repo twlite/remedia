@@ -19,9 +19,9 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run",
-    "test:server": "REMEDIA_CLIENT_SERVER_TESTS=1 vitest run tests/server-integration.test.ts",
-    "test:hybrid": "REMEDIA_CLIENT_NATIVE_TESTS=1 vitest run tests/hybrid.test.ts",
+    "test": "vitest run --exclude tests/hybrid.test.ts --exclude tests/server-integration.test.ts",
+    "test:server": "vitest run tests/server-integration.test.ts",
+    "test:hybrid": "vitest run tests/hybrid.test.ts",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.test.json --noEmit"
   },

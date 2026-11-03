@@ -20,7 +20,7 @@ describe('bounded WebSocket RPC', () => {
 
   it('correlates concurrent out-of-order responses', async () => {
     node = await FakeServerNode.listen({ id: 'rpc' });
-    socket = new WebSocket(node.url);
+    socket = connect(node.url);
     await once(socket, 'open');
     rpc = makeRpc(socket);
 
@@ -33,7 +33,7 @@ describe('bounded WebSocket RPC', () => {
 
   it('cleans timed out and aborted requests and ignores their late replies', async () => {
     node = await FakeServerNode.listen({ id: 'rpc-cancel' });
-    socket = new WebSocket(node.url);
+    socket = connect(node.url);
     await once(socket, 'open');
     rpc = makeRpc(socket, 25);
 
@@ -53,7 +53,7 @@ describe('bounded WebSocket RPC', () => {
 
   it('rejects outstanding work when its socket closes', async () => {
     node = await FakeServerNode.listen({ id: 'rpc-close' });
-    socket = new WebSocket(node.url);
+    socket = connect(node.url);
     await once(socket, 'open');
     rpc = makeRpc(socket);
     const pending = rpc.request('test.delay', { delayMs: 500 });
@@ -70,4 +70,8 @@ function makeRpc(socket: WebSocket, timeoutMs = 1_000): RpcClient {
     onEvent: () => undefined,
     onMalformed: () => undefined,
   });
+}
+
+function connect(url: string): WebSocket {
+  return new WebSocket(url, { headers: { 'x-remedia-bot-id': '100000000000000001' } });
 }

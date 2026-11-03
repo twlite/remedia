@@ -1,0 +1,8 @@
+name: remedia-ffmpeg7
+channels:
+  - conda-forge
+channel_priority: strict
+dependencies:
+  - ffmpeg=7.1.1
+  - libopus=1.5.2
+  - pkg-config=0.29.2

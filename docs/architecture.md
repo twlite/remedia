@@ -42,7 +42,9 @@ and diagnostics APIs. `@remedia/client` orchestrates direct embedded and remote 
   sessions and voice connections, or explicitly request a process-global subscriber when they own
   that lifecycle. Export is off by default; the crate does not export OTLP logs.
 - **`remedia-server`** is a standalone Rust process using the core, Discord, and observability crates
-  directly. It authenticates HTTP Basic credentials during the `/v1/ws` WebSocket handshake and
+  directly. It authenticates HTTP Basic credentials and validates the positive Discord bot ID from
+  `X-Remedia-Bot-Id` during the `/v1/ws` WebSocket handshake. The bot ID is per connection rather
+  than static server configuration, allowing distinct bots to use the same server account. It
   implements strict version 1 JSON RPC for node stats, client-session resume, guild players, voice
   connection lifecycle, media playback, filters, volume, and state. It does not use N-API, perform
   Discord Gateway OP 4, or implement Lavalink. Each authenticated client session owns guild sessions;
@@ -84,7 +86,9 @@ integration exist. The Node package adapts an externally owned Discord Gateway b
 implement Gateway connectivity, REST, or channel commands. Receiving audio and device output remain
 design intentions. Add crates or packages only when implementation needs them.
 
-`@remedia/client` is the high-level TypeScript orchestration layer. Its embedded adapter lazily loads
+`@remedia/client` is the high-level TypeScript orchestration layer. Its remote connections send the
+host Discord client's bot ID in `X-Remedia-Bot-Id`; server sessions are bound to both the authenticated
+principal and that ID. Its embedded adapter lazily loads
 the optional `@remedia/node` peer and calls the N-API engine directly without a local server. Its
 remote adapter uses authenticated WebSocket RPC, maintains one resumable server session per node,
 reconciles guild/player snapshots, bounds pending requests, and reconnects with bounded exponential

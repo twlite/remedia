@@ -33,7 +33,6 @@ pub struct ServerConfig {
 pub(crate) struct AuthUser {
     pub(crate) username: String,
     pub(crate) password: String,
-    pub(crate) discord_bot_user_id: u64,
 }
 
 #[derive(Clone)]
@@ -60,8 +59,18 @@ pub(crate) struct MediaAccess {
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
-    #[error("could not read configuration file: {0}")]
-    Io(#[from] std::io::Error),
+    #[error("could not read configuration file `{path}`: {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("media.allowedFileRoots path `{path}` is unavailable: {source}")]
+    MediaRootIo {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("configuration JSON is invalid: {0}")]
     Json(#[from] serde_json::Error),
     #[error("invalid configuration: {0}")]
@@ -119,7 +128,6 @@ impl Default for RawBind {
 struct RawUser {
     username: String,
     password: String,
-    discord_bot_user_id: String,
 }
 
 #[derive(Deserialize)]
@@ -192,7 +200,10 @@ impl ServerConfig {
     /// Relative media roots are resolved relative to the configuration file.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let path = path.as_ref();
-        let contents = fs::read_to_string(path)?;
+        let contents = fs::read_to_string(path).map_err(|source| ConfigError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
         let base = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -221,11 +232,6 @@ impl ServerConfig {
         for raw_user in raw.users {
             let username = resolve_env("users[].username", raw_user.username, &mut get_env)?;
             let password = resolve_env("users[].password", raw_user.password, &mut get_env)?;
-            let bot_id = resolve_env(
-                "users[].discordBotUserId",
-                raw_user.discord_bot_user_id,
-                &mut get_env,
-            )?;
             if username.is_empty() || username.len() > 128 || username.contains(':') {
                 return Err(ConfigError::Invalid(
                     "usernames must be 1 to 128 characters and cannot contain ':'",
@@ -236,22 +242,13 @@ impl ServerConfig {
                     "user passwords must be 1 to 4096 bytes",
                 ));
             }
-            let discord_bot_user_id = parse_snowflake(&bot_id)
-                .filter(|user_id| *user_id > 0)
-                .ok_or(ConfigError::Invalid(
-                    "discordBotUserId must be a positive decimal u64 snowflake",
-                ))?;
             if users
                 .iter()
                 .any(|user: &AuthUser| user.username == username)
             {
                 return Err(ConfigError::Invalid("usernames must be unique"));
             }
-            users.push(AuthUser {
-                username,
-                password,
-                discord_bot_user_id,
-            });
+            users.push(AuthUser { username, password });
         }
         if users.is_empty() {
             return Err(ConfigError::Invalid(
@@ -322,13 +319,16 @@ impl ServerConfig {
         for configured_root in raw.media.allowed_file_roots {
             let configured_root =
                 resolve_env("media.allowedFileRoots[]", configured_root, &mut get_env)?;
-            let path = PathBuf::from(configured_root);
+            let path = expand_home_path(&configured_root)?;
             let path = if path.is_absolute() {
                 path
             } else {
                 base.join(path)
             };
-            let canonical = fs::canonicalize(path)?;
+            let canonical = fs::canonicalize(&path).map_err(|source| ConfigError::MediaRootIo {
+                path: path.clone(),
+                source,
+            })?;
             if !canonical.is_dir() {
                 return Err(ConfigError::Invalid(
                     "every media.allowedFileRoots entry must be a directory",
@@ -493,11 +493,28 @@ fn valid_env_name(name: &str) -> bool {
         && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
 }
 
-fn parse_snowflake(value: &str) -> Option<u64> {
+pub(crate) fn parse_snowflake(value: &str) -> Option<u64> {
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
     value.parse().ok()
+}
+
+fn expand_home_path(path: &str) -> Result<PathBuf, ConfigError> {
+    let suffix = if path == "~" {
+        Some("")
+    } else {
+        path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"))
+    };
+    let Some(suffix) = suffix else {
+        return Ok(PathBuf::from(path));
+    };
+    let home = env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .ok_or(ConfigError::Invalid(
+            "media.allowedFileRoots uses `~` but the home directory is unavailable",
+        ))?;
+    Ok(PathBuf::from(home).join(suffix))
 }
 
 fn host_allowed(host: &str, allowlist: &[String]) -> bool {
@@ -563,14 +580,16 @@ fn is_public_ip(address: IpAddr) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::env;
+    use std::fs;
+    use std::path::{Path, PathBuf};
 
     use super::{
         ConfigError, ServerConfig, host_allowed, is_public_ip, resolve_env, valid_host_pattern,
     };
 
     const JSON: &str = r#"{
-      "users": [{"username":"bot","password":"env('BOT_PASSWORD')","discordBotUserId":"123456789012345678"}]
+      "users": [{"username":"bot","password":"env('BOT_PASSWORD')"}]
     }"#;
 
     #[test]
@@ -593,11 +612,13 @@ mod tests {
         ));
         let unknown = JSON.replace("\"users\":", "\"extra\":true,\"users\":");
         assert!(ServerConfig::parse_with(&unknown, Path::new("."), |_| Some("x".into())).is_err());
-        let bad_user = JSON.replace("123456789012345678", "not-a-snowflake");
-        assert!(ServerConfig::parse_with(&bad_user, Path::new("."), |_| Some("x".into())).is_err());
-        let zero_user = JSON.replace("123456789012345678", "0");
+        let legacy_bot_config = JSON.replace(
+            "\"password\":\"env('BOT_PASSWORD')\"",
+            "\"password\":\"env('BOT_PASSWORD')\",\"discordBotUserId\":\"123456789012345678\"",
+        );
         assert!(
-            ServerConfig::parse_with(&zero_user, Path::new("."), |_| Some("x".into())).is_err()
+            ServerConfig::parse_with(&legacy_bot_config, Path::new("."), |_| Some("x".into()))
+                .is_err()
         );
         let malformed = JSON.replace("env('BOT_PASSWORD')", "env(BOT_PASSWORD)");
         assert!(matches!(
@@ -617,6 +638,46 @@ mod tests {
             resolve_env("field", "env('VALUE') suffix".into(), &mut lookup),
             Err(ConfigError::InvalidEnvironmentReference(_))
         ));
+    }
+
+    #[test]
+    fn home_relative_media_roots_expand_before_resolution() {
+        let home = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE"));
+        if let Some(home) = home {
+            let home = PathBuf::from(home);
+            let json = JSON.replace(
+                "\"users\":",
+                "\"media\":{\"allowedFileRoots\":[\"~\"]},\"users\":",
+            );
+            let parsed = ServerConfig::parse_with(&json, Path::new("."), |_| Some("x".into()))
+                .expect("home directory is a valid media root");
+            assert_eq!(
+                super::expand_home_path("~/Music/Downloads").unwrap(),
+                home.join("Music/Downloads")
+            );
+            assert_eq!(
+                parsed.media.allowed_file_roots,
+                vec![fs::canonicalize(home).unwrap()]
+            );
+        }
+        assert_eq!(
+            super::expand_home_path("media").unwrap(),
+            PathBuf::from("media")
+        );
+    }
+
+    #[test]
+    fn missing_config_error_reports_the_requested_path() {
+        let path = env::temp_dir().join(format!(
+            "remedia-missing-config-{}.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        match ServerConfig::from_file(&path) {
+            Err(ConfigError::Io { path: reported, .. }) => assert_eq!(reported, path),
+            Err(error) => panic!("expected path-aware read error, got {error}"),
+            Ok(_) => panic!("missing config path unexpectedly loaded"),
+        }
     }
 
     #[test]

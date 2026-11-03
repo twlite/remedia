@@ -9,6 +9,7 @@ describe('multi-node assignment', () => {
     const serverA = await FakeServerNode.listen({ id: 'pool-a', playersMaximum: 4 });
     const serverB = await FakeServerNode.listen({ id: 'pool-b', playersMaximum: 4 });
     const client = await RemediaClient.create({
+      botUserId: serverA.botUserId,
       nodes: [
         {
           type: 'remote',

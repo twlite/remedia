@@ -5,13 +5,12 @@ import type { DiscordSessionOptions, RemediaClientEvents } from '../lib/types.js
 import type { GuildBackend } from '../lib/adapters.js';
 import { FakeServerNode } from './helpers.js';
 
-const enabled = process.env.REMEDIA_CLIENT_NATIVE_TESTS === '1';
-
-describe.skipIf(!enabled)('hybrid embedded and remote node pool', () => {
+describe('hybrid embedded and remote node pool', () => {
   it('distributes sticky guild assignments across one embedded and two remote nodes', async () => {
     const serverA = await FakeServerNode.listen({ id: 'hybrid-a', playersMaximum: 2 });
     const serverB = await FakeServerNode.listen({ id: 'hybrid-b', playersMaximum: 2 });
     const client = await RemediaClient.create({
+      botUserId: serverA.botUserId,
       nodes: [
         { type: 'embedded', id: 'embedded', capacity: 2 },
         {

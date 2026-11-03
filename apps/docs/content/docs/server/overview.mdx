@@ -24,7 +24,6 @@ load a different file. An example with every supported key is available at
 cp crates/remedia-server/remedia.config.example.json remedia.config.json
 mkdir -p media
 export REMEDIA_RPC_PASSWORD='change-me'
-export DISCORD_BOT_USER_ID='100000000000000001'
 cargo run -p remedia-server
 ```
 
@@ -43,6 +42,7 @@ See [Protocol](/docs/server/protocol) for request and response shapes.
 const socket = new WebSocket('ws://127.0.0.1:8787/v1/ws', {
   headers: {
     Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`,
+    'X-Remedia-Bot-Id': discordClient.user.id,
   },
 });
 
@@ -57,11 +57,12 @@ socket.send(
 );
 ```
 
-An authenticated user is configured with one Discord bot user ID. The server returns an opaque
-client `sessionId` and `resumeCredential`. That client session owns its guild sessions. Each guild
-session owns one playback object and an optional Discord voice transport. Guild identifiers are
-scoped to the client session, so distinct bots can use the same guild ID without sharing playback
-state.
+The connection supplies its positive decimal Discord bot ID in `X-Remedia-Bot-Id`. This identity is
+bound to the client session created on that WebSocket, so multiple bot clients can use the same
+server account and node without sharing guild or playback state. The server returns an opaque client
+`sessionId` and `resumeCredential`. That client session owns its guild sessions. Each guild session
+owns one playback object and an optional Discord voice transport. Guild identifiers are scoped to
+the client session.
 
 ## Playback and Discord voice
 

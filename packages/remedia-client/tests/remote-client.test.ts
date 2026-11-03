@@ -8,6 +8,52 @@ const CHANNEL_ID = '300000000000000001';
 const BOT_ID = '100000000000000001';
 
 describe('remote Discord playback', () => {
+  it('requires a valid bot identity for remote nodes and identifies separate bots at handshake', async () => {
+    const server = await FakeServerNode.listen({ id: 'remote-bot-identities' });
+    const makeClient = (botUserId: string) =>
+      RemediaClient.create({
+        botUserId,
+        nodes: [
+          {
+            type: 'remote',
+            id: 'shared-server',
+            url: server.url,
+            auth: { username: 'same-account', password: 'secret' },
+          },
+        ],
+        send: () => undefined,
+      });
+    try {
+      await expect(
+        RemediaClient.create({
+          nodes: [
+            {
+              type: 'remote',
+              id: 'missing-id',
+              url: server.url,
+              auth: { username: 'same-account', password: 'secret' },
+            },
+          ],
+          send: () => undefined,
+        }),
+      ).rejects.toThrow(/botUserId/);
+      await expect(makeClient('0')).rejects.toThrow(/botUserId/);
+
+      const first = await makeClient(BOT_ID);
+      const secondId = '100000000000000009';
+      const second = await makeClient(secondId);
+      try {
+        expect(first.nodes[0]?.status).toBe('healthy');
+        expect(second.nodes[0]?.status).toBe('healthy');
+        expect(server.botUserIdHeaders).toEqual([BOT_ID, secondId]);
+      } finally {
+        await Promise.all([first.close(), second.close()]);
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
   it('connects through host Gateway events and controls playback by generation', async () => {
     const server = await FakeServerNode.listen({ id: 'remote-playback' });
     const payloads: DiscordGatewayVoicePayload[] = [];
@@ -16,6 +62,7 @@ describe('remote Discord playback', () => {
       resolveJoin = resolve;
     });
     const client = await RemediaClient.create({
+      botUserId: BOT_ID,
       nodes: [
         {
           type: 'remote',
@@ -34,6 +81,7 @@ describe('remote Discord playback', () => {
       expect(server.authorizationHeaders[0]).toBe(
         `Basic ${Buffer.from('bot:secret').toString('base64')}`,
       );
+      expect(server.botUserIdHeaders[0]).toBe(BOT_ID);
       const voice = client.createDiscordSession({
         guildId: GUILD_ID,
         channelId: CHANNEL_ID,
@@ -119,6 +167,7 @@ describe('remote Discord playback', () => {
       requiredAuthorization: `Basic ${Buffer.from('bot:correct').toString('base64')}`,
     });
     const client = await RemediaClient.create({
+      botUserId: BOT_ID,
       nodes: [
         {
           type: 'remote',
@@ -145,6 +194,7 @@ describe('remote Discord playback', () => {
   it('rejects an unsupported server protocol without retrying a known-incompatible node', async () => {
     const server = await FakeServerNode.listen({ id: 'remote-v2', protocolVersion: 2 });
     const client = await RemediaClient.create({
+      botUserId: BOT_ID,
       nodes: [
         {
           type: 'remote',
@@ -166,13 +216,11 @@ describe('remote Discord playback', () => {
     }
   });
 
-  it('rejects a configured Discord bot identity mismatch before sending OP 4', async () => {
-    const server = await FakeServerNode.listen({
-      id: 'remote-identity',
-      botUserId: '100000000000000009',
-    });
+  it('rejects a session bot identity mismatch before sending OP 4', async () => {
+    const server = await FakeServerNode.listen({ id: 'remote-identity' });
     const payloads: DiscordGatewayVoicePayload[] = [];
     const client = await RemediaClient.create({
+      botUserId: BOT_ID,
       nodes: [
         {
           type: 'remote',
@@ -186,14 +234,13 @@ describe('remote Discord playback', () => {
       },
     });
     try {
-      const voice = client.createDiscordSession({
-        guildId: GUILD_ID,
-        channelId: CHANNEL_ID,
-        userId: BOT_ID,
-      });
-      await expect(voice.connect({ timeoutMs: 1_000 })).rejects.toMatchObject({
-        name: 'DiscordBotMismatchError',
-      });
+      expect(() =>
+        client.createDiscordSession({
+          guildId: GUILD_ID,
+          channelId: CHANNEL_ID,
+          userId: '100000000000000009',
+        }),
+      ).toThrow(/Discord bot user mismatch/);
       expect(payloads).toHaveLength(0);
     } finally {
       await client.close();

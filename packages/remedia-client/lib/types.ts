@@ -275,6 +275,8 @@ export type NodeSelection = (
 export interface RemediaClientOptions {
   nodes: readonly RemediaNodeConfig[];
   send: DiscordGatewaySend;
+  /** Discord bot snowflake sent as `X-Remedia-Bot-Id` on remote WebSocket handshakes. */
+  botUserId?: string;
   /** Bounded WebSocket RPC timeout. Defaults to 15 seconds. */
   requestTimeoutMs?: number;
   /** Maximum concurrent RPC requests per remote node. Defaults to 128. */

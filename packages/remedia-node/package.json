@@ -20,7 +20,8 @@
     "build:native:debug": "napi build --platform --esm --js native.js --dts native.d.ts",
     "build:types": "tsc -p tsconfig.json",
     "build:debug": "pnpm run build:native:debug && pnpm run build:types",
-    "test": "pnpm run build:debug && vitest run",
+    "test": "pnpm run build:native:debug && pnpm run build:types && pnpm run test:bindings",
+    "test:bindings": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.test.json --noEmit"
   },

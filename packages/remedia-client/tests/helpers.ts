@@ -50,10 +50,12 @@ export class FakeServerNode {
   readonly protocolVersion: number;
   readonly playersMaximum: number;
   readonly authorizationHeaders: string[] = [];
+  readonly botUserIdHeaders: string[] = [];
   readonly sessions = new Map<string, FakeSession>();
   readonly server = createServer();
   readonly #websocketServer: WebSocketServer;
   readonly #socketSessions = new Map<WebSocket, FakeSession>();
+  readonly #socketBotUserIds = new Map<WebSocket, string>();
   readonly #dropSessionsOnDisconnect: boolean;
   readonly #requiredAuthorization: string | undefined;
   #sessionSequence = 0;
@@ -85,6 +87,7 @@ export class FakeServerNode {
         const session = this.#socketSessions.get(socket);
         if (session?.attached === socket) session.attached = undefined;
         this.#socketSessions.delete(socket);
+        this.#socketBotUserIds.delete(socket);
         if (session && this.#dropSessionsOnDisconnect) this.sessions.delete(session.id);
       });
     });
@@ -103,7 +106,15 @@ export class FakeServerNode {
         socket.destroy();
         return;
       }
+      const botUserId = request.headers['x-remedia-bot-id'];
+      node.botUserIdHeaders.push(typeof botUserId === 'string' ? botUserId : '');
+      if (!isSnowflake(botUserId)) {
+        socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
       websocketServer.handleUpgrade(request, socket, head, (websocket) => {
+        node.#socketBotUserIds.set(websocket, botUserId);
         websocketServer.emit('connection', websocket, request);
       });
     });
@@ -197,7 +208,7 @@ export class FakeServerNode {
           const session: FakeSession = {
             id: `session-${this.id}-${++this.#sessionSequence}`,
             credential: `resume-${this.id}-${this.#sessionSequence}`,
-            botUserId: this.botUserId,
+            botUserId: this.#socketBotUserIds.get(socket) ?? this.botUserId,
             guilds: new Map(),
             sequence: 0,
             attached: socket,
@@ -213,7 +224,12 @@ export class FakeServerNode {
         }
         case 'client.resume': {
           const session = this.sessions.get(String(params.sessionId));
-          if (!session || session.credential !== params.resumeCredential || session.attached) {
+          if (
+            !session ||
+            session.credential !== params.resumeCredential ||
+            session.attached ||
+            session.botUserId !== this.#socketBotUserIds.get(socket)
+          ) {
             error = { code: 'unknown_session', message: 'session unavailable' };
             break;
           }
@@ -232,14 +248,18 @@ export class FakeServerNode {
           result = { closed: true };
           break;
         }
-        case 'client.list':
+        case 'client.list': {
+          const botUserId = this.#socketBotUserIds.get(socket);
           result = {
-            sessions: [...this.sessions.values()].map((session) => ({
-              sessionId: session.id,
-              attached: Boolean(session.attached),
-            })),
+            sessions: [...this.sessions.values()]
+              .filter((session) => session.botUserId === botUserId)
+              .map((session) => ({
+                sessionId: session.id,
+                attached: Boolean(session.attached),
+              })),
           };
           break;
+        }
         case 'guild.create': {
           const session = this.#session(socket);
           const guildId = String(params.guildId);
@@ -479,6 +499,15 @@ export class FakeServerNode {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isSnowflake(value: string | string[] | undefined): value is string {
+  if (typeof value !== 'string' || !/^\d{1,20}$/.test(value)) return false;
+  try {
+    return BigInt(value) > 0n && BigInt(value) <= 18_446_744_073_709_551_615n;
+  } catch {
+    return false;
+  }
 }
 
 function delay(ms: number): Promise<void> {

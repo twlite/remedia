@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
+use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderName};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -24,6 +24,7 @@ async fn main() -> ExampleResult<()> {
     let url = env_or("REMEDIA_SERVER_URL", "ws://127.0.0.1:8787/v1/ws");
     let username = required("REMEDIA_USERNAME")?;
     let password = required("REMEDIA_PASSWORD")?;
+    let bot_user_id = required("REMEDIA_BOT_USER_ID")?;
     let guild_id = required("REMEDIA_GUILD_ID")?;
     let channel_id = required("REMEDIA_CHANNEL_ID")?;
     let media_url = required("REMEDIA_MEDIA_URL")?;
@@ -37,6 +38,10 @@ async fn main() -> ExampleResult<()> {
     request
         .headers_mut()
         .insert(AUTHORIZATION, format!("Basic {credentials}").parse()?);
+    request.headers_mut().insert(
+        HeaderName::from_static("x-remedia-bot-id"),
+        bot_user_id.parse()?,
+    );
     let (mut socket, _) = connect_async(request).await?;
     let mut client_session_id = None::<String>;
     let mut guild_created = false;

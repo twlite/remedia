@@ -52,7 +52,7 @@ export class ProtocolError extends RemediaClientError {
 export class DiscordBotMismatchError extends RemediaClientError {
   constructor(nodeId: string, expected: string, actual: string) {
     super(
-      `Discord bot user mismatch on node ${nodeId}: session uses ${expected}, server is configured for ${actual}`,
+      `Discord bot user mismatch on node ${nodeId}: expected ${expected}, connection identifies as ${actual}`,
     );
   }
 }

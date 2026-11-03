@@ -9,6 +9,7 @@ describe('remote resource cleanup', () => {
   it('flushes guild destruction after resuming a temporarily disconnected node', async () => {
     const server = await FakeServerNode.listen({ id: 'cleanup-resume' });
     const node = new RemoteNodeAdapter({
+      botUserId: server.botUserId,
       config: {
         type: 'remote',
         id: 'cleanup-node',
@@ -57,6 +58,7 @@ describe('remote resource cleanup', () => {
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('test server did not bind');
     const node = new RemoteNodeAdapter({
+      botUserId: '100000000000000001',
       config: {
         type: 'remote',
         id: 'closing-node',

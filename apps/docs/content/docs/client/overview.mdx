@@ -17,6 +17,7 @@ node configurations.
 import { RemediaClient } from '@remedia/client';
 
 const remedia = await RemediaClient.create({
+  botUserId: discord.user.id,
   nodes: [
     { type: 'embedded', id: 'local', capacity: 8 },
     {
@@ -44,6 +45,12 @@ await voice.play({ url: 'https://media.example.net/audio.mp3' });
 await voice.filters.set('bass=g=8');
 await voice.setVolume(0.8);
 ```
+
+When any remote node is configured, `botUserId` is required and must be the host Discord client's
+positive decimal snowflake. `@remedia/client` sends it as `X-Remedia-Bot-Id` on each WebSocket
+handshake; it is never part of the server's static user configuration. This lets independent bot
+clients use the same server credentials while retaining separate server sessions. For embedded-only
+node pools the option is optional.
 
 The application owns the Discord Gateway connection. Remedia sends OP 4 through `send`, correlates
 the matching `VOICE_STATE_UPDATE` and `VOICE_SERVER_UPDATE`, and connects the selected node's voice

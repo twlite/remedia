@@ -11,6 +11,7 @@ describe('remote session resumption', () => {
       resolveJoin = resolve;
     });
     const client = await RemediaClient.create({
+      botUserId: server.botUserId,
       nodes: [
         {
           type: 'remote',
@@ -79,6 +80,7 @@ describe('remote session resumption', () => {
       resolveJoin = resolve;
     });
     const client = await RemediaClient.create({
+      botUserId: serverA.botUserId,
       nodes: [
         {
           type: 'remote',

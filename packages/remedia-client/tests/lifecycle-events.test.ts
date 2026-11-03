@@ -251,6 +251,7 @@ async function createConnectedRemoteSessionWithServer(server: FakeServerNode) {
     join = resolve;
   });
   const client = await RemediaClient.create({
+    botUserId: BOT_ID,
     nodes: [
       {
         type: 'remote',

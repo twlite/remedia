@@ -7,13 +7,15 @@ Discord voice transports. It uses `remedia-core`, `remedia-discord`, and
 
 The server starts only with `remedia.config.json` in the current working directory, or with an
 explicit `--config <path>` argument. See [`remedia.config.example.json`](remedia.config.example.json)
-for the complete schema.
+for the complete schema. If the file is missing or a configured media root cannot be resolved, the
+startup error reports the path. Relative media roots are based on the config file's directory, and
+`~`/`~/...` roots expand using the current user's home directory.
 
 ```sh
 cp crates/remedia-server/remedia.config.example.json remedia.config.json
 mkdir -p media
 export REMEDIA_RPC_PASSWORD='replace-this'
-export DISCORD_BOT_USER_ID='100000000000000001'
+export REMEDIA_BOT_USER_ID='100000000000000001'
 cargo run -p remedia-server
 ```
 
@@ -24,11 +26,13 @@ credentials must never cross an unencrypted public connection.
 ## Connection and ownership
 
 Connect a WebSocket client to `ws://127.0.0.1:8787/v1/ws` and authenticate the handshake with
-`Authorization: Basic ...`. All RPC frames are version 1 JSON. The server assigns opaque session
-identifiers and binds each client session to the authenticated user and configured Discord bot
-user ID. Each client session owns guild sessions; each guild session owns one `PlaybackSession` and
-an optional voice transport. Guild IDs are scoped by client session, so separate bots can play in
-the same guild independently.
+`Authorization: Basic ...` and `X-Remedia-Bot-Id: <discord-snowflake>`. The manual integration
+example reads the ID from `REMEDIA_BOT_USER_ID`. The bot ID is sent on each WebSocket connection,
+validated as a positive decimal snowflake, and bound to that connection's
+client session. It is not part of server configuration, so multiple bot identities can use the same
+server account and server instance. Each client session owns guild sessions; each guild session
+owns one `PlaybackSession` and an optional voice transport. Guild IDs are scoped by client session,
+so separate bots can play in the same guild independently.
 
 The bot application still owns its Discord Gateway connection. It supplies `voice.connect` with
 fresh gateway dispatch credentials; the server handles the voice transport, RTP, DAVE, and UDP. The
@@ -84,6 +88,7 @@ replacement, and cleanup without printing credentials:
 export REMEDIA_SERVER_URL='ws://127.0.0.1:8787/v1/ws'
 export REMEDIA_USERNAME='media-bot'
 export REMEDIA_PASSWORD='replace-this'
+export REMEDIA_BOT_USER_ID='100000000000000001'
 export REMEDIA_GUILD_ID='200000000000000001'
 export REMEDIA_CHANNEL_ID='200000000000000002'
 export REMEDIA_MEDIA_URL='https://media.example.com/audio.ogg'

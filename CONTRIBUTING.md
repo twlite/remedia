@@ -13,22 +13,85 @@ follow the intended boundaries in [`docs/architecture.md`](docs/architecture.md)
 - pnpm 12.16.1, selected by the root `package.json`.
 - Git.
 
-`remedia-core` links native FFmpeg libraries through `ffmpeg-next` and `ffmpeg-sys-next`, and its
-Opus adapter links native libopus, and playback filters use libavfilter. Install development headers
+`remedia-core` links native FFmpeg libraries through `ffmpeg-next` and `ffmpeg-sys-next`. Its Opus
+adapter links native libopus, and playback filters use libavfilter. Install development headers
 for libavformat, libavcodec, libavutil, libavfilter, libswresample, and libopus, plus `pkg-config`
 and Clang/libclang for the bindings build.
-Common starting points are:
+Native target status is tracked separately from the workflow definition; adding a matrix entry does
+not by itself establish runtime support:
 
-- macOS: install Xcode Command Line Tools, then run `brew install ffmpeg opus pkg-config`.
-- Debian or Ubuntu:
+| Target                                           | Status                                                                                                                                              |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Linux x86_64 GNU                                 | Native build and runtime tests configured; the previous Linux run reached Rust tests but a pause test exceeded its 3-second frame-boundary timeout. |
+| Linux ARM64 GNU                                  | Native build and runtime tests configured; hosted result pending.                                                                                   |
+| macOS x86_64                                     | Native build and runtime tests configured; hosted result pending.                                                                                   |
+| macOS ARM64                                      | Native build and runtime tests configured; locally built and tested on the development host.                                                        |
+| Windows x86_64 MSVC                              | Native build and runtime tests configured; hosted result pending.                                                                                   |
+| Windows ARM64 MSVC                               | Unsupported for now: the pinned FFmpeg 7 package set does not provide the required Windows ARM64 development libraries.                             |
+| musl, Android, WASI, FreeBSD, and 32-bit targets | Unsupported and not tested.                                                                                                                         |
 
-  ```sh
-  sudo apt install clang libclang-dev pkg-config libavcodec-dev libavfilter-dev libavformat-dev libavutil-dev libswresample-dev libopus-dev
-  ```
+The configured native CI matrix uses native runners and tests the same addon artifact with Node.js
+22.18, 24, and 26. Promote a target to fully tested support only after its native build and runtime
+jobs pass. No target is build-only in the current matrix.
 
-On Windows, install FFmpeg development libraries that match the target architecture and configure
-`FFMPEG_DIR` or `PKG_CONFIG_PATH` so `ffmpeg-sys-next` can find their headers and libraries. Make
-libclang discoverable to bindgen as well. FFmpeg's executable is not used by Remedia at runtime.
+Remedia targets the FFmpeg 7 ABI and dynamically links FFmpeg and libopus. FFmpeg executables are
+used only for dependency/version checks; Remedia does not spawn them for playback. The CI dependency
+specifications are in `.github/native-deps/` and pin FFmpeg 7.1.1, libopus 1.5.2, and pkg-config
+0.29.2 for Linux and Windows.
+
+### macOS
+
+Install Xcode Command Line Tools and the versioned Homebrew formula:
+
+```sh
+brew install ffmpeg@7 opus pkg-config llvm
+export FFMPEG_DIR="$(brew --prefix ffmpeg@7)"
+export OPUS_LIB_DIR="$(brew --prefix opus)"
+export PKG_CONFIG_PATH="$FFMPEG_DIR/lib/pkgconfig:$OPUS_LIB_DIR/lib/pkgconfig"
+export LIBCLANG_PATH="$(brew --prefix llvm)/lib"
+export DYLD_LIBRARY_PATH="$FFMPEG_DIR/lib:$OPUS_LIB_DIR/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+```
+
+The versioned formula keeps the FFmpeg major version explicit. After a Homebrew upgrade, rerun the
+`brew --prefix` assignments in the current shell; do not retain a path into a versioned Cellar
+directory. If bindgen reports that it cannot load libclang, confirm that the LLVM prefix still
+contains `lib/libclang.dylib` and refresh `LIBCLANG_PATH`.
+
+### Linux
+
+Install Clang/libclang, then create the pinned dynamic FFmpeg/Opus environment used by CI:
+
+```sh
+sudo apt-get install clang libclang-dev
+micromamba create --name remedia-ffmpeg7 --file .github/native-deps/ffmpeg7.yml
+micromamba activate remedia-ffmpeg7
+export FFMPEG_DIR="$CONDA_PREFIX"
+export OPUS_LIB_DIR="$CONDA_PREFIX"
+export PKG_CONFIG_PATH="$CONDA_PREFIX/lib/pkgconfig"
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+```
+
+The FFmpeg packages in the Ubuntu runner's default repositories may have a different major version;
+use the pinned environment rather than mixing system FFmpeg headers with another runtime library.
+
+### Windows
+
+Install Visual Studio 2022 Build Tools with the MSVC C++ workload, Rust's MSVC toolchain, and
+micromamba. Use the pinned x64 development packages:
+
+```powershell
+micromamba create --name remedia-ffmpeg7 --file .github/native-deps/ffmpeg7-windows.yml
+micromamba activate remedia-ffmpeg7
+$env:FFMPEG_DIR = Join-Path $env:CONDA_PREFIX 'Library'
+$env:OPUS_LIB_DIR = $env:FFMPEG_DIR
+$env:PKG_CONFIG_PATH = Join-Path $env:FFMPEG_DIR 'lib\pkgconfig'
+$env:LIBCLANG_PATH = Join-Path $env:CONDA_PREFIX 'Library\bin'
+$env:PATH = (Join-Path $env:FFMPEG_DIR 'bin') + ';' + $env:PATH
+```
+
+The FFmpeg package must include MSVC import libraries, headers, and matching x64 DLLs. Keep the
+runtime DLL directory on `PATH` when running tests and applications. MinGW libraries are not
+compatible with the MSVC target.
 
 ## Set up the repository
 
@@ -76,20 +139,32 @@ pnpm --filter docs build
 
 The docs app can be run with `pnpm --filter docs dev` and built with
 `pnpm --filter docs build`. `pnpm --filter @remedia/node test` builds the debug N-API addon and runs
-the TypeScript integration tests with Vitest. Add tests under `packages/remedia-node/tests/` and
-split them by behavior; `typecheck` checks both library and test TypeScript. The package keeps Rust
-code in `src/`, TypeScript library code in `lib/`, and generated TypeScript output in `dist/`.
+the TypeScript integration tests with Vitest. To separate compilation from execution, run
+`pnpm --filter @remedia/node build:native` (release addon),
+`pnpm --filter @remedia/node build:types`, then
+`pnpm --filter @remedia/node test:bindings`. `test:bindings` never compiles native code and is the
+CI entry point after downloading a target artifact. Add tests under
+`packages/remedia-node/tests/` and split them by behavior; `typecheck` checks both library and test
+TypeScript. The package keeps Rust code in `src/`, TypeScript library code in `lib/`, and generated
+TypeScript output in `dist/`.
 The Discord harness runs TypeScript directly with `tsx`; its `typecheck` script uses `tsc --noEmit`,
 and its local queue tests run with Node's built-in test runner. To start the bot, run
 `pnpm --filter discord-app start`. This builds the native Node package first and reads
 `DISCORD_TOKEN` and `APPLICATION_ID` from `apps/discord/.env`.
 `@remedia/client` is pure TypeScript ESM. Remote-only consumers do not need the native addon;
-`@remedia/node` is an optional peer dependency for embedded nodes. Its normal tests use local
-protocol fixtures. To run the hybrid allocation test after building the native addon, use
-`pnpm --filter @remedia/node build:debug` and then
-`pnpm --filter @remedia/client test:hybrid`. The optional server interop test starts the local Rust
-server and validates playback over the SDK RPC adapter with `pnpm --filter @remedia/client
-test:server`.
+`@remedia/node` is an optional peer dependency for embedded nodes. Its default `test` command excludes
+the native hybrid and Rust-server integration files. Run `pnpm --filter @remedia/client test:hybrid`
+to require and test a built native addon. Run `pnpm --filter @remedia/client test:server` to test
+against a real local server; it uses `REMEDIA_SERVER_BINARY` when provided and otherwise runs
+`cargo run` for convenience. CI always invokes both explicit integration commands, with a previously
+built addon and server executable, so a missing environment variable cannot silently skip either
+test.
+
+Compiling `@remedia/node` from source requires the pinned Rust toolchain, target-compatible FFmpeg 7
+development libraries, dynamic libopus, and libclang. Installing a prebuilt platform addon from a
+future published package would not need those build tools and does not install FFmpeg during package
+installation. The current repository package is private, and no FFmpeg or native compilation is
+attached to npm/pnpm install hooks.
 `cargo test -p remedia-core` runs deterministic file, in-memory, streaming, and local-HTTP decoder tests. The
 core tests cover decoder conversion, seeking, playback lifecycle, native FFmpeg filtergraph processing,
 master gain, Opus framing, backpressure, and stop cleanup. `remedia-discord` tests parsing, fail-closed DAVE behavior, RTP, transport encryption,

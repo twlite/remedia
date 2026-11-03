@@ -1,9 +1,20 @@
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use remedia_server::{ServerConfig, ServerHandle};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> ExitCode {
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("remedia-server: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config_path = parse_args()?;
     let config = ServerConfig::from_file(&config_path)?;
     let server = ServerHandle::start(config).await?;

@@ -17,12 +17,13 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tracing::instrument::WithSubscriber;
 
-use crate::config::{ConfigError, ServerConfig};
+use crate::config::{ConfigError, ServerConfig, parse_snowflake};
 use crate::protocol::{RpcResponse, parse_request};
 use crate::rpc;
 use crate::state::{ConnectionContext, ServerInner, new_inner};
 
 const WS_PATH: &str = "/v1/ws";
+const BOT_USER_ID_HEADER: &str = "x-remedia-bot-id";
 
 pub struct ServerHandle {
     local_addr: SocketAddr,
@@ -179,11 +180,8 @@ async fn handle_connection(
     let connection_id = crate::state::opaque_id(16);
     let connection = Arc::new(ConnectionContext::new(
         connection_id.clone(),
-        &crate::config::AuthUser {
-            username: principal,
-            password: String::new(),
-            discord_bot_user_id: bot_user_id,
-        },
+        principal,
+        bot_user_id,
     ));
     tracing::info!(
         name: "server.websocket.connected",
@@ -329,7 +327,7 @@ fn authorize_handshake(
             "unknown websocket endpoint",
         ));
     }
-    let credentials = request
+    let principal = request
         .headers()
         .get("authorization")
         .and_then(|value| value.to_str().ok())
@@ -337,15 +335,24 @@ fn authorize_handshake(
         .and_then(|(username, password)| {
             config
                 .authenticate(&username, &password)
-                .map(|user| (user.username.clone(), user.discord_bot_user_id))
+                .map(|user| user.username.clone())
         });
-    let Some(credentials) = credentials else {
+    let Some(principal) = principal else {
         return Err(http_error(
             StatusCode::UNAUTHORIZED,
             "authentication_failed",
         ));
     };
-    *lock(authenticated) = Some(credentials);
+    let bot_user_id = request
+        .headers()
+        .get(BOT_USER_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_snowflake)
+        .filter(|user_id| *user_id > 0);
+    let Some(bot_user_id) = bot_user_id else {
+        return Err(http_error(StatusCode::BAD_REQUEST, "invalid_bot_user_id"));
+    };
+    *lock(authenticated) = Some((principal, bot_user_id));
     Ok(response)
 }
 

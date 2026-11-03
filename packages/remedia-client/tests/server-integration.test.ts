@@ -7,11 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { RemoteNodeAdapter } from '../lib/remote-node.js';
 
-const enabled = process.env.REMEDIA_CLIENT_SERVER_TESTS === '1';
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const fixture = resolve(repositoryRoot, 'crates/remedia-core/tests/fixtures/generated-tone.mp3');
 
-describe.skipIf(!enabled)('SDK against the Rust WebSocket server', () => {
+describe('SDK against the Rust WebSocket server', () => {
   let server: ChildProcess | undefined;
   let configDirectory: string | undefined;
   let node: RemoteNodeAdapter | undefined;
@@ -43,7 +42,6 @@ describe.skipIf(!enabled)('SDK against the Rust WebSocket server', () => {
           {
             username: 'sdk-test',
             password: 'sdk-test-password',
-            discordBotUserId: '100000000000000001',
           },
         ],
         sessionResumptionTimeoutSeconds: 10,
@@ -69,17 +67,18 @@ describe.skipIf(!enabled)('SDK against the Rust WebSocket server', () => {
       }),
     );
 
+    const serverBinary = process.env.REMEDIA_SERVER_BINARY;
     server = spawn(
-      'cargo',
-      ['run', '--quiet', '-p', 'remedia-server', '--', '--config', configPath],
-      {
-        cwd: repositoryRoot,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
+      serverBinary ?? 'cargo',
+      serverBinary
+        ? ['--config', configPath]
+        : ['run', '--quiet', '-p', 'remedia-server', '--', '--config', configPath],
+      { cwd: repositoryRoot, stdio: ['ignore', 'pipe', 'pipe'] },
     );
     server.stderr?.resume();
     const url = await waitForServer(server);
     node = new RemoteNodeAdapter({
+      botUserId: '100000000000000001',
       config: {
         type: 'remote',
         id: 'actual-server',

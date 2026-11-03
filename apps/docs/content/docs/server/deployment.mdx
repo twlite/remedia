@@ -14,7 +14,6 @@ environment variables:
 cp crates/remedia-server/remedia.config.example.json remedia.config.json
 mkdir -p media
 export REMEDIA_RPC_PASSWORD='use-a-local-development-password'
-export DISCORD_BOT_USER_ID='100000000000000001'
 cargo run -p remedia-server
 ```
 
@@ -22,6 +21,10 @@ The listener defaults to `127.0.0.1:8787`, and accepts WebSocket RPC at `/v1/ws`
 PATH` for another file. The server uses native FFmpeg libraries and the native Discord voice
 transport. Install the workspace's FFmpeg development libraries as described in
 [core decoding](/docs/core/decoding).
+
+Discord bot identity is sent by each client as the `X-Remedia-Bot-Id` WebSocket handshake header.
+The server configuration contains only server-side accounts and access policy, allowing one
+authenticated account to serve multiple independent bot identities.
 
 ## TLS reverse proxy
 
@@ -37,6 +40,7 @@ location /v1/ws {
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
     proxy_set_header Authorization $http_authorization;
+    proxy_set_header X-Remedia-Bot-Id $http_x_remedia_bot_id;
     proxy_read_timeout 1h;
     proxy_send_timeout 1h;
 }

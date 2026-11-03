@@ -14,7 +14,7 @@ use tokio::sync::{Semaphore, broadcast};
 use tokio_util::sync::CancellationToken as TokioCancellationToken;
 use tracing::instrument::WithSubscriber;
 
-use crate::config::{AuthUser, ServerConfig};
+use crate::config::ServerConfig;
 use crate::protocol::event;
 
 pub(crate) struct ServerInner {
@@ -107,7 +107,8 @@ impl ServerInner {
 
     pub(crate) fn create_client(
         self: &Arc<Self>,
-        user: &AuthUser,
+        principal: &str,
+        bot_user_id: u64,
         connection_id: &str,
         event_buffer: usize,
     ) -> Result<(Arc<ClientSession>, String), StateError> {
@@ -118,7 +119,7 @@ impl ServerInner {
         if sessions
             .values()
             .filter(|session| {
-                session.principal == user.username && !session.closed.load(Ordering::Acquire)
+                session.principal == principal && !session.closed.load(Ordering::Acquire)
             })
             .count()
             >= self.config.limits.max_client_sessions
@@ -129,8 +130,8 @@ impl ServerInner {
         let credential = opaque_id(32);
         let session = Arc::new(ClientSession {
             id: opaque_id(16),
-            principal: user.username.clone(),
-            bot_user_id: user.discord_bot_user_id,
+            principal: principal.to_owned(),
+            bot_user_id,
             resume_credential: Mutex::new(credential.clone()),
             attached_connection: Mutex::new(Some(connection_id.to_owned())),
             detached_deadline: Mutex::new(None),
@@ -145,11 +146,13 @@ impl ServerInner {
         Ok((session, credential))
     }
 
-    pub(crate) fn list_clients(&self, principal: &str) -> Vec<serde_json::Value> {
+    pub(crate) fn list_clients(&self, principal: &str, bot_user_id: u64) -> Vec<serde_json::Value> {
         lock(&self.sessions)
             .values()
             .filter(|session| {
-                session.principal == principal && !session.closed.load(Ordering::Acquire)
+                session.principal == principal
+                    && session.bot_user_id == bot_user_id
+                    && !session.closed.load(Ordering::Acquire)
             })
             .map(|session| {
                 serde_json::json!({
@@ -166,13 +169,17 @@ impl ServerInner {
         session_id: &str,
         credential: &str,
         principal: &str,
+        bot_user_id: u64,
         connection_id: &str,
     ) -> Result<(Arc<ClientSession>, String), StateError> {
         let session = lock(&self.sessions)
             .get(session_id)
             .cloned()
             .ok_or(StateError::UnknownSession)?;
-        if session.principal != principal || session.closed.load(Ordering::Acquire) {
+        if session.principal != principal
+            || session.bot_user_id != bot_user_id
+            || session.closed.load(Ordering::Acquire)
+        {
             return Err(StateError::UnknownSession);
         }
         {
@@ -393,12 +400,12 @@ impl ServerInner {
 }
 
 impl ConnectionContext {
-    pub(crate) fn new(id: String, user: &AuthUser) -> Self {
+    pub(crate) fn new(id: String, principal: String, bot_user_id: u64) -> Self {
         let (active_session, _) = watch::channel(None);
         Self {
             id,
-            principal: user.username.clone(),
-            bot_user_id: user.discord_bot_user_id,
+            principal,
+            bot_user_id,
             active_session,
             session_control: tokio::sync::Mutex::new(()),
             request_window: Mutex::new((Instant::now(), 0)),
