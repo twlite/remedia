@@ -13,6 +13,16 @@ const LOG_MESSAGE_BYTES: usize = 2_048;
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(10);
 const MAX_RATE_LIMIT_ENTRIES: usize = 256;
 
+// On Linux x86_64, bindgen represents C's `va_list` typedef as a one-element
+// array. As a function parameter, C adjusts that array type to a pointer, so
+// FFmpeg's callback and formatting declarations expect this pointer instead.
+// Other supported targets expose `va_list` in a form that already matches the
+// generated function signatures.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+type FfmpegVaList = *mut ffi::__va_list_tag;
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+type FfmpegVaList = ffi::va_list;
+
 thread_local! {
     static REMEDIA_FFMPEG_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
@@ -69,7 +79,7 @@ unsafe extern "C" fn ffmpeg_log_callback(
     context: *mut c_void,
     level: c_int,
     format: *const c_char,
-    arguments: ffi::va_list,
+    arguments: FfmpegVaList,
 ) {
     let result = catch_unwind(AssertUnwindSafe(|| {
         let is_remedia_call = REMEDIA_FFMPEG_DEPTH.with(|depth| depth.get() != 0);
@@ -126,7 +136,7 @@ unsafe extern "C" fn ffmpeg_log_callback(
     }
 }
 
-fn format_message(level: c_int, format: *const c_char, arguments: ffi::va_list) -> Option<String> {
+fn format_message(level: c_int, format: *const c_char, arguments: FfmpegVaList) -> Option<String> {
     if format.is_null() {
         return None;
     }
