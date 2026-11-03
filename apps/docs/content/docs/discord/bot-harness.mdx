@@ -53,13 +53,15 @@ voice session IDs, tokens, or endpoints.
 - `/nowplaying` shows the Remedia title when available, playback state, and
   a proportional progress bar against the original media duration. Estimated
   source positions are prefixed with `~`; unknown durations do not imply a
-  percentage.
+  percentage. Its filter field lists active presets in selection order.
 - `/stop` stops playback and clears the queue while keeping the voice
   connection open.
 - `/disconnect` stops playback, clears the queue, and leaves the voice channel.
-- `/filter set <preset>` applies one of `8d`, `bassboost`, `nightcore`,
-  `vaporwave`, `tremolo`, or `vibrato`; `/filter clear` disables the selected
-  graph, and `/filter list` displays the choices and current selection.
+- `/filter set <preset>` adds one of `8d`, `bassboost`, `nightcore`,
+  `vaporwave`, `tremolo`, or `vibrato` to the active filters. Presets are
+  chained in selection order, and selecting a preset more than once does not
+  duplicate it. `/filter clear` disables all active graphs, and `/filter list`
+  displays the choices and current selection.
 - `/volume` reads the current setting; `/volume percent:<0..200>` sets linear
   gain. Zero mutes, 100 is unity, and values above 100 may clip.
 
@@ -77,12 +79,13 @@ does not move an existing session to another channel implicitly; disconnect
 first, then issue `/play` from the new channel.
 
 The six names above are convenience presets defined only in `apps/discord`; each
-maps to a raw FFmpeg graph passed to the generic Node API. The selected preset
-and percentage are stored in the in-memory guild player, apply immediately to
-an active track, and carry over to queued tracks and skips. Filter changes do
-not change volume, and volume changes do not rebuild the graph. A disconnect or
-bot shutdown disposes the guild player and drops both settings. Engine callers
-can use arbitrary trusted filtergraphs instead of these names.
+maps to a raw FFmpeg graph passed to the generic Node API. `/filter set` appends
+each distinct preset and combines graph expressions in selection order. Changes
+apply immediately to the active track and carry over to queued tracks and skips.
+`/filter clear` removes every selected preset. Filter changes do not change
+volume, and volume changes do not rebuild the graph. A disconnect or bot
+shutdown disposes the guild player and drops both settings. Engine callers can
+use arbitrary trusted filtergraphs instead of these names.
 
 Slash command replies use consistent Remedia embeds, including colored error
 embeds when an operation fails. `/nowplaying` formats source time and duration

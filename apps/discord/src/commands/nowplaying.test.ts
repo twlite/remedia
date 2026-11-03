@@ -11,7 +11,7 @@ test('now-playing progress bar places its marker proportionally and clamps the e
   assert.equal(makeProgressBar(150, 100, 4), '▰▰▰●');
 });
 
-test('now-playing embed shows the source position, progress bar, state, filter, and volume', () => {
+test('now-playing embed shows source position, progress, active filters, and volume', () => {
   const embed = createNowPlayingEmbed(makeSnapshot());
   const data = embed.toJSON();
 
@@ -28,6 +28,17 @@ test('now-playing embed shows the source position, progress bar, state, filter, 
   );
   assert.equal(data.color, 0x57f287);
   assert.equal(data.footer?.text, 'Source position is estimated');
+});
+
+test('now-playing shows every active filter in selection order', () => {
+  const embed = createNowPlayingEmbed(
+    makeSnapshot({ filterPresets: ['bassboost', 'tremolo', 'vibrato'] }),
+  );
+
+  assert.equal(
+    embed.data.fields?.find(({ name }) => name === 'Filter')?.value,
+    'bassboost, tremolo, vibrato',
+  );
 });
 
 test('unknown duration is shown without implying a measured percentage', () => {
@@ -68,7 +79,7 @@ function makeSnapshot(overrides: Partial<PlaybackSnapshot> = {}): PlaybackSnapsh
     },
     queue: [],
     lastError: null,
-    filterPreset: 'nightcore',
+    filterPresets: ['nightcore'],
     volumePercent: 75,
     ...overrides,
   };

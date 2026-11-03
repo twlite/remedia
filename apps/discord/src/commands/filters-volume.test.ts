@@ -23,20 +23,28 @@ test('filter and volume slash commands read and change the guild playback settin
     });
 
     let response = await invoke(filterCommand, 'set', 'nightcore');
-    assert.equal(response.description, 'Applied the nightcore filter.');
+    assert.equal(response.description, 'Active filters: nightcore.');
     assert.equal(response.color, 0x5865f2);
     assert.equal(session.filters.graph, 'asetrate=60000,aresample=48000');
+
+    response = await invoke(filterCommand, 'set', 'tremolo');
+    assert.equal(response.description, 'Active filters: nightcore, tremolo.');
+    assert.equal(session.filters.graph, 'asetrate=60000,aresample=48000,tremolo=f=5:d=0.6');
+
+    response = await invoke(filterCommand, 'set', 'nightcore');
+    assert.equal(response.description, 'Active filters: nightcore, tremolo.');
+    assert.equal(session.filters.graph, 'asetrate=60000,aresample=48000,tremolo=f=5:d=0.6');
 
     response = await invoke(filterCommand, 'list');
     assert.match(
       response.description ?? '',
       /8d, bassboost, nightcore, vaporwave, tremolo, vibrato/,
     );
-    assert.match(response.description ?? '', /Current: nightcore/);
+    assert.match(response.description ?? '', /Current: nightcore, tremolo/);
     response = await invoke(filterCommand, 'set', 'not-a-preset');
     assert.match(response.description ?? '', /Unknown filter preset/i);
     assert.equal(response.color, 0xed4245);
-    assert.equal(session.filters.graph, 'asetrate=60000,aresample=48000');
+    assert.equal(session.filters.graph, 'asetrate=60000,aresample=48000,tremolo=f=5:d=0.6');
 
     response = await invoke(volumeCommand, undefined, undefined, undefined);
     assert.equal(response.description, 'Current volume: 100%.');
@@ -45,7 +53,7 @@ test('filter and volume slash commands read and change the guild playback settin
     assert.equal(session.volume, 0.75);
 
     response = await invoke(filterCommand, 'clear');
-    assert.equal(response.description, 'Audio filter cleared.');
+    assert.equal(response.description, 'All audio filters cleared.');
     assert.equal(session.filters.graph, null);
     assert.equal(session.volume, 0.75);
 

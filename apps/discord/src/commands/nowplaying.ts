@@ -51,7 +51,7 @@ export function createNowPlayingEmbed(snapshot: PlaybackSnapshot): EmbedBuilder 
     .setDescription(`${bar}**${position}** / **${formatDuration(duration)}**`)
     .addFields(
       { name: 'Status', value: capitalize(snapshot.state), inline: true },
-      { name: 'Filter', value: snapshot.filterPreset ?? 'Off', inline: true },
+      { name: 'Filter', value: snapshot.filterPresets.join(', ') || 'Off', inline: true },
       { name: 'Volume', value: `${snapshot.volumePercent}%`, inline: true },
     )
     .setFooter({

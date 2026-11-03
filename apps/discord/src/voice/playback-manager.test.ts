@@ -64,7 +64,7 @@ test('sends generation lifecycle messages to the text channel retained in queue 
   await manager.pause('guild', 'channel');
   await manager.resume('guild', 'channel');
   await manager.seek('guild', 'channel', 12_000);
-  await manager.setFilter('guild', 'channel', 'tremolo');
+  await manager.setFilters('guild', 'channel', ['tremolo', 'vibrato']);
   await manager.setVolume('guild', 'channel', 80);
   session.finish('completed');
   await new Promise<void>((resolve) => setImmediate(resolve));
@@ -123,7 +123,7 @@ test('queues tracks, advances on completion, and leaves voice connected when sto
   });
   assert.equal(first.started, true);
   assert.deepEqual(session.playedUrls, ['https://media.example/one.mp3']);
-  await manager.setFilter('guild', 'channel', 'bassboost');
+  await manager.setFilters('guild', 'channel', ['bassboost', 'tremolo']);
   await manager.setVolume('guild', 'channel', 75);
 
   const second = await manager.enqueue('guild', 'channel', 'bot', {
@@ -147,7 +147,11 @@ test('queues tracks, advances on completion, and leaves voice connected when sto
     'https://media.example/one.mp3',
     'https://media.example/two.mp3',
   ]);
-  assert.equal(session.filters.graph, FILTER_PRESETS.bassboost);
+  assert.equal(session.filters.graph, `${FILTER_PRESETS.bassboost},${FILTER_PRESETS.tremolo}`);
+  assert.deepEqual((await manager.snapshot('guild', 'channel')).filterPresets, [
+    'bassboost',
+    'tremolo',
+  ]);
   assert.equal(session.volume, 0.75);
 
   await manager.enqueue('guild', 'channel', 'bot', {
@@ -168,7 +172,7 @@ test('queues tracks, advances on completion, and leaves voice connected when sto
   await manager.close();
 });
 
-test('consecutive skips start every queued track exactly once and preserve per-guild effects', async () => {
+test('consecutive skips start tracks once and preserve combined per-guild effects', async () => {
   const { manager, session } = createManager();
   for (const name of ['a', 'b', 'c']) {
     await manager.enqueue('guild', 'channel', 'bot', {
@@ -176,14 +180,14 @@ test('consecutive skips start every queued track exactly once and preserve per-g
       requestedBy: 'alice',
     });
   }
-  await manager.setFilter('guild', 'channel', 'nightcore');
+  await manager.setFilters('guild', 'channel', ['nightcore', 'tremolo']);
   await manager.setVolume('guild', 'channel', 150);
 
   assert.equal((await manager.skip('guild', 'channel'))?.url, 'https://media.example/b.wav');
   assert.equal((await manager.skip('guild', 'channel'))?.url, 'https://media.example/c.wav');
   assert.equal(session.playedUrls.filter((url) => url.endsWith('/b.wav')).length, 1);
   assert.equal(session.playedUrls.filter((url) => url.endsWith('/c.wav')).length, 1);
-  assert.equal(session.filters.graph, 'asetrate=60000,aresample=48000');
+  assert.equal(session.filters.graph, 'asetrate=60000,aresample=48000,tremolo=f=5:d=0.6');
   assert.equal(session.volume, 1.5);
   session.finish('completed');
   await Promise.resolve();
@@ -380,9 +384,9 @@ test('filter and volume state are independent between guild sessions', async () 
   }
   await manager.setFilter('guild-a', 'channel', 'vibrato');
   await manager.setVolume('guild-a', 'channel', 30);
-  assert.equal((await manager.snapshot('guild-a', 'channel')).filterPreset, 'vibrato');
+  assert.deepEqual((await manager.snapshot('guild-a', 'channel')).filterPresets, ['vibrato']);
   assert.equal((await manager.snapshot('guild-a', 'channel')).volumePercent, 30);
-  assert.equal((await manager.snapshot('guild-b', 'channel')).filterPreset, null);
+  assert.deepEqual((await manager.snapshot('guild-b', 'channel')).filterPresets, []);
   assert.equal((await manager.snapshot('guild-b', 'channel')).volumePercent, 100);
   await manager.close();
 });

@@ -62,10 +62,13 @@ See the [Discord harness guide](/docs/discord/bot-harness) for command behavior
 and lifecycle details.
 
 `/filter set` accepts `8d`, `bassboost`, `nightcore`, `vaporwave`, `tremolo`,
-or `vibrato`; `/filter clear` and `/filter list` manage and display the current
-selection. These names are harness conveniences mapped to native FFmpeg audio
-graphs, not presets in `remedia-core` or either Node package. `/volume` reads the
-current value and `/volume percent:<0..200>` applies independent linear gain;
+or `vibrato`. Each call appends that preset to the active filters in selection
+order; selecting the same preset again does not duplicate it. Their graphs are
+chained in that order. `/filter list` shows all active presets, and
+`/filter clear` removes them all. These names are harness conveniences mapped
+to native FFmpeg audio graphs, not presets in `remedia-core` or either Node
+package. `/volume` reads the current value and `/volume percent:<0..200>` applies
+independent linear gain;
 gains above 100% may clip. Filter and volume values stay scoped to one guild
 and carry across queued tracks and skips until the player disconnects. The
 queue manager serializes skips and ignores completion notifications from a

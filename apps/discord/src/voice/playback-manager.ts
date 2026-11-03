@@ -30,7 +30,7 @@ export interface PlaybackSnapshot {
   current: TrackSnapshot | null;
   queue: readonly TrackRequest[];
   lastError: string | null;
-  filterPreset: FilterPresetName | null;
+  filterPresets: readonly FilterPresetName[];
   volumePercent: number;
 }
 
@@ -54,7 +54,7 @@ interface GuildPlayer {
   generation: number;
   stopNotificationGeneration: number | undefined;
   operations: Promise<void>;
-  filterPreset: FilterPresetName | null;
+  filterPresets: FilterPresetName[];
   volumePercent: number;
   lifecycleUnsubscribers: Array<() => void>;
 }
@@ -175,14 +175,39 @@ export class DiscordPlaybackManager {
     channelId: string,
     preset: FilterPresetName | null,
   ): Promise<void> {
+    if (preset === null) return this.clearFilters(guildId, channelId);
+    return this.setFilters(guildId, channelId, [preset]);
+  }
+
+  async setFilters(
+    guildId: string,
+    channelId: string,
+    presets: readonly FilterPresetName[],
+  ): Promise<void> {
     const player = this.#getPlayer(guildId, channelId);
     await this.#serialize(player, async () => {
-      if (preset !== null && !Object.hasOwn(FILTER_PRESETS, preset)) {
-        throw new RangeError(`Unknown filter preset: ${preset}`);
+      for (const preset of presets) {
+        if (!Object.hasOwn(FILTER_PRESETS, preset)) {
+          throw new RangeError(`Unknown filter preset: ${preset}`);
+        }
       }
-      if (preset === null) await player.session.filters.clear();
-      else await player.session.filters.set(FILTER_PRESETS[preset]);
-      player.filterPreset = preset;
+
+      const next = [...new Set([...player.filterPresets, ...presets])];
+      const graph = filterGraphFor(next);
+      if (graph === null) {
+        if (player.session.filters.graph !== null) await player.session.filters.clear();
+      } else if (player.session.filters.graph !== graph) {
+        await player.session.filters.set(graph);
+      }
+      player.filterPresets = next;
+    });
+  }
+
+  async clearFilters(guildId: string, channelId: string): Promise<void> {
+    const player = this.#getPlayer(guildId, channelId);
+    await this.#serialize(player, async () => {
+      if (player.session.filters.graph !== null) await player.session.filters.clear();
+      player.filterPresets = [];
     });
   }
 
@@ -255,7 +280,7 @@ export class DiscordPlaybackManager {
       generation: 0,
       stopNotificationGeneration: undefined,
       operations: Promise.resolve(),
-      filterPreset: null,
+      filterPresets: [],
       volumePercent: 100,
       lifecycleUnsubscribers: [],
     };
@@ -282,7 +307,7 @@ export class DiscordPlaybackManager {
       player.stopNotificationGeneration = undefined;
       player.current = track;
       try {
-        const graph = player.filterPreset === null ? null : FILTER_PRESETS[player.filterPreset];
+        const graph = filterGraphFor(player.filterPresets);
         if (graph === null) {
           if (player.session.filters.graph !== null) await player.session.filters.clear();
         } else if (player.session.filters.graph !== graph) {
@@ -627,9 +652,13 @@ function toPlaybackSnapshot(player: GuildPlayer): PlaybackSnapshot {
     current: player.current ? toTrackSnapshot(player.current) : null,
     queue: player.queue.map(({ url, requestedBy }) => ({ url, requestedBy })),
     lastError: player.lastError ?? null,
-    filterPreset: player.filterPreset,
+    filterPresets: [...player.filterPresets],
     volumePercent: player.volumePercent,
   };
+}
+
+function filterGraphFor(presets: readonly FilterPresetName[]): string | null {
+  return presets.length === 0 ? null : presets.map((preset) => FILTER_PRESETS[preset]).join(',');
 }
 
 function isActivePlayback(state: PlaybackState): boolean {

@@ -2878,6 +2878,26 @@ mod tests {
         let restore_gain = thread::spawn(move || {
             let _ = response_tx.send(update_session.set_volume(1.0));
         });
+        assert!(wait_for_volume(&session, 1.0));
+        handle.release(1);
+        assert!(wait_for_processing_mode(
+            &session,
+            PlaybackProcessingMode::Passthrough
+        ));
+        assert!(
+            handle.wait_for_calls(7),
+            "passthrough resumes on the same sink"
+        );
+        assert_eq!(
+            session.state(),
+            PlaybackState::Playing,
+            "the processing transition is observed before the source is drained"
+        );
+        assert_eq!(
+            session.processing_mode(),
+            Some(PlaybackProcessingMode::Passthrough),
+            "unity gain returns to passthrough while playback remains active"
+        );
         handle.release(1_000);
         response_rx.recv_timeout(TEST_TIMEOUT).unwrap().unwrap();
         restore_gain.join().unwrap();
