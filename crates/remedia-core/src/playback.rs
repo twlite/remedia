@@ -2892,15 +2892,10 @@ mod tests {
         let fixture = include_bytes!("../tests/fixtures/generated-opus-passthrough.ogg");
         let (source, producer) = InputSource::byte_stream(1_024).unwrap();
         let source_bytes = fixture.to_vec();
-        // Keep the byte stream open until all live transitions have completed.
-        // Otherwise the demuxer can observe EOF and settle the session before
-        // the clear-filter operation gets a chance to restore passthrough.
-        let (finish_tx, finish_rx) = mpsc::sync_channel::<()>(0);
         let producer_thread = thread::spawn(move || {
             for chunk in source_bytes.chunks(317) {
                 producer.write(chunk).unwrap();
             }
-            finish_rx.recv().unwrap();
             producer.finish().unwrap();
         });
         let (sink, handle) = StepPacketSink::new();
@@ -3001,7 +2996,6 @@ mod tests {
             "unity gain returns to passthrough while playback remains active"
         );
         handle.release(1_000);
-        finish_tx.send(()).unwrap();
         response_rx.recv_timeout(TEST_TIMEOUT).unwrap().unwrap();
         restore_gain.join().unwrap();
         assert_eq!(
@@ -3773,6 +3767,14 @@ mod tests {
                 .map_err(|error| error.to_string());
             update_gate.record_filter_update(result);
         });
+        // Wait until the update thread has actually queued the transition.
+        // Otherwise, on fast platforms the test releases every blocked packet
+        // before that thread is scheduled, drains the finite Opus fixture, and
+        // observes a successful config change only after natural EOF.
+        assert!(
+            gate.wait_for_pending_filter(&session),
+            "live filter update is pending while packet output is blocked"
+        );
         let deadline = Instant::now() + TEST_TIMEOUT;
         let mut after_calls = 0;
         let mut released_packets = 0;
