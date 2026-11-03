@@ -438,6 +438,19 @@ jobs:
             echo "CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=$linker" >> "$GITHUB_ENV"
             echo "CC_armv7_linux_androideabi=$linker" >> "$GITHUB_ENV"
           fi
+          # Bindgen runs on the Linux host. Force the target NDK headers and
+          # Clang builtins instead of mixing in host glibc headers.
+          ndk_clang="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
+          builtin_headers="$("$ndk_clang" -print-resource-dir)/include"
+          sysroot="$ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          if [ "${{ inputs.target }}" = "aarch64-linux-android" ]; then
+            android_target=aarch64-linux-android24
+            target_headers=aarch64-linux-android
+          else
+            android_target=armv7a-linux-androideabi24
+            target_headers=arm-linux-androideabi
+          fi
+          echo "BINDGEN_EXTRA_CLANG_ARGS=--target=$android_target --sysroot=$sysroot -nostdinc -isystem $builtin_headers -isystem $sysroot/usr/include -isystem $sysroot/usr/include/$target_headers" >> "$GITHUB_ENV"
       - name: Install the MSVC target toolchain
         if: inputs.os == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
@@ -598,9 +611,24 @@ jobs:
         run: |
           set -euo pipefail
           sudo pkg update -f
-          sudo pkg install -y curl node npm cmake pkgconf llvm19 ffmpeg7
-          test "$(ffmpeg -version | head -n 1 | sed -E 's/.* version ([0-9]+).*/\1/')" = 7
+          sudo pkg install -y curl git node24 npm-node24 cmake pkgconf llvm19 gmake nasm
+          # The FreeBSD 15 package repositories do not contain the ffmpeg7
+          # package. Compile the same pinned FFmpeg 7.1.1 revision used by the
+          # cross-platform jobs instead of installing an unrelated FFmpeg major.
+          ffmpeg_source="$HOME/remedia-ffmpeg-7"
+          git init -q "$ffmpeg_source"
+          git -C "$ffmpeg_source" remote add origin https://github.com/FFmpeg/FFmpeg.git
+          git -C "$ffmpeg_source" fetch --quiet --depth=1 origin db69d06eeeab4f46da15030a80d539efb4503ca8
+          git -C "$ffmpeg_source" checkout --quiet --detach FETCH_HEAD
+          (
+            cd "$ffmpeg_source"
+            ./configure --prefix=/usr/local --enable-shared --disable-static --disable-programs --disable-doc --disable-debug --disable-autodetect --enable-network --enable-pic
+            gmake -j3
+            sudo gmake install
+          )
           test "$(pkg-config --modversion libavcodec | cut -d. -f1)" = 61
+          test "$(pkg-config --modversion libavformat | cut -d. -f1)" = 61
+          test "$(pkg-config --modversion libavfilter | cut -d. -f1)" = 10
           curl https://sh.rustup.rs -sSf --output rustup.sh
           sh rustup.sh -y --profile minimal --default-toolchain 1.99.1
           source "$HOME/.cargo/env"
