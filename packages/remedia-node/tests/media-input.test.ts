@@ -231,7 +231,10 @@ test('stop and close cancel blocked Readable probes without destroying caller st
     ]);
     await remedia.close();
     assert.equal(await closingPlay, 'rejected');
-    assert.equal(closedPlayback.state, 'stopped');
+    // Remedia.close() releases the native session registry, so the wrapper
+    // cannot expose a playback state after shutdown. Assert that shutdown
+    // actually removed the session and preserved ownership of the Readable.
+    assert.throws(() => closedPlayback.state, /unknown playback session/i);
     assert.equal(closedSource.stream.destroyed, false);
   } finally {
     stoppedSource.stream.destroy();
