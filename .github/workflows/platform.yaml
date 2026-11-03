@@ -394,7 +394,7 @@ jobs:
         if: inputs.os == 'linux' || inputs.os == 'android'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends clang libclang-dev pkg-config build-essential git
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev llvm pkg-config build-essential git nasm
           if [ "${{ inputs.target }}" = "armv7-unknown-linux-gnueabihf" ]; then
             sudo apt-get install --yes --no-install-recommends gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf binutils-arm-linux-gnueabihf
             echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
@@ -466,10 +466,12 @@ jobs:
           RUST_TARGET: ${{ inputs.target }}
         run: |
           $vcpkgRoot = Join-Path $env:RUNNER_TEMP 'remedia-vcpkg'
-          git init $vcpkgRoot
-          git -C $vcpkgRoot remote add origin https://github.com/microsoft/vcpkg.git
-          git -C $vcpkgRoot fetch --depth=1 origin afa249f12f52ed8a3b919f195495ba8b330288d1
-          git -C $vcpkgRoot checkout --detach FETCH_HEAD
+          # vcpkg versioned ports resolve historical Git tree objects, which are
+          # unavailable in a depth=1 checkout even when the baseline commit exists.
+          git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg full clone failed' }
+          git -C $vcpkgRoot checkout --detach afa249f12f52ed8a3b919f195495ba8b330288d1
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg pinned checkout failed' }
           & (Join-Path $vcpkgRoot 'bootstrap-vcpkg.bat') -disableMetrics
           if ($LASTEXITCODE -ne 0) { throw 'vcpkg bootstrap failed' }
 
