@@ -1,9 +1,12 @@
+import { EmbedBuilder, type SendableChannels } from 'discord.js';
 import type {
   AudioStreamInfo,
   DiscordSession,
   PlaybackState,
   RemediaClient,
 } from '@remedia/client';
+import { PlaybackSessionEvents, VoiceSessionEvents } from '@remedia/client';
+import { displayTrack } from './command-helpers.js';
 import { FILTER_PRESETS, type FilterPresetName } from './filter-presets.js';
 
 const MAX_QUEUED_TRACKS = 100;
@@ -35,21 +38,32 @@ interface Track extends TrackRequest {
   info?: AudioStreamInfo;
 }
 
+interface TrackLifecycleMetadata {
+  textChannel?: SendableChannels;
+  queueGeneration: number;
+  track: Track;
+}
+
 interface GuildPlayer {
-  session: DiscordSession;
+  session: DiscordSession<TrackLifecycleMetadata>;
   queue: Track[];
   current: Track | undefined;
+  /** The first queue's text channel, retained in memory for lifecycle announcements. */
+  queueMetadata: { textChannel?: SendableChannels };
   lastError: string | undefined;
   generation: number;
+  stopNotificationGeneration: number | undefined;
   operations: Promise<void>;
   filterPreset: FilterPresetName | null;
   volumePercent: number;
+  lifecycleUnsubscribers: Array<() => void>;
 }
 
 /** Application-owned queueing for the manual Discord harness. The native API remains single-source. */
 export class DiscordPlaybackManager {
   readonly #remedia: RemediaClient;
   readonly #players = new Map<string, GuildPlayer>();
+  readonly #failedNotifications = new WeakSet<Track>();
   #closed = false;
 
   constructor(remedia: RemediaClient) {
@@ -61,9 +75,10 @@ export class DiscordPlaybackManager {
     channelId: string,
     botUserId: string,
     request: TrackRequest,
+    textChannel?: SendableChannels,
   ): Promise<{ started: boolean; queuePosition: number; track: TrackSnapshot }> {
     this.#assertOpen();
-    const player = this.#getOrCreatePlayer(guildId, channelId, botUserId);
+    const player = this.#getOrCreatePlayer(guildId, channelId, botUserId, textChannel);
     return this.#serialize(player, async () => {
       if (player.session.connectionState !== 'connected') {
         try {
@@ -126,6 +141,7 @@ export class DiscordPlaybackManager {
     const player = this.#getPlayer(guildId, channelId);
     await this.#serialize(player, async () => {
       player.generation += 1;
+      player.stopNotificationGeneration = player.generation - 1;
       player.current = undefined;
       player.queue.length = 0;
       if (isActivePlayback(player.session.state)) await player.session.stop();
@@ -212,7 +228,12 @@ export class DiscordPlaybackManager {
     }
   }
 
-  #getOrCreatePlayer(guildId: string, channelId: string, botUserId: string): GuildPlayer {
+  #getOrCreatePlayer(
+    guildId: string,
+    channelId: string,
+    botUserId: string,
+    textChannel: SendableChannels | undefined,
+  ): GuildPlayer {
     const existing = this.#players.get(guildId);
     if (existing) {
       if (existing.session.channelId !== channelId) {
@@ -222,16 +243,24 @@ export class DiscordPlaybackManager {
     }
 
     const player: GuildPlayer = {
-      session: this.#remedia.createDiscordSession({ guildId, channelId, userId: botUserId }),
+      session: this.#remedia.createDiscordSession<TrackLifecycleMetadata>({
+        guildId,
+        channelId,
+        userId: botUserId,
+      }),
       queue: [],
       current: undefined,
+      queueMetadata: textChannel === undefined ? {} : { textChannel },
       lastError: undefined,
       generation: 0,
+      stopNotificationGeneration: undefined,
       operations: Promise.resolve(),
       filterPreset: null,
       volumePercent: 100,
+      lifecycleUnsubscribers: [],
     };
     this.#players.set(guildId, player);
+    this.#bindLifecycleEvents(player);
     return player;
   }
 
@@ -250,6 +279,7 @@ export class DiscordPlaybackManager {
       const track = player.queue.shift();
       if (!track) return;
       const generation = ++player.generation;
+      player.stopNotificationGeneration = undefined;
       player.current = track;
       try {
         const graph = player.filterPreset === null ? null : FILTER_PRESETS[player.filterPreset];
@@ -261,7 +291,12 @@ export class DiscordPlaybackManager {
         if (player.session.volume !== player.volumePercent / 100) {
           await player.session.setVolume(player.volumePercent / 100);
         }
-        track.info = await player.session.play({ url: track.url });
+        const metadata: TrackLifecycleMetadata = {
+          ...player.queueMetadata,
+          queueGeneration: generation,
+          track,
+        };
+        track.info = await player.session.play({ url: track.url }, { customMetadata: metadata });
         if (player.generation !== generation) return;
         void this.#watchCompletion(player, generation).catch((error: unknown) => {
           console.error('Could not advance the Remedia queue:', asError(error).message);
@@ -270,6 +305,15 @@ export class DiscordPlaybackManager {
       } catch (error) {
         if (player.generation !== generation) return;
         const failure = asError(error);
+        this.#notifyTrackFailure(
+          player,
+          {
+            ...player.queueMetadata,
+            queueGeneration: generation,
+            track,
+          },
+          failure,
+        );
         firstFailure ??= failure;
         player.lastError = `A track failed to open or decode: ${redactUrl(failure.message, track.url)}`;
         player.current = undefined;
@@ -317,7 +361,239 @@ export class DiscordPlaybackManager {
     try {
       await player.session.dispose();
     } finally {
+      for (const unsubscribe of player.lifecycleUnsubscribers.splice(0)) unsubscribe();
+      delete player.queueMetadata.textChannel;
       this.#players.delete(player.session.guildId);
+    }
+  }
+
+  #bindLifecycleEvents(player: GuildPlayer): void {
+    const onPlaybackStarted = (event: {
+      generation: number;
+      state: 'playing';
+      info: AudioStreamInfo;
+      customMetadata?: TrackLifecycleMetadata;
+    }): void => {
+      const metadata = event.customMetadata;
+      if (!metadata || !this.#isCurrentLifecycle(player, metadata)) return;
+      const track = metadata.track;
+      track.info ??= event.info;
+      this.#sendLifecycleMessage(
+        player,
+        metadata,
+        'Now playing',
+        `${displayTrack({ url: track.url, info: event.info })}${formatTrackRequester(track)}`,
+        0x57f287,
+      );
+    };
+    const onPlaybackCompleted = (event: {
+      generation: number;
+      customMetadata?: TrackLifecycleMetadata;
+    }): void => {
+      const metadata = event.customMetadata;
+      if (!metadata || !this.#isCurrentLifecycle(player, metadata)) return;
+      this.#sendLifecycleMessage(
+        player,
+        metadata,
+        'Track finished',
+        `${displayTrack(metadata.track)} finished playing.`,
+        0x5865f2,
+      );
+    };
+    const onPlaybackStopped = (event: {
+      generation: number;
+      customMetadata?: TrackLifecycleMetadata;
+    }): void => {
+      const metadata = event.customMetadata;
+      if (!metadata) return;
+      const expectedStop = player.stopNotificationGeneration === metadata.queueGeneration;
+      if (!expectedStop && !this.#isCurrentLifecycle(player, metadata)) return;
+      if (expectedStop) player.stopNotificationGeneration = undefined;
+      this.#sendLifecycleMessage(
+        player,
+        metadata,
+        'Playback stopped',
+        `${displayTrack(metadata.track)} was stopped.`,
+        0x99aab5,
+      );
+    };
+    const onPlaybackFailed = (event: {
+      generation: number;
+      error: Error;
+      customMetadata?: TrackLifecycleMetadata;
+    }): void => {
+      const metadata = event.customMetadata;
+      if (!metadata || !this.#isCurrentLifecycle(player, metadata)) return;
+      this.#notifyTrackFailure(player, metadata, event.error);
+    };
+    const onPlaybackPaused = (event: {
+      generation: number;
+      customMetadata?: TrackLifecycleMetadata;
+    }): void => {
+      const metadata = event.customMetadata;
+      if (!metadata || !this.#isCurrentLifecycle(player, metadata)) return;
+      this.#sendLifecycleMessage(
+        player,
+        metadata,
+        'Playback paused',
+        `${displayTrack(metadata.track)} is paused.`,
+        0xfee75c,
+      );
+    };
+    const onPlaybackResumed = (event: {
+      generation: number;
+      customMetadata?: TrackLifecycleMetadata;
+    }): void => {
+      const metadata = event.customMetadata;
+      if (!metadata || !this.#isCurrentLifecycle(player, metadata)) return;
+      this.#sendLifecycleMessage(
+        player,
+        metadata,
+        'Playback resumed',
+        `${displayTrack(metadata.track)} is playing again.`,
+        0x57f287,
+      );
+    };
+    const onPlaybackSeeked = (event: {
+      generation: number;
+      positionMs: number;
+      customMetadata?: TrackLifecycleMetadata;
+    }): void => {
+      const metadata = event.customMetadata;
+      if (!metadata || !this.#isCurrentLifecycle(player, metadata)) return;
+      this.#sendLifecycleMessage(
+        player,
+        metadata,
+        'Playback position changed',
+        `Seeked ${displayTrack(metadata.track)} to ${formatDuration(event.positionMs)}.`,
+        0x5865f2,
+      );
+    };
+    const onFilterChanged = (event: {
+      generation: number;
+      graph: string | null;
+      customMetadata?: TrackLifecycleMetadata;
+    }): void => {
+      const metadata = event.customMetadata;
+      if (metadata && !this.#isCurrentLifecycle(player, metadata)) return;
+      this.#sendLifecycleMessage(
+        player,
+        metadata,
+        'Audio filter changed',
+        event.graph === null ? 'The audio filter was cleared.' : 'An audio filter was applied.',
+        0x5865f2,
+      );
+    };
+    const onVolumeChanged = (event: {
+      generation: number;
+      volume: number;
+      customMetadata?: TrackLifecycleMetadata;
+    }): void => {
+      const metadata = event.customMetadata;
+      if (metadata && !this.#isCurrentLifecycle(player, metadata)) return;
+      this.#sendLifecycleMessage(
+        player,
+        metadata,
+        'Playback volume changed',
+        `Master volume is now ${Math.round(event.volume * 100)}%.`,
+        0x5865f2,
+      );
+    };
+    const onVoiceStateChanged = (event: { state: string }): void => {
+      const messages: Readonly<Record<string, string>> = {
+        connected: 'Connected to the Discord voice channel.',
+        disconnected: 'Disconnected from the Discord voice channel.',
+        reconnecting: 'The Discord voice connection is reconnecting.',
+      };
+      const description = messages[event.state];
+      if (description) {
+        this.#sendLifecycleMessage(player, undefined, 'Voice connection', description, 0x5865f2);
+      }
+    };
+    const onVoiceFailed = (event: { error: Error }): void => {
+      this.#sendLifecycleMessage(
+        player,
+        undefined,
+        'Voice connection failed',
+        safeLifecycleError(event.error.message),
+        0xed4245,
+      );
+    };
+
+    player.session.on(PlaybackSessionEvents.playbackStarted, onPlaybackStarted);
+    player.session.on(PlaybackSessionEvents.playbackCompleted, onPlaybackCompleted);
+    player.session.on(PlaybackSessionEvents.playbackStopped, onPlaybackStopped);
+    player.session.on(PlaybackSessionEvents.playbackFailed, onPlaybackFailed);
+    player.session.on(PlaybackSessionEvents.playbackPaused, onPlaybackPaused);
+    player.session.on(PlaybackSessionEvents.playbackResumed, onPlaybackResumed);
+    player.session.on(PlaybackSessionEvents.playbackSeeked, onPlaybackSeeked);
+    player.session.on(PlaybackSessionEvents.filterChanged, onFilterChanged);
+    player.session.on(PlaybackSessionEvents.volumeChanged, onVolumeChanged);
+    player.session.on(VoiceSessionEvents.voiceStateChanged, onVoiceStateChanged);
+    player.session.on(VoiceSessionEvents.voiceFailed, onVoiceFailed);
+
+    player.lifecycleUnsubscribers.push(
+      () => player.session.off(PlaybackSessionEvents.playbackStarted, onPlaybackStarted),
+      () => player.session.off(PlaybackSessionEvents.playbackCompleted, onPlaybackCompleted),
+      () => player.session.off(PlaybackSessionEvents.playbackStopped, onPlaybackStopped),
+      () => player.session.off(PlaybackSessionEvents.playbackFailed, onPlaybackFailed),
+      () => player.session.off(PlaybackSessionEvents.playbackPaused, onPlaybackPaused),
+      () => player.session.off(PlaybackSessionEvents.playbackResumed, onPlaybackResumed),
+      () => player.session.off(PlaybackSessionEvents.playbackSeeked, onPlaybackSeeked),
+      () => player.session.off(PlaybackSessionEvents.filterChanged, onFilterChanged),
+      () => player.session.off(PlaybackSessionEvents.volumeChanged, onVolumeChanged),
+      () => player.session.off(VoiceSessionEvents.voiceStateChanged, onVoiceStateChanged),
+      () => player.session.off(VoiceSessionEvents.voiceFailed, onVoiceFailed),
+    );
+  }
+
+  #isCurrentLifecycle(player: GuildPlayer, metadata: TrackLifecycleMetadata): boolean {
+    return player.generation === metadata.queueGeneration && player.current === metadata.track;
+  }
+
+  #notifyTrackFailure(player: GuildPlayer, metadata: TrackLifecycleMetadata, error: Error): void {
+    if (this.#failedNotifications.has(metadata.track)) return;
+    this.#failedNotifications.add(metadata.track);
+    this.#sendLifecycleMessage(
+      player,
+      metadata,
+      'Playback failed',
+      `Could not play ${displayTrack(metadata.track)}. ${safeLifecycleError(
+        redactUrl(error.message, metadata.track.url),
+      )}`,
+      0xed4245,
+    );
+  }
+
+  #sendLifecycleMessage(
+    player: GuildPlayer,
+    metadata: TrackLifecycleMetadata | undefined,
+    title: string,
+    description: string,
+    color: number,
+  ): void {
+    const channel = metadata?.textChannel ?? player.queueMetadata.textChannel;
+    if (!channel) return;
+    const embed = new EmbedBuilder()
+      .setColor(color)
+      .setAuthor({ name: 'Remedia' })
+      .setTitle(title)
+      .setDescription(description.slice(0, 4_000))
+      .setTimestamp();
+    try {
+      void channel.send({ embeds: [embed], allowedMentions: { parse: [] } }).catch(() => {
+        if (process.env.REMEDIA_DEBUG === '1') {
+          console.warn(
+            `Could not send a lifecycle notification for guild ${player.session.guildId}.`,
+          );
+        }
+      });
+    } catch {
+      if (process.env.REMEDIA_DEBUG === '1') {
+        console.warn(
+          `Could not send a lifecycle notification for guild ${player.session.guildId}.`,
+        );
+      }
     }
   }
 
@@ -380,4 +656,29 @@ function redactUrl(message: string, source: string): string {
     // The command validates URLs before they reach the manager.
   }
   return message.replaceAll(source, display).slice(0, 300);
+}
+
+function formatDuration(milliseconds: number): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${minutes}:${remainder.toString().padStart(2, '0')}`;
+}
+
+function formatTrackRequester(track: Track): string {
+  return track.requestedBy ? `\nRequested by <@${track.requestedBy}>.` : '';
+}
+
+function safeLifecycleError(message: string): string {
+  return message
+    .replace(/https?:\/\/[^\s<>"']+/gi, (value) => {
+      try {
+        const url = new URL(value);
+        return `${url.origin}${url.pathname}`;
+      } catch {
+        return '[media URL]';
+      }
+    })
+    .replace(/\b(token|password|secret|authorization)(\s*[:=]\s*)[^\s,;]+/gi, '$1$2[redacted]')
+    .slice(0, 800);
 }

@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
-import type { DiscordSession, PlaybackState, RemediaClient } from '@remedia/client';
+import {
+  PlaybackSessionEvents,
+  VoiceSessionEvents,
+  type DiscordSession,
+  type PlaybackState,
+  type RemediaClient,
+} from '@remedia/client';
+import type { SendableChannels } from 'discord.js';
 import { displayTrack } from './command-helpers.js';
 import { FILTER_PRESETS, FILTER_PRESET_NAMES } from './filter-presets.js';
 import { DiscordPlaybackManager } from './playback-manager.js';
@@ -31,6 +39,79 @@ test('keeps the six named presets in the Discord harness only', () => {
   assert.match(FILTER_PRESETS['8d'], /apulsator/);
   assert.match(FILTER_PRESETS.nightcore, /asetrate=60000/);
   assert.match(FILTER_PRESETS.vaporwave, /asetrate=38400/);
+});
+
+test('sends generation lifecycle messages to the text channel retained in queue metadata', async () => {
+  const { manager, session } = createManager();
+  const origin = createTextChannel();
+  const other = createTextChannel();
+  await manager.enqueue(
+    'guild',
+    'channel',
+    'bot',
+    { url: 'https://media.example/one.mp3', requestedBy: 'alice' },
+    origin.channel,
+  );
+  assert.equal(session.playMetadata[0]?.textChannel, origin.channel);
+
+  await manager.enqueue(
+    'guild',
+    'channel',
+    'bot',
+    { url: 'https://media.example/two.mp3', requestedBy: 'bob' },
+    other.channel,
+  );
+  await manager.pause('guild', 'channel');
+  await manager.resume('guild', 'channel');
+  await manager.seek('guild', 'channel', 12_000);
+  await manager.setFilter('guild', 'channel', 'tremolo');
+  await manager.setVolume('guild', 'channel', 80);
+  session.finish('completed');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  const titles = origin.messages.map(embedTitle);
+  assert.ok(titles.includes('Voice connection'));
+  assert.ok(titles.includes('Now playing'));
+  assert.ok(titles.includes('Track finished'));
+  assert.ok(titles.includes('Playback paused'));
+  assert.ok(titles.includes('Playback resumed'));
+  assert.ok(titles.includes('Playback position changed'));
+  assert.ok(titles.includes('Audio filter changed'));
+  assert.ok(titles.includes('Playback volume changed'));
+  assert.ok(titles.filter((title) => title === 'Now playing').length >= 2);
+  assert.ok(origin.messages.some((message) => embedDescription(message).includes('Example title')));
+  assert.ok(
+    origin.messages.some(
+      (message) =>
+        embedTitle(message) === 'Track finished' &&
+        embedDescription(message).includes('Example title'),
+    ),
+  );
+  assert.equal(other.messages.length, 0);
+
+  await manager.disconnect('guild', 'channel');
+  const sentBeforeLateEvent = origin.messages.length;
+  session.emitVoiceFailure(new Error('late failure'));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(origin.messages.length, sentBeforeLateEvent);
+  await manager.close();
+});
+
+test('announces a source failure when playback rejects before a start event', async () => {
+  const { manager, session } = createManager();
+  const channel = createTextChannel();
+  const url = 'https://media.example/unreachable.mp3?token=secret';
+  session.failingUrls.add(url);
+
+  await assert.rejects(
+    manager.enqueue('guild', 'channel', 'bot', { url, requestedBy: 'alice' }, channel.channel),
+  );
+  assert.equal(
+    channel.messages.filter((message) => embedTitle(message) === 'Playback failed').length,
+    1,
+  );
+  assert.ok(channel.messages.every((message) => !embedDescription(message).includes('secret')));
+  await manager.close();
 });
 
 test('queues tracks, advances on completion, and leaves voice connected when stopping', async () => {
@@ -349,11 +430,19 @@ function createManager(): { manager: DiscordPlaybackManager; session: FakeDiscor
   return { manager: new DiscordPlaybackManager(remedia), session };
 }
 
-class FakeDiscordSession {
+class FakeDiscordSession extends EventEmitter {
   readonly guildId: string;
   readonly channelId = 'channel';
   readonly userId = 'bot';
   readonly playedUrls: string[] = [];
+  readonly playMetadata: Array<
+    | {
+        textChannel?: SendableChannels;
+        queueGeneration: number;
+        track: { url: string; requestedBy: string };
+      }
+    | undefined
+  > = [];
   connectionState = 'disconnected';
   state: PlaybackState = 'idle';
   position: {
@@ -375,10 +464,22 @@ class FakeDiscordSession {
   readonly filters = {
     graph: null as string | null,
     set: async (graph: string) => {
+      const previousGraph = this.filters.graph;
       this.filters.graph = graph;
+      this.emit(PlaybackSessionEvents.filterChanged, {
+        ...this.#eventIdentity(this.#currentGeneration),
+        previousGraph,
+        graph,
+      });
     },
     clear: async () => {
+      const previousGraph = this.filters.graph;
       this.filters.graph = null;
+      this.emit(PlaybackSessionEvents.filterChanged, {
+        ...this.#eventIdentity(this.#currentGeneration),
+        previousGraph,
+        graph: null,
+      });
     },
   };
   readonly failingUrls = new Set<string>();
@@ -391,6 +492,7 @@ class FakeDiscordSession {
   readonly #terminalStates = new Map<number, PlaybackState>();
 
   constructor(guildId = 'guild') {
+    super();
     this.guildId = guildId;
   }
 
@@ -409,10 +511,27 @@ class FakeDiscordSession {
 
   async connect(): Promise<void> {
     this.connectionState = 'connected';
+    this.emit(VoiceSessionEvents.voiceStateChanged, {
+      sessionId: `${this.guildId}-session`,
+      guildId: this.guildId,
+      nodeId: null,
+      previousState: 'disconnected',
+      state: 'connected',
+    });
   }
 
-  async play(source: { url: string }) {
+  async play(
+    source: { url: string },
+    options?: {
+      customMetadata?: {
+        textChannel?: SendableChannels;
+        queueGeneration: number;
+        track: { url: string; requestedBy: string };
+      };
+    },
+  ) {
     this.playedUrls.push(source.url);
+    this.playMetadata.push(options?.customMetadata);
     const barrier = this.#nextPlayBarrier;
     this.#nextPlayBarrier = undefined;
     if (barrier) {
@@ -432,7 +551,7 @@ class FakeDiscordSession {
       submittedMs: 0,
       playedMs: null,
     };
-    return {
+    const info = {
       streamIndex: 0,
       codec: 'mp3',
       sampleRate: 48_000,
@@ -440,22 +559,45 @@ class FakeDiscordSession {
       channelLayout: 'stereo',
       durationMs: 10_000,
       bitRate: null,
-      metadata: {},
+      metadata: { title: 'Example title' },
     };
+    this.emit(PlaybackSessionEvents.playbackStarted, {
+      ...this.#eventIdentity(generation),
+      state: 'playing',
+      info,
+    });
+    return info;
   }
 
   pause(): Promise<void> {
+    const previousState = this.state;
     this.state = 'paused';
+    this.emit(PlaybackSessionEvents.playbackPaused, {
+      ...this.#eventIdentity(this.#currentGeneration),
+      previousState,
+      state: 'paused',
+    });
     return Promise.resolve();
   }
 
   resume(): Promise<void> {
+    const previousState = this.state;
     this.state = 'playing';
+    this.emit(PlaybackSessionEvents.playbackResumed, {
+      ...this.#eventIdentity(this.#currentGeneration),
+      previousState,
+      state: 'playing',
+    });
     return Promise.resolve();
   }
 
   seek(positionMs: number): Promise<void> {
     this.seekPositionMs = positionMs;
+    this.emit(PlaybackSessionEvents.playbackSeeked, {
+      ...this.#eventIdentity(this.#currentGeneration),
+      positionMs,
+      previousPositionMs: null,
+    });
     return Promise.resolve();
   }
 
@@ -476,7 +618,13 @@ class FakeDiscordSession {
   }
 
   setVolume(gain: number): Promise<void> {
+    const previousVolume = this.volume;
     this.volume = gain;
+    this.emit(PlaybackSessionEvents.volumeChanged, {
+      ...this.#eventIdentity(this.#currentGeneration),
+      previousVolume,
+      volume: gain,
+    });
     return Promise.resolve();
   }
 
@@ -487,16 +635,103 @@ class FakeDiscordSession {
   #finish(generation: number, state: PlaybackState): void {
     this.#terminalStates.set(generation, state);
     if (generation === this.#currentGeneration) this.state = state;
+    if (state === 'completed') {
+      this.emit(PlaybackSessionEvents.playbackCompleted, {
+        ...this.#eventIdentity(generation),
+        state,
+        position: this.position,
+      });
+    } else if (state === 'failed') {
+      this.emit(PlaybackSessionEvents.playbackFailed, {
+        ...this.#eventIdentity(generation),
+        state,
+        error: new Error('decoder failed'),
+      });
+    } else if (state === 'stopped') {
+      this.emit(PlaybackSessionEvents.playbackStopped, {
+        ...this.#eventIdentity(generation),
+        state,
+      });
+    }
     for (const resolve of this.#waiters.get(generation) ?? []) resolve(state);
     this.#waiters.delete(generation);
   }
 
   async disconnect(): Promise<void> {
+    const previousState = this.connectionState;
     this.connectionState = 'disconnected';
+    this.emit(VoiceSessionEvents.voiceStateChanged, {
+      sessionId: `${this.guildId}-session`,
+      guildId: this.guildId,
+      nodeId: null,
+      previousState,
+      state: 'disconnected',
+    });
   }
 
   async dispose(): Promise<void> {
     this.disposed = true;
     await this.disconnect();
   }
+
+  emitVoiceFailure(error: Error): void {
+    this.emit(VoiceSessionEvents.voiceFailed, {
+      sessionId: `${this.guildId}-session`,
+      guildId: this.guildId,
+      nodeId: null,
+      state: 'failed',
+      error,
+    });
+  }
+
+  #eventIdentity(generation: number): {
+    sessionId: string;
+    guildId: string;
+    nodeId: null;
+    generation: number;
+    customMetadata?: {
+      textChannel?: SendableChannels;
+      queueGeneration: number;
+      track: { url: string; requestedBy: string };
+    };
+  } {
+    const customMetadata = this.playMetadata[generation - 1];
+    return {
+      sessionId: `${this.guildId}-session`,
+      guildId: this.guildId,
+      nodeId: null,
+      generation,
+      ...(customMetadata ? { customMetadata } : {}),
+    };
+  }
+}
+
+function createTextChannel(): {
+  channel: SendableChannels;
+  messages: Array<{ embeds?: readonly { data?: { title?: string; description?: string } }[] }>;
+} {
+  const messages: Array<{
+    embeds?: readonly { data?: { title?: string; description?: string } }[];
+  }> = [];
+  const channel = {
+    async send(message: {
+      embeds?: readonly { data?: { title?: string; description?: string } }[];
+    }) {
+      messages.push(message);
+      return {};
+    },
+  } as unknown as SendableChannels;
+  return { channel, messages };
+}
+
+function embedTitle(message: {
+  embeds?: readonly { data?: { title?: string } }[];
+}): string | undefined {
+  return message.embeds?.[0]?.data?.title;
+}
+
+function embedDescription(message: {
+  embeds?: readonly { data?: { description?: string } }[];
+}): string {
+  return message.embeds?.[0]?.data?.description ?? '';
 }

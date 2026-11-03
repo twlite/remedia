@@ -1,4 +1,10 @@
-import { EmbedBuilder, MessageFlags, type ChatInputCommandInteraction } from 'discord.js';
+import {
+  EmbedBuilder,
+  MessageFlags,
+  type ChatInputCommandInteraction,
+  type SendableChannels,
+  type TextBasedChannel,
+} from 'discord.js';
 import type { AudioStreamInfo } from '@remedia/client';
 
 const REMEDIA_BLURPLE = 0x5865f2;
@@ -25,6 +31,7 @@ export interface VoiceCommandContext {
   channelId: string;
   botUserId: string;
   requesterId: string;
+  textChannel: TextBasedChannel & SendableChannels;
 }
 
 export function getVoiceCommandContext(
@@ -39,12 +46,17 @@ export function getVoiceCommandContext(
 
   const botUserId = interaction.client.user?.id;
   if (!botUserId) throw new Error('The bot is not ready yet. Try again shortly.');
+  const textChannel = interaction.channel;
+  if (!textChannel?.isTextBased() || !textChannel.isSendable()) {
+    throw new Error('Use this command in a text channel where the bot can send messages.');
+  }
 
   return {
     guildId: interaction.guildId,
     channelId: voiceState.channelId,
     botUserId,
     requesterId: interaction.user.id,
+    textChannel,
   };
 }
 

@@ -27,23 +27,27 @@ export default {
     ],
   },
   async execute(interaction) {
-    await withCommandReply(interaction, async () => {
-      const { guildId, channelId } = getVoiceCommandContext(interaction);
-      const manager = VoiceRuntime.current.playback;
-      const action = interaction.options.getSubcommand();
-      if (action === 'set') {
-        const preset = interaction.options.getString('preset', true) as FilterPresetName;
-        await manager.setFilter(guildId, channelId, preset);
-        return `Applied the ${preset} filter.`;
-      }
-      if (action === 'clear') {
-        await manager.setFilter(guildId, channelId, null);
-        return 'Audio filter cleared.';
-      }
+    await withCommandReply(
+      interaction,
+      async () => {
+        const { guildId, channelId } = getVoiceCommandContext(interaction);
+        const manager = VoiceRuntime.current.playback;
+        const action = interaction.options.getSubcommand();
+        if (action === 'set') {
+          const preset = interaction.options.getString('preset', true) as FilterPresetName;
+          await manager.setFilter(guildId, channelId, preset);
+          return `Applied the ${preset} filter.`;
+        }
+        if (action === 'clear') {
+          await manager.setFilter(guildId, channelId, null);
+          return 'Audio filter cleared.';
+        }
 
-      const snapshot = await manager.snapshot(guildId, channelId);
-      const selected = snapshot.filterPreset ?? 'none';
-      return `Available filters: ${FILTER_PRESET_NAMES.join(', ')}. Current: ${selected}.`;
-    });
+        const snapshot = await manager.snapshot(guildId, channelId);
+        const selected = snapshot.filterPreset ?? 'none';
+        return `Available filters: ${FILTER_PRESET_NAMES.join(', ')}. Current: ${selected}.`;
+      },
+      true,
+    );
   },
 } satisfies Command;

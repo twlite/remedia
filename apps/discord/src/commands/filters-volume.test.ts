@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
 import { EmbedBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import type { DiscordSession, PlaybackState, RemediaClient } from '@remedia/client';
@@ -69,6 +70,11 @@ async function invoke(
     guild: { voiceStates: { cache: new Map([['user', { channelId: 'channel' }]]) } },
     user: { id: 'user' },
     client: { user: { id: 'bot' } },
+    channel: {
+      isTextBased: () => true,
+      isSendable: () => true,
+      send: async () => ({}),
+    },
     options: {
       getSubcommand: () => subcommand,
       getString: () => preset,
@@ -84,7 +90,7 @@ async function invoke(
   return response;
 }
 
-class FakeDiscordSession {
+class FakeDiscordSession extends EventEmitter {
   readonly guildId = 'guild';
   readonly channelId = 'channel';
   readonly userId = 'bot';

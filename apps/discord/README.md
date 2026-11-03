@@ -12,6 +12,15 @@ show URLs until Remedia opens them and returns metadata.
 Slash command responses use consistent Remedia embeds, with colored error
 embeds when a command fails. `/nowplaying` shows a proportional progress bar
 against the original media duration and marks estimated positions with `~`.
+The bot also subscribes to the typed Remedia session events and posts lifecycle
+embeds for track start/completion/failure, playback controls, filter and volume
+changes, and voice connection changes. The text channel from the command that
+creates a guild's queue is retained in that queue's in-memory metadata and is
+used for those notifications across queued tracks. Later `/play` requests do
+not silently move the queue to another text channel. Disconnecting disposes
+the queue metadata. Successful control-command acknowledgements are ephemeral
+so they do not duplicate public lifecycle messages; `/queue` remains a normal
+public snapshot.
 
 Create `.env` with `DISCORD_TOKEN` and `APPLICATION_ID`, then choose a backend.
 Embedded mode is the default and calls the native Node addon directly. Build it

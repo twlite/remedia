@@ -9,17 +9,21 @@ import {
 export default {
   data: { name: 'skip', description: 'Skip the current track and play the next queued URL.' },
   async execute(interaction) {
-    await withCommandReply(interaction, async () => {
-      const { guildId, channelId } = getVoiceCommandContext(interaction);
-      const playback = VoiceRuntime.current.playback;
-      const snapshot = await playback.snapshot(guildId, channelId);
-      const next = await playback.skip(guildId, channelId);
-      const skipped = snapshot.current
-        ? `Skipped ${displayTrack(snapshot.current)}. `
-        : 'Skipped. ';
-      return next
-        ? `${skipped}Now playing ${displayTrack(next)}.`
-        : `${skipped}The queue is empty.`;
-    });
+    await withCommandReply(
+      interaction,
+      async () => {
+        const { guildId, channelId } = getVoiceCommandContext(interaction);
+        const playback = VoiceRuntime.current.playback;
+        const snapshot = await playback.snapshot(guildId, channelId);
+        const next = await playback.skip(guildId, channelId);
+        const skipped = snapshot.current
+          ? `Skipped ${displayTrack(snapshot.current)}. `
+          : 'Skipped. ';
+        return next
+          ? `${skipped}Now playing ${displayTrack(next)}.`
+          : `${skipped}The queue is empty.`;
+      },
+      true,
+    );
   },
 } satisfies Command;

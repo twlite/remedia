@@ -21,15 +21,19 @@ export default {
     ],
   },
   async execute(interaction) {
-    await withCommandReply(interaction, async () => {
-      const { guildId, channelId } = getVoiceCommandContext(interaction);
-      const seconds = interaction.options.getNumber('seconds', true);
-      const playback = VoiceRuntime.current.playback;
-      const snapshot = await playback.snapshot(guildId, channelId);
-      await playback.seek(guildId, channelId, seconds * 1_000);
-      const track = snapshot.current ? ` in ${displayTrack(snapshot.current)}` : '';
-      return `Seeked${track} to ${formatPosition(seconds)}.`;
-    });
+    await withCommandReply(
+      interaction,
+      async () => {
+        const { guildId, channelId } = getVoiceCommandContext(interaction);
+        const seconds = interaction.options.getNumber('seconds', true);
+        const playback = VoiceRuntime.current.playback;
+        const snapshot = await playback.snapshot(guildId, channelId);
+        await playback.seek(guildId, channelId, seconds * 1_000);
+        const track = snapshot.current ? ` in ${displayTrack(snapshot.current)}` : '';
+        return `Seeked${track} to ${formatPosition(seconds)}.`;
+      },
+      true,
+    );
   },
 } satisfies Command;
 

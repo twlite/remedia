@@ -89,6 +89,21 @@ embeds when an operation fails. `/nowplaying` formats source time and duration
 around a compact progress bar; estimated source positions are prefixed with
 `~`.
 
+The app also subscribes to the typed `@remedia/client` session events. It posts
+embeds for track start, natural completion, stop and failure; pause, resume,
+seek, filter and volume changes; and important voice connection transitions.
+Track lifecycle notifications use the `customMetadata` attached to that
+playback generation to find the originating text channel. The first `/play`
+request that creates a guild queue stores its sendable channel object in that
+queue's in-memory metadata, and each playback passes that reference through
+Remedia's JavaScript-only `customMetadata`. The reference is not serialized to
+Rust or a remote Remedia server. Later requests and queued tracks continue to
+notify the original queue channel until the guild session is disconnected and
+disposed. Successful control-command acknowledgements are ephemeral to avoid
+duplicating the public event messages; queue snapshots remain public. If the
+bot cannot send in the retained channel, playback continues and a warning is
+written only when `REMEDIA_DEBUG=1`.
+
 Queue operations are serialized per guild. Skip stops and joins the current
 playback before opening the next URL while retaining the connected voice
 transport. Completion waits are bound to the source generation active when
