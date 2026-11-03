@@ -17,6 +17,9 @@
       "import": "./dist/index.js"
     }
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run --exclude tests/hybrid.test.ts --exclude tests/server-integration.test.ts",

@@ -26,7 +26,12 @@ import type {
 interface ManagedDiscordSession {
   readonly guildId: string;
   dispose(): Promise<void>;
-  receiveGatewayDispatch(event: string, data: Record<string, unknown>, sequence?: number): void;
+  receiveGatewayDispatch(
+    event: string,
+    data: Record<string, unknown>,
+    sequence?: number,
+    epoch?: number,
+  ): void;
   markSessionLost(reason: string): void;
 }
 
@@ -43,6 +48,7 @@ export class RemediaClient
   readonly #selectNode: NodeSelection | undefined;
   #assignmentWork: Promise<void> = Promise.resolve();
   #gatewaySequence: number | undefined;
+  #gatewayEpoch = 0;
   #closed = false;
   #closing = false;
   #closePromise: Promise<void> | undefined;
@@ -126,11 +132,12 @@ export class RemediaClient
       typeof packet.s === 'number' && Number.isSafeInteger(packet.s) && packet.s >= 0
         ? packet.s
         : undefined;
-    if (
-      typeof packet.t === 'string' &&
-      (packet.t === 'READY' ||
-        this.#gatewaySequence === undefined ||
-        (sequence !== undefined && sequence > this.#gatewaySequence))
+    if (packet.t === 'READY') {
+      this.#gatewayEpoch += 1;
+      this.#gatewaySequence = sequence;
+    } else if (
+      this.#gatewaySequence === undefined ||
+      (sequence !== undefined && sequence > this.#gatewaySequence)
     ) {
       if (sequence !== undefined) this.#gatewaySequence = sequence;
     }
@@ -140,7 +147,12 @@ export class RemediaClient
     if (!dispatch) return;
     this.#sessions
       .get(dispatch.data.guild_id as string)
-      ?.receiveGatewayDispatch(dispatch.event, dispatch.data, dispatch.sequence);
+      ?.receiveGatewayDispatch(
+        dispatch.event,
+        dispatch.data,
+        dispatch.sequence,
+        this.#gatewayEpoch,
+      );
   }
 
   close(): Promise<void> {

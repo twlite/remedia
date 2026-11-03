@@ -161,6 +161,670 @@ describe('remote Discord playback', () => {
     }
   });
 
+  it('replaces a remote voice transport during region migration without stopping paused playback', async () => {
+    const server = await FakeServerNode.listen({ id: 'remote-voice-migration' });
+    const payloads: DiscordGatewayVoicePayload[] = [];
+    const client = await RemediaClient.create({
+      botUserId: BOT_ID,
+      nodes: [
+        {
+          type: 'remote',
+          id: 'remote-migration',
+          url: server.url,
+          auth: { username: 'bot', password: 'secret' },
+        },
+      ],
+      send: (_guildId, payload) => {
+        payloads.push(payload);
+      },
+      requestTimeoutMs: 2_000,
+    });
+    try {
+      const voice = client.createDiscordSession({
+        guildId: GUILD_ID,
+        channelId: CHANNEL_ID,
+        userId: BOT_ID,
+      });
+      const connecting = voice.connect({ timeoutMs: 2_000 });
+      await waitUntil(() => payloads.length === 1);
+      client.receive({
+        t: 'VOICE_STATE_UPDATE',
+        s: 1,
+        d: {
+          guild_id: GUILD_ID,
+          user_id: BOT_ID,
+          channel_id: CHANNEL_ID,
+          session_id: 'voice-session-a',
+        },
+      });
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 2,
+        d: { guild_id: GUILD_ID, token: 'voice-token-a', endpoint: 'one.voice.test:443' },
+      });
+      await connecting;
+
+      let started = 0;
+      voice.on('playbackStarted', () => (started += 1));
+      await voice.play({ url: 'https://media.example.test/migrating.mp3' });
+      await voice.pause();
+      const sourceGeneration = voice.snapshot.generation;
+
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 3,
+        d: { guild_id: GUILD_ID, token: 'voice-token-b', endpoint: 'two.voice.test:443' },
+      });
+      const migrating = voice.connect({ timeoutMs: 2_000 });
+      await waitUntil(() => payloads.length === 2);
+      client.receive({
+        t: 'VOICE_STATE_UPDATE',
+        s: 4,
+        d: {
+          guild_id: GUILD_ID,
+          user_id: BOT_ID,
+          channel_id: CHANNEL_ID,
+          session_id: 'voice-session-b',
+        },
+      });
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 5,
+        d: { guild_id: GUILD_ID, token: 'voice-token-b', endpoint: 'two.voice.test:443' },
+      });
+      await migrating;
+
+      expect(voice.state).toBe('paused');
+      expect(voice.snapshot.generation).toBe(sourceGeneration);
+      expect(started).toBe(1);
+      expect(server.voiceConnectRequests).toBe(2);
+      expect(server.voiceDisconnectRequests).toBe(0);
+      expect((await voice.refresh()).state).toBe('paused');
+
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 6,
+        d: { guild_id: GUILD_ID, token: 'voice-token-b', endpoint: 'two.voice.test:443' },
+      });
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 4,
+        d: { guild_id: GUILD_ID, token: 'stale-token', endpoint: 'old.voice.test:443' },
+      });
+      await Promise.resolve();
+      expect(payloads).toHaveLength(2);
+      expect(server.voiceConnectRequests).toBe(2);
+      await voice.disconnect();
+      expect(server.voiceDisconnectRequests).toBe(1);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('supersedes an in-flight remote transport setup when newer Gateway credentials arrive', async () => {
+    const server = await FakeServerNode.listen({ id: 'remote-voice-stale-connect' });
+    const payloads: DiscordGatewayVoicePayload[] = [];
+    let releaseConnect!: () => void;
+    const blockedConnect = new Promise<void>((resolve) => {
+      releaseConnect = resolve;
+    });
+    const client = await RemediaClient.create({
+      botUserId: BOT_ID,
+      nodes: [
+        {
+          type: 'remote',
+          id: 'remote-stale-connect',
+          url: server.url,
+          auth: { username: 'bot', password: 'secret' },
+        },
+      ],
+      send: (_guildId, payload) => {
+        payloads.push(payload);
+      },
+      requestTimeoutMs: 2_000,
+    });
+    try {
+      const voice = client.createDiscordSession({
+        guildId: GUILD_ID,
+        channelId: CHANNEL_ID,
+        userId: BOT_ID,
+      });
+      const connecting = voice.connect({ timeoutMs: 2_000 });
+      await waitUntil(() => payloads.length === 1);
+      client.receive({
+        t: 'VOICE_STATE_UPDATE',
+        s: 1,
+        d: {
+          guild_id: GUILD_ID,
+          user_id: BOT_ID,
+          channel_id: CHANNEL_ID,
+          session_id: 'voice-session-a',
+        },
+      });
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 2,
+        d: { guild_id: GUILD_ID, token: 'voice-token-a', endpoint: 'one.voice.test:443' },
+      });
+      await connecting;
+      await voice.play({ url: 'https://media.example.test/stale-connect.mp3' });
+      const generation = voice.snapshot.generation;
+
+      server.voiceConnectGate = () => blockedConnect;
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 3,
+        d: { guild_id: GUILD_ID, token: 'voice-token-b', endpoint: 'two.voice.test:443' },
+      });
+      await waitUntil(() => payloads.length === 2);
+      client.receive({
+        t: 'VOICE_STATE_UPDATE',
+        s: 4,
+        d: {
+          guild_id: GUILD_ID,
+          user_id: BOT_ID,
+          channel_id: CHANNEL_ID,
+          session_id: 'voice-session-b',
+        },
+      });
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 5,
+        d: { guild_id: GUILD_ID, token: 'voice-token-b', endpoint: 'two.voice.test:443' },
+      });
+      await waitUntil(() => server.voiceConnectRequests === 2);
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 6,
+        d: { guild_id: GUILD_ID, token: 'voice-token-c', endpoint: 'three.voice.test:443' },
+      });
+      await waitUntil(() => server.voiceSuspendRequests >= 1);
+      server.voiceConnectGate = undefined;
+      releaseConnect();
+
+      await waitUntil(() => server.voiceConnectRequests === 3);
+      await waitUntil(() => voice.connectionState === 'connected');
+      expect(server.voiceSuspendRequests).toBeGreaterThanOrEqual(1);
+      expect(server.voiceDisconnectRequests).toBe(0);
+      expect(voice.state).toBe('playing');
+      expect(voice.snapshot.generation).toBe(generation);
+
+      await voice.disconnect();
+      expect(server.voiceDisconnectRequests).toBe(1);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('allows stop during voice migration and does not restart the stopped source', async () => {
+    const server = await FakeServerNode.listen({ id: 'remote-voice-stop-during-migration' });
+    const payloads: DiscordGatewayVoicePayload[] = [];
+    const client = await RemediaClient.create({
+      botUserId: BOT_ID,
+      nodes: [
+        {
+          type: 'remote',
+          id: 'remote-stop-migration',
+          url: server.url,
+          auth: { username: 'bot', password: 'secret' },
+        },
+      ],
+      send: (_guildId, payload) => {
+        payloads.push(payload);
+      },
+      requestTimeoutMs: 2_000,
+    });
+    try {
+      const voice = client.createDiscordSession({
+        guildId: GUILD_ID,
+        channelId: CHANNEL_ID,
+        userId: BOT_ID,
+      });
+      const connecting = voice.connect({ timeoutMs: 2_000 });
+      await waitUntil(() => payloads.length === 1);
+      client.receive({
+        t: 'VOICE_STATE_UPDATE',
+        s: 1,
+        d: {
+          guild_id: GUILD_ID,
+          user_id: BOT_ID,
+          channel_id: CHANNEL_ID,
+          session_id: 'voice-session-a',
+        },
+      });
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 2,
+        d: { guild_id: GUILD_ID, token: 'voice-token-a', endpoint: 'one.voice.test:443' },
+      });
+      await connecting;
+      let started = 0;
+      voice.on('playbackStarted', () => (started += 1));
+      await voice.play({ url: 'https://media.example.test/stopped-during-migration.mp3' });
+
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 3,
+        d: { guild_id: GUILD_ID, token: 'voice-token-b', endpoint: 'two.voice.test:443' },
+      });
+      const migrating = voice.connect({ timeoutMs: 2_000 });
+      await waitUntil(() => payloads.length === 2);
+      await voice.stop();
+      expect(voice.state).toBe('stopped');
+
+      client.receive({
+        t: 'VOICE_STATE_UPDATE',
+        s: 4,
+        d: {
+          guild_id: GUILD_ID,
+          user_id: BOT_ID,
+          channel_id: CHANNEL_ID,
+          session_id: 'voice-session-b',
+        },
+      });
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 5,
+        d: { guild_id: GUILD_ID, token: 'voice-token-b', endpoint: 'two.voice.test:443' },
+      });
+      await migrating;
+
+      expect(voice.connectionState).toBe('connected');
+      expect(voice.state).toBe('stopped');
+      expect(started).toBe(1);
+      expect(server.voiceConnectRequests).toBe(2);
+      expect(server.voiceDisconnectRequests).toBe(0);
+      await voice.disconnect();
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('allows stop during remote voice migration and leaves the replacement connection idle', async () => {
+    const server = await FakeServerNode.listen({ id: 'remote-voice-stop-migration' });
+    const payloads: DiscordGatewayVoicePayload[] = [];
+    const client = await RemediaClient.create({
+      botUserId: BOT_ID,
+      nodes: [
+        {
+          type: 'remote',
+          id: 'remote-stop-migration',
+          url: server.url,
+          auth: { username: 'bot', password: 'secret' },
+        },
+      ],
+      send: (_guildId, payload) => {
+        payloads.push(payload);
+      },
+      requestTimeoutMs: 2_000,
+    });
+    try {
+      const voice = client.createDiscordSession({
+        guildId: GUILD_ID,
+        channelId: CHANNEL_ID,
+        userId: BOT_ID,
+      });
+      const connecting = voice.connect({ timeoutMs: 2_000 });
+      await waitUntil(() => payloads.length === 1);
+      client.receive({
+        t: 'VOICE_STATE_UPDATE',
+        s: 1,
+        d: {
+          guild_id: GUILD_ID,
+          user_id: BOT_ID,
+          channel_id: CHANNEL_ID,
+          session_id: 'voice-session-a',
+        },
+      });
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 2,
+        d: { guild_id: GUILD_ID, token: 'voice-token-a', endpoint: 'one.voice.test:443' },
+      });
+      await connecting;
+      let started = 0;
+      voice.on('playbackStarted', () => (started += 1));
+      await voice.play({ url: 'https://media.example.test/stop-during-migration.mp3' });
+
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 3,
+        d: { guild_id: GUILD_ID, token: 'voice-token-b', endpoint: 'two.voice.test:443' },
+      });
+      const migrating = voice.connect({ timeoutMs: 2_000 });
+      await waitUntil(() => payloads.length === 2);
+      await voice.stop();
+      expect(voice.state).toBe('stopped');
+
+      client.receive({
+        t: 'VOICE_STATE_UPDATE',
+        s: 4,
+        d: {
+          guild_id: GUILD_ID,
+          user_id: BOT_ID,
+          channel_id: CHANNEL_ID,
+          session_id: 'voice-session-b',
+        },
+      });
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 5,
+        d: { guild_id: GUILD_ID, token: 'voice-token-b', endpoint: 'two.voice.test:443' },
+      });
+      await migrating;
+
+      expect(voice.connectionState).toBe('connected');
+      expect(voice.state).toBe('stopped');
+      expect(started).toBe(1);
+      expect(server.voiceConnectRequests).toBe(2);
+      expect(server.voiceDisconnectRequests).toBe(0);
+      await voice.disconnect();
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('fails playback only after bounded voice migration recovery fails', async () => {
+    const server = await FakeServerNode.listen({ id: 'remote-voice-migration-failure' });
+    const payloads: DiscordGatewayVoicePayload[] = [];
+    const client = await RemediaClient.create({
+      botUserId: BOT_ID,
+      nodes: [
+        {
+          type: 'remote',
+          id: 'remote-failure',
+          url: server.url,
+          auth: { username: 'bot', password: 'secret' },
+        },
+      ],
+      send: (_guildId, payload) => {
+        payloads.push(payload);
+      },
+      requestTimeoutMs: 2_000,
+    });
+    try {
+      const voice = client.createDiscordSession({
+        guildId: GUILD_ID,
+        channelId: CHANNEL_ID,
+        userId: BOT_ID,
+      });
+      const connecting = voice.connect({ timeoutMs: 2_000 });
+      await waitUntil(() => payloads.length === 1);
+      client.receive({
+        t: 'VOICE_STATE_UPDATE',
+        s: 1,
+        d: {
+          guild_id: GUILD_ID,
+          user_id: BOT_ID,
+          channel_id: CHANNEL_ID,
+          session_id: 'voice-session-a',
+        },
+      });
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 2,
+        d: { guild_id: GUILD_ID, token: 'voice-token-a', endpoint: 'one.voice.test:443' },
+      });
+      await connecting;
+      let starts = 0;
+      let failures = 0;
+      voice.on('playbackStarted', () => {
+        starts += 1;
+      });
+      voice.on('voiceFailed', () => {
+        failures += 1;
+      });
+      await voice.play({ url: 'https://media.example.test/failing-migration.mp3' });
+      const generation = voice.snapshot.generation;
+      server.voiceConnectFailures = 3;
+
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 3,
+        d: { guild_id: GUILD_ID, token: 'voice-token-b', endpoint: 'two.voice.test:443' },
+      });
+      await waitUntil(() => payloads.length === 2);
+      client.receive({
+        t: 'VOICE_STATE_UPDATE',
+        s: 4,
+        d: {
+          guild_id: GUILD_ID,
+          user_id: BOT_ID,
+          channel_id: CHANNEL_ID,
+          session_id: 'voice-session-b',
+        },
+      });
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 5,
+        d: { guild_id: GUILD_ID, token: 'voice-token-b', endpoint: 'two.voice.test:443' },
+      });
+      await waitUntil(() => payloads.length === 3);
+      client.receive({
+        t: 'VOICE_STATE_UPDATE',
+        s: 6,
+        d: {
+          guild_id: GUILD_ID,
+          user_id: BOT_ID,
+          channel_id: CHANNEL_ID,
+          session_id: 'voice-session-c',
+        },
+      });
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 7,
+        d: { guild_id: GUILD_ID, token: 'voice-token-c', endpoint: 'three.voice.test:443' },
+      });
+      await waitUntil(() => payloads.length === 4);
+      client.receive({
+        t: 'VOICE_STATE_UPDATE',
+        s: 8,
+        d: {
+          guild_id: GUILD_ID,
+          user_id: BOT_ID,
+          channel_id: CHANNEL_ID,
+          session_id: 'voice-session-d',
+        },
+      });
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 9,
+        d: { guild_id: GUILD_ID, token: 'voice-token-d', endpoint: 'four.voice.test:443' },
+      });
+      await waitUntil(() => voice.connectionState === 'failed');
+
+      expect(server.voiceConnectRequests).toBe(4);
+      expect(voice.snapshot.generation).toBe(generation);
+      expect(starts).toBe(1);
+      expect(failures).toBe(1);
+      await voice.disconnect();
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('keeps an explicit leave authoritative during pending remote voice recovery', async () => {
+    const server = await FakeServerNode.listen({ id: 'remote-voice-migration-cancel' });
+    const payloads: DiscordGatewayVoicePayload[] = [];
+    const client = await RemediaClient.create({
+      botUserId: BOT_ID,
+      nodes: [
+        {
+          type: 'remote',
+          id: 'remote-cancel',
+          url: server.url,
+          auth: { username: 'bot', password: 'secret' },
+        },
+      ],
+      send: (_guildId, payload) => {
+        payloads.push(payload);
+      },
+      requestTimeoutMs: 2_000,
+    });
+    try {
+      const voice = client.createDiscordSession({
+        guildId: GUILD_ID,
+        channelId: CHANNEL_ID,
+        userId: BOT_ID,
+      });
+      const connecting = voice.connect({ timeoutMs: 2_000 });
+      await waitUntil(() => payloads.length === 1);
+      client.receive({
+        t: 'VOICE_STATE_UPDATE',
+        s: 1,
+        d: {
+          guild_id: GUILD_ID,
+          user_id: BOT_ID,
+          channel_id: CHANNEL_ID,
+          session_id: 'voice-session-a',
+        },
+      });
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 2,
+        d: { guild_id: GUILD_ID, token: 'voice-token-a', endpoint: 'one.voice.test:443' },
+      });
+      await connecting;
+
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 3,
+        d: { guild_id: GUILD_ID, token: 'voice-token-b', endpoint: 'two.voice.test:443' },
+      });
+      await waitUntil(() => payloads.length === 2);
+      await voice.disconnect();
+      client.receive({
+        t: 'VOICE_STATE_UPDATE',
+        s: 4,
+        d: {
+          guild_id: GUILD_ID,
+          user_id: BOT_ID,
+          channel_id: CHANNEL_ID,
+          session_id: 'stale-session',
+        },
+      });
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 5,
+        d: { guild_id: GUILD_ID, token: 'stale-token', endpoint: 'old.voice.test:443' },
+      });
+
+      expect(payloads.at(-1)?.d.channel_id).toBeNull();
+      expect(server.voiceConnectRequests).toBe(1);
+      expect(server.voiceDisconnectRequests).toBe(1);
+      expect(voice.connectionState).toBe('disconnected');
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('rejects a delayed remote replacement after an explicit disconnect', async () => {
+    const server = await FakeServerNode.listen({ id: 'remote-voice-generation-fence' });
+    const payloads: DiscordGatewayVoicePayload[] = [];
+    let releaseConnect!: () => void;
+    let connectStarted!: () => void;
+    const blockedConnect = new Promise<void>((resolve) => {
+      releaseConnect = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      connectStarted = resolve;
+    });
+    const client = await RemediaClient.create({
+      botUserId: BOT_ID,
+      nodes: [
+        {
+          type: 'remote',
+          id: 'remote-generation-fence',
+          url: server.url,
+          auth: { username: 'bot', password: 'secret' },
+        },
+      ],
+      send: (_guildId, payload) => {
+        payloads.push(payload);
+      },
+      requestTimeoutMs: 2_000,
+    });
+    try {
+      const voice = client.createDiscordSession({
+        guildId: GUILD_ID,
+        channelId: CHANNEL_ID,
+        userId: BOT_ID,
+      });
+      const connecting = voice.connect({ timeoutMs: 2_000 });
+      await waitUntil(() => payloads.length === 1);
+      client.receive({
+        t: 'VOICE_STATE_UPDATE',
+        s: 1,
+        d: {
+          guild_id: GUILD_ID,
+          user_id: BOT_ID,
+          channel_id: CHANNEL_ID,
+          session_id: 'voice-session-a',
+        },
+      });
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 2,
+        d: { guild_id: GUILD_ID, token: 'voice-token-a', endpoint: 'one.voice.test:443' },
+      });
+      await connecting;
+      await voice.play({ url: 'https://media.example.test/generation-fence.mp3' });
+
+      server.voiceConnectGate = async () => {
+        connectStarted();
+        await blockedConnect;
+      };
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 3,
+        d: { guild_id: GUILD_ID, token: 'voice-token-b', endpoint: 'two.voice.test:443' },
+      });
+      await waitUntil(() => payloads.length === 2);
+      client.receive({
+        t: 'VOICE_STATE_UPDATE',
+        s: 4,
+        d: {
+          guild_id: GUILD_ID,
+          user_id: BOT_ID,
+          channel_id: CHANNEL_ID,
+          session_id: 'voice-session-b',
+        },
+      });
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 5,
+        d: { guild_id: GUILD_ID, token: 'voice-token-b', endpoint: 'two.voice.test:443' },
+      });
+      await started;
+
+      await voice.disconnect();
+      releaseConnect();
+      await waitUntil(
+        () =>
+          server.sessions.values().next().value?.guilds.get(GUILD_ID)?.voiceState ===
+          'disconnected',
+      );
+
+      expect(voice.connectionState).toBe('disconnected');
+      expect(voice.state).toBe('stopped');
+      expect(server.voiceConnectRequests).toBe(2);
+      expect(server.voiceDisconnectRequests).toBe(1);
+      expect(server.sessions.values().next().value?.guilds.get(GUILD_ID)?.voiceState).toBe(
+        'disconnected',
+      );
+    } finally {
+      releaseConnect();
+      await client.close();
+      await server.close();
+    }
+  });
+
   it('keeps an authentication failure visible without retrying bad credentials', async () => {
     const server = await FakeServerNode.listen({
       id: 'remote-auth',
@@ -248,3 +912,11 @@ describe('remote Discord playback', () => {
     }
   });
 });
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('timed out waiting for Gateway voice request');
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+}

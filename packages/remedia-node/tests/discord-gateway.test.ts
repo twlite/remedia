@@ -69,6 +69,28 @@ test('ignores unrelated Gateway packets and does not send OP 4 during voice resu
   assert.equal(harness.connections.length, 1);
 });
 
+test('accepts fresh dispatch sequences after the host Gateway starts a new READY epoch', async () => {
+  const harness = createHarness();
+  const session = harness.session();
+  harness.receive(gatewayPacket('READY', {}, 900));
+  const connected = session.connect();
+  harness.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('old-gateway-session'), 901));
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('old-gateway-token'), 902));
+  await connected;
+
+  harness.receive(gatewayPacket('READY', {}, 1));
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('new-gateway-token'), 2));
+  const migrated = session.connect();
+  harness.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('new-gateway-session'), 3));
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('new-gateway-token'), 4));
+  await migrated;
+  await waitFor(() => (harness.replacements.length === 1 ? true : undefined));
+
+  assert.equal(session.connectionState, 'connected');
+  assert.equal(harness.replacements[0]?.options.sessionId, 'new-gateway-session');
+  await session.disconnect();
+});
+
 test('correlates concurrent joins by guild and keeps their credentials independent', async () => {
   const harness = createHarness();
   const first = harness.session();
@@ -106,7 +128,7 @@ test('correlates concurrent joins by guild and keeps their credentials independe
   await Promise.all([first.disconnect(), second.disconnect()]);
 });
 
-test('voice server changes request fresh Gateway credentials before replacing the native transport', async () => {
+test('voice server changes replace only the transport and preserve the playback session', async () => {
   const harness = createHarness();
   const session = harness.session();
   const connected = session.connect();
@@ -128,12 +150,13 @@ test('voice server changes request fresh Gateway credentials before replacing th
   assert.equal(harness.connections.length, 1);
   harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('new-token'), 5));
   await reconnected;
-  await waitFor(() => (harness.connections.length === 2 ? true : undefined));
+  await waitFor(() => (harness.replacements.length === 1 ? true : undefined));
   await waitFor(() => (session.connectionState === 'connected' ? true : undefined));
 
-  assert.equal(harness.connections[1]?.token, 'new-token');
-  assert.equal(harness.connections[1]?.endpoint, 'voice.example.test:443');
-  assert.equal(harness.connections[1]?.sessionId, 'new-session');
+  assert.equal(harness.replacements[0]?.options.token, 'new-token');
+  assert.equal(harness.replacements[0]?.options.endpoint, 'voice.example.test:443');
+  assert.equal(harness.replacements[0]?.options.sessionId, 'new-session');
+  assert.equal(harness.replacements[0]?.voiceId, 'voice-1');
   assert.deepEqual(
     harness.sent.map(({ payload }) => payload),
     [
@@ -141,9 +164,177 @@ test('voice server changes request fresh Gateway credentials before replacing th
       op4(sessionOptions.guildId, sessionOptions.channelId),
     ],
   );
-  assert.deepEqual(harness.disconnectedVoiceIds, ['voice-1']);
-  assert.deepEqual(harness.releasedVoiceIds, ['voice-1']);
+  assert.deepEqual(harness.disconnectedVoiceIds, []);
+  assert.deepEqual(harness.releasedVoiceIds, []);
   await session.disconnect();
+});
+
+test('region migration while paused keeps the same playback id and repeated credentials are idempotent', async () => {
+  const harness = createHarness();
+  const session = harness.session();
+  const connected = session.connect();
+  harness.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('session'), 1));
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('token'), 2));
+  await connected;
+  let startedEvents = 0;
+  session.on('playbackStarted', () => (startedEvents += 1));
+  await session.play({ url: 'https://media.example/track.wav' });
+  await session.pause();
+  const playbackId = session.generation;
+
+  harness.receive(
+    gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('rotated', 'region-2.example.test:443'), 3),
+  );
+  const recovery = session.connect();
+  harness.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('session-2'), 4));
+  harness.receive(
+    gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('rotated', 'region-2.example.test:443'), 5),
+  );
+  await recovery;
+  await waitFor(() => (harness.replacements.length === 1 ? true : undefined));
+
+  assert.equal(session.state, 'paused');
+  assert.equal(session.generation, playbackId);
+  assert.equal(startedEvents, 1);
+  harness.receive(
+    gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('rotated', 'region-2.example.test:443'), 6),
+  );
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('stale-token'), 4));
+  await flushMicrotasks();
+  assert.equal(harness.sent.length, 2);
+  assert.equal(harness.replacements.length, 1);
+  await session.disconnect();
+});
+
+test('a newer Gateway update invalidates an in-flight native transport replacement', async () => {
+  let releaseFirstReplacement!: () => void;
+  let firstReplacementStarted!: () => void;
+  const firstStarted = new Promise<void>((resolve) => {
+    firstReplacementStarted = resolve;
+  });
+  const blockedReplacement = new Promise<void>((resolve) => {
+    releaseFirstReplacement = resolve;
+  });
+  let replacementCount = 0;
+  const harness = createHarness(undefined, undefined, async () => {
+    replacementCount += 1;
+    if (replacementCount === 1) {
+      firstReplacementStarted();
+      await blockedReplacement;
+    }
+  });
+  const session = harness.session();
+  const connected = session.connect();
+  harness.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('session'), 1));
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('token'), 2));
+  await connected;
+  await session.play({ url: 'https://example.test/transport-race.wav' });
+
+  harness.receive(
+    gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('rotated-1', 'region-one.test:443'), 3),
+  );
+  harness.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('session-1'), 4));
+  harness.receive(
+    gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('rotated-1', 'region-one.test:443'), 5),
+  );
+  await firstStarted;
+
+  harness.receive(
+    gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('rotated-2', 'region-two.test:443'), 6),
+  );
+  releaseFirstReplacement();
+  await waitFor(() => (harness.replacements.length === 2 ? true : undefined));
+  await waitFor(() => (session.connectionState === 'connected' ? true : undefined));
+
+  assert.equal(harness.connections.length, 1);
+  assert.deepEqual(
+    harness.replacements.map(({ options }) => options.endpoint),
+    ['region-one.test:443', 'region-two.test:443'],
+  );
+  assert.equal(harness.replacements[0]?.voiceId, harness.replacements[1]?.voiceId);
+  assert.equal(harness.suspendedVoiceIds.length, 1);
+  assert.equal(session.state, 'playing');
+  await session.disconnect();
+});
+
+test('playback controls remain available during migration and stop is never undone by recovery', async () => {
+  const harness = createHarness();
+  const session = harness.session();
+  const connected = session.connect();
+  harness.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('session'), 1));
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('token'), 2));
+  await connected;
+  let startedEvents = 0;
+  session.on('playbackStarted', () => (startedEvents += 1));
+  await session.play({ url: 'https://media.example/track.wav' });
+
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('rotated'), 3));
+  const recovery = session.connect();
+  assert.equal(session.connectionState, 'reconnecting');
+  await session.pause();
+  assert.equal(session.state, 'paused');
+  await session.stop();
+  assert.equal(session.state, 'stopped');
+
+  harness.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('session-2'), 4));
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('rotated'), 5));
+  await recovery;
+  await waitFor(() => (harness.replacements.length === 1 ? true : undefined));
+
+  assert.equal(session.connectionState, 'connected');
+  assert.equal(session.state, 'stopped');
+  assert.equal(startedEvents, 1);
+  await session.disconnect();
+});
+
+test('explicit disconnect cancels pending transport recovery', async () => {
+  const harness = createHarness();
+  const session = harness.session();
+  const connected = session.connect();
+  harness.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('session'), 1));
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('token'), 2));
+  await connected;
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('rotated'), 3));
+  const recovery = session.connect();
+  const recoveryRejected = assert.rejects(recovery, /cancelled by disconnect/i);
+
+  await session.disconnect();
+  await recoveryRejected;
+  assert.equal(harness.replacements.length, 0);
+  assert.deepEqual(harness.sent.at(-1)?.payload, op4(sessionOptions.guildId, null));
+  assert.deepEqual(harness.disconnectedVoiceIds, ['voice-1']);
+});
+
+test('failed migration retries a bounded number of times before failing playback once', async () => {
+  let replacements = 0;
+  const harness = createHarness(undefined, undefined, async () => {
+    replacements += 1;
+    throw new Error('voice transport did not become ready');
+  });
+  const session = harness.session();
+  const connected = session.connect();
+  harness.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('session'), 1));
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('token'), 2));
+  await connected;
+
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('rotated-1'), 3));
+  const recovery = session.connect();
+  const rejected = assert.rejects(recovery, /voice transport did not become ready/i);
+  harness.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('session-1'), 4));
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('rotated-1'), 5));
+  await waitFor(() => (harness.sent.length >= 3 ? true : undefined));
+  harness.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('session-2'), 6));
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('rotated-2'), 7));
+  await waitFor(() => (harness.sent.length >= 4 ? true : undefined));
+  harness.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('session-3'), 8));
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('rotated-3'), 9));
+  await rejected;
+
+  assert.equal(replacements, 3);
+  assert.equal(session.connectionState, 'failed');
+  assert.deepEqual(harness.disconnectedVoiceIds, []);
+  assert.deepEqual(harness.releasedVoiceIds, []);
+  assert.equal(harness.failedRecoveries.length, 1);
 });
 
 test('disconnect cancels a pending join and sends OP 4 with a null channel', async () => {
@@ -233,12 +424,22 @@ test('propagates Gateway send and native transport failures', async () => {
 function createHarness(
   send?: (guildId: string, payload: DiscordGatewayVoicePayload) => void | Promise<void>,
   connectVoice?: (options: NativeVoiceOptions) => Promise<{ voiceId: string; playbackId: string }>,
+  replaceVoice?: (
+    voiceId: string,
+    generation: number,
+    options: NativeVoiceOptions,
+  ) => Promise<void>,
 ) {
   const sent: Array<{ guildId: string; payload: DiscordGatewayVoicePayload }> = [];
   const connections: NativeVoiceOptions[] = [];
+  const replacements: Array<{ voiceId: string; options: NativeVoiceOptions }> = [];
   const disconnectedVoiceIds: string[] = [];
   const releasedVoiceIds: string[] = [];
+  const failedRecoveries: string[] = [];
+  const suspendedVoiceIds: string[] = [];
+  const transportGenerations = new Map<string, number>();
   const voiceStates = new Map<string, string>();
+  const playbackStates = new Map<string, string>();
   let nextVoiceId = 1;
 
   const native = {
@@ -247,8 +448,49 @@ function createHarness(
       if (connectVoice) return connectVoice(options);
       const voiceId = `voice-${nextVoiceId++}`;
       voiceStates.set(voiceId, 'connected');
-      return { voiceId, playbackId: `playback-${voiceId}` };
+      const playbackId = `playback-${voiceId}`;
+      playbackStates.set(playbackId, 'idle');
+      return { voiceId, playbackId };
     },
+    replaceVoice: async (voiceId: string, generation: number, options: NativeVoiceOptions) => {
+      replacements.push({ voiceId, options });
+      if (replaceVoice) await replaceVoice(voiceId, generation, options);
+      if (transportGenerations.get(voiceId) !== generation)
+        throw new Error('Discord voice recovery attempt was superseded');
+      voiceStates.set(voiceId, 'connected');
+    },
+    invalidateVoiceRecovery: (voiceId: string, generation: number) => {
+      transportGenerations.set(voiceId, generation);
+    },
+    suspendVoice: async (voiceId: string, generation: number) => {
+      suspendedVoiceIds.push(voiceId);
+      if (transportGenerations.get(voiceId) === generation)
+        voiceStates.set(voiceId, 'disconnected');
+    },
+    failVoiceRecovery: (voiceId: string) => failedRecoveries.push(voiceId),
+    playbackState: (playbackId: string) => playbackStates.get(playbackId) ?? 'idle',
+    playbackGeneration: () => 1,
+    playbackFilterGraph: () => null,
+    playbackVolume: () => 1,
+    playbackPosition: () => ({ submittedMs: 0 }),
+    playbackDurationMs: () => 100_000,
+    playbackError: () => null,
+    play: async (playbackId: string) => {
+      playbackStates.set(playbackId, 'playing');
+      return {
+        streamIndex: 0,
+        codec: 'wav',
+        sampleRate: 48_000,
+        channels: 2,
+        channelLayout: 'stereo',
+        durationMs: 100_000,
+        metadata: {},
+      };
+    },
+    pause: async (playbackId: string) => playbackStates.set(playbackId, 'paused'),
+    resume: async (playbackId: string) => playbackStates.set(playbackId, 'playing'),
+    stop: async (playbackId: string) => playbackStates.set(playbackId, 'stopped'),
+    wait: async () => new Promise<string>(() => undefined),
     voiceState: (voiceId: string) => voiceStates.get(voiceId) ?? 'disconnected',
     voiceError: () => null,
     disconnectVoice: async (voiceId: string) => {
@@ -267,8 +509,11 @@ function createHarness(
     gateway,
     sent,
     connections,
+    replacements,
     disconnectedVoiceIds,
     releasedVoiceIds,
+    failedRecoveries,
+    suspendedVoiceIds,
     setVoiceState(voiceId: string, state: string) {
       voiceStates.set(voiceId, state);
     },
@@ -277,7 +522,12 @@ function createHarness(
       if (dispatch) {
         sessions
           .get(dispatch.guildId)
-          ?.receiveGatewayDispatch(dispatch.event, dispatch.data, dispatch.sequence);
+          ?.receiveGatewayDispatch(
+            dispatch.event,
+            dispatch.data,
+            dispatch.sequence,
+            dispatch.epoch,
+          );
       }
     },
     session(options = sessionOptions) {

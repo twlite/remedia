@@ -23,6 +23,7 @@ interface FakeGuild {
   botUserId: string;
   playback: FakePlayback;
   voiceState: string | null;
+  voiceGeneration: number;
 }
 
 interface FakeSession {
@@ -63,6 +64,11 @@ export class FakeServerNode {
   #closed = false;
   finishBeforePlayResponse = false;
   playerPlayRequests = 0;
+  voiceConnectRequests = 0;
+  voiceDisconnectRequests = 0;
+  voiceSuspendRequests = 0;
+  voiceConnectFailures = 0;
+  voiceConnectGate: (() => Promise<void>) | undefined;
   nodeIdentity: string;
   url = '';
 
@@ -289,6 +295,28 @@ export class FakeServerNode {
         case 'voice.connect': {
           const session = this.#session(socket);
           const guild = this.#guild(socket, String(params.guildId));
+          const generation = Number(params.transportGeneration ?? guild.voiceGeneration + 1);
+          if (generation < guild.voiceGeneration) {
+            error = { code: 'invalid_state', message: 'voice attempt was superseded' };
+            break;
+          }
+          if (generation === guild.voiceGeneration && guild.voiceState === 'connected') {
+            result = { guildId: guild.guildId, state: 'connected', alreadyConnected: true };
+            break;
+          }
+          guild.voiceGeneration = generation;
+          this.voiceConnectRequests += 1;
+          const gate = this.voiceConnectGate;
+          if (gate) await gate();
+          if (this.voiceConnectFailures > 0) {
+            this.voiceConnectFailures -= 1;
+            error = { code: 'transport_failed', message: 'voice transport setup failed' };
+            break;
+          }
+          if (guild.voiceGeneration !== generation) {
+            error = { code: 'invalid_state', message: 'voice attempt was superseded' };
+            break;
+          }
           guild.voiceState = 'connected';
           this.#event(session, 'voice.state_changed', {
             guildId: guild.guildId,
@@ -297,9 +325,34 @@ export class FakeServerNode {
           result = { guildId: guild.guildId, state: 'connected' };
           break;
         }
+        case 'voice.suspend': {
+          const session = this.#session(socket);
+          const guild = this.#guild(socket, String(params.guildId));
+          const generation = Number(params.transportGeneration ?? guild.voiceGeneration + 1);
+          if (generation < guild.voiceGeneration) {
+            error = { code: 'invalid_state', message: 'voice attempt was superseded' };
+            break;
+          }
+          guild.voiceGeneration = generation;
+          this.voiceSuspendRequests += 1;
+          guild.voiceState = 'reconnecting';
+          this.#event(session, 'voice.state_changed', {
+            guildId: guild.guildId,
+            state: 'reconnecting',
+          });
+          result = { guildId: guild.guildId, state: 'reconnecting' };
+          break;
+        }
         case 'voice.disconnect': {
           const session = this.#session(socket);
           const guild = this.#guild(socket, String(params.guildId));
+          const generation = Number(params.transportGeneration ?? guild.voiceGeneration + 1);
+          if (generation < guild.voiceGeneration) {
+            error = { code: 'invalid_state', message: 'voice attempt was superseded' };
+            break;
+          }
+          guild.voiceGeneration = generation;
+          this.voiceDisconnectRequests += 1;
           guild.voiceState = 'disconnected';
           guild.playback.state = 'stopped';
           this.#event(session, 'voice.state_changed', {
@@ -307,6 +360,21 @@ export class FakeServerNode {
             state: 'disconnected',
           });
           result = { guildId: guild.guildId, state: 'disconnected' };
+          break;
+        }
+        case 'voice.fail': {
+          const session = this.#session(socket);
+          const guild = this.#guild(socket, String(params.guildId));
+          const generation = Number(params.transportGeneration ?? guild.voiceGeneration + 1);
+          if (generation < guild.voiceGeneration) {
+            error = { code: 'invalid_state', message: 'voice attempt was superseded' };
+            break;
+          }
+          guild.voiceGeneration = generation;
+          guild.voiceState = 'failed';
+          guild.playback.state = 'failed';
+          this.#event(session, 'voice.failed', { guildId: guild.guildId, state: 'failed' });
+          result = { guildId: guild.guildId, state: 'failed' };
           break;
         }
         case 'voice.state': {
@@ -482,6 +550,7 @@ export class FakeServerNode {
       guildId,
       botUserId,
       voiceState: 'disconnected',
+      voiceGeneration: 0,
       playback: {
         state: 'idle',
         generation: 0,

@@ -123,7 +123,33 @@ individual playback sessions. Calling `opus_sender()` creates a bounded
 backpressured output for one playback; a newer output supersedes the prior one.
 Finishing or cancelling an output does not disconnect the voice connection.
 Call `disconnect().await` to close the connection and release its worker, socket,
-and DAVE state.
+and DAVE state. The Node and remote server adapters place a stable
+`DiscordOpusSenderRouter` between playback and the current connection, so they
+can replace a transport without replacing the playback output.
+
+## Voice server and region migration
+
+The generic Rust transport does not own the bot Gateway and therefore cannot
+request new session credentials itself. Node and remote-client integrations do:
+they detect fresh `VOICE_SERVER_UPDATE` credentials or a changed
+`VOICE_STATE_UPDATE` session, send OP 4 through the caller's Gateway adapter,
+and replace the transport after receiving a fresh pair. A stable packet router
+detaches the old sender before it is closed and attaches the new sender only
+after its DAVE setup is ready. Playback state, source position, filter and
+volume configuration, and pause state remain owned by the existing core
+session. Ordinary voice WebSocket Resume stays in this crate and does not send
+Gateway OP 4.
+
+The router has no unbounded handoff queue. The dedicated playback worker waits
+at the output boundary during recovery; accepted packets held only by the old
+transport can be lost when it closes. No packet is reused with stale transport
+encryption. This can create an audible gap, but does not restart or rewind the
+source. Files, HTTP inputs, buffers, and producer-backed Readables remain open
+in the same decoder; one-shot streams are not replayed. If bounded recovery
+fails, the wrapper reports a terminal voice failure and the routed output
+fails. Stop cancels playback independently from voice recovery, and a stopped
+source is not restarted when a replacement transport attaches. Explicit
+disconnect, session disposal, and application shutdown cancel pending recovery.
 
 Each output has a monotonically increasing generation. Cancellation applies only
 while its generation is still current, so a delayed stop from an older playback
@@ -164,7 +190,10 @@ is ready.
 The transport attempts Voice Gateway v8 Resume after a WebSocket close or a
 missed heartbeat acknowledgment. Resume keeps the voice connection's UDP and
 DAVE state. If the gateway rejects Resume, the connection becomes `Failed`; the
-caller must obtain fresh voice session information and connect again. DAVE
+Rust caller must obtain fresh voice session information and connect again. The
+Node/remote Gateway adapters separately react to Gateway voice credential
+changes; a failed voice-WebSocket Resume alone is not mistaken for a region
+migration. DAVE
 protocol version 1 is the only version supported by the selected `davey`
 release. No live Discord connection has been validated as part of repository
 CI.

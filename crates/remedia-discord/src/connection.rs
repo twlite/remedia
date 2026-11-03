@@ -629,6 +629,18 @@ pub struct DiscordOpusSender {
 }
 
 impl DiscordOpusSender {
+    /// Read the connection state associated with this playback-scoped sender.
+    pub fn state(&self) -> ConnectionState {
+        *self.inner.state.borrow()
+    }
+
+    pub(crate) fn supports_passthrough_packet(packet: &EncodedOpusPacket) -> bool {
+        // Leave room for the RTP header and DAVE/transport encryption overhead.
+        // The RTP sender still validates the final encrypted datagram size.
+        let maximum_opus_payload = MAX_UDP_PACKET_BYTES.saturating_sub(RTP_HEADER_BYTES + 64);
+        validate_opus_packet(packet).is_ok() && packet.bytes.len() <= maximum_opus_payload
+    }
+
     fn ensure_current(&self, cancellation: &CoreCancellationToken) -> Result<u64, VoiceError> {
         if cancellation.is_cancelled() || self.inner.cancellation.is_cancelled() {
             return Err(VoiceError::Cancelled);
@@ -751,10 +763,7 @@ impl OpusPacketSink for DiscordOpusSender {
     }
 
     fn supports_passthrough_packet(&self, packet: &EncodedOpusPacket) -> bool {
-        // Leave room for the RTP header and DAVE/transport encryption overhead.
-        // The RTP sender still validates the final encrypted datagram size.
-        let maximum_opus_payload = MAX_UDP_PACKET_BYTES.saturating_sub(RTP_HEADER_BYTES + 64);
-        validate_opus_packet(packet).is_ok() && packet.bytes.len() <= maximum_opus_payload
+        Self::supports_passthrough_packet(packet)
     }
 
     fn flush(

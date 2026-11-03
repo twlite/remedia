@@ -10,7 +10,7 @@ description: Control native Remedia playback and Discord voice sessions from Nod
 Node process. It does not start `remedia-server` and does not install a global
 Rust tracing subscriber.
 
-The package is under development and is currently private. It supports local
+The package includes prebuilt native addons for verified platforms. It supports local
 files, HTTP(S) URLs, in-memory `Buffer`/`Uint8Array` data, and Node.js binary
 `Readable` streams. A standalone playback session decodes into a null output
 for inspection and testing; a Discord session connects the existing Opus
@@ -45,7 +45,7 @@ and native declarations are generated from Rust source by `@napi-rs/cli`.
 Windows builds use the dynamic MSVC CRT to match bundled Opus's CMake defaults;
 Opus itself remains statically linked. A Windows runtime machine needs a
 compatible Microsoft Visual C++ v14 runtime if it is not already installed.
-The private N-API package does not bundle that runtime or guarantee static CRT
+The N-API package does not bundle that runtime or guarantee static CRT
 linkage. FFmpeg's DLLs remain separate runtime dependencies.
 
 ## Create and close an instance
@@ -391,13 +391,39 @@ be interrupted mid-operation; `disconnect()` waits for the transport's bounded
 timeouts and disposes any late native connection result.
 
 `Remedia.receive(packet)` ignores non-voice packets and voice updates for other
-guilds, users, or channels. A voice server/session change starts a fresh OP 4
-request and waits for a new state/server pair; dispatch sequence numbers are
-used to reject packets older than that request when the client includes them.
-The native transport is replaced only after the new credentials arrive. Any
-active playback is stopped during replacement; start it again after
-`connectionState` returns to `connected`. Voice Gateway WebSocket Resume is
-handled inside the native transport and does not send a bot Gateway OP 4.
+guilds, users, or channels. A changed voice server token/endpoint or voice
+session starts a fresh OP 4 exchange. The adapter correlates fresh dispatch
+sequences, ignores stale and duplicate updates, and retries a failed transport
+replacement a bounded number of times. `connectionState` reports
+`reconnecting` during this work and `connected` after the replacement transport
+and DAVE setup are ready.
+
+Credential refresh replaces only the Discord transport. The existing playback
+session and its decoder, current source, source generation, filtergraph, master
+volume, paused/playing state, and application `customMetadata` remain in place.
+Playback output is routed through a stable bounded handoff: it waits at the
+output boundary while a replacement transport is established, then sends new
+packets only through the new RTP/encryption/DAVE session. It never replays a
+track from the beginning or forwards a packet using old transport keys. Packets
+already accepted by the old transport may be lost during the handoff, so a
+short audible gap is possible. Files, HTTP inputs, buffers, and caller-owned
+Readables continue through the already-open decoder; no source is reopened or
+rewound. In particular, a one-shot Readable is not replayed. This is transport
+recovery, not a promise of lossless audio delivery.
+
+An ordinary Voice WebSocket Resume remains inside the native transport and does
+not send a bot Gateway OP 4. A new server region, token, endpoint, or voice
+session is handled as a credential migration. `pause()`, `resume()`, `seek()`,
+`stop()`, and `wait()` continue to address the existing playback while its voice
+transport is reconnecting. `stop()` cancels that playback and it is never
+restarted by transport recovery. Explicit `disconnect()`, session disposal, or
+closing the owning `Remedia` cancels pending recovery. Recovery has a bounded
+connection timeout and retry count; after exhaustion the session emits
+`voiceFailed` and the routed output fails. A source already paused remains
+paused if recovery succeeds.
+
+Each native replacement uses an internal transport generation. A late setup is
+discarded if a newer credential update or explicit disconnect has superseded it.
 
 The application remains responsible for authenticating its Gateway client and
 forwarding its raw dispatch packets. The binding does not implement Gateway

@@ -1,10 +1,15 @@
 {
   "name": "@remedia/node",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "description": "Native Node.js playback and Discord voice bindings for Remedia",
   "author": "Twilight <hello@twlite.dev>",
   "repository": "https://github.com/twlite/remedia.git",
+  "files": [
+    "dist",
+    "native.js",
+    "native.d.ts",
+    "README.md"
+  ],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -13,6 +18,9 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "pnpm run build:native && pnpm run build:types",
@@ -33,6 +41,26 @@
   },
   "napi": {
     "binaryName": "node",
-    "packageName": "@remedia/node"
+    "npmClient": "pnpm",
+    "packageName": "@remedia/node",
+    "rootPublisher": "pnpm",
+    "targets": [
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "x86_64-pc-windows-msvc",
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-musl",
+      "armv7-unknown-linux-gnueabihf",
+      "i686-pc-windows-msvc",
+      "aarch64-pc-windows-msvc",
+      "aarch64-linux-android",
+      "armv7-linux-androideabi",
+      "x86_64-unknown-freebsd"
+    ]
+  },
+  "engines": {
+    "node": ">=22.18.0"
   }
 }

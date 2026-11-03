@@ -16,6 +16,20 @@ export declare class NativeRemedia {
   get droppedDebugEvents(): number
   /** Open a Discord voice transport using session data collected by the caller's Gateway client. */
   connectVoice(options: NativeVoiceOptions): Promise<NativeVoiceSessionIds>
+  /**
+   * Replace only the Discord transport while retaining the existing
+   * playback decoder, filters, volume, pause state, and output timeline.
+   */
+  replaceVoice(voiceId: string, generation: number, options: NativeVoiceOptions): Promise<void>
+  /**
+   * Invalidate an in-flight transport replacement before newer Gateway
+   * credentials are used. This does not touch the active playback session.
+   */
+  invalidateVoiceRecovery(voiceId: string, generation: number): void
+  /** Close the old Discord transport while leaving the playback session parked for recovery. */
+  suspendVoice(voiceId: string, generation: number): Promise<void>
+  /** Terminate a playback parked during voice recovery after retries fail. */
+  failVoiceRecovery(voiceId: string, message: string): void
   /** Current transport state for one voice session. */
   voiceState(voiceId: string): string
   /** Return the latest transport failure for one voice session. */

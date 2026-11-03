@@ -1,6 +1,6 @@
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use remedia_core::{
@@ -176,19 +176,41 @@ pub(crate) async fn execute(
             let guild = server
                 .get_guild(&session, &params.guild_id)
                 .map_err(state_error)?;
+            let request_generation = claim_voice_generation(
+                &guild.voice_request_generation,
+                params.transport_generation,
+            )?;
             let _voice_operation = Arc::clone(&guild.voice_operations).lock_owned().await;
             guild.ensure_open().map_err(state_error)?;
-            if lock(&guild.voice).as_ref().is_some_and(|voice| {
-                !matches!(
-                    voice.state(),
-                    ConnectionState::Disconnected | ConnectionState::Failed
-                )
-            }) {
+            if guild.voice_request_generation.load(Ordering::Acquire) != request_generation {
                 return Err(RpcError::new(
                     "invalid_state",
-                    "a voice transport is already associated with this guild session",
+                    "Discord voice connection attempt was superseded",
                 ));
             }
+            if guild.voice_terminal_generation.load(Ordering::Acquire) >= request_generation {
+                return Err(RpcError::new(
+                    "invalid_state",
+                    "Discord voice connection attempt was cancelled",
+                ));
+            }
+            {
+                let voice = lock(&guild.voice);
+                if guild.voice_connected_generation.load(Ordering::Acquire) == request_generation
+                    && let Some(voice) = voice.as_ref()
+                {
+                    let state = voice_state_name(voice.state());
+                    if !matches!(
+                        voice.state(),
+                        ConnectionState::Disconnected | ConnectionState::Failed
+                    ) {
+                        return Ok(
+                            json!({ "guildId": guild.guild_id, "state": state, "alreadyConnected": true }),
+                        );
+                    }
+                }
+            }
+            let voice_generation = guild.voice_generation.fetch_add(1, Ordering::AcqRel) + 1;
             if params.session_id.is_empty()
                 || params.session_id.len() > 1024
                 || params.token.is_empty()
@@ -202,6 +224,33 @@ pub(crate) async fn execute(
                     "voice session credentials or Discord endpoint are malformed",
                 ));
             }
+            let previous_voice = { lock(&guild.voice).take() };
+            let recovery =
+                previous_voice.is_some() || guild.voice_reconnecting.swap(true, Ordering::AcqRel);
+            guild.voice_reconnecting.store(recovery, Ordering::Release);
+            guild.voice_sender_router.detach();
+            if let Some(previous_voice) = previous_voice {
+                session.emit(
+                    "voice.state_changed",
+                    json!({"guildId": guild.guild_id, "previousState": "connected", "state": "reconnecting"}),
+                );
+                if previous_voice.disconnect().await.is_err() {
+                    // Keep output parked during the bounded client-side retry
+                    // sequence. A single failed close is not yet a terminal
+                    // voice failure; `voice.fail` reports that after retries.
+                    guild.voice_reconnecting.store(true, Ordering::Release);
+                    return Err(RpcError::new(
+                        "transport_failed",
+                        "could not replace Discord voice transport",
+                    ));
+                }
+            } else if !recovery {
+                session.emit(
+                    "voice.state_changed",
+                    json!({"guildId": guild.guild_id, "previousState": "disconnected", "state": "connecting"}),
+                );
+            }
+
             let connection_info = VoiceConnectionInfo {
                 guild_id: parse_snowflake(&params.guild_id).expect("validated snowflake"),
                 channel_id: parse_snowflake(&params.channel_id).expect("validated snowflake"),
@@ -210,10 +259,6 @@ pub(crate) async fn execute(
                 token: params.token,
                 endpoint: params.endpoint,
             };
-            session.emit(
-                "voice.state_changed",
-                json!({"guildId": guild.guild_id, "previousState": "disconnected", "state": "connecting"}),
-            );
             let voice = match DiscordVoiceConnection::connect_with_observability(
                 connection_info,
                 server.observability.clone(),
@@ -222,34 +267,65 @@ pub(crate) async fn execute(
             {
                 Ok(voice) => voice,
                 Err(_) => {
-                    session.emit(
-                        "voice.state_changed",
-                        json!({"guildId": guild.guild_id, "previousState": "connecting", "state": "failed"}),
-                    );
-                    session.emit(
-                        "voice.failed",
-                        json!({"guildId": guild.guild_id, "state": "failed", "code": "transport_failed"}),
-                    );
+                    if !recovery
+                        && guild.voice_request_generation.load(Ordering::Acquire)
+                            == request_generation
+                    {
+                        guild.voice_reconnecting.store(false, Ordering::Release);
+                        session.emit(
+                            "voice.state_changed",
+                            json!({"guildId": guild.guild_id, "previousState": "connecting", "state": "failed"}),
+                        );
+                        session.emit(
+                            "voice.failed",
+                            json!({"guildId": guild.guild_id, "state": "failed", "code": "transport_failed"}),
+                        );
+                    }
                     return Err(RpcError::new(
                         "transport_failed",
                         "Discord voice connection failed",
                     ));
                 }
             };
-            if guild.closed.load(Ordering::Acquire) || session.closed.load(Ordering::Acquire) {
+            if guild.closed.load(Ordering::Acquire)
+                || session.closed.load(Ordering::Acquire)
+                || guild.voice_request_generation.load(Ordering::Acquire) != request_generation
+            {
                 let _ = voice.disconnect().await;
                 return Err(RpcError::new(
-                    "unknown_session",
-                    "guild session was closed during voice connection",
+                    if guild.closed.load(Ordering::Acquire)
+                        || session.closed.load(Ordering::Acquire)
+                    {
+                        "unknown_session"
+                    } else {
+                        "invalid_state"
+                    },
+                    if guild.closed.load(Ordering::Acquire)
+                        || session.closed.load(Ordering::Acquire)
+                    {
+                        "guild session was closed during voice connection"
+                    } else {
+                        "Discord voice connection attempt was superseded"
+                    },
                 ));
             }
             let initial_state = voice_state_name(voice.state());
+            guild.voice_sender_router.attach(voice.opus_sender());
             *lock(&guild.voice) = Some(voice);
+            guild
+                .voice_connected_generation
+                .store(request_generation, Ordering::Release);
+            guild.voice_reconnecting.store(false, Ordering::Release);
             session.emit(
                 "voice.state_changed",
-                json!({"guildId": guild.guild_id, "previousState": "connecting", "state": initial_state}),
+                json!({"guildId": guild.guild_id, "previousState": if recovery { "reconnecting" } else { "connecting" }, "state": initial_state}),
             );
-            spawn_voice_monitor(Arc::clone(&guild), Arc::downgrade(&session));
+            spawn_voice_monitor(
+                Arc::clone(&guild),
+                Arc::downgrade(&session),
+                voice_generation,
+                request_generation,
+            );
             Ok(json!({ "guildId": guild.guild_id, "state": initial_state }))
         }
         "voice.state" => {
@@ -260,20 +336,93 @@ pub(crate) async fn execute(
                 .get_guild(&session, &params.guild_id)
                 .map_err(state_error)?;
             let voice = lock(&guild.voice);
+            let state = if guild.voice_reconnecting.load(Ordering::Acquire) {
+                "reconnecting"
+            } else {
+                voice
+                    .as_ref()
+                    .map(|voice| voice_state_name(voice.state()))
+                    .unwrap_or("disconnected")
+            };
             Ok(json!({
-                "state": voice.as_ref().map(|voice| voice_state_name(voice.state())).unwrap_or("disconnected"),
+                "state": state,
                 "failed": voice.as_ref().is_some_and(|voice| voice.failure().is_some()),
             }))
         }
-        "voice.disconnect" => {
-            let params: GuildParams = decode_params(request.params)?;
+        "voice.suspend" => {
+            let params: VoiceOperationParams = decode_params(request.params)?;
             validate_snowflake(&params.guild_id, "guildId")?;
             let session = require_client(&connection)?;
             let guild = server
                 .get_guild(&session, &params.guild_id)
                 .map_err(state_error)?;
+            let request_generation = claim_voice_generation(
+                &guild.voice_request_generation,
+                params.transport_generation,
+            )?;
+            if guild.voice_terminal_generation.load(Ordering::Acquire) >= request_generation {
+                return Err(RpcError::new(
+                    "invalid_state",
+                    "Discord voice recovery was cancelled",
+                ));
+            }
+            if guild.voice_connected_generation.load(Ordering::Acquire) == request_generation
+                && lock(&guild.voice).is_some()
+            {
+                return Ok(
+                    json!({"guildId": guild.guild_id, "state": "connected", "alreadyConnected": true}),
+                );
+            }
+            let _generation = guild.voice_generation.fetch_add(1, Ordering::AcqRel) + 1;
+            guild.voice_reconnecting.store(true, Ordering::Release);
+            guild.voice_sender_router.detach();
+            let _voice_operation = Arc::clone(&guild.voice_operations).lock_owned().await;
+            guild.ensure_open().map_err(state_error)?;
+            if guild.voice_request_generation.load(Ordering::Acquire) != request_generation {
+                return Ok(
+                    json!({"guildId": guild.guild_id, "state": "reconnecting", "superseded": true}),
+                );
+            }
+            let voice = { lock(&guild.voice).take() };
+            if let Some(voice) = voice {
+                let previous_state = voice_state_name(voice.state());
+                voice.disconnect().await.map_err(|_| {
+                    RpcError::new(
+                        "transport_failed",
+                        "could not suspend Discord voice transport",
+                    )
+                })?;
+                session.emit(
+                    "voice.state_changed",
+                    json!({"guildId": guild.guild_id, "previousState": previous_state, "state": "reconnecting"}),
+                );
+            }
+            Ok(json!({"guildId": guild.guild_id, "state": "reconnecting"}))
+        }
+        "voice.disconnect" => {
+            let params: VoiceOperationParams = decode_params(request.params)?;
+            validate_snowflake(&params.guild_id, "guildId")?;
+            let session = require_client(&connection)?;
+            let guild = server
+                .get_guild(&session, &params.guild_id)
+                .map_err(state_error)?;
+            let request_generation = claim_voice_generation(
+                &guild.voice_request_generation,
+                params.transport_generation,
+            )?;
+            let _voice_generation = guild.voice_generation.fetch_add(1, Ordering::AcqRel) + 1;
+            guild
+                .voice_terminal_generation
+                .fetch_max(request_generation, Ordering::AcqRel);
+            guild.voice_reconnecting.store(false, Ordering::Release);
+            guild.voice_sender_router.detach();
             let voice_operation = Arc::clone(&guild.voice_operations).lock_owned().await;
             guild.ensure_open().map_err(state_error)?;
+            if guild.voice_request_generation.load(Ordering::Acquire) != request_generation {
+                return Ok(
+                    json!({"guildId": guild.guild_id, "state": "reconnecting", "superseded": true}),
+                );
+            }
             stop_playback(&guild).await?;
             let voice = { lock(&guild.voice).take() };
             let previous_voice_state = voice
@@ -302,6 +451,9 @@ pub(crate) async fn execute(
                         RpcError::new("transport_failed", "Discord voice disconnection failed")
                     })?;
             }
+            guild
+                .voice_sender_router
+                .fail("Discord voice session was disconnected");
             if previous_voice_state != "disconnected" {
                 session.emit(
                     "voice.state_changed",
@@ -309,6 +461,51 @@ pub(crate) async fn execute(
                 );
             }
             Ok(json!({ "guildId": guild.guild_id, "state": "disconnected" }))
+        }
+        "voice.fail" => {
+            let params: VoiceOperationParams = decode_params(request.params)?;
+            validate_snowflake(&params.guild_id, "guildId")?;
+            let session = require_client(&connection)?;
+            let guild = server
+                .get_guild(&session, &params.guild_id)
+                .map_err(state_error)?;
+            let request_generation = claim_voice_generation(
+                &guild.voice_request_generation,
+                params.transport_generation,
+            )?;
+            if guild.voice_terminal_generation.load(Ordering::Acquire) >= request_generation {
+                return Ok(
+                    json!({"guildId": guild.guild_id, "state": "failed", "alreadyFailed": true}),
+                );
+            }
+            let _voice_operation = Arc::clone(&guild.voice_operations).lock_owned().await;
+            guild.ensure_open().map_err(state_error)?;
+            if guild.voice_request_generation.load(Ordering::Acquire) != request_generation {
+                return Ok(
+                    json!({"guildId": guild.guild_id, "state": "reconnecting", "superseded": true}),
+                );
+            }
+            let _voice_generation = guild.voice_generation.fetch_add(1, Ordering::AcqRel) + 1;
+            guild
+                .voice_terminal_generation
+                .fetch_max(request_generation, Ordering::AcqRel);
+            guild.voice_reconnecting.store(false, Ordering::Release);
+            guild
+                .voice_sender_router
+                .fail("Discord voice recovery failed");
+            let voice = { lock(&guild.voice).take() };
+            if let Some(voice) = voice {
+                let _ = voice.disconnect().await;
+            }
+            session.emit(
+                "voice.state_changed",
+                json!({"guildId": guild.guild_id, "previousState": "reconnecting", "state": "failed"}),
+            );
+            session.emit(
+                "voice.failed",
+                json!({"guildId": guild.guild_id, "state": "failed", "code": "transport_failed"}),
+            );
+            Ok(json!({"guildId": guild.guild_id, "state": "failed"}))
         }
         "player.play" => {
             let params: PlayParams = decode_params(request.params)?;
@@ -368,11 +565,13 @@ pub(crate) async fn execute(
                         "Discord voice transport is not connected",
                     ));
                 }
-                let sender = voice.opus_sender();
-                OpusEncoderOutput::new_with_observability(sender, server.observability.clone())
-                    .map_err(|_| {
-                        RpcError::new("playback_failed", "could not initialize the Opus output")
-                    })?
+                OpusEncoderOutput::new_with_observability(
+                    guild.voice_sender_router.sink(),
+                    server.observability.clone(),
+                )
+                .map_err(|_| {
+                    RpcError::new("playback_failed", "could not initialize the Opus output")
+                })?
             } else {
                 // A player without Discord consumes decoded frames into a null output. This is
                 // useful for server-side validation and tests; it does not pretend to be audible.
@@ -854,6 +1053,44 @@ fn stream_info_json(info: remedia_core::AudioStreamInfo) -> Value {
     })
 }
 
+/// Claim a monotonically increasing transport-operation generation from a client.
+/// WebSocket handlers execute concurrently, so the server must not rely on task
+/// scheduling to preserve request arrival order. Older clients omit the field;
+/// those requests receive a server-generated generation for compatibility.
+fn claim_voice_generation(generation: &AtomicU64, requested: Option<u64>) -> Result<u64, RpcError> {
+    let Some(requested) = requested else {
+        return Ok(generation.fetch_add(1, Ordering::AcqRel) + 1);
+    };
+    if requested == 0 {
+        return Err(RpcError::new(
+            "invalid_request",
+            "transportGeneration must be a positive integer",
+        ));
+    }
+
+    let mut current = generation.load(Ordering::Acquire);
+    loop {
+        if requested < current {
+            return Err(RpcError::new(
+                "invalid_state",
+                "Discord voice operation was superseded by a newer transport generation",
+            ));
+        }
+        if requested == current {
+            return Ok(requested);
+        }
+        match generation.compare_exchange_weak(
+            current,
+            requested,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return Ok(requested),
+            Err(actual) => current = actual,
+        }
+    }
+}
+
 fn playback_start_json(info: remedia_core::AudioStreamInfo, generation: u64) -> Value {
     let mut result = stream_info_json(info);
     result["generation"] = json!(generation);
@@ -912,7 +1149,12 @@ fn spawn_playback_monitor(
     });
 }
 
-fn spawn_voice_monitor(guild: Arc<GuildSession>, session: std::sync::Weak<ClientSession>) {
+fn spawn_voice_monitor(
+    guild: Arc<GuildSession>,
+    session: std::sync::Weak<ClientSession>,
+    generation: u64,
+    request_generation: u64,
+) {
     tokio::spawn(async move {
         let mut previous = lock(&guild.voice)
             .as_ref()
@@ -922,6 +1164,12 @@ fn spawn_voice_monitor(guild: Arc<GuildSession>, session: std::sync::Weak<Client
         loop {
             interval.tick().await;
             if guild.closed.load(Ordering::Acquire) {
+                return;
+            }
+            if guild.voice_generation.load(Ordering::Acquire) != generation {
+                return;
+            }
+            if guild.voice_request_generation.load(Ordering::Acquire) != request_generation {
                 return;
             }
             let state = lock(&guild.voice)
@@ -1058,6 +1306,16 @@ struct VoiceConnectParams {
     session_id: String,
     token: String,
     endpoint: String,
+    #[serde(default)]
+    transport_generation: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct VoiceOperationParams {
+    guild_id: String,
+    #[serde(default)]
+    transport_generation: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -1098,8 +1356,10 @@ struct VolumeParams {
 #[cfg(test)]
 mod tests {
     use super::{
-        load_average_1m, parse_snowflake, resident_memory_bytes, valid_discord_voice_endpoint,
+        claim_voice_generation, load_average_1m, parse_snowflake, resident_memory_bytes,
+        valid_discord_voice_endpoint,
     };
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
     fn snowflakes_are_decimal_and_remain_u64() {
@@ -1128,5 +1388,17 @@ mod tests {
         assert!(!valid_discord_voice_endpoint(
             "wss://user@voice.discord.media"
         ));
+    }
+
+    #[test]
+    fn voice_generations_reject_stale_operations_and_allow_same_attempt_steps() {
+        let generation = AtomicU64::new(0);
+        assert_eq!(claim_voice_generation(&generation, Some(4)).unwrap(), 4);
+        assert_eq!(claim_voice_generation(&generation, Some(4)).unwrap(), 4);
+        assert_eq!(generation.load(Ordering::Acquire), 4);
+        assert!(claim_voice_generation(&generation, Some(3)).is_err());
+        assert_eq!(claim_voice_generation(&generation, None).unwrap(), 5);
+        assert_eq!(claim_voice_generation(&generation, Some(9)).unwrap(), 9);
+        assert!(claim_voice_generation(&generation, Some(0)).is_err());
     }
 }

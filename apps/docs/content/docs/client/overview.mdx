@@ -184,6 +184,37 @@ cleanup and sends it after the same server session resumes. If the whole client 
 node is unreachable, the server releases those resources when its configured session-resumption
 timeout expires.
 
+### Discord voice server migration
+
+This is distinct from reconnecting the Remedia WebSocket. When the host Discord
+Gateway delivers changed voice server credentials or a new voice session for an
+already connected guild, the same assigned backend replaces its Discord voice
+transport automatically. The old transport is detached and closed, then a new
+voice WebSocket, UDP discovery, transport encryption, and DAVE session are
+established from fresh Gateway dispatches. The existing playback session is
+retained: its source reader, decoder, filtergraph, gain, pause state, generation,
+and JavaScript `customMetadata` are not rebuilt. `voice.connectionState` reports
+`reconnecting` while this happens; successful completion returns it to
+`connected`, while exhausted recovery emits `voiceFailed` and fails the active
+output.
+
+Packets are never sent with stale transport keys. A playback worker waits at the
+bounded output boundary during handoff; packets already accepted by the old
+transport but not delivered may be lost, so brief silence is possible. The
+source is not restarted or sought: local files, HTTP inputs, buffers, and
+Readables keep using the same open decoder, and a one-shot Readable is never
+replayed. This does not promise lossless delivery. Ordinary Voice WebSocket
+Resume continues within `remedia-discord` and does not trigger Gateway OP 4.
+Playback controls remain bound to this existing backend while it is reconnecting;
+in particular, `stop()` cancels playback and transport recovery never restarts
+that source. Calling `disconnect()`, disposing the session, or closing the client
+cancels pending voice recovery. Cross-node migration remains unsupported.
+
+Remote voice operations carry a monotonically increasing transport generation.
+The server rejects late connect, suspend, and failure RPCs from older
+generations, so out-of-order request tasks cannot install stale credentials
+after a newer disconnect or migration has taken effect.
+
 There is no cross-node playback migration. A replacement node does not have the original decoder,
 filter graph, voice transport, or exact playback position, and it needs fresh Discord Gateway voice
 credentials. The application must explicitly dispose or rebuild a lost session. Session credentials

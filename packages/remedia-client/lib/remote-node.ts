@@ -340,12 +340,26 @@ export class RemoteNodeAdapter
     guildId: string,
     channelId: string,
     credentials: { sessionId: string; token: string; endpoint: string },
+    transportGeneration?: number,
   ): Promise<void> {
     this.#assertHealthy();
-    await this.request('voice.connect', { guildId, channelId, ...credentials });
+    await this.request('voice.connect', {
+      guildId,
+      channelId,
+      ...credentials,
+      ...(transportGeneration === undefined ? {} : { transportGeneration }),
+    });
   }
 
-  async disconnectVoice(guildId: string): Promise<void> {
+  async suspendVoice(guildId: string, transportGeneration?: number): Promise<void> {
+    this.#assertHealthy();
+    await this.request('voice.suspend', {
+      guildId,
+      ...(transportGeneration === undefined ? {} : { transportGeneration }),
+    });
+  }
+
+  async disconnectVoice(guildId: string, transportGeneration?: number): Promise<void> {
     if (this.#status !== 'healthy') {
       if (this.#sessionId && this.#status !== 'session_lost' && !this.#closed) {
         this.#pendingVoiceDisconnects.add(guildId);
@@ -353,7 +367,10 @@ export class RemoteNodeAdapter
       return;
     }
     try {
-      await this.request('voice.disconnect', { guildId });
+      await this.request('voice.disconnect', {
+        guildId,
+        ...(transportGeneration === undefined ? {} : { transportGeneration }),
+      });
       this.#pendingVoiceDisconnects.delete(guildId);
     } catch (error) {
       if (error instanceof NodeUnavailableError && this.#sessionId && !this.#closed) {
@@ -362,6 +379,11 @@ export class RemoteNodeAdapter
       }
       if (!(error instanceof RemediaRpcError && error.code === 'unknown_session')) throw error;
     }
+  }
+
+  async failVoice(guildId: string, transportGeneration: number): Promise<void> {
+    this.#assertHealthy();
+    await this.request('voice.fail', { guildId, transportGeneration });
   }
 
   deferVoiceDisconnect(guildId: string): void {
@@ -944,6 +966,8 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
   #sessionId = 'pending';
   #hasSnapshot = false;
   #voiceFailureEmitted = false;
+  #voiceTransportGeneration = 0;
+  #voiceSuspension: Promise<void> = Promise.resolve();
   readonly #startedGenerations = new Set<number>();
   readonly #terminalGenerations = new Set<number>();
 
@@ -1001,55 +1025,124 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     }
   }
 
-  async connectWithCredentials(credentials: {
-    sessionId: string;
-    token: string;
-    endpoint: string;
-  }): Promise<void> {
+  async connectWithCredentials(
+    credentials: {
+      sessionId: string;
+      token: string;
+      endpoint: string;
+    },
+    transportGeneration?: number,
+  ): Promise<void> {
     this.#assertOpen();
     this.validateIdentity(this.#options.userId);
-    const configuredFilter = this.#snapshot.filterGraph;
-    const configuredVolume = this.#snapshot.volume;
-    const guild = await this.#node.createGuild(this.#options.guildId);
-    this.#guildCreated = true;
-    this.#sessionId = guild.guildSessionId;
-    this.#snapshot = parsePlaybackSnapshot(guild.playback, this.#node.id);
-    this.#hasSnapshot = true;
-    this.#snapshot = { ...this.#snapshot, filterGraph: configuredFilter, volume: configuredVolume };
-    if (this.#snapshot.filterGraph !== null) {
-      await this.#node.control(this.#options.guildId, 'player.filter.set', {
-        graph: this.#snapshot.filterGraph,
-      });
+    const generation = this.#claimVoiceGeneration(transportGeneration);
+    const replacingTransport = this.#guildCreated;
+    if (!this.#guildCreated) {
+      const configuredFilter = this.#snapshot.filterGraph;
+      const configuredVolume = this.#snapshot.volume;
+      const guild = await this.#node.createGuild(this.#options.guildId);
+      this.#guildCreated = true;
+      this.#sessionId = guild.guildSessionId;
+      this.#snapshot = parsePlaybackSnapshot(guild.playback, this.#node.id);
+      this.#hasSnapshot = true;
+      this.#snapshot = {
+        ...this.#snapshot,
+        filterGraph: configuredFilter,
+        volume: configuredVolume,
+      };
+      if (this.#snapshot.filterGraph !== null) {
+        await this.#node.control(this.#options.guildId, 'player.filter.set', {
+          graph: this.#snapshot.filterGraph,
+        });
+      }
+      if (this.#snapshot.volume !== 1) {
+        await this.#node.control(this.#options.guildId, 'player.volume.set', {
+          gain: this.#snapshot.volume,
+        });
+      }
     }
-    if (this.#snapshot.volume !== 1) {
-      await this.#node.control(this.#options.guildId, 'player.volume.set', {
-        gain: this.#snapshot.volume,
-      });
-    }
-    this.#voiceFailureEmitted = false;
-    this.#setVoiceState('negotiating_dave');
+    this.#assertCurrentVoiceGeneration(generation);
+    this.#setVoiceState(replacingTransport ? 'reconnecting' : 'negotiating_dave');
     try {
-      await this.#node.connectVoice(this.#options.guildId, this.#options.channelId, credentials);
+      await this.#voiceSuspension;
+      this.#assertCurrentVoiceGeneration(generation);
+      await this.#node.connectVoice(
+        this.#options.guildId,
+        this.#options.channelId,
+        credentials,
+        generation,
+      );
+      this.#assertCurrentVoiceGeneration(generation);
+      this.#voiceFailureEmitted = false;
       this.#setVoiceState('connected');
       this.#connectionError = null;
       await this.refresh();
     } catch (error) {
       this.#connectionError = asError(error).message;
-      this.#setVoiceState('failed');
-      this.#emitVoiceFailure(asError(error));
+      this.#setVoiceState(replacingTransport ? 'reconnecting' : 'failed');
+      if (!replacingTransport) this.#emitVoiceFailure(asError(error));
       throw error;
     }
   }
 
-  async disconnect(): Promise<void> {
+  suspendVoiceRecovery(transportGeneration?: number): Promise<void> {
+    if (this.#disposed || this.#lost) return Promise.resolve();
+    const generation = this.#claimVoiceGeneration(transportGeneration);
+    if (!this.#guildCreated) return Promise.resolve();
+    const suspend = () => this.#node.suspendVoice(this.#options.guildId, generation);
+    const result = this.#voiceSuspension.then(suspend, suspend);
+    this.#voiceSuspension = result.catch(() => undefined);
+    return result;
+  }
+
+  async failVoiceRecovery(transportGeneration?: number): Promise<void> {
+    if (this.#disposed || !this.#guildCreated || this.#lost) return;
+    const generation = this.#claimVoiceGeneration(transportGeneration);
+    if (this.#node.status === 'healthy') {
+      await this.#node.failVoice(this.#options.guildId, generation);
+    }
+    this.#assertCurrentVoiceGeneration(generation);
+    this.#connectionError = 'Discord voice transport recovery failed';
+    this.#setVoiceState('failed');
+    this.#emitVoiceFailure(new Error(this.#connectionError));
+  }
+
+  async disconnect(transportGeneration?: number): Promise<void> {
     if (this.#disposed) return;
+    const generation = this.#claimVoiceGeneration(transportGeneration);
     if (!this.#lost && this.#guildCreated) {
-      if (this.#node.status === 'healthy') await this.#node.disconnectVoice(this.#options.guildId);
+      if (this.#node.status === 'healthy')
+        await this.#node.disconnectVoice(this.#options.guildId, generation);
       else this.#node.deferVoiceDisconnect(this.#options.guildId);
     }
+    if (generation !== this.#voiceTransportGeneration) return;
     this.#setVoiceState('disconnected');
     if (this.#snapshot.state === 'playing' || this.#snapshot.state === 'paused') {
       this.#snapshot = { ...this.#snapshot, state: 'stopped' };
+    }
+  }
+
+  #claimVoiceGeneration(requested: number | undefined): number {
+    if (requested === undefined) {
+      if (this.#voiceTransportGeneration >= Number.MAX_SAFE_INTEGER - 1) {
+        throw new RangeError('Discord voice transport generation has been exhausted');
+      }
+      this.#voiceTransportGeneration += 1;
+      return this.#voiceTransportGeneration;
+    }
+    if (!Number.isSafeInteger(requested) || requested <= 0) {
+      throw new RangeError('transportGeneration must be a positive safe integer');
+    }
+    if (requested < this.#voiceTransportGeneration) {
+      throw new Error('Discord voice operation was superseded by a newer transport generation');
+    }
+    this.#voiceTransportGeneration = requested;
+    return requested;
+  }
+
+  #assertCurrentVoiceGeneration(generation: number): void {
+    if (generation !== this.#voiceTransportGeneration) {
+      throw new Error('Discord voice operation was superseded by a newer transport generation');
     }
   }
 

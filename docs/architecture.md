@@ -48,9 +48,14 @@ and diagnostics APIs. `@remedia/client` orchestrates direct embedded and remote 
   `X-Remedia-Bot-Id` during the `/v1/ws` WebSocket handshake. The bot ID is per connection rather
   than static server configuration, allowing distinct bots to use the same server account. It
   implements strict version 1 JSON RPC for node stats, client-session resume, guild players, voice
-  connection lifecycle, media playback, filters, volume, and state. It does not use N-API, perform
-  Discord Gateway OP 4, or implement Lavalink. Each authenticated client session owns guild sessions;
-  each guild session owns one playback session and an optional Discord transport. Session state is
+  connection lifecycle, media playback, filters, volume, and state. Each guild has a stable bounded
+  packet router independent of its replaceable voice transport, so a Gateway credential refresh
+  does not recreate server playback. Explicit disconnect and guild destruction stop the source.
+  Remote voice lifecycle RPCs carry a monotonic transport generation; stale connect, suspend, or
+  failure operations are rejected even though request handlers execute concurrently.
+  The server does not use N-API, perform Discord Gateway OP 4, or implement Lavalink. Each
+  authenticated client session owns guild sessions; each guild session owns one playback session
+  and an optional Discord transport. Session state is
   node-local and in memory; disconnects can be resumed for a configured bounded interval, while
   process restarts do not preserve playback. Event buffering and all resource limits are bounded.
 - **`remedia-node`** contains the Rust N-API crate and thin TypeScript wrapper. `Remedia` owns
@@ -59,9 +64,12 @@ and diagnostics APIs. `@remedia/client` orchestrates direct embedded and remote 
   function and routes raw `VOICE_STATE_UPDATE`/`VOICE_SERVER_UPDATE` dispatches to one session per
   guild. A join sends OP 4 and waits for both fresh dispatches before invoking the existing native
   credential-based transport API; credentials are not part of the public Node API. A voice server
-  or session change requests a fresh Gateway pair before replacing the native transport, stopping
-  active playback during replacement. Ordinary voice WebSocket Resume is handled natively and does
-  not send a bot Gateway request. Native playback methods run on NAPI-RS's managed Tokio runtime; blocking core methods
+  or session change requests fresh Gateway credentials and replaces only the voice transport.
+  Playback retains its decoder, source, output, pause state, filters, volume, source generation,
+  and application metadata through a stable bounded sender router. During handoff, the per-session
+  worker parks at the output boundary; packets accepted by the old transport but not delivered may
+  be lost and are never resent with stale keys. Ordinary voice WebSocket Resume is handled natively
+  and does not send a bot Gateway request. Native playback methods run on NAPI-RS's managed Tokio runtime; blocking core methods
   are dispatched to blocking workers. A caller-owned cancellation token covers the gap before a
   scheduled decoder worker starts, so concurrent stop, dispose, or close cannot leave a late
   playback worker behind. Completion waiters capture a source generation synchronously, so a delayed
@@ -112,8 +120,11 @@ Gateway dispatches, sends OP 4 through the owning shard, and provides app-level 
 an in-memory per-guild URL queue. Queueing stays out of the core and Node playback APIs. The bot
 runs its TypeScript source with `tsx`; `tsc --noEmit` remains its type check. Its six named audio
 presets, `/filter`, and `/volume` commands are harness-only conveniences; the raw graph API remains
-generic. The application-owned queue stores per-guild effect settings and preserves them across
-skips.
+generic. Successful command replies are public and attributed to the invoking user; errors remain
+ephemeral. State changes already confirmed by a command do not generate duplicate posts, while
+automatic track starts and genuine failures retain lifecycle notifications. `/nowplaying` shows
+source-time progress with an estimate marker when needed. The application-owned queue stores
+per-guild effect settings and preserves them across skips.
 
 The bounded `DiagnosticReceiver` in `remedia-observability` is connected to the Node wrapper by one
 dedicated forwarding worker and a bounded N-API `ThreadsafeFunction`. The receiver is per

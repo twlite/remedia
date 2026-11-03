@@ -31,13 +31,18 @@ export interface GuildBackend extends EventEmitter<GuildBackendEvents> {
   readonly connectionState: VoiceConnectionState;
   readonly snapshot: PlaybackSnapshot;
   connect(options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void>;
-  connectWithCredentials?(credentials: {
-    sessionId: string;
-    token: string;
-    endpoint: string;
-  }): Promise<void>;
+  connectWithCredentials?(
+    credentials: {
+      sessionId: string;
+      token: string;
+      endpoint: string;
+    },
+    transportGeneration?: number,
+  ): Promise<void>;
+  suspendVoiceRecovery?(transportGeneration?: number): Promise<void>;
+  failVoiceRecovery?(transportGeneration?: number): Promise<void>;
   validateIdentity?(userId: string): void;
-  disconnect(): Promise<void>;
+  disconnect(transportGeneration?: number): Promise<void>;
   dispose(): Promise<void>;
   play(
     source: MediaSource,

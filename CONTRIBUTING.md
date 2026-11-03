@@ -18,22 +18,27 @@ Opus adapter builds libopus from bundled source and links it statically. Playbac
 libavfilter. Install development headers for libavformat, libavcodec, libavutil, libavfilter, and
 libswresample, plus `pkg-config` and Clang/libclang for the bindings build. Remedia does not require
 system libopus headers or libraries.
-Native target status is tracked separately from the workflow definition; adding a matrix entry does
-not by itself establish runtime support:
+The CI workflow lists all 13 requested Rust targets. Only the five targets below are required for
+release builds and runtime tests; experimental jobs cannot publish packages or block those tests.
 
-| Target                                           | Status                                                                                                                  |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| Linux x86_64 GNU                                 | Native build and runtime tests configured; bundled-Opus CI fixes await a hosted rerun.                                  |
-| Linux ARM64 GNU                                  | Native build and runtime tests configured; bundled-Opus CI fixes await a hosted rerun.                                  |
-| macOS x86_64                                     | Native build and runtime tests configured; bundled-Opus and LLVM 19 bindgen fixes await a hosted rerun.                 |
-| macOS ARM64                                      | Native build and runtime tests configured; bundled-Opus and LLVM 19 bindgen fixes await a hosted rerun.                 |
-| Windows x86_64 MSVC                              | Native build and runtime tests configured; bundled-Opus fixes await a hosted rerun.                                     |
-| Windows ARM64 MSVC                               | Unsupported for now: the pinned FFmpeg 7 package set does not provide the required Windows ARM64 development libraries. |
-| musl, Android, WASI, FreeBSD, and 32-bit targets | Unsupported and not tested.                                                                                             |
+| Target                  | CI level     | Native verification                                                                            |
+| ----------------------- | ------------ | ---------------------------------------------------------------------------------------------- |
+| Linux x86_64 GNU        | Required     | Native FFmpeg 7 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
+| Linux ARM64 GNU         | Required     | Native FFmpeg 7 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
+| macOS x86_64            | Required     | Native FFmpeg 7 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
+| macOS ARM64             | Required     | Native FFmpeg 7 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
+| Windows x86_64 MSVC     | Required     | Native FFmpeg 7 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
+| Linux x86_64 musl       | Experimental | cargo-zigbuild is configured; target-compatible FFmpeg 7 libraries are missing                 |
+| Linux ARM64 musl        | Experimental | cargo-zigbuild is configured; target-compatible FFmpeg 7 libraries are missing                 |
+| Linux ARMv7 GNU         | Experimental | Cross toolchain and QEMU are configured; the FFmpeg 7 recipe has no ARMv7 sysroot              |
+| Windows x86 MSVC        | Experimental | Target build is attempted; the FFmpeg 7 recipe contains x64 libraries only                     |
+| Windows ARM64 MSVC      | Experimental | Native ARM runner is configured; matching FFmpeg 7 import libraries and DLLs are missing       |
+| Android ARM64 and ARMv7 | Experimental | NDK 27.2 with API 24 linkers is configured; target-built FFmpeg 7 libraries are missing        |
+| FreeBSD x86_64          | Experimental | FreeBSD 15 VM attempts FFmpeg 7 installation, native build, and runtime tests                  |
 
-The configured native CI matrix uses native runners and tests the same addon artifact with Node.js
-22.18, 24, and 26. Promote a target to fully tested support only after its native build and runtime
-jobs pass. No target is build-only in the current matrix.
+The experimental N-API and server artifacts are excluded from package publication. WASI is not in
+the workflow. Promote an experimental target only after its FFmpeg 7 dependency pipeline, runtime
+tests, and release packaging have been verified.
 
 Remedia targets the FFmpeg 7 ABI and dynamically links FFmpeg. Its Opus adapter builds libopus from
 the locked bundled source and statically links it into native binaries. FFmpeg executables are used
@@ -94,7 +99,7 @@ runtime DLL directory on `PATH` when running tests and applications. MinGW libra
 compatible with the MSVC target. Windows builds use MSVC's dynamic CRT to match the bundled Opus
 CMake configuration; if the runtime machine does not already have a compatible Microsoft Visual
 C++ v14 runtime, install the current Visual C++ Redistributable. Remedia does not bundle that
-runtime, and the private N-API package does not promise static CRT linkage.
+runtime, and the N-API package does not promise static CRT linkage.
 
 ## Set up the repository
 
@@ -167,8 +172,39 @@ Compiling `@remedia/node` from source requires the pinned Rust toolchain, target
 development libraries, and libclang. The bundled Opus source is built and statically linked by
 Cargo. Installing a prebuilt platform addon from a
 future published package would not need those build tools and does not install FFmpeg during package
-installation. The current repository package is private, and no FFmpeg or native compilation is
-attached to npm/pnpm install hooks.
+installation. The published N-API package does not bundle FFmpeg or compile native code during
+npm/pnpm installation. Consumers must install FFmpeg 7 shared runtime libraries for a supported
+target; see the [Node.js distribution guide](apps/docs/content/docs/node/distribution.mdx).
+
+## Automated releases
+
+Stable and prerelease releases are created by pushing a commit to main whose entire subject is
+'chore: release x.y.z' or 'chore: release x.y.z-tag.n'. Stable versions publish with npm's
+'latest' dist-tag. Prerelease versions use their lowercase identifier as the dist-tag, such as
+'canary' in '1.3.0-canary.5'. Ordinary pushes and pull requests never publish.
+
+The workflow overrides the @remedia/node and @remedia/client npm versions in each CI checkout
+before installing, building, or packing. It does not commit those overrides or alter Rust crate
+versions. @napi-rs/cli creates platform packages and synchronizes their versions; pnpm pack
+resolves the client's workspace:* peer dependency in the packed manifest. Only the five required
+native targets are packed and published. Exact package versions already on npm are skipped, and
+platform packages publish before @remedia/node, followed by @remedia/client.
+
+Before enabling releases, configure npm Trusted Publishing for each package the workflow publishes:
+
+- @remedia/node-linux-x64-gnu
+- @remedia/node-linux-arm64-gnu
+- @remedia/node-darwin-x64
+- @remedia/node-darwin-arm64
+- @remedia/node-win32-x64-msvc
+- @remedia/node
+- @remedia/client
+
+For every package, choose GitHub Actions with organization/user twlite, repository remedia, and
+workflow filename ci.yaml. Leave the environment unset and allow direct publishing. Do not add an
+NPM_TOKEN or other npm authentication secret. The workflow uses a GitHub-hosted Node 24 runner and
+npm 11.21.0; only its publish job receives id-token: write. See npm's
+[trusted publisher setup guide](https://docs.npmjs.com/trusted-publishers/).
 `cargo test -p remedia-core` runs deterministic file, in-memory, streaming, and local-HTTP decoder tests. The
 core tests cover decoder conversion, seeking, playback lifecycle, native FFmpeg filtergraph processing,
 master gain, Opus framing, backpressure, and stop cleanup. `remedia-discord` tests parsing, fail-closed DAVE behavior, RTP, transport encryption,

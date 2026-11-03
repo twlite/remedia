@@ -38,6 +38,24 @@ export interface PlaybackSnapshot {
   loopMode: LoopMode;
 }
 
+export interface PlaybackStateChange {
+  previousState: PlaybackState;
+  changed: boolean;
+  current: TrackSnapshot | null;
+}
+
+export interface SeekActionContext {
+  current: TrackSnapshot;
+  previousMediaPositionMs: number | null;
+  previousPositionEstimated: boolean;
+}
+
+export interface SkipActionContext {
+  skipped: TrackSnapshot;
+  next: TrackSnapshot | null;
+  queuedNext: TrackSnapshot | null;
+}
+
 interface Track extends TrackRequest {
   info?: AudioStreamInfo;
 }
@@ -116,44 +134,86 @@ export class DiscordPlaybackManager {
   }
 
   async pause(guildId: string, channelId: string): Promise<void> {
+    await this.pauseWithContext(guildId, channelId);
+  }
+
+  async pauseWithContext(guildId: string, channelId: string): Promise<PlaybackStateChange> {
     const player = this.#getPlayer(guildId, channelId);
-    await this.#serialize(player, async () => {
-      if (player.session.state === 'paused') return;
-      if (player.session.state !== 'playing')
-        throw new Error('There is no playing track to pause.');
+    return this.#serialize(player, async () => {
+      const previousState = player.session.state;
+      const current = player.current ? toTrackSnapshot(player.current) : null;
+      if (previousState === 'paused') return { previousState, changed: false, current };
+      if (previousState !== 'playing') throw new Error('There is no playing track to pause.');
       await player.session.pause();
+      return { previousState, changed: true, current };
     });
   }
 
   async resume(guildId: string, channelId: string): Promise<void> {
+    await this.resumeWithContext(guildId, channelId);
+  }
+
+  async resumeWithContext(guildId: string, channelId: string): Promise<PlaybackStateChange> {
     const player = this.#getPlayer(guildId, channelId);
-    await this.#serialize(player, async () => {
-      if (player.session.state === 'playing') return;
-      if (player.session.state !== 'paused') throw new Error('There is no paused track to resume.');
+    return this.#serialize(player, async () => {
+      const previousState = player.session.state;
+      const current = player.current ? toTrackSnapshot(player.current) : null;
+      if (previousState === 'playing') return { previousState, changed: false, current };
+      if (previousState !== 'paused') throw new Error('There is no paused track to resume.');
       await player.session.resume();
+      return { previousState, changed: true, current };
     });
   }
 
   async seek(guildId: string, channelId: string, positionMs: number): Promise<void> {
+    await this.seekWithContext(guildId, channelId, positionMs);
+  }
+
+  async seekWithContext(
+    guildId: string,
+    channelId: string,
+    positionMs: number,
+  ): Promise<SeekActionContext> {
     const player = this.#getPlayer(guildId, channelId);
-    await this.#serialize(player, async () => {
+    return this.#serialize(player, async () => {
       if (!player.current) throw new Error('There is no current track to seek.');
+      const position = player.session.position;
+      const context = {
+        current: toTrackSnapshot(player.current),
+        previousMediaPositionMs: position.mediaMs,
+        previousPositionEstimated:
+          position.playedMs === null || position.mediaPositionAccuracy === 'estimated',
+      };
       await player.session.seek(positionMs);
+      return context;
     });
   }
 
   async stop(guildId: string, channelId: string): Promise<void> {
+    await this.stopWithContext(guildId, channelId);
+  }
+
+  async stopWithContext(
+    guildId: string,
+    channelId: string,
+  ): Promise<{ current: TrackSnapshot | null }> {
     const player = this.#getPlayer(guildId, channelId);
-    await this.#serialize(player, async () => {
+    return this.#serialize(player, async () => {
+      const current = player.current ? toTrackSnapshot(player.current) : null;
       player.generation += 1;
       player.current = undefined;
       player.queue.length = 0;
       if (isActivePlayback(player.session.state)) await player.session.stop();
       player.lastError = undefined;
+      return { current };
     });
   }
 
   async skip(guildId: string, channelId: string): Promise<TrackSnapshot | null> {
+    return (await this.skipWithContext(guildId, channelId)).next;
+  }
+
+  async skipWithContext(guildId: string, channelId: string): Promise<SkipActionContext> {
     const player = this.#getPlayer(guildId, channelId);
     return this.#serialize(player, async () => {
       if (!player.current) throw new Error('There is no current track to skip.');
@@ -163,7 +223,11 @@ export class DiscordPlaybackManager {
       if (isActivePlayback(player.session.state)) await player.session.stop();
       if (player.loopMode === 'queue') player.queue.push(skipped);
       await this.#startNext(player, false);
-      return player.current ? toTrackSnapshot(player.current) : null;
+      return {
+        skipped: toTrackSnapshot(skipped),
+        next: player.current ? toTrackSnapshot(player.current) : null,
+        queuedNext: !player.current && player.queue[0] ? toTrackSnapshot(player.queue[0]) : null,
+      };
     });
   }
 
@@ -208,6 +272,14 @@ export class DiscordPlaybackManager {
     channelId: string,
     preset: FilterPresetName,
   ): Promise<'added' | 'removed'> {
+    return (await this.toggleFilterWithContext(guildId, channelId, preset)).change;
+  }
+
+  async toggleFilterWithContext(
+    guildId: string,
+    channelId: string,
+    preset: FilterPresetName,
+  ): Promise<{ change: 'added' | 'removed'; activePresets: readonly FilterPresetName[] }> {
     const player = this.#getPlayer(guildId, channelId);
     return this.#serialize(player, async () => {
       if (!Object.hasOwn(FILTER_PRESETS, preset)) {
@@ -219,31 +291,65 @@ export class DiscordPlaybackManager {
         ? player.filterPresets.filter((activePreset) => activePreset !== preset)
         : [...player.filterPresets, preset];
       await this.#applyFilterPresets(player, next);
-      return isActive ? 'removed' : 'added';
+      return {
+        change: isActive ? 'removed' : 'added',
+        activePresets: [...player.filterPresets],
+      };
     });
   }
 
   async clearFilters(guildId: string, channelId: string): Promise<void> {
+    await this.clearFiltersWithContext(guildId, channelId);
+  }
+
+  async clearFiltersWithContext(
+    guildId: string,
+    channelId: string,
+  ): Promise<readonly FilterPresetName[]> {
     const player = this.#getPlayer(guildId, channelId);
-    await this.#serialize(player, () => this.#clearFilterPresets(player));
+    return this.#serialize(player, async () => {
+      const previous = [...player.filterPresets];
+      await this.#clearFilterPresets(player);
+      return previous;
+    });
   }
 
   async setVolume(guildId: string, channelId: string, percent: number): Promise<void> {
+    await this.setVolumeWithContext(guildId, channelId, percent);
+  }
+
+  async setVolumeWithContext(
+    guildId: string,
+    channelId: string,
+    percent: number,
+  ): Promise<{ previousPercent: number }> {
     const player = this.#getPlayer(guildId, channelId);
     if (!Number.isInteger(percent) || percent < 0 || percent > 200) {
       throw new RangeError('Volume must be an integer from 0 to 200 percent.');
     }
-    await this.#serialize(player, async () => {
+    return this.#serialize(player, async () => {
+      const previousPercent = player.volumePercent;
       await player.session.setVolume(percent / 100);
       player.volumePercent = percent;
+      return { previousPercent };
     });
   }
 
   async setLoopMode(guildId: string, channelId: string, mode: LoopMode): Promise<void> {
+    await this.setLoopModeWithContext(guildId, channelId, mode);
+  }
+
+  async setLoopModeWithContext(
+    guildId: string,
+    channelId: string,
+    mode: LoopMode,
+  ): Promise<{ previousMode: LoopMode }> {
     if (!LOOP_MODES.includes(mode)) throw new RangeError(`Unknown loop mode: ${mode}`);
     const player = this.#getPlayer(guildId, channelId);
-    await this.#serialize(player, async () => {
+    return this.#serialize(player, async () => {
+      const previousMode = player.loopMode;
       player.loopMode = mode;
+      return { previousMode };
     });
   }
 
@@ -325,6 +431,7 @@ export class DiscordPlaybackManager {
   }
 
   async #startNext(player: GuildPlayer, announceStarted: boolean): Promise<void> {
+    if (player.session.connectionState !== 'connected') return;
     let firstFailure: Error | undefined;
     while (!player.current && player.queue.length > 0) {
       const track = player.queue.shift();
@@ -480,14 +587,28 @@ export class DiscordPlaybackManager {
         0xed4245,
       );
     };
+    const onVoiceStateChanged = (event: { state: string }): void => {
+      if (event.state !== 'connected') return;
+      void this.#serialize(player, async () => {
+        if (this.#closed || player.current || player.queue.length === 0) return;
+        await this.#startNext(player, true);
+      }).catch((error: unknown) => {
+        console.error(
+          'Could not resume the Remedia queue after voice recovery:',
+          asError(error).message,
+        );
+      });
+    };
 
     player.session.on(PlaybackSessionEvents.playbackStarted, onPlaybackStarted);
     player.session.on(PlaybackSessionEvents.playbackFailed, onPlaybackFailed);
+    player.session.on(VoiceSessionEvents.voiceStateChanged, onVoiceStateChanged);
     player.session.on(VoiceSessionEvents.voiceFailed, onVoiceFailed);
 
     player.lifecycleUnsubscribers.push(
       () => player.session.off(PlaybackSessionEvents.playbackStarted, onPlaybackStarted),
       () => player.session.off(PlaybackSessionEvents.playbackFailed, onPlaybackFailed),
+      () => player.session.off(VoiceSessionEvents.voiceStateChanged, onVoiceStateChanged),
       () => player.session.off(VoiceSessionEvents.voiceFailed, onVoiceFailed),
     );
   }
@@ -631,8 +752,11 @@ function safeLifecycleError(message: string): string {
 }
 
 function sanitizeLifecycleText(value: string, limit: number): string {
-  const clean = value
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+  const clean = Array.from(value, (character) => {
+    const code = character.charCodeAt(0);
+    return code < 0x20 || code === 0x7f ? ' ' : character;
+  })
+    .join('')
     .replace(/@(everyone|here)/gi, '@\u200b$1')
     .trim();
   return clean.length > limit ? `${clean.slice(0, limit - 1)}…` : clean;

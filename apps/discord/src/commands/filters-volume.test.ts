@@ -57,23 +57,26 @@ test('filter and volume slash commands read and change the guild playback settin
     response = await invoke(volumeCommand, undefined, undefined, undefined);
     assert.equal(response.description, 'Current volume: 100%.');
     response = await invoke(volumeCommand, undefined, undefined, 75);
-    assert.equal(response.description, 'Volume set to 75%.');
+    assert.equal(response.description, 'Volume changed from 100% to 75%.');
     assert.equal(session.volume, 0.75);
 
     response = await invoke(loopCommand, undefined, undefined, undefined, 'track');
     assert.equal(
       response.description,
-      'The current track will repeat until you change the mode or skip it.',
+      'Loop mode changed from off to track. The current track will repeat until you change the mode or skip it.',
     );
     response = await invoke(loopCommand, undefined, undefined, undefined, 'queue');
-    assert.equal(response.description, 'Completed and skipped tracks will move to the end of the queue.');
+    assert.equal(
+      response.description,
+      'Loop mode changed from track to queue. Completed and skipped tracks will move to the end of the queue.',
+    );
     response = await invoke(loopCommand, undefined, undefined, undefined, 'off');
-    assert.equal(response.description, 'Looping is off.');
+    assert.equal(response.description, 'Loop mode changed from queue to off. Looping is off.');
     assert.equal((await runtime.playback.snapshot('guild', 'channel')).loopMode, 'off');
 
     await invoke(filterCommand, 'set', 'nightcore');
     response = await invoke(filterCommand, 'clear');
-    assert.equal(response.description, 'All audio filters cleared.');
+    assert.equal(response.description, 'Cleared audio filters: nightcore.');
     assert.equal(session.filters.graph, null);
     assert.equal(session.volume, 0.75);
 
@@ -110,6 +113,10 @@ async function invoke(
       getInteger: () => percent ?? null,
     },
     deferReply: async () => {},
+    deleteReply: async () => {},
+    followUp: async ({ embeds }: { embeds: EmbedBuilder[] }) => {
+      response = embeds[0]?.toJSON();
+    },
     editReply: async ({ embeds }: { embeds: EmbedBuilder[] }) => {
       response = embeds[0]?.toJSON();
     },

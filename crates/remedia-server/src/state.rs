@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use rand::random;
 use remedia_core::{CancellationToken, PlaybackSession, PlaybackState};
-use remedia_discord::DiscordVoiceConnection;
+use remedia_discord::{DiscordOpusSenderRouter, DiscordVoiceConnection};
 use remedia_observability::{Observability, ObservabilityHandle};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
@@ -51,6 +51,12 @@ pub(crate) struct GuildSession {
     pub(crate) bot_user_id: u64,
     pub(crate) playback: Arc<PlaybackSession>,
     pub(crate) voice: Mutex<Option<DiscordVoiceConnection>>,
+    pub(crate) voice_sender_router: DiscordOpusSenderRouter,
+    pub(crate) voice_generation: AtomicU64,
+    pub(crate) voice_request_generation: AtomicU64,
+    pub(crate) voice_connected_generation: AtomicU64,
+    pub(crate) voice_terminal_generation: AtomicU64,
+    pub(crate) voice_reconnecting: AtomicBool,
     pub(crate) play_cancellation: Mutex<Option<CancellationToken>>,
     pub(crate) playback_operations: Arc<tokio::sync::Mutex<()>>,
     pub(crate) voice_operations: Arc<tokio::sync::Mutex<()>>,
@@ -314,6 +320,12 @@ impl ServerInner {
                 self.observability.clone(),
             )),
             voice: Mutex::new(None),
+            voice_sender_router: DiscordOpusSenderRouter::new(),
+            voice_generation: AtomicU64::new(0),
+            voice_request_generation: AtomicU64::new(0),
+            voice_connected_generation: AtomicU64::new(0),
+            voice_terminal_generation: AtomicU64::new(0),
+            voice_reconnecting: AtomicBool::new(false),
             play_cancellation: Mutex::new(None),
             playback_operations: Arc::new(tokio::sync::Mutex::new(())),
             voice_operations: Arc::new(tokio::sync::Mutex::new(())),
@@ -364,6 +376,9 @@ impl ServerInner {
         })
         .await;
         let connection = { lock(&guild.voice).take() };
+        guild.voice_generation.fetch_add(1, Ordering::AcqRel);
+        guild.voice_reconnecting.store(false, Ordering::Release);
+        guild.voice_sender_router.fail("guild session was closed");
         let voice_result = if let Some(connection) = connection {
             connection.disconnect().await
         } else {
@@ -504,14 +519,18 @@ impl GuildSession {
 
     pub(crate) fn snapshot(&self) -> serde_json::Value {
         let voice = lock(&self.voice);
-        let voice_state = voice.as_ref().map(|voice| match voice.state() {
-            remedia_discord::ConnectionState::NegotiatingDave => "negotiating_dave",
-            remedia_discord::ConnectionState::Connected => "connected",
-            remedia_discord::ConnectionState::Reconnecting => "reconnecting",
-            remedia_discord::ConnectionState::Disconnecting => "disconnecting",
-            remedia_discord::ConnectionState::Disconnected => "disconnected",
-            remedia_discord::ConnectionState::Failed => "failed",
-        });
+        let voice_state = if self.voice_reconnecting.load(Ordering::Acquire) {
+            Some("reconnecting")
+        } else {
+            voice.as_ref().map(|voice| match voice.state() {
+                remedia_discord::ConnectionState::NegotiatingDave => "negotiating_dave",
+                remedia_discord::ConnectionState::Connected => "connected",
+                remedia_discord::ConnectionState::Reconnecting => "reconnecting",
+                remedia_discord::ConnectionState::Disconnecting => "disconnecting",
+                remedia_discord::ConnectionState::Disconnected => "disconnected",
+                remedia_discord::ConnectionState::Failed => "failed",
+            })
+        };
         serde_json::json!({
             "guildSessionId": self.id,
             "guildId": self.guild_id,

@@ -18,21 +18,19 @@ export default {
     ],
   },
   async execute(interaction) {
-    await withCommandReply(
-      interaction,
-      async () => {
-        const { guildId, channelId } = getVoiceCommandContext(interaction);
-        const manager = VoiceRuntime.current.playback;
-        const percent = interaction.options.getInteger('percent');
-        if (percent === null) {
-          const snapshot = await manager.snapshot(guildId, channelId);
-          return `Current volume: ${snapshot.volumePercent}%.`;
-        }
-        await manager.setVolume(guildId, channelId, percent);
-        return percent > 100
-          ? `Volume set to ${percent}%. Values above 100% may clip.`
-          : `Volume set to ${percent}%.`;
-      },
-    );
+    await withCommandReply(interaction, async () => {
+      const { guildId, channelId } = getVoiceCommandContext(interaction);
+      const manager = VoiceRuntime.current.playback;
+      const percent = interaction.options.getInteger('percent');
+      if (percent === null) {
+        const snapshot = await manager.snapshot(guildId, channelId);
+        return `Current volume: ${snapshot.volumePercent}%.`;
+      }
+      const { previousPercent } = await manager.setVolumeWithContext(guildId, channelId, percent);
+      if (previousPercent === percent) return `Volume remains at ${percent}%.`;
+      return percent > 100
+        ? `Volume changed from ${previousPercent}% to ${percent}%. Values above 100% may clip.`
+        : `Volume changed from ${previousPercent}% to ${percent}%.`;
+    });
   },
 } satisfies Command;

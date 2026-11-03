@@ -27,29 +27,27 @@ export default {
     ],
   },
   async execute(interaction) {
-    await withCommandReply(
-      interaction,
-      async () => {
-        const { guildId, channelId } = getVoiceCommandContext(interaction);
-        const manager = VoiceRuntime.current.playback;
-        const action = interaction.options.getSubcommand();
-        if (action === 'set') {
-          const preset = interaction.options.getString('preset', true) as FilterPresetName;
-          const result = await manager.toggleFilter(guildId, channelId, preset);
-          const snapshot = await manager.snapshot(guildId, channelId);
-          const active = snapshot.filterPresets.join(', ') || 'none';
-          const status = result === 'added' ? 'Added' : 'Removed';
-          return `${status} the ${preset} filter. Active filters: ${active}.`;
-        }
-        if (action === 'clear') {
-          await manager.clearFilters(guildId, channelId);
-          return 'All audio filters cleared.';
-        }
+    await withCommandReply(interaction, async () => {
+      const { guildId, channelId } = getVoiceCommandContext(interaction);
+      const manager = VoiceRuntime.current.playback;
+      const action = interaction.options.getSubcommand();
+      if (action === 'set') {
+        const preset = interaction.options.getString('preset', true) as FilterPresetName;
+        const result = await manager.toggleFilterWithContext(guildId, channelId, preset);
+        const active = result.activePresets.join(', ') || 'none';
+        const status = result.change === 'added' ? 'Added' : 'Removed';
+        return `${status} the ${preset} filter. Active filters: ${active}.`;
+      }
+      if (action === 'clear') {
+        const previous = await manager.clearFiltersWithContext(guildId, channelId);
+        return previous.length > 0
+          ? `Cleared audio filters: ${previous.join(', ')}.`
+          : 'Audio filters were already off.';
+      }
 
-        const snapshot = await manager.snapshot(guildId, channelId);
-        const selected = snapshot.filterPresets.join(', ') || 'none';
-        return `Available filters: ${FILTER_PRESET_NAMES.join(', ')}. Current: ${selected}.`;
-      },
-    );
+      const snapshot = await manager.snapshot(guildId, channelId);
+      const selected = snapshot.filterPresets.join(', ') || 'none';
+      return `Available filters: ${FILTER_PRESET_NAMES.join(', ')}. Current: ${selected}.`;
+    });
   },
 } satisfies Command;

@@ -25,6 +25,7 @@ impl NativeRemedia {
         let entry = PlaybackEntry::new(
             PlaybackSession::with_observability(self.inner.observability_handle.clone()),
             None,
+            None,
         );
         lock(&self.inner.playbacks).insert(id.clone(), entry);
         Ok(id)
@@ -71,10 +72,16 @@ impl NativeRemedia {
         };
 
         let cancellation = entry.begin_start()?;
+        let sender_router = entry.sender_router.clone();
         let result = run_blocking(move || match connection {
-            Some(connection) => {
+            Some(_) => {
+                let Some(sender_router) = sender_router else {
+                    return Err(PlaybackError::from(remedia_core::OutputError::new(
+                        "Discord voice sender is unavailable",
+                    )));
+                };
                 let output =
-                    OpusEncoderOutput::new_with_observability(connection.opus_sender(), handle)
+                    OpusEncoderOutput::new_with_observability(sender_router.sink(), handle)
                         .map_err(PlaybackError::from)?;
                 session.play_with_cancellation(input, output, cancellation)
             }

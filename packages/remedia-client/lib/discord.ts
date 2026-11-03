@@ -39,7 +39,11 @@ interface ConnectAttempt {
   starting: boolean;
   voiceState: { sessionId: string } | undefined;
   voiceServer: { token: string; endpoint: string } | undefined;
+  credentialRevision: number;
+  transportGeneration: number | undefined;
+  voiceSuspension: Promise<void> | undefined;
   internal: boolean;
+  retryCount: number;
 }
 
 export interface DiscordSessionRuntime {
@@ -95,8 +99,11 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   #volume = 1;
   #voiceSessionId: string | undefined;
   #voiceServer: { token: string; endpoint: string } | undefined;
+  #gatewayEpoch: number | undefined;
+  #lastGatewaySequence: number | undefined;
   #configurationWork: Promise<void> = Promise.resolve();
   #connectionGeneration = 0;
+  #transportGeneration = 0;
   #playbackGeneration = 0;
   #playPromise: Promise<AudioStreamInfo> | undefined;
   #sessionLossReason: string | undefined;
@@ -129,7 +136,8 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     if (
       this.#connectionState === 'connecting' ||
       this.#connectionState === 'negotiating_dave' ||
-      this.#connectionState === 'disconnecting'
+      this.#connectionState === 'disconnecting' ||
+      this.#connectionState === 'failed'
     )
       return this.#connectionState;
     return this.#backend?.connectionState ?? this.#connectionState;
@@ -275,29 +283,29 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   }
 
   pause(): Promise<void> {
-    return this.#requireBackend().pause();
+    return this.#requireExistingBackend().pause();
   }
   resume(): Promise<void> {
-    return this.#requireBackend().resume();
+    return this.#requireExistingBackend().resume();
   }
   seek(positionMs: number): Promise<void> {
     if (!Number.isFinite(positionMs) || positionMs < 0)
       return Promise.reject(new RangeError('positionMs must be non-negative'));
-    return this.#requireBackend().seek(positionMs);
+    return this.#requireExistingBackend().seek(positionMs);
   }
   stop(): Promise<void> {
     return this.#stopPlayback();
   }
 
   async #stopPlayback(): Promise<void> {
-    await this.#requireBackend().stop();
+    await this.#requireExistingBackend().stop();
     this.#clearPlayAbortBinding();
   }
 
   async wait(): Promise<PlaybackState> {
     this.#assertOpen();
     if (this.#playPromise) await this.#playPromise;
-    const completion = await this.#requireBackend().wait();
+    const completion = await this.#requireExistingBackend().wait();
     if (completion.generation !== this.#playbackGeneration) return 'stopped';
     return completion.state;
   }
@@ -368,9 +376,27 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   }
 
   /** @internal */
-  receiveGatewayDispatch(event: string, data: Record<string, unknown>, sequence?: number): void {
+  receiveGatewayDispatch(
+    event: string,
+    data: Record<string, unknown>,
+    sequence?: number,
+    epoch?: number,
+  ): void {
     if (this.#disposed || this.#backend?.nodeType !== 'remote' || data.guild_id !== this.guildId)
       return;
+    if (epoch !== undefined && epoch !== this.#gatewayEpoch) {
+      this.#gatewayEpoch = epoch;
+      this.#lastGatewaySequence = undefined;
+      if (this.#attempt) this.#attempt.sequenceFloor = undefined;
+    }
+    if (
+      sequence !== undefined &&
+      this.#lastGatewaySequence !== undefined &&
+      sequence <= this.#lastGatewaySequence
+    ) {
+      return;
+    }
+    if (sequence !== undefined) this.#lastGatewaySequence = sequence;
     const attempt = this.#attempt;
     if (
       attempt &&
@@ -463,6 +489,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       this.#attempt ??
       (refresh ? this.#newAttempt(DEFAULT_CONNECT_TIMEOUT_MS, undefined, true) : undefined);
     if (!attempt) return;
+    if (attempt.voiceState?.sessionId === data.session_id) return;
     if (refresh) {
       this.#attempt = attempt;
       attempt.voiceServer = undefined;
@@ -472,9 +499,15 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
           if (this.#attempt === attempt) attempt.requestSent = true;
           this.#tryStartRemoteConnection(attempt);
         })
-        .catch((error: unknown) => this.#failAttempt(attempt, asError(error), true));
+        .catch((error: unknown) => {
+          if (!this.#retryGatewayCredentials(attempt, asError(error))) {
+            this.#failAttempt(attempt, asError(error), true);
+          }
+        });
     }
     attempt.voiceState = { sessionId: data.session_id };
+    attempt.credentialRevision += 1;
+    this.#suspendRemoteVoice(attempt);
     this.#tryStartRemoteConnection(attempt);
   }
 
@@ -482,12 +515,20 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     if (!this.#joinRequested) return;
     if (data.endpoint === null) {
       const attempt = this.#attempt;
-      if (attempt)
+      if (attempt?.internal) {
+        this.#retryGatewayCredentials(attempt, new Error('Discord voice endpoint is rotating'));
+      } else if (attempt) {
         this.#failAttempt(
           attempt,
           new Error('Discord did not provide a voice server endpoint'),
           true,
         );
+      } else if (this.#connectionState === 'connected') {
+        const refresh = this.#newAttempt(DEFAULT_CONNECT_TIMEOUT_MS, undefined, true);
+        this.#attempt = refresh;
+        this.#setConnectionState('reconnecting');
+        this.#retryGatewayCredentials(refresh, new Error('Discord voice endpoint is rotating'));
+      }
       return;
     }
     if (
@@ -497,6 +538,8 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       !data.endpoint
     )
       return;
+    const pendingServer = this.#attempt?.voiceServer;
+    if (pendingServer?.token === data.token && pendingServer.endpoint === data.endpoint) return;
     if (
       !this.#attempt &&
       this.#connectionState === 'connected' &&
@@ -509,6 +552,8 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       this.#attempt ??
       (refresh ? this.#newAttempt(DEFAULT_CONNECT_TIMEOUT_MS, undefined, true) : undefined);
     if (!attempt) return;
+    if (attempt.voiceServer?.token === data.token && attempt.voiceServer.endpoint === data.endpoint)
+      return;
     if (refresh) {
       this.#attempt = attempt;
       attempt.voiceState = undefined;
@@ -518,9 +563,15 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
           if (this.#attempt === attempt) attempt.requestSent = true;
           this.#tryStartRemoteConnection(attempt);
         })
-        .catch((error: unknown) => this.#failAttempt(attempt, asError(error), true));
+        .catch((error: unknown) => {
+          if (!this.#retryGatewayCredentials(attempt, asError(error))) {
+            this.#failAttempt(attempt, asError(error), true);
+          }
+        });
     }
     attempt.voiceServer = { token: data.token, endpoint: data.endpoint };
+    attempt.credentialRevision += 1;
+    this.#suspendRemoteVoice(attempt);
     this.#tryStartRemoteConnection(attempt);
   }
 
@@ -535,26 +586,84 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       return;
     attempt.starting = true;
     void (async () => {
-      const credentials = {
-        sessionId: attempt.voiceState!.sessionId,
-        token: attempt.voiceServer!.token,
-        endpoint: attempt.voiceServer!.endpoint,
-      };
       const backend = await this.#ensureBackend();
-      if (attempt.internal) await backend.disconnect();
-      await backend.connectWithCredentials?.(credentials);
-      if (!this.#isCurrent(attempt)) {
-        await backend.disconnect();
-        return;
+      let installed: { sessionId: string; token: string; endpoint: string } | undefined;
+      while (this.#isCurrent(attempt)) {
+        const state = attempt.voiceState;
+        const server = attempt.voiceServer;
+        if (!state || !server || !attempt.requestSent) return;
+        const transportGeneration =
+          attempt.transportGeneration ?? this.#nextTransportGeneration(attempt);
+        const credentials = {
+          sessionId: state.sessionId,
+          token: server.token,
+          endpoint: server.endpoint,
+        };
+        const credentialRevision = attempt.credentialRevision;
+        try {
+          await attempt.voiceSuspension;
+          if (credentialRevision !== attempt.credentialRevision) continue;
+          await backend.connectWithCredentials?.(credentials, transportGeneration);
+        } catch (error) {
+          if (!this.#isCurrent(attempt)) return;
+          if (credentialRevision !== attempt.credentialRevision) continue;
+          throw error;
+        }
+        if (!this.#isCurrent(attempt)) {
+          // The backend fences this request with transportGeneration. A stale RPC
+          // must not issue a broad disconnect that could stop a newer transport
+          // or the playback session it carries.
+          return;
+        }
+        if (credentialRevision !== attempt.credentialRevision) continue;
+        installed = credentials;
+        if (
+          attempt.voiceState?.sessionId === credentials.sessionId &&
+          attempt.voiceServer?.token === credentials.token &&
+          attempt.voiceServer?.endpoint === credentials.endpoint
+        ) {
+          break;
+        }
       }
+      if (!this.#isCurrent(attempt) || !installed) return;
       this.#joinRequested = true;
-      this.#voiceSessionId = credentials.sessionId;
-      this.#voiceServer = { token: credentials.token, endpoint: credentials.endpoint };
+      this.#voiceSessionId = installed.sessionId;
+      this.#voiceServer = { token: installed.token, endpoint: installed.endpoint };
       this.#connectionError = null;
       this.#setConnectionState('connected');
       this.#finishAttempt(attempt);
       attempt.resolve();
-    })().catch((error: unknown) => this.#failAttempt(attempt, asError(error), true));
+    })()
+      .catch((error: unknown) => {
+        attempt.starting = false;
+        if (!this.#retryGatewayCredentials(attempt, asError(error))) {
+          this.#failAttempt(attempt, asError(error), true);
+        }
+      })
+      .finally(() => {
+        if (this.#attempt === attempt && !attempt.settled) {
+          attempt.starting = false;
+          this.#tryStartRemoteConnection(attempt);
+        }
+      });
+  }
+
+  #suspendRemoteVoice(attempt: ConnectAttempt): void {
+    const transportGeneration = this.#nextTransportGeneration(attempt);
+    const backend = this.#backend;
+    if (backend?.nodeType !== 'remote' || !backend.suspendVoiceRecovery) return;
+    const suspension = backend.suspendVoiceRecovery(transportGeneration);
+    attempt.voiceSuspension = suspension;
+    void suspension.catch(() => undefined);
+  }
+
+  #nextTransportGeneration(attempt?: ConnectAttempt): number {
+    if (this.#transportGeneration >= Number.MAX_SAFE_INTEGER - 1) {
+      throw new RangeError('Discord voice transport generation has been exhausted');
+    }
+    this.#transportGeneration += 1;
+    if (attempt) attempt.transportGeneration = this.#transportGeneration;
+    return this.#transportGeneration;
   }
 
   #newAttempt(
@@ -594,7 +703,11 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       starting: false,
       voiceState: undefined,
       voiceServer: undefined,
+      credentialRevision: 0,
+      transportGeneration: undefined,
+      voiceSuspension: undefined,
       internal,
+      retryCount: 0,
     } satisfies ConnectAttempt);
     if (internal) void attempt.promise.catch(() => undefined);
     this.#connectionGeneration += 1;
@@ -616,6 +729,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     );
     this.#joinRequested = false;
     this.#setConnectionState('disconnecting');
+    const transportGeneration = this.#nextTransportGeneration();
     if (attempt) {
       this.#finishAttempt(attempt);
       attempt.reject(abortError('Discord voice connection was cancelled by disconnect()'));
@@ -629,7 +743,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       }
     }
     try {
-      await this.#backend?.disconnect();
+      await this.#backend?.disconnect(transportGeneration);
     } catch (error) {
       errors.push(asError(error));
     }
@@ -658,7 +772,8 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       attempt.reject(new Error('Discord Gateway reported that the bot left the voice channel'));
     }
     this.#setConnectionState('disconnected');
-    void this.#backend?.disconnect().catch((error: unknown) => {
+    const transportGeneration = this.#nextTransportGeneration();
+    void this.#backend?.disconnect(transportGeneration).catch((error: unknown) => {
       this.#connectionError = asError(error).message;
       this.#setConnectionState('failed');
       this.#emitVoiceFailure(asError(error));
@@ -671,6 +786,10 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     this.#connectionError = error.name === 'AbortError' ? null : error.message;
     this.#setConnectionState(error.name === 'AbortError' ? 'disconnected' : 'failed');
     if (error.name !== 'AbortError') this.#emitVoiceFailure(error);
+    if (attempt.internal && error.name !== 'AbortError') {
+      const transportGeneration = this.#nextTransportGeneration();
+      void this.#backend?.failVoiceRecovery?.(transportGeneration).catch(() => undefined);
+    }
     const shouldLeave = leaveGateway && this.#joinRequested;
     this.#joinRequested = false;
     attempt.reject(error);
@@ -678,6 +797,35 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       void Promise.resolve(this.#runtime.sendVoicePayload(this.guildId, null)).catch(
         () => undefined,
       );
+  }
+
+  #retryGatewayCredentials(attempt: ConnectAttempt, _error: Error): boolean {
+    if (
+      !attempt.internal ||
+      !this.#isCurrent(attempt) ||
+      attempt.retryCount >= 2 ||
+      this.#disposed
+    ) {
+      return false;
+    }
+    attempt.retryCount += 1;
+    attempt.requestSent = false;
+    attempt.sequenceFloor = this.#runtime.gatewaySequence();
+    attempt.voiceState = undefined;
+    attempt.voiceServer = undefined;
+    attempt.credentialRevision += 1;
+    this.#suspendRemoteVoice(attempt);
+    this.#setConnectionState('reconnecting');
+    void Promise.resolve(this.#runtime.sendVoicePayload(this.guildId, this.channelId))
+      .then(() => {
+        if (!this.#isCurrent(attempt)) return;
+        attempt.requestSent = true;
+        this.#tryStartRemoteConnection(attempt);
+      })
+      .catch((error: unknown) => {
+        this.#failAttempt(attempt, asError(error), true);
+      });
+    return true;
   }
 
   #finishAttempt(attempt: ConnectAttempt): void {
@@ -741,10 +889,9 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     return result;
   }
 
-  #requireBackend(): GuildBackend {
+  #requireExistingBackend(): GuildBackend {
     this.#assertOpen();
-    if (this.#connectionState !== 'connected' || !this.#backend)
-      throw new Error('Discord voice session is not connected');
+    if (!this.#backend) throw new Error('Discord voice session has no playback backend');
     return this.#backend;
   }
 

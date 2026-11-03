@@ -24,7 +24,12 @@ interface PlaybackResource {
 
 interface DiscordSessionResource {
   readonly guildId: string;
-  receiveGatewayDispatch(event: string, data: Record<string, unknown>, sequence?: number): void;
+  receiveGatewayDispatch(
+    event: string,
+    data: Record<string, unknown>,
+    sequence?: number,
+    epoch?: number,
+  ): void;
   dispose(): Promise<void>;
 }
 
@@ -103,7 +108,7 @@ export class Remedia extends RemediaEventEmitter<RemediaLifecycleEvents> {
     if (!dispatch) return;
     this.#discordSessions
       .get(dispatch.guildId)
-      ?.receiveGatewayDispatch(dispatch.event, dispatch.data, dispatch.sequence);
+      ?.receiveGatewayDispatch(dispatch.event, dispatch.data, dispatch.sequence, dispatch.epoch);
   }
 
   /** Stop all playbacks, disconnect transports, flush telemetry, and release native resources. */

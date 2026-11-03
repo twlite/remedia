@@ -19,7 +19,7 @@ test('timecodes use mm:ss and hh:mm:ss and progress never exceeds duration', () 
   assert.equal(formatTimecode(84_000), '01:24');
   assert.equal(formatTimecode(3_723_000), '01:02:03');
   assert.equal(formatTimecode(Number.NaN), 'unknown');
-  assert.equal(formatProgressLine(999_000, 200_000), '03:20 ┃ ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬● ┃ 03:20');
+  assert.equal(formatProgressLine(999_000, 200_000), `03:20 ┃ ${'▬'.repeat(17)}● ┃ 03:20`);
   assert.equal(formatProgressLine(84_000, null, { estimated: true }), '~01:24 ┃ Duration unknown');
 });
 
@@ -64,7 +64,9 @@ test('now-playing shows every active filter in selection order', () => {
 
 test('unknown and zero durations do not show a fabricated progress bar', () => {
   for (const durationMs of [null, 0, Number.NaN]) {
-    const embed = createNowPlayingEmbed(makeSnapshot({ durationMs }));
+    const snapshot = makeSnapshot({ durationMs });
+    if (snapshot.current?.info) snapshot.current.info.durationMs = null;
+    const embed = createNowPlayingEmbed(snapshot);
     assert.equal(embed.data.description, '`~00:48 ┃ Duration unknown`');
   }
 });

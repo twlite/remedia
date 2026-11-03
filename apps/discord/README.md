@@ -10,17 +10,20 @@ Playback replies prefer the title returned in Remedia's media metadata and
 fall back to a URL with credentials and query parameters removed. Queue entries
 show URLs until Remedia opens them and returns metadata.
 Slash command responses use consistent Remedia embeds, with colored error
-embeds when a command fails. `/nowplaying` shows a proportional progress bar
-against the original media duration and marks estimated positions with `~`.
-The bot also subscribes to the typed Remedia session events and posts lifecycle
-embeds for track start/completion/failure, playback controls, filter and volume
-changes, and voice connection changes. The text channel from the command that
+embeds when a command fails. Successful responses are public and identify the
+invoking user; errors remain ephemeral. `/nowplaying` shows elapsed time, a
+proportional progress indicator, and original media duration, marking estimated
+source positions with `~`. Unknown or live duration does not show a fabricated
+progress bar. The bot subscribes to typed Remedia lifecycle events and posts
+autonomous notifications for queued track starts, genuine playback failures,
+and terminal voice failures. Command-confirmed controls, filters, volume, stop,
+skip, and disconnect do not produce a second lifecycle embed. The text channel
+from the command that
 creates a guild's queue is retained in that queue's in-memory metadata and is
 used for those notifications across queued tracks. Later `/play` requests do
 not silently move the queue to another text channel. Disconnecting disposes
-the queue metadata. Successful control-command acknowledgements are ephemeral
-so they do not duplicate public lifecycle messages; `/queue` remains a normal
-public snapshot.
+the queue metadata. Automatic start notifications identify the track requester
+and are labeled automatic; `/queue` remains a public snapshot.
 
 Create `.env` with `DISCORD_TOKEN` and `APPLICATION_ID`, then choose a backend.
 Embedded mode is the default and calls the native Node addon directly. Build it

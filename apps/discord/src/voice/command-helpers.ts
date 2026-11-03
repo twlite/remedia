@@ -69,29 +69,50 @@ export async function withCommandReply(
   // deferred reply's visibility, so successful actions delete the private defer and post a public
   // follow-up instead.
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  let response: CommandResponse;
   try {
-    const response = await action();
-    const embed = response instanceof EmbedBuilder ? response : createCommandEmbed(interaction, response);
-    if (!embed.data.fields?.some(({ name }) => name === 'Action by')) {
-      embed.addFields({ name: 'Action by', value: `<@${interaction.user.id}>`, inline: true });
+    response = await action();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const reply = {
+      embeds: [createErrorEmbed(interaction, message)],
+      allowedMentions: { parse: [] as const },
+    };
+    try {
+      await interaction.editReply(reply);
+    } catch {
+      await interaction.followUp({ ...reply, ephemeral: true }).catch(() => undefined);
     }
-    await interaction.deleteReply();
+    return;
+  }
+
+  const embed =
+    response instanceof EmbedBuilder ? response : createCommandEmbed(interaction, response);
+  if (!embed.data.fields?.some(({ name }) => name === 'Action by')) {
+    embed.addFields({ name: 'Action by', value: `<@${interaction.user.id}>`, inline: true });
+  }
+  try {
     await interaction.followUp({
       embeds: [embed],
       ephemeral: false,
       allowedMentions: { parse: [] },
     });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+  } catch {
     const reply = {
-      embeds: [createErrorEmbed(interaction, message)],
-      allowedMentions: { parse: [] as string[] },
+      embeds: [createDeliveryFailureEmbed(interaction)],
+      allowedMentions: { parse: [] as const },
     };
     try {
       await interaction.editReply(reply);
     } catch {
-      await interaction.followUp({ ...reply, ephemeral: true });
+      await interaction.followUp({ ...reply, ephemeral: true }).catch(() => undefined);
     }
+    return;
+  }
+  try {
+    await interaction.deleteReply();
+  } catch {
+    // The public confirmation succeeded; leave Discord's defer alone if it cannot be removed.
   }
 }
 
@@ -118,6 +139,20 @@ export function createErrorEmbed(
     .setAuthor({ name: 'Remedia' })
     .setTitle('Command failed')
     .setDescription(safeText(message, 3_800))
+    .addFields({ name: 'Action by', value: `<@${interaction.user.id}>`, inline: true })
+    .setFooter({ text: `/${interaction.commandName}` })
+    .setTimestamp();
+}
+
+function createDeliveryFailureEmbed(interaction: ChatInputCommandInteraction): EmbedBuilder {
+  return new EmbedBuilder()
+    .setColor(REMEDIA_RED)
+    .setAuthor({ name: 'Remedia' })
+    .setTitle('Confirmation could not be sent')
+    .setDescription(
+      'The command completed, but Discord did not accept its public confirmation. Check the current playback state before retrying.',
+    )
+    .addFields({ name: 'Action by', value: `<@${interaction.user.id}>`, inline: true })
     .setFooter({ text: `/${interaction.commandName}` })
     .setTimestamp();
 }
@@ -165,8 +200,7 @@ export function formatDuration(milliseconds: number | null): string {
 }
 
 export function safeText(value: string, maximumLength: number): string {
-  const sanitized = value
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+  const sanitized = stripControlCharacters(value)
     .replace(/@(everyone|here)/gi, '@\u200b$1')
     .replace(/\b(token|password|secret|authorization)(\s*[:=]\s*)[^\s,;&]+/gi, '$1$2[redacted]')
     .replace(/(https?:\/\/)[^\s]+/gi, (candidate) => {
@@ -181,4 +215,11 @@ export function safeText(value: string, maximumLength: number): string {
   return sanitized.length > maximumLength
     ? `${sanitized.slice(0, Math.max(0, maximumLength - 1))}…`
     : sanitized || 'No details were provided.';
+}
+
+function stripControlCharacters(value: string): string {
+  return Array.from(value, (character) => {
+    const code = character.charCodeAt(0);
+    return code < 0x20 || code === 0x7f ? ' ' : character;
+  }).join('');
 }

@@ -11,6 +11,7 @@ mod dave;
 mod error;
 mod protocol;
 mod rtp;
+mod sender_router;
 
 use remedia_observability::ObservabilityHandle;
 
@@ -25,3 +26,4 @@ pub use connection::{
     ConnectionState, DiscordOpusSender, DiscordVoiceConnection, VoiceConnectionInfo,
 };
 pub use error::VoiceError;
+pub use sender_router::{DiscordOpusSenderRouter, RoutedOpusSender};

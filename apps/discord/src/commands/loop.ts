@@ -27,14 +27,18 @@ export default {
     ],
   },
   async execute(interaction) {
-    await withCommandReply(
-      interaction,
-      async () => {
-        const { guildId, channelId } = getVoiceCommandContext(interaction);
-        const mode = interaction.options.getString('mode', true) as LoopMode;
-        await VoiceRuntime.current.playback.setLoopMode(guildId, channelId, mode);
-        return LOOP_DESCRIPTIONS[mode];
-      },
-    );
+    await withCommandReply(interaction, async () => {
+      const { guildId, channelId } = getVoiceCommandContext(interaction);
+      const mode = interaction.options.getString('mode', true) as LoopMode;
+      const result = await VoiceRuntime.current.playback.setLoopModeWithContext(
+        guildId,
+        channelId,
+        mode,
+      );
+      const previous = result.previousMode;
+      return previous === mode
+        ? `Loop mode remains ${mode}. ${LOOP_DESCRIPTIONS[mode]}`
+        : `Loop mode changed from ${previous} to ${mode}. ${LOOP_DESCRIPTIONS[mode]}`;
+    });
   },
 } satisfies Command;

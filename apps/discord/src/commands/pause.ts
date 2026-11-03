@@ -9,15 +9,18 @@ import {
 export default {
   data: { name: 'pause', description: 'Pause the current track.' },
   async execute(interaction) {
-    await withCommandReply(
-      interaction,
-      async () => {
-        const { guildId, channelId } = getVoiceCommandContext(interaction);
-        const playback = VoiceRuntime.current.playback;
-        const snapshot = await playback.snapshot(guildId, channelId);
-        await playback.pause(guildId, channelId);
-        return snapshot.current ? `Paused ${displayTrack(snapshot.current)}.` : 'Playback paused.';
-      },
-    );
+    await withCommandReply(interaction, async () => {
+      const { guildId, channelId } = getVoiceCommandContext(interaction);
+      const playback = VoiceRuntime.current.playback;
+      const result = await playback.pauseWithContext(guildId, channelId);
+      const track = result.current ? ` Track: ${displayTrack(result.current)}.` : '';
+      return result.changed
+        ? `Playback changed from ${displayState(result.previousState)} to Paused.${track}`
+        : `Playback is already paused.${track}`;
+    });
   },
 } satisfies Command;
+
+function displayState(state: string): string {
+  return state.charAt(0).toUpperCase() + state.slice(1);
+}

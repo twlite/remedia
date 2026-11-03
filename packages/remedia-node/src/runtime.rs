@@ -2,7 +2,7 @@ use napi::bindgen_prelude::Status;
 use remedia_core::{
     ByteStreamWriter, CancellationToken, InputSource, PlaybackError, PlaybackSession,
 };
-use remedia_discord::DiscordVoiceConnection;
+use remedia_discord::{DiscordOpusSenderRouter, DiscordVoiceConnection};
 use remedia_observability::{DiagnosticReceiver, Observability, ObservabilityHandle};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -32,6 +32,7 @@ pub(crate) struct RuntimeInner {
 pub(crate) struct PlaybackEntry {
     pub(crate) session: Arc<PlaybackSession>,
     pub(crate) voice_id: Option<String>,
+    pub(crate) sender_router: Option<DiscordOpusSenderRouter>,
     pub(crate) lifecycle: Arc<Mutex<PlaybackLifecycle>>,
 }
 
@@ -43,10 +44,15 @@ pub(crate) struct PlaybackLifecycle {
 }
 
 impl PlaybackEntry {
-    pub(crate) fn new(session: PlaybackSession, voice_id: Option<String>) -> Self {
+    pub(crate) fn new(
+        session: PlaybackSession,
+        voice_id: Option<String>,
+        sender_router: Option<DiscordOpusSenderRouter>,
+    ) -> Self {
         Self {
             session: Arc::new(session),
             voice_id,
+            sender_router,
             lifecycle: Arc::new(Mutex::new(PlaybackLifecycle::default())),
         }
     }
@@ -108,6 +114,9 @@ impl PlaybackEntry {
 pub(crate) struct VoiceEntry {
     pub(crate) connection: DiscordVoiceConnection,
     pub(crate) playback_id: String,
+    pub(crate) sender_router: DiscordOpusSenderRouter,
+    pub(crate) transport_operations: Arc<napi::tokio::sync::Mutex<()>>,
+    pub(crate) transport_generation: Arc<AtomicU64>,
 }
 
 #[derive(Clone)]

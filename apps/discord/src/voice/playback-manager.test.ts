@@ -8,7 +8,7 @@ import {
   type PlaybackState,
   type RemediaClient,
 } from '@remedia/client';
-import type { SendableChannels } from 'discord.js';
+import type { EmbedBuilder, SendableChannels } from 'discord.js';
 import { displayTrack } from './command-helpers.js';
 import { FILTER_PRESETS, FILTER_PRESET_NAMES } from './filter-presets.js';
 import { DiscordPlaybackManager } from './playback-manager.js';
@@ -71,13 +71,14 @@ test('command actions suppress duplicate lifecycle posts while automatic starts 
 
   const titles = origin.messages.map(embedTitle);
   assert.deepEqual(titles, ['Now playing']);
-  assert.ok(origin.messages[0]?.embeds?.[0]?.data?.description?.includes('Example title'));
+  const notification = origin.messages[0]?.embeds?.[0] as EmbedBuilder | undefined;
+  assert.ok(notification?.data.description?.includes('Example title'));
   assert.ok(
-    origin.messages[0]?.embeds?.[0]?.data?.fields?.some(
+    notification?.data.fields?.some(
       (field) => field.name === 'Requested by' && field.value === '<@bob>',
     ),
   );
-  assert.equal(origin.messages[0]?.embeds?.[0]?.data?.footer?.text, 'Automatic playback notification');
+  assert.equal(notification?.data.footer?.text, 'Automatic playback notification');
   assert.equal(other.messages.length, 0);
 
   await manager.disconnect('guild', 'channel');
@@ -124,10 +125,24 @@ test('queues tracks, advances on completion, and leaves voice connected when sto
   assert.equal(second.started, false);
   assert.equal(second.queuePosition, 1);
 
-  await manager.pause('guild', 'channel');
+  const pause = await manager.pauseWithContext('guild', 'channel');
+  assert.equal(pause.previousState, 'playing');
+  assert.equal(pause.changed, true);
+  assert.equal(pause.current?.url, 'https://media.example/one.mp3');
   assert.equal(session.state, 'paused');
-  await manager.resume('guild', 'channel');
-  await manager.seek('guild', 'channel', 12_500);
+  const resume = await manager.resumeWithContext('guild', 'channel');
+  assert.equal(resume.previousState, 'paused');
+  assert.equal(resume.current?.url, 'https://media.example/one.mp3');
+  session.position = {
+    mediaMs: 8_400,
+    mediaPositionAccuracy: 'estimated',
+    submittedMs: 6_720,
+    playedMs: null,
+  };
+  const seek = await manager.seekWithContext('guild', 'channel', 12_500);
+  assert.equal(seek.current.url, 'https://media.example/one.mp3');
+  assert.equal(seek.previousMediaPositionMs, 8_400);
+  assert.equal(seek.previousPositionEstimated, true);
   assert.equal(session.seekPositionMs, 12_500);
 
   session.finish('completed');
@@ -205,7 +220,10 @@ test('track loop repeats only the current track and off resumes the queue', asyn
   let snapshot = await completeAndSnapshot(manager, session);
   assert.equal(snapshot.loopMode, 'track');
   assert.equal(snapshot.current?.url, 'https://media.example/a.wav');
-  assert.deepEqual(snapshot.queue.map((track) => track.url), ['https://media.example/b.wav']);
+  assert.deepEqual(
+    snapshot.queue.map((track) => track.url),
+    ['https://media.example/b.wav'],
+  );
   assert.deepEqual(session.playedUrls, [
     'https://media.example/a.wav',
     'https://media.example/a.wav',
@@ -235,25 +253,25 @@ test('queue loop rotates completed and skipped tracks and remains guild-scoped',
 
   let snapshot = await completeAndSnapshot(manager, session);
   assert.equal(snapshot.current?.url, 'https://media.example/b.wav');
-  assert.deepEqual(snapshot.queue.map((track) => track.url), [
-    'https://media.example/c.wav',
-    'https://media.example/a.wav',
-  ]);
+  assert.deepEqual(
+    snapshot.queue.map((track) => track.url),
+    ['https://media.example/c.wav', 'https://media.example/a.wav'],
+  );
 
   snapshot = await completeAndSnapshot(manager, session);
   assert.equal(snapshot.current?.url, 'https://media.example/c.wav');
-  assert.deepEqual(snapshot.queue.map((track) => track.url), [
-    'https://media.example/a.wav',
-    'https://media.example/b.wav',
-  ]);
+  assert.deepEqual(
+    snapshot.queue.map((track) => track.url),
+    ['https://media.example/a.wav', 'https://media.example/b.wav'],
+  );
 
   assert.equal((await manager.skip('guild', 'channel'))?.url, 'https://media.example/a.wav');
   snapshot = await manager.snapshot('guild', 'channel');
   assert.equal(snapshot.loopMode, 'queue');
-  assert.deepEqual(snapshot.queue.map((track) => track.url), [
-    'https://media.example/b.wav',
-    'https://media.example/c.wav',
-  ]);
+  assert.deepEqual(
+    snapshot.queue.map((track) => track.url),
+    ['https://media.example/b.wav', 'https://media.example/c.wav'],
+  );
   assert.deepEqual(session.playedUrls, [
     'https://media.example/a.wav',
     'https://media.example/b.wav',
@@ -358,6 +376,43 @@ test('skip while paused and rapid skips advance serially', async () => {
     'https://media.example/b.wav',
     'https://media.example/c.wav',
   ]);
+  await manager.close();
+});
+
+test('skip during voice recovery preserves the next item and starts it after reconnection', async () => {
+  const { manager, session } = createManager();
+  await manager.enqueue('guild', 'channel', 'bot', {
+    url: 'https://media.example/a.wav',
+    requestedBy: 'alice',
+  });
+  await manager.enqueue('guild', 'channel', 'bot', {
+    url: 'https://media.example/b.wav',
+    requestedBy: 'bob',
+  });
+  session.connectionState = 'reconnecting';
+  const result = await manager.skipWithContext('guild', 'channel');
+  assert.equal(result.skipped.url, 'https://media.example/a.wav');
+  assert.equal(result.next, null);
+  assert.equal(result.queuedNext?.url, 'https://media.example/b.wav');
+  assert.deepEqual(session.playedUrls, ['https://media.example/a.wav']);
+
+  session.connectionState = 'connected';
+  session.emit(VoiceSessionEvents.voiceStateChanged, {
+    sessionId: 'guild-session',
+    guildId: 'guild',
+    nodeId: null,
+    previousState: 'reconnecting',
+    state: 'connected',
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(session.playedUrls, [
+    'https://media.example/a.wav',
+    'https://media.example/b.wav',
+  ]);
+  assert.equal(
+    (await manager.snapshot('guild', 'channel')).current?.url,
+    'https://media.example/b.wav',
+  );
   await manager.close();
 });
 
@@ -864,30 +919,22 @@ class FakeDiscordSession extends EventEmitter {
 
 function createTextChannel(): {
   channel: SendableChannels;
-  messages: Array<{ embeds?: readonly { data?: { title?: string; description?: string } }[] }>;
+  messages: Array<{ embeds?: readonly unknown[] }>;
 } {
-  const messages: Array<{
-    embeds?: readonly { data?: { title?: string; description?: string } }[];
-  }> = [];
+  const messages: Array<{ embeds?: readonly unknown[] }> = [];
   const channel = {
-    async send(message: {
-      embeds?: readonly { data?: { title?: string; description?: string } }[];
-    }) {
-      messages.push(message);
+    async send(message: { embeds?: readonly EmbedBuilder[] }) {
+      messages.push(message as { embeds?: readonly unknown[] });
       return {};
     },
   } as unknown as SendableChannels;
   return { channel, messages };
 }
 
-function embedTitle(message: {
-  embeds?: readonly { data?: { title?: string } }[];
-}): string | undefined {
-  return message.embeds?.[0]?.data?.title;
+function embedTitle(message: { embeds?: readonly unknown[] }): string | undefined {
+  return (message.embeds?.[0] as EmbedBuilder | undefined)?.data.title;
 }
 
-function embedDescription(message: {
-  embeds?: readonly { data?: { description?: string } }[];
-}): string {
-  return message.embeds?.[0]?.data?.description ?? '';
+function embedDescription(message: { embeds?: readonly unknown[] }): string {
+  return (message.embeds?.[0] as EmbedBuilder | undefined)?.data.description ?? '';
 }

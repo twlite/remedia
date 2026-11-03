@@ -30,6 +30,7 @@ export interface DiscordVoiceGatewayDispatch {
   data: Record<string, unknown>;
   guildId: string;
   sequence?: number;
+  epoch: number;
 }
 
 /**
@@ -40,6 +41,7 @@ export interface DiscordVoiceGatewayDispatch {
 export class DiscordGatewayAdapter {
   readonly #send: DiscordGatewaySend;
   #lastSequence: number | undefined;
+  #epoch = 0;
 
   constructor(send: DiscordGatewaySend) {
     this.#send = send;
@@ -48,6 +50,11 @@ export class DiscordGatewayAdapter {
   /** Most recently observed Gateway dispatch sequence, when supplied by the host client. */
   get lastSequence(): number | undefined {
     return this.#lastSequence;
+  }
+
+  /** Changes when the host Gateway starts a new READY session and resets its sequence. */
+  get epoch(): number {
+    return this.#epoch;
   }
 
   /** Request a voice channel join or leave through Gateway OP 4. */
@@ -66,14 +73,18 @@ export class DiscordGatewayAdapter {
   /** Parse only relevant voice dispatches; malformed and unrelated packets are ignored. */
   receive(packet: unknown): DiscordVoiceGatewayDispatch | undefined {
     if (!isRecord(packet) || typeof packet.t !== 'string') return undefined;
-    if (typeof packet.s === 'number' && Number.isSafeInteger(packet.s) && packet.s >= 0) {
-      if (
-        packet.t === 'READY' ||
-        this.#lastSequence === undefined ||
-        packet.s > this.#lastSequence
-      ) {
-        this.#lastSequence = packet.s;
-      }
+    const sequence =
+      typeof packet.s === 'number' && Number.isSafeInteger(packet.s) && packet.s >= 0
+        ? packet.s
+        : undefined;
+    if (packet.t === 'READY') {
+      this.#epoch += 1;
+      this.#lastSequence = sequence;
+      return undefined;
+    }
+    if (sequence !== undefined) {
+      if (this.#lastSequence !== undefined && sequence <= this.#lastSequence) return undefined;
+      this.#lastSequence = sequence;
     }
     if (!isRecord(packet.d)) return undefined;
     if (packet.t !== 'VOICE_STATE_UPDATE' && packet.t !== 'VOICE_SERVER_UPDATE') return undefined;
@@ -85,10 +96,9 @@ export class DiscordGatewayAdapter {
       event: packet.t,
       data: packet.d,
       guildId,
+      epoch: this.#epoch,
     };
-    if (typeof packet.s === 'number' && Number.isSafeInteger(packet.s) && packet.s >= 0) {
-      dispatch.sequence = packet.s;
-    }
+    if (sequence !== undefined) dispatch.sequence = sequence;
     return dispatch;
   }
 }

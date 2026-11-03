@@ -56,9 +56,11 @@ voice session IDs, tokens, or endpoints.
 - `/skip` stops the current item and starts the next queued URL, showing titles
   when Remedia metadata is available.
 - `/nowplaying` shows the Remedia title when available, playback state, and
-  a proportional progress bar against the original media duration. Estimated
-  source positions are prefixed with `~`; unknown durations do not imply a
-  percentage. Its filter field lists active presets in selection order.
+  an elapsed-time / progress-indicator / duration line against the original
+  media timeline. It uses `mm:ss` and switches to `hh:mm:ss` for long tracks.
+  Estimated source positions are prefixed with `~`; unknown or live durations
+  show no fabricated progress bar or percentage. Its fields show requester,
+  queue count, filters, volume, and loop mode.
 - `/stop` stops playback and clears the queue while keeping the voice
   connection open.
 - `/disconnect` stops playback, clears the queue, and leaves the voice channel.
@@ -99,23 +101,29 @@ graph. A disconnect or bot shutdown disposes the guild player and drops both
 settings. Engine callers can use arbitrary trusted filtergraphs instead of
 these names.
 
-Slash command replies use consistent Remedia embeds, including colored error
-embeds when an operation fails. `/nowplaying` formats source time and duration
-around a compact progress bar; estimated source positions are prefixed with
-`~`.
+Slash command replies use consistent Remedia embeds. Successful command
+responses are public and include the invoking user; validation and operation
+errors remain ephemeral. The helper defers privately because Discord does not
+allow a deferred reply to change visibility, then deletes that private defer
+and posts a public follow-up on success. Error replies edit the ephemeral defer.
+`/nowplaying` formats source time and duration around a compact progress bar;
+estimated source positions are prefixed with `~`.
 
-The app also subscribes to the typed `@remedia/client` session events. It posts
-embeds for track start, natural completion, stop and failure; pause, resume,
-seek, filter and volume changes; and important voice connection transitions.
-Track lifecycle notifications use the `customMetadata` attached to that
+The app also subscribes to typed `@remedia/client` session events. It posts
+autonomous embeds when a queued track starts naturally, playback genuinely
+fails, or voice recovery reaches a terminal failure. Successful command
+responses already confirm pause, resume, seek, filter, volume, stop, skip, and
+disconnect, so those transitions do not post a second lifecycle embed. Track
+lifecycle notifications use the `customMetadata` attached to that
 playback generation to find the originating text channel. The first `/play`
 request that creates a guild queue stores its sendable channel object in that
 queue's in-memory metadata, and each playback passes that reference through
 Remedia's JavaScript-only `customMetadata`. The reference is not serialized to
 Rust or a remote Remedia server. Later requests and queued tracks continue to
 notify the original queue channel until the guild session is disconnected and
-disposed. Successful control-command acknowledgements are ephemeral to avoid
-duplicating the public event messages; queue snapshots remain public. If the
+disposed. The command invocation is attributed in its public response;
+automatic start notifications instead identify the track requester and are
+labeled automatic. Queue snapshots remain public. If the
 bot cannot send in the retained channel, playback continues and a warning is
 written only when `REMEDIA_DEBUG=1`.
 
