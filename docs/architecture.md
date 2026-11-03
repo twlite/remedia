@@ -2,9 +2,10 @@
 
 This document distinguishes implemented behavior from design intentions. `remedia-core` implements
 file, HTTP, buffer, and byte-stream decoding to PCM, playback sessions, generic output, and
-transport-independent Opus encoding. `remedia-discord` implements one outbound voice connection with DAVE and RTP-size
-transport encryption. The server remains starter code. The N-API package now exposes initial native
-playback, Discord session, and diagnostics APIs.
+transport-independent Opus encoding. `remedia-discord` implements one outbound voice connection
+with DAVE and RTP transport encryption. `remedia-server` now provides authenticated, in-memory
+WebSocket RPC over the native engine. The N-API package exposes native playback, Discord session,
+and diagnostics APIs.
 
 ## Rust crates
 
@@ -40,8 +41,14 @@ playback, Discord session, and diagnostics APIs.
   OpenTelemetry provider themselves. Applications can pass an `ObservabilityHandle` to playback
   sessions and voice connections, or explicitly request a process-global subscriber when they own
   that lifecycle. Export is off by default; the crate does not export OTLP logs.
-- **`remedia-server`** is intended to run the engine as a standalone remote service and expose
-  operations over a WebSocket RPC protocol.
+- **`remedia-server`** is a standalone Rust process using the core, Discord, and observability crates
+  directly. It authenticates HTTP Basic credentials during the `/v1/ws` WebSocket handshake and
+  implements strict version 1 JSON RPC for node stats, client-session resume, guild players, voice
+  connection lifecycle, media playback, filters, volume, and state. It does not use N-API, perform
+  Discord Gateway OP 4, or implement Lavalink. Each authenticated client session owns guild sessions;
+  each guild session owns one playback session and an optional Discord transport. Session state is
+  node-local and in memory; disconnects can be resumed for a configured bounded interval, while
+  process restarts do not preserve playback. Event buffering and all resource limits are bounded.
 - **`remedia-node`** contains the Rust N-API crate and thin TypeScript wrapper. `Remedia` owns
   isolated native playback sessions, Discord voice connections, and one bounded diagnostics
   forwarder. Its TypeScript `DiscordGatewayAdapter` accepts the host application's Gateway send
@@ -62,10 +69,10 @@ playback, Discord session, and diagnostics APIs.
   Readable without destroying it. The addon does not install a global tracing subscriber. It is
   private and under development and does not implement server RPC.
 
-The core decoder, playback, Opus, outbound Discord transport, and first N-API playback integration
-exist. The Node package adapts an externally owned Discord Gateway but does not implement Gateway
-connectivity, REST, or channel commands. Server RPC, receiving audio, and device output remain design
-intentions. Add crates or packages only when implementation needs them.
+The core decoder, playback, Opus, outbound Discord transport, server RPC, and N-API playback
+integration exist. The Node package adapts an externally owned Discord Gateway but does not
+implement Gateway connectivity, REST, or channel commands. Receiving audio and device output remain
+design intentions. Add crates or packages only when implementation needs them.
 
 `apps/discord` is a manual discord.js integration harness over `@remedia/node`. It forwards raw
 Gateway dispatches, sends OP 4 through the owning shard, and provides app-level slash commands with
@@ -80,7 +87,8 @@ dedicated forwarding worker and a bounded N-API `ThreadsafeFunction`. The receiv
 `Remedia` context; clones compete for events and are not broadcasts. The wrapper exposes structured
 events through `on('debug', listener)` and reports events dropped by either bounded queue. Embedded
 contexts disable console output by default to avoid duplicating events handled by JavaScript. The
-standalone server can initialize the same shared context when server runtime work begins.
+standalone server initializes the same shared context for its RPC and cleanup tasks. Its console
+output can be disabled in server configuration while configured OTLP export remains available.
 
 ## Embedded and remote integration
 
@@ -90,9 +98,13 @@ a 512 KiB bounded queue, so decoder backpressure reaches the producer without cr
 unbounded audio buffer. Cancelling playback releases queued bytes and detaches the feeder; the
 caller retains ownership of the Readable, which is paused but not destroyed.
 
-Remote integration runs in a separate server process. Its intended initial inputs are files and
-HTTP URLs that the server can access. Uploading arbitrary client-generated binary streams to the
-remote server is intentionally deferred; the local N-API byte input does not add remote transport.
+Remote integration runs in a separate server process. The implemented v0 server accepts HTTP(S)
+URLs permitted by its explicit host policy and local files canonicalized beneath configured
+`allowedFileRoots`. Uploading arbitrary client-generated binary streams to the remote server is
+intentionally deferred; the local N-API byte input does not add remote transport. The server
+requires TLS termination at a trusted reverse proxy for remote deployment and uses independent
+node-local session registries. Node selection, sticky guild routing, and cross-node failover belong
+to a future client rather than the server.
 
 ## Processing and inputs
 

@@ -1,32 +1,125 @@
 ---
 title: Remote server
-description: Current server crate status and intended remote integration boundary.
+description: Run Remedia as an authenticated standalone WebSocket audio server.
 ---
 
 # Remote server
 
-`remedia-server` is currently a placeholder crate. Running it prints `Hello, world!` and exits. It
-does not expose a remote protocol, WebSocket RPC, media endpoint, or playback service.
+`remedia-server` is an operational standalone Rust service. It hosts the same native Remedia engine
+used by embedded applications and exposes a versioned JSON RPC protocol over WebSocket. It depends
+directly on `remedia-core`, `remedia-discord`, and `remedia-observability`; it does not use N-API,
+spawn FFmpeg executables, or implement Lavalink compatibility.
 
-## Intended integration
+The server is still under development. Its v0 protocol is intended for trusted applications and is
+not a public multi-tenant service without deployment-level TLS, network isolation, and carefully
+scoped media access.
 
-The planned standalone server will host the Remedia engine and expose it over a remote protocol.
-Initially, the server is intended to open files and HTTP(S) URLs that are reachable from the server
-process. Arbitrary streams or buffers created by a client are intended for local N-API integration
-first; remote binary stream ingestion is deferred.
+## Start the server
 
-This remote process model is distinct from the
-[embedded Node.js integration](/docs/node/bindings), which is intended to call native engine code
-directly inside the application process. Neither the server protocol nor its playback API has been
-implemented.
-
-## Run the current crate
-
-From the repository root:
+The server requires `remedia.config.json` in the process working directory. Use `--config PATH` to
+load a different file. An example with every supported key is available at
+[`crates/remedia-server/remedia.config.example.json`](https://github.com/twlite/remedia/blob/main/crates/remedia-server/remedia.config.example.json).
 
 ```sh
+cp crates/remedia-server/remedia.config.example.json remedia.config.json
+mkdir -p media
+export REMEDIA_RPC_PASSWORD='change-me'
+export DISCORD_BOT_USER_ID='100000000000000001'
 cargo run -p remedia-server
 ```
 
-This only runs the placeholder. The repository-level `docs/architecture.md` describes the intended
-crate boundaries and implementation status.
+The default address is `127.0.0.1:8787`; the WebSocket endpoint is `/v1/ws`. The server rejects
+unknown configuration keys and invalid values. Passwords and other selected string fields may
+reference environment variables with the exact form `env('VARIABLE_NAME')`. See
+[Configuration](/docs/server/configuration).
+
+## Connect and create sessions
+
+Authenticate the WebSocket upgrade with an HTTP Basic `Authorization` header. Credentials never go
+in a query string. The server verifies the account before allocating a client session or player.
+See [Protocol](/docs/server/protocol) for request and response shapes.
+
+```ts
+const socket = new WebSocket('ws://127.0.0.1:8787/v1/ws', {
+  headers: {
+    Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`,
+  },
+});
+
+// After the WebSocket opens:
+socket.send(
+  JSON.stringify({
+    version: 1,
+    id: 'create-client-1',
+    command: 'client.create',
+    params: {},
+  }),
+);
+```
+
+An authenticated user is configured with one Discord bot user ID. The server returns an opaque
+client `sessionId` and `resumeCredential`. That client session owns its guild sessions. Each guild
+session owns one playback object and an optional Discord voice transport. Guild identifiers are
+scoped to the client session, so distinct bots can use the same guild ID without sharing playback
+state.
+
+## Playback and Discord voice
+
+The bot application remains connected to Discord Gateway and obtains voice credentials from its
+Gateway dispatches. It sends those credentials to `voice.connect`; Remedia then establishes the
+voice WebSocket, DAVE session, and UDP transport. The server does not implement Gateway OP 4, channel
+joining, or a bot command framework.
+
+`player.play` accepts server-accessible HTTP(S) URLs and files under configured allowed roots. The
+existing native decoder, filters, volume, Opus passthrough/transcoding, and output timeline are
+reused. Playback without an associated voice transport uses a null output for validation and local
+workflows; it does not produce audible server output.
+
+```json
+{
+  "version": 1,
+  "id": "play-1",
+  "command": "player.play",
+  "params": {
+    "guildId": "200000000000000001",
+    "source": { "type": "url", "url": "https://media.example.com/audio.ogg" }
+  }
+}
+```
+
+Live `player.filter.set`, `player.filter.clear`, `player.volume.set`, pause, resume, and seek operate
+on the existing playback session. A stop does not disconnect voice. `voice.disconnect` stops the
+player and releases the transport. Raw FFmpeg graphs are trusted configuration; do not expose them
+as an unrestricted input to untrusted remote users.
+
+## Resumption and node ownership
+
+An unexpected WebSocket disconnect detaches the controlling client session for the configured
+resumption window. The same authenticated user can send `client.resume` with its opaque credential.
+Successful resume returns a fresh snapshot of the existing guild and playback state. The
+credential remains stable for that session so a lost resume response does not invalidate the only
+credential the client received.
+
+Events use a bounded buffer. Events are not replayed while detached; if a connected consumer falls
+behind, it receives `client.events_lost` with a dropped count and can request snapshots. Explicit
+`client.close`, expiry, and graceful server shutdown stop playback and disconnect transports. A
+process restart does not preserve sessions or playback.
+
+Each instance is an independent node. `node.stats` reports node-local identity, capacity and host
+information where available. Node selection and routing subsequent guild operations to the same
+node belong to a future client library; the server does not coordinate nodes or migrate players.
+
+## Security and deployment
+
+The server binds to loopback by default. Basic credentials and Discord voice credentials require an
+encrypted connection. For remote access, bind to a private interface and place the service behind a
+TLS reverse proxy that supports WebSocket upgrades, authentication header forwarding, and suitably
+long idle timeouts. Do not expose the plain `ws://` listener to the public Internet.
+
+File inputs are canonicalized and must remain below `media.allowedFileRoots`. Remote URL schemes,
+host allowlists, and private-address rejection are configurable. FFmpeg follows HTTP redirects, so
+host-level outbound firewall rules should also deny metadata, loopback, link-local, and private
+services when accepting URLs from users. See [deployment guidance](/docs/server/deployment).
+
+The complete configuration, protocol command table, stable error codes, and manual Discord example
+are in the linked server pages.

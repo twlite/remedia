@@ -1,0 +1,84 @@
+---
+title: Server deployment
+description: Local operation, TLS termination, network restrictions, and independent nodes.
+---
+
+# Server deployment
+
+## Local development
+
+Create a local media directory and configuration, then provide the configured secrets through
+environment variables:
+
+```sh
+cp crates/remedia-server/remedia.config.example.json remedia.config.json
+mkdir -p media
+export REMEDIA_RPC_PASSWORD='use-a-local-development-password'
+export DISCORD_BOT_USER_ID='100000000000000001'
+cargo run -p remedia-server
+```
+
+The listener defaults to `127.0.0.1:8787`, and accepts WebSocket RPC at `/v1/ws`. Use `--config
+PATH` for another file. The server uses native FFmpeg libraries and the native Discord voice
+transport. Install the workspace's FFmpeg development libraries as described in
+[core decoding](/docs/core/decoding).
+
+## TLS reverse proxy
+
+The server does not terminate TLS. For remote clients, expose only a TLS reverse proxy, bind Remedia
+to a private interface, and firewall the plain listener. The proxy must support WebSocket upgrades,
+forward `Authorization`, and allow long-lived connections. Example Nginx location (with TLS server
+configuration and certificates supplied by the operator):
+
+```nginx
+location /v1/ws {
+    proxy_pass http://127.0.0.1:8787/v1/ws;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Authorization $http_authorization;
+    proxy_read_timeout 1h;
+    proxy_send_timeout 1h;
+}
+```
+
+Clients then connect to `wss://media.example.net/v1/ws`. Keep passwords and resume credentials in
+secret storage. Do not put them in URLs, logs, shell history, or source control. The server supports
+standard `ws://` and `wss://` clients; `remedia://` and `remedias://` URL parsing with userinfo is a
+future SDK convenience and is not a server feature.
+
+## Media network policy
+
+Use `allowedFileRoots` to expose only intended media directories. URL access is denied unless a host
+is explicitly allowlisted. Keep `blockPrivateNetworks` enabled. FFmpeg may follow redirects after
+the initial host check, so also restrict server egress at the host/network layer. For workloads that
+accept client-selected URLs, firewall access to loopback, RFC 1918 networks, link-local addresses,
+cloud metadata endpoints, and internal service networks. Use a narrow host allowlist and prefer
+HTTPS.
+
+The filtergraph API executes native FFmpeg filters. It is suitable for trusted applications and
+should be limited to trusted control clients. RPC authentication alone does not turn arbitrary
+filter expressions into a safe sandbox.
+
+## Session durability and capacity
+
+Each process owns independent in-memory sessions. Unexpected socket loss permits resumption for a
+bounded timeout. Explicit close, expiry, and graceful shutdown release playback and voice resources.
+A process restart loses active sessions; v0 has no persistence, clustering, or coordinator.
+
+Set connection, player, message, request, and event limits to match host resources. `node.stats`
+reports local capacity, player/connection counts, process uptime, CPU parallelism/load and resident
+memory when the host exposes them, plus transport and processing health. Some host metrics are
+Linux-specific and may be `null` elsewhere.
+
+Multiple nodes do not share state and do not proxy commands. A future `@remedia/client` is expected
+to select a node for a new guild and route every later request for that guild back to the same node.
+Cross-node failover and player migration belong to the client/control plane, not this server.
+
+## Manual Discord test
+
+The [`remote_discord` example](https://github.com/twlite/remedia/blob/main/crates/remedia-server/examples/remote_discord.rs)
+connects as an RPC client, creates a guild player, uses voice credentials supplied by an external
+bot Gateway implementation, plays a URL, replaces and clears filters, then stops and disconnects.
+It never sends OP 4. CI does not use Discord credentials; it validates server playback through a
+null output and localhost WebSocket connections.

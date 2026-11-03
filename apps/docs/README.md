@@ -2,8 +2,9 @@
 
 This Next.js and Fumadocs app contains Remedia's user-facing documentation. Pages are grouped by
 workspace module under `content/docs/`: `core/` documents decoding and playback, `discord/` covers
-the outbound voice transport, and `node/` and `server/` describe the current scaffolds and intended
-integration boundaries. The `meta.json` files define titles and navigation order.
+the outbound voice transport and bot harness, `node/` documents native bindings, `server/` covers
+authenticated WebSocket RPC and deployment, and `observability/` documents shared diagnostics. The
+`meta.json` files define titles and navigation order.
 
 From the repository root, run:
 

@@ -68,6 +68,8 @@ cargo fmt --all
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo test -p remedia-server --all-targets
+pnpm --filter docs build
 ```
 
 The docs app can be run with `pnpm --filter docs dev` and built with
@@ -88,14 +90,19 @@ examples can be run with `cargo run -p remedia-core --example decode -- file <pa
 `cargo run -p remedia-core --example playback -- file <path>`.
 The optional manual voice sender example is `cargo run -p remedia-discord --example play_file`; it
 requires externally obtained Discord voice session information and a reachable voice endpoint.
+The standalone server reads `remedia.config.json` from the current directory or a `--config PATH`
+override. Use `crates/remedia-server/remedia.config.example.json` as the schema example. Its
+`remote_discord` example requires an already running server and fresh voice credentials obtained by
+an external Discord Gateway client; normal tests do not require Discord credentials.
 
 ## Where code belongs
 
 - Add a Rust crate under `crates/` when it has an independently useful boundary in the engine,
   transport, or server. `remedia-core` owns source opening, decoding, resampling, playback sessions,
   generic PCM output, and transport-independent Opus encoding. `remedia-discord` owns Discord voice
-  connections, DAVE, RTP, encryption, UDP, and packet scheduling. Add crates to the Cargo workspace
-  only when they exist and are needed.
+  connections, DAVE, RTP, encryption, UDP, and packet scheduling. `remedia-server` owns authenticated
+  remote sessions and JSON RPC while reusing those crates. Add crates to the Cargo workspace only
+  when they exist and are needed.
 - Add a JavaScript or TypeScript package under `packages/` when it has a distinct package boundary.
   Keep an N-API crate alongside its owning Node package: `packages/remedia-node` is included in the
   root Cargo workspace and calls the Remedia engine in process. Keep its Rust files in `src/` and
@@ -106,7 +113,7 @@ requires externally obtained Discord voice session information and a reachable v
 - Keep generated native binaries out of commits. Commit generated JS/TypeScript declarations or
   other source artifacts when the package's build and distribution workflow requires them.
 
-Changes to exported Rust APIs, the planned N-API surface, or the remote protocol need a clear
+Changes to exported Rust APIs, the N-API surface, or the remote protocol need a clear
 compatibility note in the pull request. Do not assume the embedded and remote interfaces have the
 same input constraints.
 

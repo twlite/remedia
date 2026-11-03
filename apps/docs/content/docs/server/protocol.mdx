@@ -1,0 +1,148 @@
+---
+title: WebSocket RPC protocol
+description: Authentication, version 1 JSON messages, commands, errors, and lifecycle events.
+---
+
+# WebSocket RPC protocol
+
+Connect to `ws://<host>:<port>/v1/ws` or `wss://.../v1/ws`. The custom `remedia://` and
+`remedias://` schemes belong to a future SDK; the server accepts standard WebSocket URLs. Authenticate
+the WebSocket HTTP upgrade with Basic auth:
+
+```http
+Authorization: Basic base64(username:password)
+```
+
+Credentials in query parameters are not supported. Authentication is checked before allocating
+client, player, or voice resources. A failed handshake receives HTTP `401`; the response does not
+identify whether the username or password was wrong.
+
+## Request and response
+
+Every request is one text WebSocket frame containing a strict JSON object. Unknown top-level and
+command parameter fields are rejected.
+
+```json
+{ "version": 1, "id": "request-1", "command": "node.info", "params": {} }
+```
+
+Responses retain the request ID:
+
+```json
+{
+  "version": 1,
+  "id": "request-1",
+  "ok": true,
+  "result": { "nodeId": "...", "version": "0.1.0", "protocolVersion": 1 }
+}
+```
+
+```json
+{
+  "version": 1,
+  "id": "request-2",
+  "ok": false,
+  "error": { "code": "invalid_state", "message": "..." }
+}
+```
+
+The server accepts protocol version `1`, requires a 1–128 byte request ID and command name, and
+requires `params` to be an object. Binary frames are rejected. WebSocket frame and message sizes,
+in-flight requests, per-connection request rate, and request duration are bounded by configuration.
+
+## Command table
+
+All Discord snowflakes are decimal strings in JSON. Parameters use camelCase. Commands that act on
+a guild require an existing guild session owned by the active client session.
+
+| Command                                        | Parameters                                         | Result / behavior                                                                                                                                                 |
+| ---------------------------------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node.info`                                    | `{}`                                               | `nodeId`, server version, protocol version                                                                                                                        |
+| `node.protocol_version`                        | `{}`                                               | Protocol version                                                                                                                                                  |
+| `node.health`                                  | `{}`                                               | `ok` or `shutting_down`                                                                                                                                           |
+| `node.stats`                                   | `{}`                                               | Uptime, connections, players, capacity, CPU/memory where available, health                                                                                        |
+| `client.create`                                | `{}`                                               | Creates a session; returns `sessionId`, `resumeCredential`, configured `botUserId`                                                                                |
+| `client.list`                                  | `{}`                                               | Lists sessions belonging to the authenticated username and their snapshots                                                                                        |
+| `client.resume`                                | `{sessionId, resumeCredential}`                    | Reclaims a detached session; returns its identity, stable credential, and guild snapshots                                                                         |
+| `client.close`                                 | `{}`                                               | Immediately releases all owned guild players and transports                                                                                                       |
+| `guild.create`                                 | `{guildId}`                                        | Creates one isolated player session for that guild under this client                                                                                              |
+| `guild.list`                                   | `{}`                                               | Lists owned guild snapshots                                                                                                                                       |
+| `guild.get`                                    | `{guildId}`                                        | Returns one guild/player/voice snapshot                                                                                                                           |
+| `guild.destroy`                                | `{guildId}`                                        | Stops playback, disconnects voice, and removes the guild session                                                                                                  |
+| `voice.connect`                                | `{guildId, channelId, sessionId, token, endpoint}` | Connects using the bot's fresh Gateway dispatch credentials and waits for native voice/DAVE readiness; endpoint must resolve to secure `discord.media` voice host |
+| `voice.state`                                  | `{guildId}`                                        | Returns transport state and a failure flag; never returns credentials                                                                                             |
+| `voice.disconnect`                             | `{guildId}`                                        | Stops the player and disconnects the transport                                                                                                                    |
+| `player.play`                                  | `{guildId, source}`                                | Starts a server-accessible file or URL; returns selected audio stream metadata                                                                                    |
+| `player.pause`, `player.resume`, `player.stop` | `{guildId}`                                        | Controls the current source; stop keeps the voice transport connected                                                                                             |
+| `player.seek`                                  | `{guildId, positionMs}`                            | Seeks in the source media timeline when supported                                                                                                                 |
+| `player.filter.set`                            | `{guildId, graph}`                                 | Validates and applies a raw trusted FFmpeg audio graph                                                                                                            |
+| `player.filter.clear`                          | `{guildId}`                                        | Clears the graph                                                                                                                                                  |
+| `player.volume.set`                            | `{guildId, gain}`                                  | Sets finite linear gain from `0.0` through `2.0`; values above unity can clip                                                                                     |
+| `player.state`                                 | `{guildId}`                                        | State, source metadata, duration, source/submitted/played position, graph, gain, processing mode, and safe error summary                                          |
+
+Media source shapes:
+
+```json
+{"type":"url","url":"https://media.example.com/audio.ogg"}
+{"type":"file","path":"/srv/remedia/media/audio.ogg"}
+```
+
+File paths must resolve under configured allowed roots. URL sources are subject to configured scheme,
+host, and IP restrictions. There is no client byte upload in v0.
+
+To connect voice, the bot application first performs Discord Gateway channel joining and collects
+the `VOICE_STATE_UPDATE` and `VOICE_SERVER_UPDATE` dispatch values. It then sends them to
+`voice.connect`. The server does not send OP 4 and does not expose received credentials in responses
+or lifecycle events.
+
+## Error codes
+
+| Code                    | Meaning                                                                                                              |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `invalid_request`       | Malformed JSON/protocol message, unknown command, invalid parameters, or denied media source                         |
+| `authentication_failed` | Handshake authentication failed (HTTP 401)                                                                           |
+| `unknown_session`       | Session or guild is missing or not owned by this connection                                                          |
+| `invalid_state`         | Operation conflicts with the current session/player state                                                            |
+| `resource_exhausted`    | Configured connection, session, player, request, or event capacity was reached                                       |
+| `request_timeout`       | Operation did not produce a response before its configured deadline; started cleanup/native work may continue safely |
+| `unsupported`           | Requested media operation, such as seeking, is unsupported for this source                                           |
+| `playback_failed`       | Media open, decoder, resampler, filter, encoder, or playback worker failed                                           |
+| `transport_failed`      | Discord voice connect, disconnect, or resource cleanup failed                                                        |
+
+Messages are safe summaries and do not include raw media URLs, passwords, or voice tokens. Inspect
+server diagnostics for operational context.
+
+## Lifecycle events
+
+Events are separate text frames and do not have request IDs:
+
+```json
+{
+  "version": 1,
+  "event": "player.completed",
+  "sessionId": "...",
+  "sequence": 12,
+  "data": { "guildId": "200000000000000001", "generation": 3 }
+}
+```
+
+Implemented event names include `guild.created`, `guild.destroyed`, `player.started`,
+`player.paused`, `player.resumed`, `player.seeked`, `player.stopped`, `player.filter_changed`,
+`player.volume_changed`, `player.completed`, `player.failed`, `voice.state_changed`, `voice.failed`,
+and `client.events_lost`.
+
+Events are bounded and are not replayed while the client is detached. A slow consumer can receive
+`client.events_lost` with a dropped-event count. `client.resume`, `guild.list`, `guild.get`, and
+`player.state` provide authoritative snapshots after reconnect.
+
+## Session resumption
+
+`client.create` returns an opaque `sessionId` and high-entropy `resumeCredential`. Store the
+credential securely. On unexpected socket loss, the server keeps resources for
+`sessionResumptionTimeoutSeconds`. The same authenticated username may call `client.resume` with
+both values while detached and before expiry. The credential stays stable until the session closes;
+this allows a client to retry if a resume response was lost. A concurrent socket cannot control an
+already attached session.
+
+`client.close` releases resources immediately. Expiry and graceful shutdown do the same. Active
+sessions are in-memory only and are lost when the server process restarts.

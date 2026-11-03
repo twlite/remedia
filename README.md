@@ -15,7 +15,11 @@ PCM processing without reopening the input. `remedia-discord` implements
 an outbound voice transport for encoded Opus with voice gateway v8, RTP-size transport encryption,
 and DAVE through `davey`. It has not been verified against a live Discord bot yet.
 `packages/remedia-node` provides an initial native Node.js integration for playback, Discord voice
-sessions, and structured diagnostics. Remote RPC and local audio-device output are not implemented.
+sessions, and structured diagnostics. `crates/remedia-server` provides authenticated, in-memory
+WebSocket RPC over the same native Rust crates. Its v0 protocol supports node statistics, resumable
+client sessions, guild players, Discord voice transports using credentials obtained by the bot's
+Gateway client, and playback controls. The server is a single independent node; it does not use
+N-API or implement cross-node coordination.
 
 The intended integrations have different boundaries:
 
@@ -25,12 +29,13 @@ The intended integrations have different boundaries:
   Gateway payloads and forwards raw dispatch packets; Remedia requests channel joins and manages the
   voice transport lifecycle. Readables feed a bounded native byte queue with backpressure; Remedia
   detaches on cancellation and does not destroy the caller's stream.
-- **Remote server:** a future standalone server will expose the engine over a remote protocol.
-  Initially, it is intended to accept files and HTTP URLs that the server itself can access.
+- **Remote server:** `remedia-server` accepts authenticated JSON RPC at `/v1/ws`. It opens
+  server-accessible HTTP(S) URLs and local files restricted to configured roots. It does not accept
+  remote byte uploads, send Discord Gateway OP 4, or persist sessions through process restarts.
 
 Remote ingestion of arbitrary client-generated streams is deferred. The Discord transport has not
-been verified against a live bot. These are design intentions, not claims that unfinished features
-work.
+been verified against a live bot, including when controlled through the standalone server. These
+are design intentions, not claims that unfinished features work.
 
 ## Repository structure
 
@@ -40,7 +45,7 @@ apps/discord/                 Manual discord.js playback and voice-command harne
 crates/remedia-core/          Core decoder, playback, PCM output, and Opus encoding
 crates/remedia-discord/       Discord voice transport for encoded Opus
 crates/remedia-observability/ Shared tracing, bounded diagnostics, and optional OTLP export
-crates/remedia-server/        Future remote server; currently a placeholder crate
+crates/remedia-server/        Authenticated standalone WebSocket RPC server
 packages/remedia-node/        Native N-API bindings and TypeScript wrapper
 ```
 
@@ -48,6 +53,8 @@ Component guides: [core](crates/remedia-core/README.md),
 [Discord transport](crates/remedia-discord/README.md),
 [observability](crates/remedia-observability/README.md),
 [server](crates/remedia-server/README.md), and [Node.js bindings](packages/remedia-node/README.md).
+The server's full configuration and protocol references are also available in the
+[Fumadocs server guide](apps/docs/content/docs/server/overview.mdx).
 
 The core uses native FFmpeg libraries for media processing; it does not spawn FFmpeg subprocesses.
 It outputs interleaved 48 kHz stereo `f32` samples, downmixing through FFmpeg's channel-layout-aware
@@ -85,7 +92,13 @@ cargo test --workspace
 cargo run -p remedia-core --example decode -- file ./path/to/audio.wav
 cargo run -p remedia-core --example decode -- url https://example.com/audio.mp3
 cargo run -p remedia-core --example playback -- file ./path/to/audio.wav
+cargo run -p remedia-server -- --config ./remedia.config.json
 ```
+
+The server requires a strict `remedia.config.json`; see
+[`crates/remedia-server/remedia.config.example.json`](crates/remedia-server/remedia.config.example.json).
+It binds to loopback by default. Put remote deployments behind TLS termination and restrict
+outbound network access for remote media URLs.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup details, platform notes, and pull request
 guidance.

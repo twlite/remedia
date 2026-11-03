@@ -1,0 +1,95 @@
+---
+title: Server configuration
+description: Strict configuration, environment references, media access, and observability.
+---
+
+# Server configuration
+
+`remedia-server` loads a required JSON file from the current working directory. Override the path
+with `--config PATH`. Unknown fields, missing required fields, invalid ranges, duplicate usernames,
+and missing environment variables stop startup with an error.
+
+```sh
+cargo run -p remedia-server -- --config /etc/remedia/remedia.config.json
+```
+
+The full example file is [`remedia.config.example.json`](https://github.com/twlite/remedia/blob/main/crates/remedia-server/remedia.config.example.json).
+
+## Schema
+
+| Field                             | Type           | Default / validation                                                                                      |
+| --------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------- |
+| `bind.host`                       | string         | `127.0.0.1`; must not be empty                                                                            |
+| `bind.port`                       | integer        | `8787`; valid `u16` port, `0` is available for ephemeral test binding                                     |
+| `users`                           | array          | Required and non-empty; usernames must be unique                                                          |
+| `users[].username`                | string         | 1–128 characters, cannot contain `:`                                                                      |
+| `users[].password`                | string         | Required; 1–4096 bytes                                                                                    |
+| `users[].discordBotUserId`        | decimal string | Required positive Discord snowflake that fits `u64`                                                       |
+| `sessionResumptionTimeoutSeconds` | integer        | `60`; valid range 1–86,400                                                                                |
+| `limits.maxConnections`           | integer        | `128`; valid range 1–65,536                                                                               |
+| `limits.maxClientSessions`        | integer        | `128` per authenticated username; valid range 1–10,000                                                    |
+| `limits.maxTotalPlayers`          | integer        | `256` server-wide; valid range 1–10,000                                                                   |
+| `limits.maxPlayersPerClient`      | integer        | `16`; valid range 1–1,000 and no greater than `maxTotalPlayers`                                           |
+| `limits.maxMessageBytes`          | integer        | `65,536`; valid range 1,024–1,048,576                                                                     |
+| `limits.requestTimeoutMs`         | integer        | `30,000`; valid range 1–300,000; also bounds the WebSocket handshake                                      |
+| `limits.maxInFlightRequests`      | integer        | `16` per WebSocket; valid range 1–4,096                                                                   |
+| `limits.maxRequestsPerSecond`     | integer        | `60` per WebSocket; valid range 1–100,000                                                                 |
+| `limits.eventBuffer`              | integer        | `128` events per client session; valid range 1–65,536                                                     |
+| `media.allowedFileRoots`          | string array   | Empty by default, which denies file playback; relative paths are relative to the config file              |
+| `media.allowedUrlHosts`           | string array   | Empty by default, which denies URL playback; exact host and subdomains are matched, or explicitly use `*` |
+| `media.allowHttp`                 | boolean        | `true`; controls `http:` URLs                                                                             |
+| `media.allowHttps`                | boolean        | `true`; controls `https:` URLs                                                                            |
+| `media.blockPrivateNetworks`      | boolean        | `true`; rejects hostnames resolving to private or special IP ranges                                       |
+| `observability.console`           | boolean        | `true`; enables the existing console subscriber for this server process                                   |
+
+For an empty `limits`, `media`, `observability`, or `bind` object, the defaults above apply. The
+`users` array is required.
+
+## Environment references
+
+String fields that may contain secrets or deployment-specific paths can use only this exact
+reference syntax:
+
+```json
+{
+  "password": "env('REMEDIA_RPC_PASSWORD')"
+}
+```
+
+Supported fields are `bind.host`, each user `username`, `password`, and `discordBotUserId`, each
+`media.allowedFileRoots` entry, and each `media.allowedUrlHosts` entry. The variable name must match
+`[A-Za-z_][A-Za-z0-9_]*`. A missing variable fails startup. The resolved value is treated as literal
+text; no interpolation or expression evaluation occurs. Numeric and boolean fields do not accept
+environment references.
+
+## Media access restrictions
+
+File paths are canonicalized before use and must be regular files beneath one of the configured
+roots. Use narrowly scoped roots containing only media the server should serve.
+
+Remote inputs accept only HTTP(S), according to `allowHttp` and `allowHttps`. `allowedUrlHosts` is an
+explicit host allowlist; an empty list denies all hosts. A listed parent domain also matches its
+subdomains. `"*"` opts in to any public hostname. Private, loopback, link-local, multicast, reserved,
+and documentation IP ranges are rejected by default after DNS resolution.
+
+FFmpeg follows HTTP redirects, and the core HTTP input owns the redirected request. The server
+cannot revalidate each redirect target in this v0 implementation. For untrusted URL inputs, use a
+strict host allowlist and enforce outbound egress rules that block internal networks and cloud
+metadata endpoints. Do not disable `blockPrivateNetworks` or configure `*` unless the media URLs are
+trusted and network egress is independently restricted.
+
+Raw FFmpeg filtergraphs are trusted application configuration because filters can access external
+resources. Do not expose unrestricted filter changes to untrusted clients.
+
+## Observability
+
+The server initializes the existing `remedia-observability` context. It does not add a second
+logging configuration. `REMEDIA_LOG` takes precedence over `REMEDIA_DEBUG=1`; `REMEDIA_LOG_FORMAT`
+accepts `text` or `json`; `REMEDIA_OTEL_ENABLED=true` enables optional OTLP traces and metrics. The
+standard `OTEL_*` endpoint, protocol, resource, and sampling variables are honored by the shared
+crate. `observability.console: false` disables server console output while preserving configured
+diagnostic receivers and OTLP exporters. See [Observability](/docs/observability/configuration).
+
+The process never logs passwords, authorization headers, Discord voice tokens, session keys, MLS
+material, or full media URLs. Treat RPC credentials, resume credentials, and voice credentials as
+secrets even when they are not written to logs.
