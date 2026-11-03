@@ -109,11 +109,6 @@ export async function withCommandReply(
     }
     return;
   }
-  try {
-    await interaction.deleteReply();
-  } catch {
-    // The public confirmation succeeded; leave Discord's defer alone if it cannot be removed.
-  }
 }
 
 export function createCommandEmbed(
