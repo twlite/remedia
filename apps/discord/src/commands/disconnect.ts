@@ -14,7 +14,6 @@ export default {
           ? 'Disconnected from the voice channel.'
           : 'No voice session was active.';
       },
-      true,
     );
   },
 } satisfies Command;

@@ -18,7 +18,6 @@ export default {
         await playback.pause(guildId, channelId);
         return snapshot.current ? `Paused ${displayTrack(snapshot.current)}.` : 'Playback paused.';
       },
-      true,
     );
   },
 } satisfies Command;

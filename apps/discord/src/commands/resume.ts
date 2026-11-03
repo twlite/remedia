@@ -20,7 +20,6 @@ export default {
           ? `Resumed ${displayTrack(snapshot.current)}.`
           : 'Playback resumed.';
       },
-      true,
     );
   },
 } satisfies Command;

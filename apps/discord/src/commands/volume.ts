@@ -33,7 +33,6 @@ export default {
           ? `Volume set to ${percent}%. Values above 100% may clip.`
           : `Volume set to ${percent}%.`;
       },
-      true,
     );
   },
 } satisfies Command;

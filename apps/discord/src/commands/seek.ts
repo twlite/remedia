@@ -32,7 +32,6 @@ export default {
         const track = snapshot.current ? ` in ${displayTrack(snapshot.current)}` : '';
         return `Seeked${track} to ${formatPosition(seconds)}.`;
       },
-      true,
     );
   },
 } satisfies Command;

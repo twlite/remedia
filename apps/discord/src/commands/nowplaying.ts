@@ -3,11 +3,11 @@ import { EmbedBuilder } from 'discord.js';
 import { VoiceRuntime } from '../voice/runtime.js';
 import {
   displayTrack,
-  formatDuration,
   getVoiceCommandContext,
   withCommandReply,
 } from '../voice/command-helpers.js';
 import type { PlaybackSnapshot } from '../voice/playback-manager.js';
+import { createProgressBar, formatProgressLine } from '../voice/progress.js';
 
 export default {
   data: { name: 'nowplaying', description: 'Show the current track and playback position.' },
@@ -25,13 +25,7 @@ export default {
 } satisfies Command;
 
 export function makeProgressBar(positionMs: number, durationMs: number, width = 18): string {
-  const boundedWidth = Math.max(1, Math.floor(width));
-  const ratio = Math.min(1, Math.max(0, positionMs / durationMs));
-  const marker = Math.min(boundedWidth - 1, Math.floor(ratio * boundedWidth));
-  return Array.from({ length: boundedWidth }, (_, index) => {
-    if (index === marker) return '●';
-    return index < marker ? '▰' : '▱';
-  }).join('');
+  return createProgressBar(positionMs, durationMs, width) ?? '';
 }
 
 export function createNowPlayingEmbed(snapshot: PlaybackSnapshot): EmbedBuilder {
@@ -39,20 +33,25 @@ export function createNowPlayingEmbed(snapshot: PlaybackSnapshot): EmbedBuilder 
   const stateColor =
     snapshot.state === 'playing' ? 0x57f287 : snapshot.state === 'paused' ? 0xfee75c : 0x5865f2;
   const duration = snapshot.durationMs ?? snapshot.current.info?.durationMs ?? null;
-  const position = `${snapshot.positionEstimated ? '~' : ''}${formatDuration(snapshot.positionMs)}`;
-  const bar =
-    duration !== null && duration > 0
-      ? `\`${makeProgressBar(snapshot.positionMs, duration)}\`\n`
-      : '';
+  const progress = formatProgressLine(snapshot.positionMs, duration, {
+    estimated: snapshot.positionEstimated,
+  });
   const embed = new EmbedBuilder()
     .setColor(stateColor)
     .setAuthor({ name: 'Now playing' })
     .setTitle(displayTrack(snapshot.current))
-    .setDescription(`${bar}**${position}** / **${formatDuration(duration)}**`)
+    .setDescription(`\`${progress}\``)
     .addFields(
-      { name: 'Status', value: capitalize(snapshot.state), inline: true },
-      { name: 'Filter', value: snapshot.filterPresets.join(', ') || 'Off', inline: true },
+      { name: 'Requested by', value: `<@${snapshot.current.requestedBy}>`, inline: true },
+      { name: 'State', value: capitalize(snapshot.state), inline: true },
+      {
+        name: 'Up next',
+        value: `${snapshot.queue.length} ${snapshot.queue.length === 1 ? 'track' : 'tracks'}`,
+        inline: true,
+      },
       { name: 'Volume', value: `${snapshot.volumePercent}%`, inline: true },
+      { name: 'Filters', value: snapshot.filterPresets.join(', ') || 'Off', inline: true },
+      { name: 'Loop', value: capitalize(snapshot.loopMode), inline: true },
     )
     .setFooter({
       text: snapshot.positionEstimated ? 'Source position is estimated' : 'Source media position',

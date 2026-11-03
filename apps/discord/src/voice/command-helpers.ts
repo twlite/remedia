@@ -13,6 +13,7 @@ const REMEDIA_RED = 0xed4245;
 const COMMAND_TITLES: Readonly<Record<string, string>> = {
   disconnect: 'Voice disconnected',
   filter: 'Audio filter',
+  loop: 'Loop mode',
   pause: 'Playback paused',
   ping: 'Remedia is online',
   play: 'Playback',
@@ -63,23 +64,34 @@ export function getVoiceCommandContext(
 export async function withCommandReply(
   interaction: ChatInputCommandInteraction,
   action: () => Promise<CommandResponse>,
-  ephemeral = false,
 ): Promise<void> {
-  await interaction.deferReply(ephemeral ? { flags: MessageFlags.Ephemeral } : {});
+  // Defer privately so validation and execution errors stay private. Discord cannot change a
+  // deferred reply's visibility, so successful actions delete the private defer and post a public
+  // follow-up instead.
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   try {
     const response = await action();
-    await interaction.editReply({
-      embeds: [
-        response instanceof EmbedBuilder ? response : createCommandEmbed(interaction, response),
-      ],
+    const embed = response instanceof EmbedBuilder ? response : createCommandEmbed(interaction, response);
+    if (!embed.data.fields?.some(({ name }) => name === 'Action by')) {
+      embed.addFields({ name: 'Action by', value: `<@${interaction.user.id}>`, inline: true });
+    }
+    await interaction.deleteReply();
+    await interaction.followUp({
+      embeds: [embed],
+      ephemeral: false,
       allowedMentions: { parse: [] },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await interaction.editReply({
+    const reply = {
       embeds: [createErrorEmbed(interaction, message)],
-      allowedMentions: { parse: [] },
-    });
+      allowedMentions: { parse: [] as string[] },
+    };
+    try {
+      await interaction.editReply(reply);
+    } catch {
+      await interaction.followUp({ ...reply, ephemeral: true });
+    }
   }
 }
 
@@ -92,7 +104,7 @@ export function createCommandEmbed(
     .setColor(REMEDIA_BLURPLE)
     .setAuthor({ name: 'Remedia' })
     .setTitle(COMMAND_TITLES[command] ?? `/${command}`)
-    .setDescription(description)
+    .setDescription(safeText(description, 4_000))
     .setFooter({ text: `/${command}` })
     .setTimestamp();
 }
@@ -105,7 +117,7 @@ export function createErrorEmbed(
     .setColor(REMEDIA_RED)
     .setAuthor({ name: 'Remedia' })
     .setTitle('Command failed')
-    .setDescription(message)
+    .setDescription(safeText(message, 3_800))
     .setFooter({ text: `/${interaction.commandName}` })
     .setTimestamp();
 }
@@ -126,7 +138,7 @@ export function parseHttpUrl(input: string): string {
 
 export function displayUrl(input: string): string {
   const url = new URL(input);
-  const display = `${url.origin}${url.pathname}`;
+  const display = `${url.protocol}//${url.host}${url.pathname}`;
   return display.length > 160 ? `${display.slice(0, 157)}...` : display;
 }
 
@@ -138,7 +150,7 @@ export function displayTrack(track: {
     ([key, value]) => key.toLowerCase() === 'title' && value.trim().length > 0,
   )?.[1];
   const label = title?.trim() || displayUrl(track.url);
-  return label.length > 160 ? `${label.slice(0, 157)}...` : label;
+  return safeText(label, 160);
 }
 
 export function formatDuration(milliseconds: number | null): string {
@@ -150,4 +162,23 @@ export function formatDuration(milliseconds: number | null): string {
   return hours > 0
     ? `${hours}:${minutes.toString().padStart(2, '0')}:${remainder.toString().padStart(2, '0')}`
     : `${minutes}:${remainder.toString().padStart(2, '0')}`;
+}
+
+export function safeText(value: string, maximumLength: number): string {
+  const sanitized = value
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/@(everyone|here)/gi, '@\u200b$1')
+    .replace(/\b(token|password|secret|authorization)(\s*[:=]\s*)[^\s,;&]+/gi, '$1$2[redacted]')
+    .replace(/(https?:\/\/)[^\s]+/gi, (candidate) => {
+      try {
+        const url = new URL(candidate);
+        return `${url.protocol}//${url.host}${url.pathname}`;
+      } catch {
+        return '[link]';
+      }
+    })
+    .trim();
+  return sanitized.length > maximumLength
+    ? `${sanitized.slice(0, Math.max(0, maximumLength - 1))}…`
+    : sanitized || 'No details were provided.';
 }

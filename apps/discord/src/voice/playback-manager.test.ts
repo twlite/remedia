@@ -41,7 +41,7 @@ test('keeps the six named presets in the Discord harness only', () => {
   assert.match(FILTER_PRESETS.vaporwave, /asetrate=38400/);
 });
 
-test('sends generation lifecycle messages to the text channel retained in queue metadata', async () => {
+test('command actions suppress duplicate lifecycle posts while automatic starts remain attributed', async () => {
   const { manager, session } = createManager();
   const origin = createTextChannel();
   const other = createTextChannel();
@@ -70,23 +70,14 @@ test('sends generation lifecycle messages to the text channel retained in queue 
   await new Promise<void>((resolve) => setImmediate(resolve));
 
   const titles = origin.messages.map(embedTitle);
-  assert.ok(titles.includes('Voice connection'));
-  assert.ok(titles.includes('Now playing'));
-  assert.ok(titles.includes('Track finished'));
-  assert.ok(titles.includes('Playback paused'));
-  assert.ok(titles.includes('Playback resumed'));
-  assert.ok(titles.includes('Playback position changed'));
-  assert.ok(titles.includes('Audio filter changed'));
-  assert.ok(titles.includes('Playback volume changed'));
-  assert.ok(titles.filter((title) => title === 'Now playing').length >= 2);
-  assert.ok(origin.messages.some((message) => embedDescription(message).includes('Example title')));
+  assert.deepEqual(titles, ['Now playing']);
+  assert.ok(origin.messages[0]?.embeds?.[0]?.data?.description?.includes('Example title'));
   assert.ok(
-    origin.messages.some(
-      (message) =>
-        embedTitle(message) === 'Track finished' &&
-        embedDescription(message).includes('Example title'),
+    origin.messages[0]?.embeds?.[0]?.data?.fields?.some(
+      (field) => field.name === 'Requested by' && field.value === '<@bob>',
     ),
   );
+  assert.equal(origin.messages[0]?.embeds?.[0]?.data?.footer?.text, 'Automatic playback notification');
   assert.equal(other.messages.length, 0);
 
   await manager.disconnect('guild', 'channel');
@@ -195,6 +186,133 @@ test('consecutive skips start tracks once and preserve combined per-guild effect
   assert.equal(snapshot.current, null);
   assert.equal(snapshot.queue.length, 0);
   assert.equal(snapshot.connectionState, 'connected');
+  await manager.close();
+});
+
+test('track loop repeats only the current track and off resumes the queue', async () => {
+  const { manager, session } = createManager();
+  await manager.enqueue('guild', 'channel', 'bot', {
+    url: 'https://media.example/a.wav',
+    requestedBy: 'alice',
+  });
+  await manager.enqueue('guild', 'channel', 'bot', {
+    url: 'https://media.example/b.wav',
+    requestedBy: 'alice',
+  });
+  assert.equal((await manager.snapshot('guild', 'channel')).loopMode, 'off');
+
+  await manager.setLoopMode('guild', 'channel', 'track');
+  let snapshot = await completeAndSnapshot(manager, session);
+  assert.equal(snapshot.loopMode, 'track');
+  assert.equal(snapshot.current?.url, 'https://media.example/a.wav');
+  assert.deepEqual(snapshot.queue.map((track) => track.url), ['https://media.example/b.wav']);
+  assert.deepEqual(session.playedUrls, [
+    'https://media.example/a.wav',
+    'https://media.example/a.wav',
+  ]);
+
+  await manager.setLoopMode('guild', 'channel', 'off');
+  snapshot = await completeAndSnapshot(manager, session);
+  assert.equal(snapshot.current?.url, 'https://media.example/b.wav');
+  assert.deepEqual(snapshot.queue, []);
+  assert.deepEqual(session.playedUrls, [
+    'https://media.example/a.wav',
+    'https://media.example/a.wav',
+    'https://media.example/b.wav',
+  ]);
+  await manager.close();
+});
+
+test('queue loop rotates completed and skipped tracks and remains guild-scoped', async () => {
+  const { manager, session } = createManager();
+  for (const name of ['a', 'b', 'c']) {
+    await manager.enqueue('guild', 'channel', 'bot', {
+      url: `https://media.example/${name}.wav`,
+      requestedBy: 'alice',
+    });
+  }
+  await manager.setLoopMode('guild', 'channel', 'queue');
+
+  let snapshot = await completeAndSnapshot(manager, session);
+  assert.equal(snapshot.current?.url, 'https://media.example/b.wav');
+  assert.deepEqual(snapshot.queue.map((track) => track.url), [
+    'https://media.example/c.wav',
+    'https://media.example/a.wav',
+  ]);
+
+  snapshot = await completeAndSnapshot(manager, session);
+  assert.equal(snapshot.current?.url, 'https://media.example/c.wav');
+  assert.deepEqual(snapshot.queue.map((track) => track.url), [
+    'https://media.example/a.wav',
+    'https://media.example/b.wav',
+  ]);
+
+  assert.equal((await manager.skip('guild', 'channel'))?.url, 'https://media.example/a.wav');
+  snapshot = await manager.snapshot('guild', 'channel');
+  assert.equal(snapshot.loopMode, 'queue');
+  assert.deepEqual(snapshot.queue.map((track) => track.url), [
+    'https://media.example/b.wav',
+    'https://media.example/c.wav',
+  ]);
+  assert.deepEqual(session.playedUrls, [
+    'https://media.example/a.wav',
+    'https://media.example/b.wav',
+    'https://media.example/c.wav',
+    'https://media.example/a.wav',
+  ]);
+  await manager.close();
+});
+
+test('skipping in track loop advances instead of replaying the current track', async () => {
+  const { manager, session } = createManager();
+  for (const name of ['a', 'b']) {
+    await manager.enqueue('guild', 'channel', 'bot', {
+      url: `https://media.example/${name}.wav`,
+      requestedBy: 'alice',
+    });
+  }
+  await manager.setLoopMode('guild', 'channel', 'track');
+
+  assert.equal((await manager.skip('guild', 'channel'))?.url, 'https://media.example/b.wav');
+  assert.deepEqual((await manager.snapshot('guild', 'channel')).queue, []);
+  assert.deepEqual(session.playedUrls, [
+    'https://media.example/a.wav',
+    'https://media.example/b.wav',
+  ]);
+  await manager.close();
+});
+
+test('loop mode does not requeue failed tracks and stop does not restart playback', async () => {
+  const { manager, session } = createManager();
+  session.failingUrls.add('https://media.example/failing.wav');
+  await assert.rejects(
+    manager.enqueue('guild', 'channel', 'bot', {
+      url: 'https://media.example/failing.wav',
+      requestedBy: 'alice',
+    }),
+    /media source was not found/i,
+  );
+  await manager.setLoopMode('guild', 'channel', 'track');
+  await manager.enqueue('guild', 'channel', 'bot', {
+    url: 'https://media.example/next.wav',
+    requestedBy: 'alice',
+  });
+  session.finish('failed');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  const afterFailure = await manager.snapshot('guild', 'channel');
+  assert.equal(afterFailure.current, null);
+  assert.equal(afterFailure.state, 'failed');
+  assert.equal(afterFailure.loopMode, 'track');
+
+  await manager.stop('guild', 'channel');
+  const stopped = await manager.snapshot('guild', 'channel');
+  assert.equal(stopped.current, null);
+  assert.equal(stopped.loopMode, 'track');
+  assert.deepEqual(session.playedUrls, [
+    'https://media.example/failing.wav',
+    'https://media.example/next.wav',
+  ]);
   await manager.close();
 });
 
@@ -384,10 +502,13 @@ test('filter and volume state are independent between guild sessions', async () 
   }
   await manager.setFilter('guild-a', 'channel', 'vibrato');
   await manager.setVolume('guild-a', 'channel', 30);
+  await manager.setLoopMode('guild-a', 'channel', 'queue');
   assert.deepEqual((await manager.snapshot('guild-a', 'channel')).filterPresets, ['vibrato']);
   assert.equal((await manager.snapshot('guild-a', 'channel')).volumePercent, 30);
+  assert.equal((await manager.snapshot('guild-a', 'channel')).loopMode, 'queue');
   assert.deepEqual((await manager.snapshot('guild-b', 'channel')).filterPresets, []);
   assert.equal((await manager.snapshot('guild-b', 'channel')).volumePercent, 100);
+  assert.equal((await manager.snapshot('guild-b', 'channel')).loopMode, 'off');
   await manager.close();
 });
 
@@ -454,6 +575,15 @@ function createManager(): { manager: DiscordPlaybackManager; session: FakeDiscor
     },
   } as unknown as RemediaClient;
   return { manager: new DiscordPlaybackManager(remedia), session };
+}
+
+async function completeAndSnapshot(
+  manager: DiscordPlaybackManager,
+  session: FakeDiscordSession,
+): Promise<Awaited<ReturnType<DiscordPlaybackManager['snapshot']>>> {
+  session.finish('completed');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  return manager.snapshot('guild', 'channel');
 }
 
 class FakeDiscordSession extends EventEmitter {

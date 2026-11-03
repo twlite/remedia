@@ -19,7 +19,6 @@ export default {
         const track = snapshot.current ? `Stopped ${displayTrack(snapshot.current)}. ` : '';
         return `${track}Playback stopped and the queue cleared. The bot remains connected.`;
       },
-      true,
     );
   },
 } satisfies Command;

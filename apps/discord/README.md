@@ -73,3 +73,10 @@ gains above 100% may clip. Filter and volume values stay scoped to one guild
 and carry across queued tracks and skips until the player disconnects. The
 queue manager serializes skips and ignores completion notifications from a
 replaced playback generation.
+
+`/loop mode:<off|track|queue>` selects a per-guild loop mode. Track mode repeats
+the current item after natural completion, while `/skip` still advances. Queue
+mode rotates naturally completed and manually skipped tracks to the end of the
+queue; failed tracks are not repeated. The mode remains selected across tracks
+and `/stop`, and resets when the player disconnects. `/nowplaying` displays the
+active mode.

@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { EmbedBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import type { DiscordSession, PlaybackState, RemediaClient } from '@remedia/client';
 import filterCommand from './filter.js';
+import loopCommand from './loop.js';
 import volumeCommand from './volume.js';
 import { VoiceRuntime } from '../voice/runtime.js';
 
@@ -59,6 +60,17 @@ test('filter and volume slash commands read and change the guild playback settin
     assert.equal(response.description, 'Volume set to 75%.');
     assert.equal(session.volume, 0.75);
 
+    response = await invoke(loopCommand, undefined, undefined, undefined, 'track');
+    assert.equal(
+      response.description,
+      'The current track will repeat until you change the mode or skip it.',
+    );
+    response = await invoke(loopCommand, undefined, undefined, undefined, 'queue');
+    assert.equal(response.description, 'Completed and skipped tracks will move to the end of the queue.');
+    response = await invoke(loopCommand, undefined, undefined, undefined, 'off');
+    assert.equal(response.description, 'Looping is off.');
+    assert.equal((await runtime.playback.snapshot('guild', 'channel')).loopMode, 'off');
+
     await invoke(filterCommand, 'set', 'nightcore');
     response = await invoke(filterCommand, 'clear');
     assert.equal(response.description, 'All audio filters cleared.');
@@ -73,10 +85,11 @@ test('filter and volume slash commands read and change the guild playback settin
 });
 
 async function invoke(
-  command: typeof filterCommand | typeof volumeCommand,
+  command: typeof filterCommand | typeof volumeCommand | typeof loopCommand,
   subcommand?: string,
   preset?: string,
   percent?: number,
+  mode?: string,
 ): Promise<ReturnType<EmbedBuilder['toJSON']>> {
   let response: ReturnType<EmbedBuilder['toJSON']> | undefined;
   const interaction = {
@@ -93,7 +106,7 @@ async function invoke(
     },
     options: {
       getSubcommand: () => subcommand,
-      getString: () => preset,
+      getString: (name: string) => (name === 'mode' ? mode : preset),
       getInteger: () => percent ?? null,
     },
     deferReply: async () => {},

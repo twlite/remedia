@@ -45,7 +45,6 @@ export default {
         }
         return `Queued #${result.queuePosition}: ${source}.`;
       },
-      true,
     );
   },
 } satisfies Command;

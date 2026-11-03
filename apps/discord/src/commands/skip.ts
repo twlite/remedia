@@ -23,7 +23,6 @@ export default {
           ? `${skipped}Now playing ${displayTrack(next)}.`
           : `${skipped}The queue is empty.`;
       },
-      true,
     );
   },
 } satisfies Command;

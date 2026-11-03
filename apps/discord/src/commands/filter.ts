@@ -50,7 +50,6 @@ export default {
         const selected = snapshot.filterPresets.join(', ') || 'none';
         return `Available filters: ${FILTER_PRESET_NAMES.join(', ')}. Current: ${selected}.`;
       },
-      true,
     );
   },
 } satisfies Command;
