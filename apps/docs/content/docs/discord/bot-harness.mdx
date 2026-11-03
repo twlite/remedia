@@ -48,6 +48,11 @@ voice session IDs, tokens, or endpoints.
   current track when available.
 - `/queue list` shows the current item and up to ten upcoming URLs;
   `/queue clear` removes upcoming items but keeps the current track.
+- `/loop mode:<off|track|queue>` controls this guild's playback loop. `track`
+  repeats the current track after natural completion; `/skip` still advances to
+  the next item. `queue` rotates naturally completed and manually skipped tracks
+  to the end of the queue. Failed tracks are not repeated. `off` restores normal
+  one-pass playback.
 - `/skip` stops the current item and starts the next queued URL, showing titles
   when Remedia metadata is available.
 - `/nowplaying` shows the Remedia title when available, playback state, and
@@ -65,10 +70,14 @@ voice session IDs, tokens, or endpoints.
   choices and current selection.
 - `/volume` reads the current setting; `/volume percent:<0..200>` sets linear
   gain. Zero mutes, 100 is unity, and values above 100 may clip.
+- `/nowplaying` also shows the selected loop mode.
 
 The queue belongs to this sample application, not `remedia-core` or
 `@remedia/node`. It is held in memory per guild and is lost when the bot exits.
 It holds up to 100 upcoming tracks in addition to the current track.
+The loop mode is stored per guild, remains selected across tracks and `/stop`,
+and resets when the voice session is disconnected. In queue mode, the current
+track counts as part of the loop; if it is the only item, it repeats by itself.
 Upcoming queue entries have not been opened by Remedia yet, so they display
 their sanitized URLs until playback begins and metadata becomes available.
 When a track reaches natural end-of-stream, the app advances to the next queued
