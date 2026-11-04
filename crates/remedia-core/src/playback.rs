@@ -1948,12 +1948,17 @@ fn fail_session(
         (pending_seek, pending_filter, playback_id, output_sample)
     };
     shared.observability.metrics().playback_failed();
+    let output_cause = match &error {
+        PlaybackError::Output(output_error) => output_error.to_string(),
+        _ => String::new(),
+    };
     tracing::error!(
         name: "core.playback.failed",
         target: "remedia_core::playback",
         playback_id,
         output_sample,
         error_kind = playback_error_kind(&error),
+        output_cause,
         "playback worker failed"
     );
     if let Some(request) = pending_seek {

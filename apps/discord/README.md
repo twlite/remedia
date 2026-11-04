@@ -15,15 +15,14 @@ invoking user; errors remain ephemeral. `/nowplaying` shows elapsed time, a
 proportional progress indicator, and original media duration, marking estimated
 source positions with `~`. Unknown or live duration does not show a fabricated
 progress bar. The bot subscribes to typed Remedia lifecycle events and posts
-autonomous notifications for queued track starts, genuine playback failures,
-and terminal voice failures. Command-confirmed controls, filters, volume, stop,
-skip, and disconnect do not produce a second lifecycle embed. The text channel
-from the command that
+public notifications for track starts, natural completion, stop, failure,
+pause, resume, seek, filter changes, volume changes, and terminal voice
+failures. The text channel from the command that
 creates a guild's queue is retained in that queue's in-memory metadata and is
 used for those notifications across queued tracks. Later `/play` requests do
 not silently move the queue to another text channel. Disconnecting disposes
-the queue metadata. Automatic start notifications identify the track requester
-and are labeled automatic; `/queue` remains a public snapshot.
+the queue metadata. Track notifications identify the requester when available;
+`/queue` remains a public snapshot.
 
 Create `.env` with `DISCORD_TOKEN` and `APPLICATION_ID`, then choose a backend.
 Embedded mode is the default and calls the native Node addon directly. Build it

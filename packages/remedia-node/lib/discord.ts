@@ -90,6 +90,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   #attempt: ConnectAttempt | undefined;
   #voiceState: VoiceStateCredentials | undefined;
   #voiceServer: VoiceServerCredentials | undefined;
+  #voiceServerUnavailable = false;
   #nativeTransportGeneration = 0;
   #gatewayEpoch: number | undefined;
   #lastGatewaySequence: number | undefined;
@@ -105,6 +106,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   #filterGraph: string | null = null;
   #volume = 1;
   #configurationWork: Promise<void> = Promise.resolve();
+  #nativeStateTimer: ReturnType<typeof setInterval> | undefined;
 
   /** @internal Constructed by `Remedia.createDiscordSession()`. */
   constructor(
@@ -236,6 +238,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     this.#attempt = attempt;
     this.#voiceState = undefined;
     this.#voiceServer = undefined;
+    this.#voiceServerUnavailable = false;
     this.#connectionError = undefined;
     this.#setConnectionState('connecting');
     this.#joinRequested = true;
@@ -359,6 +362,8 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     const shouldLeaveGateway = this.#joinRequested || this.#nativeSession !== undefined;
     this.#joinRequested = false;
     this.#generation += 1;
+    this.#stopNativeStateMonitor();
+    this.#voiceServerUnavailable = false;
     this.#invalidateNativeTransport();
     this.#setConnectionState('disconnecting');
     this.#voiceState = undefined;
@@ -414,11 +419,19 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     if (data.channel_id !== this.channelId || typeof data.session_id !== 'string') return;
     if (data.session_id.length === 0) return;
 
-    if (this.#voiceState?.sessionId === data.session_id) return;
+    const previousSessionId = this.#voiceState?.sessionId;
+    if (previousSessionId === data.session_id) return;
     const refreshRequired =
       !this.#attempt &&
-      (this.#connectionState === 'connected' || this.#connectionState === 'reconnecting');
+      (this.#connectionState === 'connected' ||
+        this.#connectionState === 'reconnecting' ||
+        this.#connectionState === 'disconnected' ||
+        this.#connectionState === 'failed');
     this.#voiceState = { sessionId: data.session_id };
+    if (previousSessionId !== undefined) {
+      this.#voiceServer = undefined;
+      this.#voiceServerUnavailable = true;
+    }
     if (refreshRequired) {
       this.#beginCredentialRefresh();
       return;
@@ -429,22 +442,13 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   #receiveVoiceServer(data: Record<string, unknown>): void {
     if (!this.#joinRequested || this.#connectionState === 'disconnecting') return;
     if (data.endpoint === null) {
-      if (this.#connectionState === 'connected' && !this.#attempt) {
+      this.#voiceServerUnavailable = true;
+      if (
+        !this.#attempt &&
+        ['connected', 'reconnecting', 'disconnected', 'failed'].includes(this.#connectionState)
+      ) {
         this.#beginCredentialRefresh();
-      } else if (this.#attempt && this.#attempt.internal) {
-        if (
-          !this.#retryCredentialRefresh(
-            this.#attempt,
-            new Error('voice endpoint is temporarily unavailable'),
-          )
-        ) {
-          this.#failAttempt(
-            this.#attempt,
-            new Error('Discord did not provide a voice server endpoint'),
-            true,
-          );
-        }
-      } else if (this.#attempt || this.#connectionState !== 'disconnected') {
+      } else if (this.#attempt && !this.#attempt.internal) {
         this.#failGateway(new Error('Discord did not provide a voice server endpoint'));
       }
       return;
@@ -452,23 +456,37 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     if (typeof data.token !== 'string' || typeof data.endpoint !== 'string') return;
     if (data.token.length === 0 || data.endpoint.length === 0) return;
 
-    if (this.#voiceServer?.token === data.token && this.#voiceServer.endpoint === data.endpoint) {
-      return;
-    }
-    if (
+    const sameServer =
+      this.#voiceServer?.token === data.token && this.#voiceServer.endpoint === data.endpoint;
+    const currentState = this.connectionState;
+    const refreshRequired =
       !this.#attempt &&
-      (this.#connectionState === 'connected' || this.#connectionState === 'reconnecting')
-    ) {
-      this.#beginCredentialRefresh();
+      currentState !== 'connecting' &&
+      currentState !== 'negotiatingDave' &&
+      (this.#voiceServerUnavailable || currentState !== 'connected' || !sameServer);
+    this.#voiceServerUnavailable = false;
+    if (sameServer && !refreshRequired) {
+      this.#credentialsChanged();
       return;
     }
     this.#voiceServer = { token: data.token, endpoint: data.endpoint };
+    if (refreshRequired) {
+      this.#beginCredentialRefresh();
+      return;
+    }
     this.#credentialsChanged();
   }
 
   #credentialsChanged(): void {
     const attempt = this.#attempt;
-    if (!attempt || !this.#voiceState || !this.#voiceServer || !attempt.requestSent) return;
+    if (
+      !attempt ||
+      !this.#voiceState ||
+      !this.#voiceServer ||
+      this.#voiceServerUnavailable ||
+      !attempt.requestSent
+    )
+      return;
     this.#tryStartNativeConnection(attempt);
   }
 
@@ -483,21 +501,23 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       resolve = res;
       reject = rej;
     });
-    this.#generation += 1;
     let attempt!: ConnectAttempt;
+    const onTimeout = (): void => {
+      const error = new Error(`Discord voice connection timed out after ${timeoutMs} ms`);
+      if (this.#retryCredentialRefresh(attempt, error)) {
+        attempt.timer = setTimeout(onTimeout, timeoutMs);
+      } else {
+        this.#failAttempt(attempt, error, true);
+      }
+    };
+    this.#generation += 1;
     attempt = {
       generation: this.#generation,
       sequenceFloor: this.#gateway.lastSequence,
       promise,
       resolve,
       reject,
-      timer: setTimeout(() => {
-        this.#failAttempt(
-          attempt,
-          new Error(`Discord voice connection timed out after ${timeoutMs} ms`),
-          true,
-        );
-      }, timeoutMs),
+      timer: setTimeout(onTimeout, timeoutMs),
       signal,
       abortListener: undefined,
       requestSent: false,
@@ -532,14 +552,16 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       });
   }
 
-  #beginCredentialRefresh(): void {
+  #beginCredentialRefresh(requireFreshServer = false): void {
     if (this.#attempt || this.#disposed) return;
+    if (requireFreshServer) {
+      this.#voiceServer = undefined;
+      this.#voiceServerUnavailable = true;
+    }
     const attempt = this.#createAttempt(DEFAULT_CONNECT_TIMEOUT_MS, undefined, true);
     // This internal attempt may have no direct caller waiting on its Promise.
     void attempt.promise.catch(() => {});
     this.#attempt = attempt;
-    this.#voiceState = undefined;
-    this.#voiceServer = undefined;
     this.#setConnectionState('reconnecting');
     this.#connectionError = undefined;
     this.#joinRequested = true;
@@ -552,7 +574,8 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       this.#attempt !== attempt ||
       !attempt.requestSent ||
       !this.#voiceState ||
-      !this.#voiceServer
+      !this.#voiceServer ||
+      this.#voiceServerUnavailable
     ) {
       return;
     }
@@ -628,6 +651,8 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       this.#setConnectionState('connected');
       this.#voiceState = { sessionId: credentials.sessionId };
       this.#voiceServer = { token: credentials.token, endpoint: credentials.endpoint };
+      this.#voiceServerUnavailable = false;
+      this.#startNativeStateMonitor();
       this.#playbackGeneration = playback?.currentGeneration ?? this.#playbackGeneration;
       if (attempt && this.#attempt === attempt) {
         this.#finishAttempt(attempt);
@@ -659,6 +684,28 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
         this.#connectionError = asError(error).message;
       }
     });
+  }
+
+  #startNativeStateMonitor(): void {
+    this.#stopNativeStateMonitor();
+    this.#nativeStateTimer = setInterval(() => {
+      if (this.#disposed || !this.#nativeSession || this.#attempt || !this.#joinRequested) return;
+      try {
+        const state = this.#native.voiceState(this.#nativeSession.voiceId);
+        if (state === 'failed' || state === 'disconnected') {
+          this.#beginCredentialRefresh(true);
+        }
+      } catch {
+        // Explicit close/disposal owns cleanup if the native entry disappeared.
+      }
+    }, 250);
+    this.#nativeStateTimer.unref?.();
+  }
+
+  #stopNativeStateMonitor(): void {
+    if (!this.#nativeStateTimer) return;
+    clearInterval(this.#nativeStateTimer);
+    this.#nativeStateTimer = undefined;
   }
 
   #invalidateNativeTransport(): void {
@@ -696,6 +743,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     if (!this.#isCurrent(generation, attempt)) return;
     if (attempt && this.#retryCredentialRefresh(attempt, error)) return;
     this.#connectionError = error.message;
+    this.#stopNativeStateMonitor();
     this.#setConnectionState('failed');
     const pending = this.#attempt;
     if (pending) {
@@ -705,8 +753,11 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     const shouldLeaveGateway = this.#joinRequested;
     this.#joinRequested = false;
     this.#generation += 1;
-    this.#voiceState = undefined;
-    this.#voiceServer = undefined;
+    if (!attempt?.internal) {
+      this.#voiceState = undefined;
+      this.#voiceServer = undefined;
+      this.#voiceServerUnavailable = false;
+    }
     if (attempt?.internal && this.#nativeSession) {
       try {
         this.#native.failVoiceRecovery(
@@ -738,9 +789,13 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     this.#generation += 1;
     this.#finishAttempt(attempt);
     this.#connectionError = error.name === 'AbortError' ? undefined : error.message;
+    this.#stopNativeStateMonitor();
     this.#setConnectionState(error.name === 'AbortError' ? 'disconnected' : 'failed');
-    this.#voiceState = undefined;
-    this.#voiceServer = undefined;
+    if (!attempt.internal) {
+      this.#voiceState = undefined;
+      this.#voiceServer = undefined;
+      this.#voiceServerUnavailable = false;
+    }
     if (attempt.internal && this.#nativeSession) {
       try {
         this.#native.failVoiceRecovery(
@@ -774,8 +829,8 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     attempt.generation = this.#generation;
     attempt.sequenceFloor = this.#gateway.lastSequence;
     attempt.requestSent = false;
-    this.#voiceState = undefined;
     this.#voiceServer = undefined;
+    this.#voiceServerUnavailable = true;
     this.#setConnectionState('reconnecting');
     this.#suspendCurrentNativeTransport(attempt);
     this.#requestGatewayJoin(attempt);
@@ -804,6 +859,8 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     this.#joinRequested = false;
     this.#voiceState = undefined;
     this.#voiceServer = undefined;
+    this.#voiceServerUnavailable = false;
+    this.#stopNativeStateMonitor();
     try {
       await this.#nativeWork;
       await this.#backgroundCleanup;

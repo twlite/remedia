@@ -65,6 +65,11 @@ export class FakeServerNode {
   finishBeforePlayResponse = false;
   playerPlayRequests = 0;
   voiceConnectRequests = 0;
+  readonly voiceConnectionCredentials: Array<{
+    sessionId: string;
+    token: string;
+    endpoint: string;
+  }> = [];
   voiceDisconnectRequests = 0;
   voiceSuspendRequests = 0;
   voiceConnectFailures = 0;
@@ -306,6 +311,11 @@ export class FakeServerNode {
           }
           guild.voiceGeneration = generation;
           this.voiceConnectRequests += 1;
+          this.voiceConnectionCredentials.push({
+            sessionId: String(params.sessionId),
+            token: String(params.token),
+            endpoint: String(params.endpoint),
+          });
           const gate = this.voiceConnectGate;
           if (gate) await gate();
           if (this.voiceConnectFailures > 0) {

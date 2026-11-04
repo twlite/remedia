@@ -238,6 +238,7 @@ describe('remote Discord playback', () => {
       expect(voice.snapshot.generation).toBe(sourceGeneration);
       expect(started).toBe(1);
       expect(server.voiceConnectRequests).toBe(2);
+      expect(server.voiceConnectionCredentials.at(-1)?.sessionId).toBe('voice-session-b');
       expect(server.voiceDisconnectRequests).toBe(0);
       expect((await voice.refresh()).state).toBe('paused');
 
@@ -254,8 +255,80 @@ describe('remote Discord playback', () => {
       await Promise.resolve();
       expect(payloads).toHaveLength(2);
       expect(server.voiceConnectRequests).toBe(2);
+      expect(server.voiceConnectionCredentials.at(-1)?.sessionId).toBe('voice-session-b');
       await voice.disconnect();
       expect(server.voiceDisconnectRequests).toBe(1);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('uses a server update alone to rotate the token when the endpoint stays the same', async () => {
+    const server = await FakeServerNode.listen({ id: 'remote-server-only-update' });
+    const payloads: DiscordGatewayVoicePayload[] = [];
+    const client = await RemediaClient.create({
+      botUserId: BOT_ID,
+      nodes: [
+        {
+          type: 'remote',
+          id: 'remote-server-only',
+          url: server.url,
+          auth: { username: 'bot', password: 'secret' },
+        },
+      ],
+      send: (_guildId, payload) => {
+        payloads.push(payload);
+      },
+      requestTimeoutMs: 2_000,
+    });
+    try {
+      const voice = client.createDiscordSession({
+        guildId: GUILD_ID,
+        channelId: CHANNEL_ID,
+        userId: BOT_ID,
+      });
+      const connecting = voice.connect({ timeoutMs: 2_000 });
+      await waitUntil(() => payloads.length === 1);
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 1,
+        d: { guild_id: GUILD_ID, token: 'initial-token', endpoint: 'same.voice.test:443' },
+      });
+      client.receive({
+        t: 'VOICE_STATE_UPDATE',
+        s: 2,
+        d: {
+          guild_id: GUILD_ID,
+          user_id: BOT_ID,
+          channel_id: CHANNEL_ID,
+          session_id: 'voice-session',
+        },
+      });
+      await connecting;
+      await voice.play({ url: 'https://media.example.test/server-only-update.mp3' });
+      await voice.pause();
+      const generation = voice.snapshot.generation;
+
+      client.receive({
+        t: 'VOICE_SERVER_UPDATE',
+        s: 3,
+        d: { guild_id: GUILD_ID, token: 'latest-token', endpoint: 'same.voice.test:443' },
+      });
+      const recovery = voice.connect({ timeoutMs: 2_000 });
+      await recovery;
+
+      expect(voice.connectionState).toBe('connected');
+      expect(voice.state).toBe('paused');
+      expect(voice.snapshot.generation).toBe(generation);
+      expect(server.voiceConnectRequests).toBe(2);
+      expect(server.voiceDisconnectRequests).toBe(0);
+      expect(server.voiceConnectionCredentials.at(-1)).toEqual({
+        sessionId: 'voice-session',
+        token: 'latest-token',
+        endpoint: 'same.voice.test:443',
+      });
+      await voice.disconnect();
     } finally {
       await client.close();
       await server.close();
@@ -434,7 +507,8 @@ describe('remote Discord playback', () => {
       expect(voice.connectionState).toBe('connected');
       expect(voice.state).toBe('stopped');
       expect(started).toBe(1);
-      expect(server.voiceConnectRequests).toBe(2);
+      expect(server.voiceConnectRequests).toBe(3);
+      expect(server.voiceConnectionCredentials.at(-1)?.sessionId).toBe('voice-session-b');
       expect(server.voiceDisconnectRequests).toBe(0);
       await voice.disconnect();
     } finally {
@@ -519,7 +593,8 @@ describe('remote Discord playback', () => {
       expect(voice.connectionState).toBe('connected');
       expect(voice.state).toBe('stopped');
       expect(started).toBe(1);
-      expect(server.voiceConnectRequests).toBe(2);
+      expect(server.voiceConnectRequests).toBe(3);
+      expect(server.voiceConnectionCredentials.at(-1)?.sessionId).toBe('voice-session-b');
       expect(server.voiceDisconnectRequests).toBe(0);
       await voice.disconnect();
     } finally {

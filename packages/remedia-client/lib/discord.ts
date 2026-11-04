@@ -193,6 +193,8 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
 
     const attempt = this.#newAttempt(timeoutMs, options.signal, false);
     this.#attempt = attempt;
+    this.#voiceSessionId = undefined;
+    this.#voiceServer = undefined;
     this.#voiceFailureEmitted = false;
     this.#setConnectionState('connecting');
     this.#connectionError = null;
@@ -478,22 +480,22 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       data.session_id.length === 0
     )
       return;
-    if (
+    if (data.session_id === this.#voiceSessionId) return;
+    const refresh =
       !this.#attempt &&
-      this.#connectionState === 'connected' &&
-      data.session_id === this.#voiceSessionId
-    )
-      return;
-    const refresh = !this.#attempt && this.#connectionState === 'connected';
+      ['connected', 'reconnecting', 'disconnected', 'failed'].includes(this.connectionState);
     const attempt =
       this.#attempt ??
       (refresh ? this.#newAttempt(DEFAULT_CONNECT_TIMEOUT_MS, undefined, true) : undefined);
     if (!attempt) return;
-    if (attempt.voiceState?.sessionId === data.session_id) return;
     if (refresh) {
       this.#attempt = attempt;
       attempt.voiceServer = undefined;
+      attempt.voiceState = { sessionId: data.session_id };
+      attempt.credentialRevision += 1;
+      this.#voiceSessionId = data.session_id;
       this.#setConnectionState('reconnecting');
+      this.#suspendRemoteVoice(attempt);
       void Promise.resolve(this.#runtime.sendVoicePayload(this.guildId, this.channelId))
         .then(() => {
           if (this.#attempt === attempt) attempt.requestSent = true;
@@ -504,8 +506,10 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
             this.#failAttempt(attempt, asError(error), true);
           }
         });
+      return;
     }
     attempt.voiceState = { sessionId: data.session_id };
+    this.#voiceSessionId = data.session_id;
     attempt.credentialRevision += 1;
     this.#suspendRemoteVoice(attempt);
     this.#tryStartRemoteConnection(attempt);
@@ -523,11 +527,10 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
           new Error('Discord did not provide a voice server endpoint'),
           true,
         );
-      } else if (this.#connectionState === 'connected') {
-        const refresh = this.#newAttempt(DEFAULT_CONNECT_TIMEOUT_MS, undefined, true);
-        this.#attempt = refresh;
-        this.#setConnectionState('reconnecting');
-        this.#retryGatewayCredentials(refresh, new Error('Discord voice endpoint is rotating'));
+      } else if (
+        ['connected', 'reconnecting', 'disconnected', 'failed'].includes(this.connectionState)
+      ) {
+        this.#beginCredentialRefresh(true);
       }
       return;
     }
@@ -538,26 +541,26 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       !data.endpoint
     )
       return;
-    const pendingServer = this.#attempt?.voiceServer;
-    if (pendingServer?.token === data.token && pendingServer.endpoint === data.endpoint) return;
-    if (
+    const sameServer =
+      this.#voiceServer?.token === data.token && this.#voiceServer.endpoint === data.endpoint;
+    const currentState = this.connectionState;
+    const refresh =
       !this.#attempt &&
-      this.#connectionState === 'connected' &&
-      data.token === this.#voiceServer?.token &&
-      data.endpoint === this.#voiceServer.endpoint
-    )
-      return;
-    const refresh = !this.#attempt && this.#connectionState === 'connected';
+      !['connecting', 'negotiating_dave', 'disconnecting'].includes(currentState) &&
+      (currentState !== 'connected' || !sameServer);
+    if (sameServer && !refresh && this.#attempt?.voiceServer?.token === data.token) return;
+    this.#voiceServer = { token: data.token, endpoint: data.endpoint };
     const attempt =
       this.#attempt ??
       (refresh ? this.#newAttempt(DEFAULT_CONNECT_TIMEOUT_MS, undefined, true) : undefined);
     if (!attempt) return;
-    if (attempt.voiceServer?.token === data.token && attempt.voiceServer.endpoint === data.endpoint)
-      return;
     if (refresh) {
       this.#attempt = attempt;
-      attempt.voiceState = undefined;
+      attempt.voiceState = this.#voiceSessionId ? { sessionId: this.#voiceSessionId } : undefined;
+      attempt.voiceServer = { token: data.token, endpoint: data.endpoint };
+      attempt.credentialRevision += 1;
       this.#setConnectionState('reconnecting');
+      this.#suspendRemoteVoice(attempt);
       void Promise.resolve(this.#runtime.sendVoicePayload(this.guildId, this.channelId))
         .then(() => {
           if (this.#attempt === attempt) attempt.requestSent = true;
@@ -568,11 +571,34 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
             this.#failAttempt(attempt, asError(error), true);
           }
         });
+      return;
     }
     attempt.voiceServer = { token: data.token, endpoint: data.endpoint };
     attempt.credentialRevision += 1;
     this.#suspendRemoteVoice(attempt);
     this.#tryStartRemoteConnection(attempt);
+  }
+
+  #beginCredentialRefresh(requireFreshServer: boolean): void {
+    if (this.#attempt || this.#disposed || !this.#joinRequested) return;
+    const attempt = this.#newAttempt(DEFAULT_CONNECT_TIMEOUT_MS, undefined, true);
+    attempt.voiceState = this.#voiceSessionId ? { sessionId: this.#voiceSessionId } : undefined;
+    attempt.voiceServer = requireFreshServer ? undefined : this.#voiceServer;
+    attempt.credentialRevision += 1;
+    this.#attempt = attempt;
+    this.#setConnectionState('reconnecting');
+    this.#suspendRemoteVoice(attempt);
+    void Promise.resolve(this.#runtime.sendVoicePayload(this.guildId, this.channelId))
+      .then(() => {
+        if (!this.#isCurrent(attempt)) return;
+        attempt.requestSent = true;
+        this.#tryStartRemoteConnection(attempt);
+      })
+      .catch((error: unknown) => {
+        if (!this.#retryGatewayCredentials(attempt, asError(error))) {
+          this.#failAttempt(attempt, asError(error), true);
+        }
+      });
   }
 
   #tryStartRemoteConnection(attempt: ConnectAttempt): void {
@@ -681,21 +707,21 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     // a process-level unhandled rejection when teardown wins a race with connection startup.
     void promise.catch(() => undefined);
     const attempt = {} as ConnectAttempt;
+    const onTimeout = (): void => {
+      const error = new Error(`Discord voice connection timed out after ${timeoutMs} ms`);
+      if (this.#retryGatewayCredentials(attempt, error)) {
+        attempt.timer = setTimeout(onTimeout, timeoutMs);
+      } else {
+        this.#failAttempt(attempt, error, true);
+      }
+    };
     Object.assign(attempt, {
       generation: this.#connectionGeneration + 1,
       sequenceFloor: this.#runtime.gatewaySequence(),
       resolve,
       reject,
       promise,
-      timer: setTimeout(
-        () =>
-          this.#failAttempt(
-            attempt,
-            new Error(`Discord voice connection timed out after ${timeoutMs} ms`),
-            true,
-          ),
-        timeoutMs,
-      ),
+      timer: setTimeout(onTimeout, timeoutMs),
       signal,
       abortListener: undefined,
       requestSent: false,
@@ -811,7 +837,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     attempt.retryCount += 1;
     attempt.requestSent = false;
     attempt.sequenceFloor = this.#runtime.gatewaySequence();
-    attempt.voiceState = undefined;
+    attempt.voiceState ??= this.#voiceSessionId ? { sessionId: this.#voiceSessionId } : undefined;
     attempt.voiceServer = undefined;
     attempt.credentialRevision += 1;
     this.#suspendRemoteVoice(attempt);
@@ -922,6 +948,15 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     const onVoiceState = (event: VoiceLifecycleEventMap['voiceStateChanged'][0]): void => {
       const state = event.state;
       if (this.#connectionState === state) return;
+      if (
+        (state === 'failed' || state === 'disconnected') &&
+        backend.nodeType === 'remote' &&
+        this.#joinRequested &&
+        !this.#attempt
+      ) {
+        this.#beginCredentialRefresh(true);
+        return;
+      }
       const previousState = this.#connectionState;
       this.#connectionState = state;
       this.emit(VoiceEvent.voiceStateChanged, {

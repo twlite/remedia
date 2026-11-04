@@ -225,19 +225,50 @@ pub(crate) async fn execute(
                 ));
             }
             let previous_voice = { lock(&guild.voice).take() };
+            let previous_voice_state = previous_voice
+                .as_ref()
+                .map(|voice| voice_state_name(voice.state()))
+                .unwrap_or("disconnected");
             let recovery =
                 previous_voice.is_some() || guild.voice_reconnecting.swap(true, Ordering::AcqRel);
             guild.voice_reconnecting.store(recovery, Ordering::Release);
             guild.voice_sender_router.detach();
+            tracing::info!(
+                event = "discord.voice.transport_connect_started",
+                guild_id = guild.guild_id,
+                playback_generation = guild.source_generation.load(Ordering::Acquire),
+                transport_generation = request_generation,
+                recovery_attempt = request_generation,
+                previous_voice_state,
+                next_voice_state = if recovery {
+                    "reconnecting"
+                } else {
+                    "connecting"
+                },
+                outcome = "started",
+                "starting Discord voice transport negotiation"
+            );
             if let Some(previous_voice) = previous_voice {
                 session.emit(
                     "voice.state_changed",
-                    json!({"guildId": guild.guild_id, "previousState": "connected", "state": "reconnecting"}),
+                    json!({"guildId": guild.guild_id, "previousState": previous_voice_state, "state": "reconnecting"}),
                 );
-                if previous_voice.disconnect().await.is_err() {
+                if let Err(error) = previous_voice.disconnect().await {
                     // Keep output parked during the bounded client-side retry
                     // sequence. A single failed close is not yet a terminal
                     // voice failure; `voice.fail` reports that after retries.
+                    tracing::warn!(
+                        event = "discord.voice.transport_close_failed",
+                        guild_id = guild.guild_id,
+                        playback_generation = guild.source_generation.load(Ordering::Acquire),
+                        transport_generation = request_generation,
+                        recovery_attempt = request_generation,
+                        previous_voice_state,
+                        next_voice_state = "reconnecting",
+                        error = %error,
+                        outcome = "retryable_failure",
+                        "old voice transport did not close cleanly during replacement"
+                    );
                     guild.voice_reconnecting.store(true, Ordering::Release);
                     return Err(RpcError::new(
                         "transport_failed",
@@ -266,7 +297,19 @@ pub(crate) async fn execute(
             .await
             {
                 Ok(voice) => voice,
-                Err(_) => {
+                Err(error) => {
+                    tracing::warn!(
+                        event = "discord.voice.transport_connect_failed",
+                        guild_id = guild.guild_id,
+                        playback_generation = guild.source_generation.load(Ordering::Acquire),
+                        transport_generation = request_generation,
+                        recovery_attempt = request_generation,
+                        previous_voice_state,
+                        next_voice_state = if recovery { "reconnecting" } else { "failed" },
+                        error = %error,
+                        outcome = if recovery { "retryable_failure" } else { "terminal_failure" },
+                        "Discord voice transport negotiation failed"
+                    );
                     if !recovery
                         && guild.voice_request_generation.load(Ordering::Acquire)
                             == request_generation
@@ -316,6 +359,17 @@ pub(crate) async fn execute(
                 .voice_connected_generation
                 .store(request_generation, Ordering::Release);
             guild.voice_reconnecting.store(false, Ordering::Release);
+            tracing::info!(
+                event = "discord.voice.transport_connect_finished",
+                guild_id = guild.guild_id,
+                playback_generation = guild.source_generation.load(Ordering::Acquire),
+                transport_generation = request_generation,
+                recovery_attempt = request_generation,
+                previous_voice_state,
+                next_voice_state = initial_state,
+                outcome = "connected",
+                "Discord voice transport and DAVE negotiation completed"
+            );
             session.emit(
                 "voice.state_changed",
                 json!({"guildId": guild.guild_id, "previousState": if recovery { "reconnecting" } else { "connecting" }, "state": initial_state}),
@@ -386,7 +440,28 @@ pub(crate) async fn execute(
             let voice = { lock(&guild.voice).take() };
             if let Some(voice) = voice {
                 let previous_state = voice_state_name(voice.state());
-                voice.disconnect().await.map_err(|_| {
+                tracing::info!(
+                    event = "discord.voice.transport_suspended",
+                    guild_id = guild.guild_id,
+                    playback_generation = guild.source_generation.load(Ordering::Acquire),
+                    transport_generation = request_generation,
+                    previous_voice_state = previous_state,
+                    next_voice_state = "reconnecting",
+                    outcome = "parked",
+                    "parked playback while replacing Discord voice transport"
+                );
+                voice.disconnect().await.map_err(|error| {
+                    tracing::warn!(
+                        event = "discord.voice.transport_suspend_failed",
+                        guild_id = guild.guild_id,
+                        playback_generation = guild.source_generation.load(Ordering::Acquire),
+                        transport_generation = request_generation,
+                        previous_voice_state = previous_state,
+                        next_voice_state = "reconnecting",
+                        error = %error,
+                        outcome = "retryable_failure",
+                        "old voice transport did not suspend cleanly"
+                    );
                     RpcError::new(
                         "transport_failed",
                         "could not suspend Discord voice transport",
@@ -453,7 +528,7 @@ pub(crate) async fn execute(
             }
             guild
                 .voice_sender_router
-                .fail("Discord voice session was disconnected");
+                .shutdown("Discord voice session was disconnected");
             if previous_voice_state != "disconnected" {
                 session.emit(
                     "voice.state_changed",
@@ -493,6 +568,17 @@ pub(crate) async fn execute(
             guild
                 .voice_sender_router
                 .fail("Discord voice recovery failed");
+            tracing::error!(
+                event = "discord.voice.recovery_exhausted",
+                guild_id = guild.guild_id,
+                playback_generation = guild.source_generation.load(Ordering::Acquire),
+                transport_generation = request_generation,
+                recovery_attempt = request_generation,
+                previous_voice_state = "reconnecting",
+                next_voice_state = "failed",
+                outcome = "terminal_failure",
+                "Discord voice recovery is no longer possible"
+            );
             let voice = { lock(&guild.voice).take() };
             if let Some(voice) = voice {
                 let _ = voice.disconnect().await;
@@ -1186,9 +1272,17 @@ fn spawn_voice_monitor(
                         }),
                     );
                     if state == ConnectionState::Failed {
-                        session.emit(
-                            "voice.failed",
-                            json!({"guildId": guild.guild_id, "state": "failed", "code": "transport_failed"}),
+                        let error = lock(&guild.voice)
+                            .as_ref()
+                            .and_then(DiscordVoiceConnection::failure)
+                            .map(|error| error.to_string())
+                            .unwrap_or_else(|| "voice transport worker failed".into());
+                        tracing::warn!(
+                            event = "discord.voice.transport_failed",
+                            guild_id = guild.guild_id,
+                            transport_generation = request_generation,
+                            error = %error,
+                            "voice transport stopped; client may request a fresh Gateway handshake"
                         );
                     }
                 }

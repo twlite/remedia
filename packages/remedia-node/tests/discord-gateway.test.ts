@@ -206,6 +206,81 @@ test('region migration while paused keeps the same playback id and repeated cred
   await session.disconnect();
 });
 
+test('a server update alone uses the latest token when the endpoint is unchanged', async () => {
+  const harness = createHarness();
+  const session = harness.session();
+  const connected = session.connect();
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('initial-token'), 1));
+  harness.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('session'), 2));
+  await connected;
+  await session.play({ url: 'https://media.example/token-rotation.wav' });
+  const playbackGeneration = session.generation;
+
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('latest-token'), 3));
+  const recovery = session.connect();
+  await recovery;
+  await waitFor(() => (harness.replacements.length === 1 ? true : undefined));
+
+  assert.equal(harness.replacements[0]?.options.token, 'latest-token');
+  assert.equal(harness.replacements[0]?.options.endpoint, 'voice.example.test:443');
+  assert.equal(harness.replacements[0]?.options.sessionId, 'session');
+  assert.equal(harness.replacements[0]?.voiceId, 'voice-1');
+  assert.equal(session.generation, playbackGeneration);
+  assert.equal(session.state, 'playing');
+  assert.equal(harness.sent.length, 2);
+  await session.disconnect();
+});
+
+test('a temporary null endpoint parks recovery until fresh credentials arrive', async () => {
+  const harness = createHarness();
+  const session = harness.session();
+  const connected = session.connect();
+  harness.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('session'), 1));
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('initial-token'), 2));
+  await connected;
+  await session.play({ url: 'https://media.example/temporary-null-endpoint.wav' });
+
+  harness.receive(
+    gatewayPacket('VOICE_SERVER_UPDATE', { guild_id: sessionOptions.guildId, endpoint: null }, 3),
+  );
+  await waitFor(() => (harness.sent.length === 2 ? true : undefined));
+  await flushMicrotasks();
+  assert.equal(harness.replacements.length, 0);
+
+  // The endpoint becomes available again with the same still-valid credentials.
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('initial-token'), 4));
+  await session.connect();
+  await waitFor(() => (harness.replacements.length === 1 ? true : undefined));
+  assert.equal(harness.replacements[0]?.options.token, 'initial-token');
+  assert.equal(harness.replacements[0]?.options.sessionId, 'session');
+  assert.equal(session.state, 'playing');
+  await session.disconnect();
+});
+
+test('an unexpected native transport closure requests fresh credentials and keeps playback alive', async () => {
+  const harness = createHarness();
+  const session = harness.session();
+  const connected = session.connect();
+  harness.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('session'), 1));
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('initial-token'), 2));
+  await connected;
+  await session.play({ url: 'https://media.example/unexpected-close.wav' });
+  const playbackGeneration = session.generation;
+
+  harness.setVoiceState('voice-1', 'disconnected');
+  await waitFor(() => (harness.sent.length === 2 ? true : undefined));
+  const recovery = session.connect();
+  harness.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('resumed-token'), 3));
+  await recovery;
+  await waitFor(() => (harness.replacements.length === 1 ? true : undefined));
+
+  assert.equal(harness.replacements[0]?.options.sessionId, 'session');
+  assert.equal(harness.replacements[0]?.options.token, 'resumed-token');
+  assert.equal(session.generation, playbackGeneration);
+  assert.equal(session.state, 'playing');
+  await session.disconnect();
+});
+
 test('a newer Gateway update invalidates an in-flight native transport replacement', async () => {
   let releaseFirstReplacement!: () => void;
   let firstReplacementStarted!: () => void;

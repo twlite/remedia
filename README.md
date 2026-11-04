@@ -13,7 +13,8 @@ and Opus encoding. When an Opus-capable output receives a compatible untrimmed O
 active PCM processing, playback can forward source packets directly and switch to or from native
 PCM processing without reopening the input. `remedia-discord` implements
 an outbound voice transport for encoded Opus with voice gateway v8, RTP-size transport encryption,
-and DAVE through `davey`. It has not been verified against a live Discord bot yet.
+and DAVE through `davey`. Live playback through a configured Discord bot has been exercised; CI
+uses deterministic tests and does not connect to Discord.
 `packages/remedia-node` provides an initial native Node.js integration for playback, Discord voice
 sessions, and structured diagnostics. `crates/remedia-server` provides authenticated, in-memory
 WebSocket RPC over the same native Rust crates. Its v0 protocol supports node statistics, resumable
@@ -36,9 +37,10 @@ The intended integrations have different boundaries:
   server-accessible HTTP(S) URLs and local files restricted to configured roots. It does not accept
   remote byte uploads, send Discord Gateway OP 4, or persist sessions through process restarts.
 
-Remote ingestion of arbitrary client-generated streams is deferred. The Discord transport has not
-been verified against a live bot, including when controlled through the standalone server. These
-are design intentions, not claims that unfinished features work.
+Remote ingestion of arbitrary client-generated streams is deferred. The manual
+[voice region recovery procedure](/docs/discord/bot-harness#manual-voice-region-recovery) covers
+transport replacement in embedded and remote modes; automated CI does not use Discord
+credentials. These are design intentions, not claims that every planned component exists.
 
 ## Repository structure
 

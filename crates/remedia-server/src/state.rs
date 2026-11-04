@@ -378,7 +378,9 @@ impl ServerInner {
         let connection = { lock(&guild.voice).take() };
         guild.voice_generation.fetch_add(1, Ordering::AcqRel);
         guild.voice_reconnecting.store(false, Ordering::Release);
-        guild.voice_sender_router.fail("guild session was closed");
+        guild
+            .voice_sender_router
+            .shutdown("guild session was closed");
         let voice_result = if let Some(connection) = connection {
             connection.disconnect().await
         } else {

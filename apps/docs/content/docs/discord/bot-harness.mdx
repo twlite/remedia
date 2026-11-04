@@ -109,21 +109,20 @@ and posts a public follow-up on success. Error replies edit the ephemeral defer.
 `/nowplaying` formats source time and duration around a compact progress bar;
 estimated source positions are prefixed with `~`.
 
-The app also subscribes to typed `@remedia/client` session events. It posts
-autonomous embeds when a queued track starts naturally, playback genuinely
-fails, or voice recovery reaches a terminal failure. Successful command
-responses already confirm pause, resume, seek, filter, volume, stop, skip, and
-disconnect, so those transitions do not post a second lifecycle embed. Track
-lifecycle notifications use the `customMetadata` attached to that
-playback generation to find the originating text channel. The first `/play`
+The app subscribes to typed `@remedia/client` session events and posts public
+embeds for playback start, natural completion, stop, failure, pause, resume,
+seek, filter changes, volume changes, and terminal voice failure. These
+notifications go to the text channel retained by the guild queue and use the
+`customMetadata` attached to that playback generation to find the originating
+text channel. The first `/play`
 request that creates a guild queue stores its sendable channel object in that
 queue's in-memory metadata, and each playback passes that reference through
 Remedia's JavaScript-only `customMetadata`. The reference is not serialized to
 Rust or a remote Remedia server. Later requests and queued tracks continue to
 notify the original queue channel until the guild session is disconnected and
-disposed. The command invocation is attributed in its public response;
-automatic start notifications instead identify the track requester and are
-labeled automatic. Queue snapshots remain public. If the
+disposed. Each playback notification identifies the track requester when
+available. Successful command replies remain separate from lifecycle
+notifications. Queue snapshots remain public. If the
 bot cannot send in the retained channel, playback continues and a warning is
 written only when `REMEDIA_DEBUG=1`.
 
@@ -145,6 +144,34 @@ transport. Playback is unpaced by the decoder; the Discord transport schedules
 encoded packets in real time. See the [voice output guide](/docs/discord/voice-output)
 for Opus, DAVE, transport encryption, and protocol limitations.
 
-This harness is intended for manual integration with a configured bot. The
-automated tests use mock sessions and do not establish a live Discord
-connection; hosted or live compatibility must be verified separately.
+This harness is intended for manual integration with a configured bot. Live
+Discord bot playback has been exercised; automated tests use deterministic mock
+sessions and do not require Discord credentials. CI does not establish a live
+connection.
+
+## Manual voice region recovery
+
+Run this procedure in a test guild where you can change the voice channel's
+Region Override. It checks that a server credential update replaces transport
+delivery while the existing playback continues.
+
+1. Start the bot in embedded mode, or start `remedia-server` and configure the
+   bot with `REMEDIA_MODE=remote` and `REMEDIA_NODES` as described in the
+   [Discord app README](https://github.com/twlite/remedia/tree/main/apps/discord#remote-mode).
+2. Join the bot to a voice channel with `/play` and use a track long enough to
+   remain active through the change. Confirm that the public `Now playing`
+   event appears in the queue's text channel.
+3. While audio is playing, change the channel's Region Override to another
+   available region. Wait for audio to resume and check `/nowplaying`; the same
+   track should continue near its previous position and must not produce
+   another `Now playing` event.
+4. Repeat while playback is paused. Confirm it remains paused after transport
+   recovery, then `/resume` and verify that audio continues.
+5. Let a track finish, then start another track in the same voice session.
+   Confirm that the second track plays without the bot leaving and rejoining the
+   channel. Restore the channel's Region Override to Automatic when finished.
+
+The replacement may cause a short audible gap while Discord renegotiates the
+voice transport and DAVE state. The source decoder and playback generation
+should continue. Logs include guild, playback, sender, and transport generations
+plus recovery outcomes; they must not include voice tokens or session IDs.

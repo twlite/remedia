@@ -42,7 +42,7 @@ test('keeps the six named presets in the Discord harness only', () => {
   assert.match(FILTER_PRESETS.vaporwave, /asetrate=38400/);
 });
 
-test('command actions suppress duplicate lifecycle posts while automatic starts remain attributed', async () => {
+test('posts Remedia playback and control events to the queue text channel', async () => {
   const { manager, session } = createManager();
   const origin = createTextChannel();
   const other = createTextChannel();
@@ -71,15 +71,34 @@ test('command actions suppress duplicate lifecycle posts while automatic starts 
   await new Promise<void>((resolve) => setImmediate(resolve));
 
   const titles = origin.messages.map(embedTitle);
-  assert.deepEqual(titles, ['Now playing']);
+  assert.deepEqual(titles, [
+    'Now playing',
+    'Playback paused',
+    'Playback resumed',
+    'Playback seeked',
+    'Audio filters changed',
+    'Volume changed',
+    'Track ended',
+    'Now playing',
+  ]);
   const notification = origin.messages[0]?.embeds?.[0] as EmbedBuilder | undefined;
   assert.ok(notification?.data.description?.includes('Example title'));
   assert.ok(
     notification?.data.fields?.some(
+      (field) => field.name === 'Requested by' && field.value === '<@alice>',
+    ),
+  );
+  const queuedStart = origin.messages[7]?.embeds?.[0] as EmbedBuilder | undefined;
+  assert.ok(
+    queuedStart?.data.fields?.some(
       (field) => field.name === 'Requested by' && field.value === '<@bob>',
     ),
   );
   assert.equal(notification?.data.footer?.text, 'Automatic playback notification');
+  assert.equal(embedDescription(origin.messages[1]!), 'Paused Example title.');
+  assert.equal(embedDescription(origin.messages[3]!), 'Seeked to 0:12 in Example title.');
+  assert.equal(embedDescription(origin.messages[5]!), 'Volume is now 80%.');
+  assert.equal(embedDescription(origin.messages[6]!), 'Finished Example title.');
   assert.equal(other.messages.length, 0);
 
   await manager.disconnect('guild', 'channel');
@@ -109,11 +128,18 @@ test('announces a source failure when playback rejects before a start event', as
 
 test('queues tracks, advances on completion, and leaves voice connected when stopping', async () => {
   const { manager, session } = createManager();
+  const channel = createTextChannel();
 
-  const first = await manager.enqueue('guild', 'channel', 'bot', {
-    url: 'https://media.example/one.mp3',
-    requestedBy: 'alice',
-  });
+  const first = await manager.enqueue(
+    'guild',
+    'channel',
+    'bot',
+    {
+      url: 'https://media.example/one.mp3',
+      requestedBy: 'alice',
+    },
+    channel.channel,
+  );
   assert.equal(first.started, true);
   assert.deepEqual(session.playedUrls, ['https://media.example/one.mp3']);
   await manager.setFilters('guild', 'channel', ['bassboost', 'tremolo']);
@@ -173,6 +199,14 @@ test('queues tracks, advances on completion, and leaves voice connected when sto
   assert.equal(stopped.current, null);
   assert.equal(session.state, 'stopped');
   assert.equal(session.connectionState, 'connected');
+  assert.equal(
+    channel.messages.filter((message) => embedTitle(message) === 'Track ended').length,
+    1,
+  );
+  assert.equal(
+    channel.messages.filter((message) => embedTitle(message) === 'Playback stopped').length,
+    2,
+  );
 
   await manager.disconnect('guild', 'channel');
   assert.equal(session.disposed, true);

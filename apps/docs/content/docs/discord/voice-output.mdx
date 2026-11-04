@@ -187,16 +187,19 @@ background transport failure is available from `connection.failure()` and
 changes the state to `Failed`. No Opus packet is sent until DAVE media encryption
 is ready.
 
-The transport attempts Voice Gateway v8 Resume after a WebSocket close or a
-missed heartbeat acknowledgment. Resume keeps the voice connection's UDP and
-DAVE state. If the gateway rejects Resume, the connection becomes `Failed`; the
-Rust caller must obtain fresh voice session information and connect again. The
-Node/remote Gateway adapters separately react to Gateway voice credential
-changes; a failed voice-WebSocket Resume alone is not mistaken for a region
-migration. DAVE
+The transport attempts Voice Gateway v8 Resume after an unexpected WebSocket
+closure or a missed heartbeat acknowledgment when the close condition permits
+Resume. Resume keeps the voice connection's UDP and DAVE state. Close codes
+that require fresh Gateway credentials instead park output and wait for the
+Node or remote Gateway adapter to send a new OP 4 request and credential pair;
+expired voice sessions become `Failed` and follow the same bounded recovery
+policy. The adapters retain the latest valid voice-state session ID while they
+apply the newest server token, including when its endpoint is unchanged. DAVE
 protocol version 1 is the only version supported by the selected `davey`
-release. No live Discord connection has been validated as part of repository
-CI.
+release. Live playback through a configured Discord bot has been exercised;
+repository CI remains credential-free and does not open a live Discord
+connection. Use the [manual voice region recovery procedure](/docs/discord/bot-harness#manual-voice-region-recovery)
+to check real credential rotation and transport replacement.
 
 This crate does not include a bot Gateway or REST client, channel-join commands,
 audio receiving, RTCP, video, remote binary uploads, DAVE cryptography, or Opus

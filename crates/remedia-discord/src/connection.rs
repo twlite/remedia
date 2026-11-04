@@ -107,6 +107,7 @@ pub struct DiscordVoiceConnection {
 
 struct ConnectionInner {
     voice_connection_id: u64,
+    guild_id: u64,
     observability: ObservabilityHandle,
     state: watch::Sender<ConnectionState>,
     failure: Arc<Mutex<Option<Arc<VoiceError>>>>,
@@ -198,6 +199,7 @@ impl DiscordVoiceConnection {
         observability: ObservabilityHandle,
     ) -> Result<Self, VoiceError> {
         let voice_connection_id = next_correlation_id();
+        let guild_id = info.guild_id;
         let started_at = Instant::now();
         let metrics = observability.metrics();
         metrics.voice_connection_attempt();
@@ -207,6 +209,7 @@ impl DiscordVoiceConnection {
                 target: "remedia_discord::connection",
                 "discord.connection.establish",
                 voice_connection_id,
+                guild_id,
                 otel.status_code = tracing::field::Empty,
                 error.type = tracing::field::Empty,
             )
@@ -256,6 +259,7 @@ impl DiscordVoiceConnection {
         metrics: remedia_observability::RemediaMetrics,
     ) -> Result<Self, VoiceError> {
         let endpoint = voice_endpoint(&info.endpoint)?;
+        let guild_id = info.guild_id;
         let (mut websocket, hello_interval, ready, early_messages, session_data, udp, sequence_ack) =
             establish_voice_session(&endpoint, &info, connection_id).await?;
 
@@ -373,12 +377,14 @@ impl DiscordVoiceConnection {
         let actor_cancel = cancellation.clone();
         let actor_cancelled_generation = Arc::clone(&cancelled_generation);
         let actor_id = connection_id;
+        let actor_guild_id = info.guild_id;
         let actor_metrics = metrics.clone();
         let actor_span = with_dispatch(&observability, || {
             tracing::info_span!(
                 target: "remedia_discord::connection",
                 "discord.connection.worker",
                 voice_connection_id = actor_id,
+                guild_id = actor_guild_id,
                 otel.status_code = tracing::field::Empty,
                 error.type = tracing::field::Empty,
             )
@@ -417,11 +423,21 @@ impl DiscordVoiceConnection {
                     "Discord voice connection worker failed"
                 );
                 *lock(&actor_failure) = Some(Arc::new(error));
-                set_connection_state(&actor_state, ConnectionState::Failed, actor_id);
+                set_connection_state(
+                    &actor_state,
+                    ConnectionState::Failed,
+                    actor_id,
+                    actor_guild_id,
+                );
             } else {
                 tracing::Span::current().record("otel.status_code", "OK");
                 if actor_state.borrow().eq(&ConnectionState::Connected) {
-                    set_connection_state(&actor_state, ConnectionState::Disconnected, actor_id);
+                    set_connection_state(
+                        &actor_state,
+                        ConnectionState::Disconnected,
+                        actor_id,
+                        actor_guild_id,
+                    );
                 }
             }
         }
@@ -435,6 +451,7 @@ impl DiscordVoiceConnection {
         let connection = Self {
             inner: Arc::new(ConnectionInner {
                 voice_connection_id: connection_id,
+                guild_id,
                 observability: observability.clone(),
                 state,
                 failure,
@@ -510,6 +527,10 @@ impl DiscordVoiceConnection {
         self.inner.voice_connection_id
     }
 
+    pub(crate) fn guild_id(&self) -> u64 {
+        self.inner.guild_id
+    }
+
     /// Return the latest transport failure, if the connection failed.
     pub fn failure(&self) -> Option<Arc<VoiceError>> {
         lock(&self.inner.failure).clone()
@@ -557,7 +578,10 @@ impl DiscordVoiceConnection {
         name = "discord.connection.disconnect",
         target = "remedia_discord::connection",
         skip(self),
-        fields(voice_connection_id = self.inner.voice_connection_id)
+        fields(
+            voice_connection_id = self.inner.voice_connection_id,
+            guild_id = self.inner.guild_id
+        )
     )]
     async fn disconnect_inner(&self) -> Result<(), VoiceError> {
         if self.state() == ConnectionState::Disconnected {
@@ -575,6 +599,7 @@ impl DiscordVoiceConnection {
                 &self.inner.state,
                 ConnectionState::Disconnecting,
                 self.inner.voice_connection_id,
+                self.inner.guild_id,
             );
             tracing::info!(
                 name: "discord.connection.disconnect_requested",
@@ -598,6 +623,7 @@ impl DiscordVoiceConnection {
                         &self.inner.state,
                         ConnectionState::Failed,
                         self.inner.voice_connection_id,
+                        self.inner.guild_id,
                     );
                 });
             }
@@ -629,6 +655,16 @@ pub struct DiscordOpusSender {
 }
 
 impl DiscordOpusSender {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn voice_connection(&self) -> DiscordVoiceConnection {
+        DiscordVoiceConnection {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
     /// Read the connection state associated with this playback-scoped sender.
     pub fn state(&self) -> ConnectionState {
         *self.inner.state.borrow()
@@ -796,6 +832,7 @@ impl OpusPacketSink for DiscordOpusSender {
                 name: "discord.rtp_sender.flushed",
                 target: "remedia_discord::connection",
                 voice_connection_id = self.inner.voice_connection_id,
+                guild_id = self.inner.guild_id,
                 generation,
                 "queued pre-seek RTP frames invalidated"
             );
@@ -906,6 +943,7 @@ fn set_connection_state(
     state: &watch::Sender<ConnectionState>,
     next: ConnectionState,
     voice_connection_id: u64,
+    guild_id: u64,
 ) {
     let previous = *state.borrow();
     if previous == next {
@@ -916,6 +954,7 @@ fn set_connection_state(
         name: "discord.connection.state_changed",
         target: "remedia_discord::connection",
         voice_connection_id,
+        guild_id,
         previous_state = ?previous,
         state = ?next,
         "Discord voice connection state changed"
@@ -1343,7 +1382,12 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
         process_gateway_message(&mut websocket, &dave, message, voice_connection_id).await?;
         if lock(&dave).is_ready() {
             active_guard.mark_connected();
-            set_connection_state(&state, ConnectionState::Connected, voice_connection_id);
+            set_connection_state(
+                &state,
+                ConnectionState::Connected,
+                voice_connection_id,
+                info.guild_id,
+            );
         }
     }
 
@@ -1368,11 +1412,20 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
             _ = async { if let Some(deadline) = deadline { time::sleep_until(deadline).await } }, if deadline.is_some() => Event::Deadline,
             changed = generation_rx.changed() => Event::Generation(changed),
         };
+        let close_code = match &event {
+            Event::Socket(Some(Ok(Message::Close(Some(frame))))) => Some(u16::from(frame.code)),
+            _ => None,
+        };
 
         match event {
             Event::Cancel => {
                 let _ = send_speaking(&mut websocket, ssrc, false, voice_connection_id).await;
-                set_connection_state(&state, ConnectionState::Disconnected, voice_connection_id);
+                set_connection_state(
+                    &state,
+                    ConnectionState::Disconnected,
+                    voice_connection_id,
+                    info.guild_id,
+                );
                 tracing::info!(
                     name: "discord.connection.disconnected",
                     target: "remedia_discord::connection",
@@ -1382,12 +1435,56 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                 return Ok(());
             }
             Event::Socket(None) | Event::Socket(Some(Ok(Message::Close(_)))) => {
+                match close_code
+                    .map(voice_close_policy)
+                    .unwrap_or(VoiceClosePolicy::Resume)
+                {
+                    VoiceClosePolicy::WaitForGateway => {
+                        set_connection_state(
+                            &state,
+                            ConnectionState::Disconnected,
+                            voice_connection_id,
+                            info.guild_id,
+                        );
+                        tracing::warn!(
+                            name: "discord.connection.closed_for_gateway_update",
+                            target: "remedia_discord::connection",
+                            voice_connection_id,
+                            guild_id = info.guild_id,
+                            close_code,
+                            "voice gateway closed this session; waiting for fresh Gateway credentials"
+                        );
+                        return Ok(());
+                    }
+                    VoiceClosePolicy::FreshIdentify => {
+                        tracing::warn!(
+                            name: "discord.connection.resume_not_permitted",
+                            target: "remedia_discord::connection",
+                            voice_connection_id,
+                            guild_id = info.guild_id,
+                            close_code,
+                            "voice session cannot be resumed; a fresh Gateway voice handshake is required"
+                        );
+                        return Err(VoiceError::ResumeFailed(format!(
+                            "voice session is no longer resumable (close code {})",
+                            close_code.unwrap_or_default()
+                        )));
+                    }
+                    VoiceClosePolicy::Resume => {}
+                }
                 metrics.voice_reconnect_attempt();
-                set_connection_state(&state, ConnectionState::Reconnecting, voice_connection_id);
+                set_connection_state(
+                    &state,
+                    ConnectionState::Reconnecting,
+                    voice_connection_id,
+                    info.guild_id,
+                );
                 tracing::warn!(
                     name: "discord.connection.reconnect_started",
                     target: "remedia_discord::connection",
                     voice_connection_id,
+                    guild_id = info.guild_id,
+                    close_code,
                     reason = "gateway_closed",
                     "voice gateway connection closed; attempting resume"
                 );
@@ -1397,6 +1494,7 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                         &state,
                         ConnectionState::Disconnected,
                         voice_connection_id,
+                        info.guild_id,
                     );
                     return Ok(());
                 };
@@ -1409,17 +1507,23 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                 if resumed_state == ConnectionState::Connected {
                     active_guard.mark_connected();
                 }
-                set_connection_state(&state, resumed_state, voice_connection_id);
+                set_connection_state(&state, resumed_state, voice_connection_id, info.guild_id);
                 last_heartbeat_ack = Instant::now();
                 pending_heartbeat_nonce = None;
             }
             Event::Socket(Some(Err(_))) => {
                 metrics.voice_reconnect_attempt();
-                set_connection_state(&state, ConnectionState::Reconnecting, voice_connection_id);
+                set_connection_state(
+                    &state,
+                    ConnectionState::Reconnecting,
+                    voice_connection_id,
+                    info.guild_id,
+                );
                 tracing::warn!(
                     name: "discord.connection.reconnect_started",
                     target: "remedia_discord::connection",
                     voice_connection_id,
+                    guild_id = info.guild_id,
                     reason = "websocket_error",
                     "voice gateway websocket failed; attempting resume"
                 );
@@ -1429,6 +1533,7 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                         &state,
                         ConnectionState::Disconnected,
                         voice_connection_id,
+                        info.guild_id,
                     );
                     return Ok(());
                 };
@@ -1441,7 +1546,7 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                 if resumed_state == ConnectionState::Connected {
                     active_guard.mark_connected();
                 }
-                set_connection_state(&state, resumed_state, voice_connection_id);
+                set_connection_state(&state, resumed_state, voice_connection_id, info.guild_id);
                 last_heartbeat_ack = Instant::now();
                 pending_heartbeat_nonce = None;
             }
@@ -1480,6 +1585,7 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                                 &state,
                                 ConnectionState::Connected,
                                 voice_connection_id,
+                                info.guild_id,
                             );
                         }
                     }
@@ -1619,6 +1725,7 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                         &state,
                         ConnectionState::Reconnecting,
                         voice_connection_id,
+                        info.guild_id,
                     );
                     tracing::warn!(
                         name: "discord.voice.heartbeat_timeout",
@@ -1633,6 +1740,7 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                             &state,
                             ConnectionState::Disconnected,
                             voice_connection_id,
+                            info.guild_id,
                         );
                         return Ok(());
                     };
@@ -1645,7 +1753,7 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
                     if resumed_state == ConnectionState::Connected {
                         active_guard.mark_connected();
                     }
-                    set_connection_state(&state, resumed_state, voice_connection_id);
+                    set_connection_state(&state, resumed_state, voice_connection_id, info.guild_id);
                     last_heartbeat_ack = Instant::now();
                     pending_heartbeat_nonce = None;
                 } else {
@@ -1827,6 +1935,25 @@ async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError> {
             }
             Event::Generation(Err(_)) => return Ok(()),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VoiceClosePolicy {
+    /// Resume is valid for an interrupted session, including Discord's
+    /// recoverable voice-server-crash close code 4015.
+    Resume,
+    /// The voice session expired; the Gateway must provide fresh credentials.
+    FreshIdentify,
+    /// Discord says not to reconnect until a fresh Gateway voice update arrives.
+    WaitForGateway,
+}
+
+fn voice_close_policy(code: u16) -> VoiceClosePolicy {
+    match code {
+        4006 | 4009 => VoiceClosePolicy::FreshIdentify,
+        4014 | 4021 | 4022 => VoiceClosePolicy::WaitForGateway,
+        _ => VoiceClosePolicy::Resume,
     }
 }
 
@@ -2121,6 +2248,105 @@ fn heartbeat_expired(last_ack: Instant, now: Instant, interval: Duration) -> boo
     now.duration_since(last_ack) > interval.saturating_mul(2)
 }
 
+#[cfg(test)]
+pub(crate) struct TestVoiceConnection {
+    connection: DiscordVoiceConnection,
+    packets: Arc<Mutex<Vec<(u64, EncodedOpusPacket)>>>,
+    controls: Arc<Mutex<Vec<&'static str>>>,
+    actor: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(test)]
+impl TestVoiceConnection {
+    pub(crate) fn new(guild_id: u64) -> Self {
+        let (packet_tx, packet_rx) = flume::bounded(QUEUE_CAPACITY);
+        let (control_tx, control_rx) = flume::bounded(16);
+        let (generation_tx, _generation_rx) = watch::channel(0);
+        let (state, _) = watch::channel(ConnectionState::Connected);
+        let cancellation = TokioCancellationToken::new();
+        let inner = Arc::new(ConnectionInner {
+            voice_connection_id: next_correlation_id(),
+            guild_id,
+            observability: ObservabilityHandle::default(),
+            state,
+            failure: Arc::new(Mutex::new(None)),
+            packet_tx,
+            control_tx,
+            generation: AtomicU64::new(0),
+            generation_update: Mutex::new(()),
+            generation_tx,
+            cancelled_generation: Arc::new(AtomicU64::new(u64::MAX)),
+            accepted_packet_id: AtomicU64::new(0),
+            next_packet_id: AtomicU64::new(0),
+            cancellation: cancellation.clone(),
+            worker: Mutex::new(None),
+        });
+        let packets = Arc::new(Mutex::new(Vec::new()));
+        let controls = Arc::new(Mutex::new(Vec::new()));
+        let actor_packets = Arc::clone(&packets);
+        let actor_controls = Arc::clone(&controls);
+        let actor_cancellation = cancellation.clone();
+        let actor = std::thread::spawn(move || {
+            while !actor_cancellation.is_cancelled() {
+                match packet_rx.recv_timeout(Duration::from_millis(2)) {
+                    Ok(packet) => lock(&actor_packets).push((packet.generation, packet.packet)),
+                    Err(flume::RecvTimeoutError::Timeout) => {}
+                    Err(flume::RecvTimeoutError::Disconnected) => break,
+                }
+                while let Ok(control) = control_rx.try_recv() {
+                    match control {
+                        Control::Flush { ack, .. } => {
+                            lock(&actor_controls).push("flush");
+                            let _ = ack.send(Ok(()));
+                        }
+                        Control::Pause { ack, .. } => {
+                            lock(&actor_controls).push("pause");
+                            let _ = ack.send(Ok(()));
+                        }
+                        Control::Resume { ack } => {
+                            lock(&actor_controls).push("resume");
+                            let _ = ack.send(Ok(()));
+                        }
+                        Control::Finish { ack, .. } => {
+                            lock(&actor_controls).push("finish");
+                            let _ = ack.send(Ok(()));
+                        }
+                        Control::Cancel { .. } => lock(&actor_controls).push("cancel"),
+                    }
+                }
+            }
+        });
+        Self {
+            connection: DiscordVoiceConnection { inner },
+            packets,
+            controls,
+            actor: Some(actor),
+        }
+    }
+
+    pub(crate) fn connection(&self) -> DiscordVoiceConnection {
+        self.connection.clone()
+    }
+
+    pub(crate) fn packets(&self) -> Vec<(u64, EncodedOpusPacket)> {
+        lock(&self.packets).clone()
+    }
+
+    pub(crate) fn controls(&self) -> Vec<&'static str> {
+        lock(&self.controls).clone()
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestVoiceConnection {
+    fn drop(&mut self) {
+        self.connection.inner.cancellation.cancel();
+        if let Some(actor) = self.actor.take() {
+            let _ = actor.join();
+        }
+    }
+}
+
 async fn resume_gateway(
     info: &VoiceConnectionInfo,
     sequence_ack: Option<u16>,
@@ -2214,6 +2440,17 @@ mod tests {
                 .any(|(key, value)| key == "encoding" && value == "json")
         );
         assert!(voice_endpoint("ws://voice.example.test").is_err());
+    }
+
+    #[test]
+    fn close_codes_resume_only_when_discord_allows_it() {
+        assert_eq!(voice_close_policy(4015), VoiceClosePolicy::Resume);
+        assert_eq!(voice_close_policy(1006), VoiceClosePolicy::Resume);
+        assert_eq!(voice_close_policy(4006), VoiceClosePolicy::FreshIdentify);
+        assert_eq!(voice_close_policy(4009), VoiceClosePolicy::FreshIdentify);
+        assert_eq!(voice_close_policy(4014), VoiceClosePolicy::WaitForGateway);
+        assert_eq!(voice_close_policy(4021), VoiceClosePolicy::WaitForGateway);
+        assert_eq!(voice_close_policy(4022), VoiceClosePolicy::WaitForGateway);
     }
 
     #[test]
@@ -2562,6 +2799,7 @@ mod tests {
         let connection = DiscordVoiceConnection {
             inner: Arc::new(ConnectionInner {
                 voice_connection_id: 4,
+                guild_id: 10,
                 observability: ObservabilityHandle::default(),
                 state,
                 failure: Arc::new(Mutex::new(None)),
@@ -2647,6 +2885,7 @@ mod tests {
         let (state, _) = watch::channel(ConnectionState::Connected);
         let inner = Arc::new(ConnectionInner {
             voice_connection_id: 1,
+            guild_id: 10,
             observability: ObservabilityHandle::default(),
             state,
             failure: Arc::new(Mutex::new(None)),
