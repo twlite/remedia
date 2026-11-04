@@ -142,29 +142,30 @@ export async function pauseHeldPlayback(
   held: { sendNext(chunkBytes?: number): number },
   timeoutMs = 5_000,
 ): Promise<void> {
-  let settled = false;
-  let failure: unknown;
+  // Track the asynchronous callback's result in a shared object. Oxlint's
+  // loop analysis cannot observe assignments made inside promise callbacks.
+  const result: { settled: boolean; failure?: unknown } = { settled: false };
   const pausing = playback.pause().then(
     () => {
-      settled = true;
+      result.settled = true;
     },
     (error: unknown) => {
-      failure = error;
-      settled = true;
+      result.failure = error;
+      result.settled = true;
     },
   );
   const deadline = Date.now() + timeoutMs;
-  while (!settled && Date.now() < deadline) {
+  while (!result.settled && Date.now() < deadline) {
     if (held.sendNext(8 * 1024) === 0) {
       throw new Error('HTTP test source was exhausted before playback paused');
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
-  if (!settled) {
+  if (!result.settled) {
     throw new Error(`playback pause did not settle within ${timeoutMs}ms (state=${playback.state})`);
   }
   await pausing;
-  if (failure !== undefined) throw failure;
+  if (result.failure !== undefined) throw result.failure;
   if (playback.state !== 'paused') {
     throw new Error(`playback pause resolved in unexpected state ${playback.state}`);
   }
