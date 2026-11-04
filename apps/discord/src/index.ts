@@ -99,7 +99,7 @@ try {
         id: 'remote',
         url: 'remedia://remedia:password@127.0.0.1:8787',
       },
-      { type: 'embedded', id: 'embedded' },
+      // { type: 'embedded', id: 'embedded' },
     ],
     send: sendGatewayPayload,
   });

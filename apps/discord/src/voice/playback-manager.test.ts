@@ -30,6 +30,7 @@ test('uses the Remedia title when available and a sanitized URL otherwise', () =
 test('keeps the six named presets in the Discord harness only', () => {
   assert.deepEqual(FILTER_PRESET_NAMES, [
     '8d',
+    '16d',
     'bassboost',
     'nightcore',
     'vaporwave',

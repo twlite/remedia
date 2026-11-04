@@ -42,7 +42,7 @@ test('filter and volume slash commands read and change the guild playback settin
     response = await invoke(filterCommand, 'list');
     assert.match(
       response.description ?? '',
-      /8d, bassboost, nightcore, vaporwave, tremolo, vibrato/,
+      /8d, 16d, bassboost, nightcore, vaporwave, tremolo, vibrato/,
     );
     assert.match(response.description ?? '', /Current: tremolo/);
     response = await invoke(filterCommand, 'set', 'not-a-preset');
