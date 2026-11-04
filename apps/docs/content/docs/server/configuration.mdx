@@ -39,11 +39,46 @@ The full example file is [`remedia.config.example.json`](https://github.com/twli
 | `media.allowHttp`                 | boolean      | `true`; controls `http:` URLs                                                                                         |
 | `media.allowHttps`                | boolean      | `true`; controls `https:` URLs                                                                                        |
 | `media.blockPrivateNetworks`      | boolean      | `true`; rejects hostnames resolving to private or special IP ranges                                                   |
+| `audio.opus.bitrate`              | integer      | `128000` bits per second; valid range 500–512000                                                                      |
+| `audio.opus.complexity`           | integer      | `9`; valid range 0–10                                                                                                 |
+| `audio.opus.vbr`                  | boolean      | `true`; enables variable bitrate                                                                                      |
 | `observability.console`           | boolean      | `true`; enables the existing console subscriber for this server process                                               |
 
 For an empty `limits`, `media`, `observability`, or `bind` object, the defaults above apply. The
 `users` array is required. Discord bot identity is not server configuration: each remote client
 sends its bot snowflake in the `X-Remedia-Bot-Id` WebSocket handshake header.
+
+## Opus encoder settings
+
+```json
+{
+  "audio": {
+    "opus": {
+      "bitrate": 128000,
+      "complexity": 9,
+      "vbr": true
+    }
+  }
+}
+```
+
+This optional section can be added to an existing configuration. Omitting `audio`, `opus`, or any
+individual property uses the defaults shown above. Values are validated before startup; unknown
+fields are rejected, including inside `audio` and `opus`.
+
+`bitrate` is in **bits per second, not kilobits**: `128000` means 128 kbit/s for the stereo stream.
+Higher bitrates generally preserve more detail at the cost of bandwidth. `complexity` trades CPU
+for encoding quality: 0 uses the least computation, 10 the most; 9 is the music-oriented default.
+With `vbr: true`, libopus varies packet sizes according to the audio while targeting the configured
+bitrate. `false` requests constant bitrate. Encoding stays at 48 kHz stereo with 20 ms frames and
+libopus's `Application::Audio` mode.
+
+All server players receive these settings, with an independent, lazily created encoder for each
+output. Settings apply only when encoding PCM. Compatible Opus passthrough forwards the original
+packets without constructing an encoder, so these settings cannot change their bitrate or quality.
+There are no client or guild overrides, and the RPC protocol is unchanged. Embedded Node.js uses
+the same core defaults without loading this JSON file; it has no JavaScript encoder-setting API.
+See [Opus encoding output](/docs/core/playback#opus-encoding-output) for the Rust configuration API.
 
 ## Environment references
 

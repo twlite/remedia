@@ -28,6 +28,13 @@
     "allowHttps": true,
     "blockPrivateNetworks": true
   },
+  "audio": {
+    "opus": {
+      "bitrate": 128000,
+      "complexity": 9,
+      "vbr": true
+    }
+  },
   "observability": {
     "console": true
   }

@@ -651,8 +651,9 @@ pub(crate) async fn execute(
                         "Discord voice transport is not connected",
                     ));
                 }
-                OpusEncoderOutput::new_with_observability(
+                OpusEncoderOutput::new_with_config_and_observability(
                     guild.voice_sender_router.sink(),
+                    server.config.opus,
                     server.observability.clone(),
                 )
                 .map_err(|_| {

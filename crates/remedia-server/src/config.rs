@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use thiserror::Error;
 
+use remedia_core::OpusEncoderConfig;
 use remedia_observability::{ObservabilityConfig, ObservabilityError};
 
 const DEFAULT_PORT: u16 = 8787;
@@ -26,6 +27,7 @@ pub struct ServerConfig {
     pub(crate) resume_timeout_seconds: u64,
     pub(crate) limits: Limits,
     pub(crate) media: MediaAccess,
+    pub(crate) opus: OpusEncoderConfig,
     pub(crate) observability_console: bool,
 }
 
@@ -75,6 +77,8 @@ pub enum ConfigError {
     Json(#[from] serde_json::Error),
     #[error("invalid configuration: {0}")]
     Invalid(&'static str),
+    #[error("invalid configuration: {0}")]
+    Audio(#[source] remedia_core::OutputError),
     #[error(
         "configuration field `{field}` references unavailable environment variable `{variable}`"
     )]
@@ -102,6 +106,8 @@ struct RawConfig {
     #[serde(default)]
     media: RawMedia,
     #[serde(default)]
+    audio: RawAudio,
+    #[serde(default)]
     observability: RawObservability,
 }
 
@@ -112,6 +118,51 @@ struct RawBind {
     host: String,
     #[serde(default = "default_port")]
     port: u16,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawAudio {
+    opus: RawOpus,
+}
+
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawOpus {
+    #[serde(deserialize_with = "deserialize_bitrate")]
+    bitrate: i32,
+    #[serde(deserialize_with = "deserialize_complexity")]
+    complexity: i32,
+    #[serde(deserialize_with = "deserialize_vbr")]
+    vbr: bool,
+}
+
+impl Default for RawOpus {
+    fn default() -> Self {
+        let config = OpusEncoderConfig::default();
+        Self {
+            bitrate: config.bitrate,
+            complexity: config.complexity,
+            vbr: config.vbr,
+        }
+    }
+}
+
+fn deserialize_bitrate<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<i32, D::Error> {
+    i32::deserialize(deserializer)
+        .map_err(|error| serde::de::Error::custom(format!("audio.opus.bitrate: {error}")))
+}
+
+fn deserialize_complexity<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<i32, D::Error> {
+    i32::deserialize(deserializer)
+        .map_err(|error| serde::de::Error::custom(format!("audio.opus.complexity: {error}")))
+}
+
+fn deserialize_vbr<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    bool::deserialize(deserializer)
+        .map_err(|error| serde::de::Error::custom(format!("audio.opus.vbr: {error}")))
 }
 
 impl Default for RawBind {
@@ -217,6 +268,12 @@ impl ServerConfig {
         mut get_env: impl FnMut(&str) -> Option<String>,
     ) -> Result<Self, ConfigError> {
         let raw: RawConfig = serde_json::from_str(json)?;
+        let opus = OpusEncoderConfig {
+            bitrate: raw.audio.opus.bitrate,
+            complexity: raw.audio.opus.complexity,
+            vbr: raw.audio.opus.vbr,
+        };
+        opus.validate().map_err(ConfigError::Audio)?;
         let bind_host = resolve_env("bind.host", raw.bind.host, &mut get_env)?;
         if bind_host.trim().is_empty() {
             return Err(ConfigError::Invalid("bind.host must not be empty"));
@@ -376,6 +433,7 @@ impl ServerConfig {
                 block_private_networks: raw.media.block_private_networks,
             },
             observability_console: raw.observability.console,
+            opus,
         })
     }
 
@@ -602,6 +660,100 @@ mod tests {
         assert_eq!(config.port, 8787);
         assert_eq!(config.limits.max_message_bytes, 65_536);
         assert_eq!(config.users[0].password, "secret");
+        assert_eq!(config.opus, remedia_core::OpusEncoderConfig::default());
+    }
+
+    #[test]
+    fn audio_defaults_and_individual_opus_overrides() {
+        use remedia_core::OpusEncoderConfig;
+        for (audio, expected) in [
+            ("{}", OpusEncoderConfig::default()),
+            (r#"{"opus":{}}"#, OpusEncoderConfig::default()),
+            (
+                r#"{"opus":{"bitrate":96000}}"#,
+                OpusEncoderConfig {
+                    bitrate: 96_000,
+                    ..Default::default()
+                },
+            ),
+            (
+                r#"{"opus":{"complexity":0}}"#,
+                OpusEncoderConfig {
+                    complexity: 0,
+                    ..Default::default()
+                },
+            ),
+            (
+                r#"{"opus":{"vbr":false}}"#,
+                OpusEncoderConfig {
+                    vbr: false,
+                    ..Default::default()
+                },
+            ),
+            (
+                r#"{"opus":{"bitrate":256000,"complexity":10,"vbr":false}}"#,
+                OpusEncoderConfig {
+                    bitrate: 256_000,
+                    complexity: 10,
+                    vbr: false,
+                },
+            ),
+        ] {
+            let json = JSON.replace("\"users\":", &format!("\"audio\":{audio},\"users\":"));
+            let config =
+                ServerConfig::parse_with(&json, Path::new("."), |_| Some("secret".into())).unwrap();
+            assert_eq!(config.opus, expected);
+        }
+    }
+
+    #[test]
+    fn invalid_opus_values_report_the_field_and_unknown_fields_are_rejected() {
+        for (field, values) in [
+            (
+                "bitrate",
+                vec![
+                    "-1",
+                    "0",
+                    "499",
+                    "512001",
+                    "4294967296",
+                    "1.5",
+                    "null",
+                    "\"128000\"",
+                ],
+            ),
+            (
+                "complexity",
+                vec!["-1", "11", "4294967296", "1.5", "null", "true"],
+            ),
+            ("vbr", vec!["0", "null", "\"true\""]),
+        ] {
+            for value in values {
+                let json = JSON.replace(
+                    "\"users\":",
+                    &format!("\"audio\":{{\"opus\":{{\"{field}\":{value}}}}},\"users\":"),
+                );
+                let error =
+                    ServerConfig::parse_with(&json, Path::new("."), |_| Some("secret".into()))
+                        .err()
+                        .expect("invalid config");
+                assert!(
+                    error.to_string().contains(&format!("audio.opus.{field}")),
+                    "{error}"
+                );
+            }
+        }
+        for audio in [
+            r#"{"extra":true}"#,
+            r#"{"opus":{"fec":true}}"#,
+            r#"{"opus":{"channelCount":1}}"#,
+        ] {
+            let json = JSON.replace("\"users\":", &format!("\"audio\":{audio},\"users\":"));
+            let error = ServerConfig::parse_with(&json, Path::new("."), |_| Some("secret".into()))
+                .err()
+                .expect("unknown field");
+            assert!(error.to_string().contains("unknown field"), "{error}");
+        }
     }
 
     #[test]

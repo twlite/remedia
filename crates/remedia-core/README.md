@@ -16,6 +16,9 @@ transport-independent Opus packet output.
   to untrimmed compatible 48 kHz mono/stereo Opus with no required processing. Filtergraph or
   volume changes can switch modes without reopening the source; unsupported inputs fall back to PCM.
   The adapter does not pace packets or depend on a transport.
+- `OpusEncoderConfig` configures each PCM encoder independently: 128000 bits per second, complexity
+  9, and VBR enabled by default. `OpusEncoderOutput::new_with_config` validates overrides before
+  lazy native initialization. These settings do not affect source Opus passthrough.
 - `PlaybackSession::with_observability` attaches lifecycle events and metrics to an application-owned
   Remedia observability context. The core never installs a global subscriber.
 
@@ -24,7 +27,8 @@ Discord networking belongs to `remedia-discord`; this crate has no Discord depen
 ## Native prerequisites
 
 Building requires development headers and libraries for FFmpeg's `libavformat`, `libavcodec`,
-`libavutil`, and `libswresample`. The Opus output also requires native `libopus` development files.
+`libavutil`, `libavfilter`, and `libswresample`. The Opus output builds and statically links bundled
+libopus; a system libopus development package is not required.
 Supported codecs depend on the FFmpeg build available on the host.
 
 ## Development

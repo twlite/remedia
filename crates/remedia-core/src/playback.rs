@@ -2782,13 +2782,29 @@ mod tests {
         passthrough
             .play(
                 InputSource::bytes(fixture.to_vec()),
-                OpusEncoderOutput::new(passthrough_sink).unwrap(),
+                OpusEncoderOutput::new_with_config(
+                    passthrough_sink,
+                    crate::OpusEncoderConfig {
+                        bitrate: 64_000,
+                        complexity: 1,
+                        vbr: false,
+                    },
+                )
+                .unwrap(),
             )
             .unwrap();
         processing
             .play(
                 InputSource::bytes(fixture.to_vec()),
-                OpusEncoderOutput::new(processing_sink).unwrap(),
+                OpusEncoderOutput::new_with_config(
+                    processing_sink,
+                    crate::OpusEncoderConfig {
+                        bitrate: 96_000,
+                        complexity: 5,
+                        vbr: true,
+                    },
+                )
+                .unwrap(),
             )
             .unwrap();
 

@@ -23,6 +23,12 @@ The default bind address is `127.0.0.1:8787`. Keep the server on loopback or a p
 unless a TLS reverse proxy protects WebSocket traffic. Basic authentication credentials and voice
 credentials must never cross an unencrypted public connection.
 
+Optional `audio.opus` settings control PCM encoding for all players: `bitrate` defaults to 128000
+**bits per second**, `complexity` to 9, and `vbr` to true. Each player output owns an independent,
+lazy encoder. Compatible Opus passthrough forwards original packets and is unaffected. See the
+[configuration guide](../../apps/docs/content/docs/server/configuration.mdx#opus-encoder-settings)
+for ranges, quality and CPU tradeoffs, and partial configuration examples.
+
 ## Connection and ownership
 
 Connect a WebSocket client to `ws://127.0.0.1:8787/v1/ws` and authenticate the handshake with

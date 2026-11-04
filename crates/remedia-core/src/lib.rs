@@ -27,7 +27,7 @@ pub use byte_stream::{ByteStreamError, ByteStreamWriter};
 pub use decoder::{AudioDecoder, AudioStreamInfo, DecoderOptions, PcmFormat, PcmFrame};
 pub use error::DecoderError;
 pub use filter::FilterGraphError;
-pub use opus::{EncodedOpusPacket, OpusEncoderOutput, OpusPacketSink};
+pub use opus::{EncodedOpusPacket, OpusEncoderConfig, OpusEncoderOutput, OpusPacketSink};
 pub use output::{
     EncodedOpusOutput, MediaOutput, NullOutput, NullOutputStats, NullOutputStatsHandle, OutputError,
 };

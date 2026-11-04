@@ -308,6 +308,41 @@ safe alongside a blocked send. The adapter does not expose Discord types and can
 be used with other packet consumers. Cargo builds libopus from bundled source
 and statically links it; a system libopus development package is not required.
 
+`OpusEncoderConfig::default()` explicitly selects 128000 **bits per second** (128 kbit/s for the
+stereo stream), complexity 9, and variable bitrate (`vbr: true`). Higher bitrate generally improves
+quality while using more bandwidth. Complexity 0–10 trades encoding CPU for quality; higher values
+use more computation. VBR distributes bits according to audio complexity; disabling it requests
+constant bitrate. The validated bitrate range is 500–512000 bits per second, following the
+[libopus control documentation](https://www.opus-codec.org/docs/opus_api-1.5/group__opus__encoderctls.html).
+The application mode remains `Application::Audio`.
+
+Rust consumers can pass reusable settings to an output:
+
+```rust
+use remedia_core::{OpusEncoderConfig, OpusEncoderOutput, OpusPacketSink, OutputError};
+
+fn configured_output(sink: impl OpusPacketSink) -> Result<OpusEncoderOutput, OutputError> {
+    let config = OpusEncoderConfig {
+        bitrate: 96_000,
+        complexity: 5,
+        ..Default::default()
+    };
+    OpusEncoderOutput::new_with_config(sink, config)
+}
+```
+
+`config.validate()` checks ranges without creating libopus state. `new_with_config` validates
+immediately; native allocation and control errors propagate on the first PCM write. Use
+`new_with_config_and_observability(sink, config, handle)` to attach diagnostics as well. Existing
+`new` and `new_with_observability` constructors use the defaults. Each output owns its configuration
+and encoder; there are no global encoder settings. Seek resets retain the configured controls.
+
+These controls apply only to PCM encoding. Compatible source Opus packets still pass through
+unchanged without initializing libopus; their original bitrate and quality are unaffected. Filters
+or gain that require PCM activate encoding with the output's settings. The server resolves settings
+from [`audio.opus`](/docs/server/configuration#opus-encoder-settings); embedded Node.js uses core
+defaults without a configuration file or a new JavaScript API.
+
 ## Runnable example
 
 From the repository root, run:

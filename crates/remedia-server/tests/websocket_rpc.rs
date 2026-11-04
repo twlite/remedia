@@ -56,6 +56,7 @@ impl RunningServer {
                 "allowHttps": true,
                 "blockPrivateNetworks": true
             },
+            "audio": {"opus": {"bitrate": 96000, "complexity": 5, "vbr": false}},
             "observability": {"console": false}
         });
         let config_path = config_dir.join("remedia.config.json");

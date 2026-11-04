@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use opus2::{Application, Channels, Encoder};
+use opus2::{Application, Bitrate, Channels, Encoder};
 use remedia_observability::ObservabilityHandle;
 
 use crate::decoder::{OUTPUT_SAMPLE_RATE_HZ, PcmFrame};
@@ -13,6 +13,49 @@ use crate::with_dispatch;
 const OPUS_FRAME_SAMPLES: usize = 960;
 const OPUS_FRAME_SCALARS: usize = OPUS_FRAME_SAMPLES * 2;
 const MAX_OPUS_PACKET_BYTES: usize = 4_000;
+
+/// Per-output settings for PCM-to-Opus encoding, independent of any transport.
+///
+/// These settings never affect source Opus packet passthrough. Encoding remains
+/// 48 kHz stereo, with 20 ms frames and libopus's `Application::Audio` mode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OpusEncoderConfig {
+    /// Target bitrate in bits per second, in libopus's documented 500..=512000 range.
+    pub bitrate: i32,
+    /// Computational complexity, from 0 (least CPU) to 10 (most CPU).
+    pub complexity: i32,
+    /// Allow variable bitrate to distribute bits according to audio complexity.
+    pub vbr: bool,
+}
+
+impl Default for OpusEncoderConfig {
+    fn default() -> Self {
+        Self {
+            bitrate: 128_000,
+            complexity: 9,
+            vbr: true,
+        }
+    }
+}
+
+impl OpusEncoderConfig {
+    /// Validate settings without allocating a native encoder.
+    pub fn validate(&self) -> Result<(), OutputError> {
+        // libopus accepts some out-of-range rates by silently clamping them.
+        // Use its documented meaningful range instead of accepting clamped values.
+        if !(500..=512_000).contains(&self.bitrate) {
+            return Err(OutputError::new(
+                "audio.opus.bitrate must be between 500 and 512000 bits per second",
+            ));
+        }
+        if !(0..=10).contains(&self.complexity) {
+            return Err(OutputError::new(
+                "audio.opus.complexity must be between 0 and 10",
+            ));
+        }
+        Ok(())
+    }
+}
 
 /// An owned Opus packet independent of any transport or encryption protocol.
 ///
@@ -95,6 +138,7 @@ pub trait OpusPacketSink: Send + Sync + 'static {
 /// the packet records both the 20 ms encoded duration and its shorter media
 /// duration. Seeking discards partial PCM and resets the encoder state.
 pub struct OpusEncoderOutput {
+    config: OpusEncoderConfig,
     state: Mutex<EncoderState>,
     sink: Box<dyn OpusPacketSink>,
     cancelled: AtomicBool,
@@ -124,7 +168,27 @@ impl OpusEncoderOutput {
         sink: impl OpusPacketSink,
         observability: ObservabilityHandle,
     ) -> Result<Self, OutputError> {
+        Self::new_with_config_and_observability(sink, OpusEncoderConfig::default(), observability)
+    }
+
+    /// Create a lazily initialized output with validated, per-instance settings.
+    /// Native initialization and control errors are returned on the first PCM write.
+    pub fn new_with_config(
+        sink: impl OpusPacketSink,
+        config: OpusEncoderConfig,
+    ) -> Result<Self, OutputError> {
+        Self::new_with_config_and_observability(sink, config, ObservabilityHandle::default())
+    }
+
+    /// Create a configured output with an application-owned diagnostic context.
+    pub fn new_with_config_and_observability(
+        sink: impl OpusPacketSink,
+        config: OpusEncoderConfig,
+        observability: ObservabilityHandle,
+    ) -> Result<Self, OutputError> {
+        config.validate()?;
         Ok(Self {
+            config,
             state: Mutex::new(EncoderState {
                 // A passthrough-only source does not need a native encoder.
                 // Construct libopus only when the first PCM frame arrives.
@@ -145,7 +209,7 @@ impl OpusEncoderOutput {
         if state.encoder.is_some() {
             return Ok(());
         }
-        let encoder = Encoder::new(OUTPUT_SAMPLE_RATE_HZ, Channels::Stereo, Application::Audio)
+        let mut encoder = Encoder::new(OUTPUT_SAMPLE_RATE_HZ, Channels::Stereo, Application::Audio)
             .map_err(|error| {
                 with_dispatch(&self.observability, || {
                     tracing::error!(
@@ -157,6 +221,15 @@ impl OpusEncoderOutput {
                 });
                 OutputError::with_source(error)
             })?;
+        encoder
+            .set_bitrate(Bitrate::Bits(self.config.bitrate))
+            .map_err(OutputError::with_source)?;
+        encoder
+            .set_complexity(self.config.complexity)
+            .map_err(OutputError::with_source)?;
+        encoder
+            .set_vbr(self.config.vbr)
+            .map_err(OutputError::with_source)?;
         state.encoder = Some(encoder);
         with_dispatch(&self.observability, || {
             tracing::info!(
@@ -656,11 +729,124 @@ mod tests {
         }
     }
 
+    fn assert_settings(output: &OpusEncoderOutput, config: OpusEncoderConfig) {
+        let mut state = lock(&output.state);
+        let encoder = state.encoder.as_mut().expect("PCM initialized encoder");
+        assert_eq!(
+            encoder.get_bitrate().unwrap(),
+            Bitrate::Bits(config.bitrate)
+        );
+        assert_eq!(encoder.get_complexity().unwrap(), config.complexity);
+        assert_eq!(encoder.get_vbr().unwrap(), config.vbr);
+        assert_eq!(encoder.get_application().unwrap(), Application::Audio);
+        assert_eq!(encoder.get_sample_rate().unwrap(), OUTPUT_SAMPLE_RATE_HZ);
+    }
+
+    #[test]
+    fn defaults_and_custom_settings_reach_native_controls_and_survive_resets() {
+        for config in [
+            OpusEncoderConfig::default(),
+            OpusEncoderConfig {
+                bitrate: 64_000,
+                complexity: 3,
+                vbr: false,
+            },
+            OpusEncoderConfig {
+                bitrate: 500,
+                complexity: 0,
+                vbr: true,
+            },
+            OpusEncoderConfig {
+                bitrate: 512_000,
+                complexity: 10,
+                vbr: false,
+            },
+        ] {
+            let output =
+                OpusEncoderOutput::new_with_config(CaptureSink::default(), config).unwrap();
+            assert!(lock(&output.state).encoder.is_none());
+            let cancellation = CancellationToken::new();
+            output.write_frame(pcm(0, 960), &cancellation).unwrap();
+            assert_settings(&output, config);
+            output.flush_samples(4_800, &cancellation).unwrap();
+            output.write_frame(pcm(4_800, 960), &cancellation).unwrap();
+            assert_settings(&output, config);
+            output.finish(&cancellation).unwrap();
+        }
+        let output = OpusEncoderOutput::new(CaptureSink::default()).unwrap();
+        output
+            .write_frame(pcm(0, 960), &CancellationToken::new())
+            .unwrap();
+        assert_settings(&output, OpusEncoderConfig::default());
+    }
+
+    #[test]
+    fn invalid_settings_fail_before_native_initialization() {
+        for bitrate in [i32::MIN, -1, 0, 499, 512_001, i32::MAX] {
+            let config = OpusEncoderConfig {
+                bitrate,
+                ..Default::default()
+            };
+            assert!(OpusEncoderOutput::new_with_config(CaptureSink::default(), config).is_err());
+        }
+        for complexity in [-1, 11, i32::MAX] {
+            let config = OpusEncoderConfig {
+                complexity,
+                ..Default::default()
+            };
+            assert!(
+                config
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("complexity")
+            );
+        }
+    }
+
+    #[test]
+    fn concurrent_outputs_have_independent_native_encoders() {
+        let configs = [
+            OpusEncoderConfig::default(),
+            OpusEncoderConfig {
+                bitrate: 96_000,
+                complexity: 2,
+                vbr: false,
+            },
+        ];
+        let outputs = configs.map(|config| {
+            OpusEncoderOutput::new_with_config(CaptureSink::default(), config).unwrap()
+        });
+        std::thread::scope(|scope| {
+            for output in &outputs {
+                scope.spawn(move || {
+                    output
+                        .write_frame(pcm(0, 960), &CancellationToken::new())
+                        .unwrap();
+                });
+            }
+        });
+        outputs[0]
+            .flush_samples(0, &CancellationToken::new())
+            .unwrap();
+        for (output, config) in outputs.iter().zip(configs) {
+            assert_settings(output, config);
+        }
+    }
+
     #[test]
     fn encoded_packet_delivery_keeps_libopus_encoder_uninitialized() {
         let sink = CaptureSink::default();
         let state = Arc::clone(&sink.0);
-        let output = OpusEncoderOutput::new(sink).unwrap();
+        let output = OpusEncoderOutput::new_with_config(
+            sink,
+            OpusEncoderConfig {
+                bitrate: 64_000,
+                complexity: 1,
+                vbr: false,
+            },
+        )
+        .unwrap();
         let cancellation = CancellationToken::new();
         assert!(lock(&output.state).encoder.is_none());
 
