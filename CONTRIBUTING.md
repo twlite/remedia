@@ -213,6 +213,20 @@ resolves the client's workspace:* peer dependency in the packed manifest. All 13
 addon targets are packed and published. Exact package versions already on npm are skipped, and
 platform packages publish before @remedia/node, followed by @remedia/client.
 
+A detected release first creates (or reuses) a GitHub draft and verifies that its immutable tag
+points to the release commit. After checks, native builds, and packaging pass, all 13 `.node`
+addons, five server executables, five server archives, and the three license/notice files are
+uploaded to that draft. Upload completeness, sizes, and available SHA-256 digests are verified
+before npm publication starts. The final job waits for every npm package publish to succeed,
+rechecks the assets, and only then makes the GitHub release public. Prerelease versions remain
+marked as prereleases and are not promoted to GitHub's latest stable release.
+
+Failures before finalization leave the draft and tag in place for inspection or a rerun. Draft
+assets can be replaced on retries. A release that is already public is never changed back to a
+draft or overwritten by a fresh full run; retrying only the final publication job is harmless.
+The npm registry and GitHub are separate systems: npm versions published before a later failure
+remain published. The existing exact-version checks allow a failed npm stage to resume.
+
 For token-free releases, configure npm Trusted Publishing for each package the workflow publishes:
 
 - @remedia/node-linux-x64-gnu

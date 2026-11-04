@@ -7,7 +7,7 @@
     "lint:fix": "oxlint . --fix --deny-warnings",
     "format": "oxfmt .",
     "format:check": "oxfmt . --check",
-    "test:release": "node --test .github/scripts/release.test.mjs",
+    "test:release": "node --test .github/scripts/release.test.mjs .github/scripts/github-release.test.mjs",
     "typecheck": "pnpm --recursive --if-present run typecheck",
     "check": "pnpm lint && pnpm typecheck && pnpm format:check && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && pnpm --filter @remedia/node test && pnpm --filter @remedia/client test && pnpm --filter discord-app test",
     "test:ci": "node --test .github/scripts/ci-changes.test.mjs"
