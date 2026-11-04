@@ -128,6 +128,48 @@ export async function createHeldAudioServer(
   };
 }
 
+/**
+ * Drive an HTTP-backed decoder until a requested pause completes.
+ *
+ * The null audio output does not pace playback. Writing large buffers or only
+ * yielding a microtask can drain a finite fixture before Rust observes the
+ * requested pause, especially on Windows. Feed small chunks with real event
+ * loop turns and await the native operation, rather than inferring completion
+ * from an intermediate state snapshot.
+ */
+export async function pauseHeldPlayback(
+  playback: { pause(): Promise<void>; readonly state: string },
+  held: { sendNext(chunkBytes?: number): number },
+  timeoutMs = 5_000,
+): Promise<void> {
+  let settled = false;
+  let failure: unknown;
+  const pausing = playback.pause().then(
+    () => {
+      settled = true;
+    },
+    (error: unknown) => {
+      failure = error;
+      settled = true;
+    },
+  );
+  const deadline = Date.now() + timeoutMs;
+  while (!settled && Date.now() < deadline) {
+    if (held.sendNext(8 * 1024) === 0) {
+      throw new Error('HTTP test source was exhausted before playback paused');
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  if (!settled) {
+    throw new Error(`playback pause did not settle within ${timeoutMs}ms (state=${playback.state})`);
+  }
+  await pausing;
+  if (failure !== undefined) throw failure;
+  if (playback.state !== 'paused') {
+    throw new Error(`playback pause resolved in unexpected state ${playback.state}`);
+  }
+}
+
 export async function waitFor<T>(findValue: () => T | undefined, timeoutMs = 2_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
