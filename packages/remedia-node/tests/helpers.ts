@@ -162,7 +162,9 @@ export async function pauseHeldPlayback(
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
   if (!result.settled) {
-    throw new Error(`playback pause did not settle within ${timeoutMs}ms (state=${playback.state})`);
+    throw new Error(
+      `playback pause did not settle within ${timeoutMs}ms (state=${playback.state})`,
+    );
   }
   await pausing;
   if (result.failure !== undefined) throw result.failure;
