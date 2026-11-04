@@ -184,15 +184,17 @@ target; see the [Node.js distribution guide](apps/docs/content/docs/node/distrib
 
 ## CI change selection
 
-Push and pull-request CI runs for workspace code, application documentation content, build and
-release configuration, and distributed license files. README-only changes, contributor guides,
-and issue/PR templates do not start the workflow. Manual workflow dispatch runs all checks.
+Every push to main or `fix/**` runs lightweight release and change detection, including empty
+commits. The remaining checks run only for workspace code, application documentation content,
+build and release configuration, distributed license files, or a detected release. Ordinary
+README-only changes, contributor guides, and issue/PR templates skip those checks. Pull requests
+retain workflow path filters. Manual workflow dispatch runs all checks.
 
 Changes confined to `apps/docs`, `apps/discord`, shared npm lockfiles, or license texts run the
 JavaScript, packaging-test, and documentation checks without installing FFmpeg or running Rust
 checks, native build matrices, or native release packing. Rust crates, the Node and client packages
 (which exercise native integration), native build recipes, workflow scripts, and shared build
-configuration enable the native checks. Release commits that start the workflow also enable them.
+configuration enable the native checks. Detected release commits always enable all checks.
 Push comparisons cover the entire push; pull requests compare from the merge base. New feature
 branches compare with the default branch. Unavailable history falls back to full validation.
 Run `pnpm test:ci` to check this selection logic locally.
@@ -202,9 +204,9 @@ Run `pnpm test:ci` to check this selection logic locally.
 Stable and prerelease releases are created by pushing a commit to main whose entire subject is
 'chore: release x.y.z' or 'chore: release x.y.z-tag.n'. Stable versions publish with npm's
 'latest' dist-tag. Prerelease versions use their lowercase identifier as the dist-tag, such as
-'canary' in '1.3.0-canary.5'. Ordinary pushes and pull requests never publish. A release commit
-must include a path accepted by the workflow filter, such as a package manifest change; an empty
-or README-only release marker does not start CI.
+'canary' in '1.3.0-canary.5'. Ordinary pushes and pull requests never publish. Both stable and
+prerelease release commits bypass change selection: empty commits and README-only release
+commits on main start the full release pipeline.
 
 The workflow overrides the @remedia/node and @remedia/client npm versions in each CI checkout
 before installing, building, or packing. It does not commit those overrides or alter Rust crate

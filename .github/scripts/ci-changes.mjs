@@ -2,6 +2,41 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
+export function needsChecks(paths) {
+  return paths.some((path) => {
+    if (path.startsWith('apps/docs/content/')) return true;
+    if (['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt'].includes(path))
+      return true;
+    if (/\.md$/i.test(path)) return false;
+    return (
+      [
+        'crates/',
+        'packages/',
+        'apps/docs/',
+        'apps/discord/',
+        '.cargo/',
+        '.github/workflows/',
+        '.github/scripts/',
+        '.github/native-deps/',
+      ].some((prefix) => path.startsWith(prefix)) ||
+      [
+        'Cargo.toml',
+        'Cargo.lock',
+        'rust-toolchain.toml',
+        'package.json',
+        'pnpm-lock.yaml',
+        'pnpm-workspace.yaml',
+        'tsconfig.base.json',
+        '.oxlintrc.json',
+        '.oxfmtrc.json',
+        '.editorconfig',
+        '.gitattributes',
+        '.gitignore',
+      ].includes(path)
+    );
+  });
+}
+
 export function needsNativeChecks(paths) {
   return paths.some((path) => {
     if (/\.md$/i.test(path)) return false;
@@ -63,7 +98,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
   const paths = changedPaths(process.env.GITHUB_EVENT_NAME, event);
   const native = paths === null || needsNativeChecks(paths);
-  const output = 'native=' + native + '\n';
+  const checks = paths === null || needsChecks(paths);
+  const output = 'native=' + native + '\nchecks=' + checks + '\n';
   if (process.env.GITHUB_OUTPUT) writeFileSync(process.env.GITHUB_OUTPUT, output, { flag: 'a' });
   else process.stdout.write(output);
 }

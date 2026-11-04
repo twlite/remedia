@@ -3,32 +3,6 @@ name: CI
 on:
   push:
     branches: [main, 'fix/**']
-    paths:
-      - 'crates/**'
-      - 'packages/**'
-      - 'apps/docs/**'
-      - 'apps/discord/**'
-      - '.cargo/**'
-      - '.github/workflows/**'
-      - '.github/scripts/**'
-      - '.github/native-deps/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-      - 'tsconfig.base.json'
-      - '.oxlintrc.json'
-      - '.oxfmtrc.json'
-      - '.editorconfig'
-      - '.gitattributes'
-      - '.gitignore'
-      - '!**/*.md'
-      - 'apps/docs/content/**'
-      - 'LICENSE'
-      - 'THIRD_PARTY_NOTICES.md'
-      - 'THIRD_PARTY_LICENSES.txt'
   pull_request:
     paths:
       - 'crates/**'
@@ -74,6 +48,7 @@ jobs:
     name: Detect release and changed paths
     runs-on: ubuntu-24.04
     outputs:
+      checks: ${{ steps.changes.outputs.checks }}
       native: ${{ steps.changes.outputs.native }}
       is_release: ${{ steps.detect.outputs.is_release }}
       version: ${{ steps.detect.outputs.version }}
@@ -141,6 +116,7 @@ jobs:
         run: node .github/scripts/github-release.mjs prepare "$RELEASE_VERSION"
 
   checks:
+    if: needs.release-detection.outputs.checks == 'true' || needs.release-detection.outputs.is_release == 'true'
     name: Lint, types, tests, and docs
     needs: release-detection
     runs-on: ubuntu-24.04
