@@ -82,9 +82,7 @@ test('the release list exactly matches all configured napi targets', () => {
   );
   assert.deepEqual(RELEASE_TARGETS.map(({ triple }) => triple), manifest.napi.targets);
   assert.equal(RELEASE_TARGETS.length, 13);
-  const targetsWithServerBinaries = RELEASE_TARGETS.filter(
-    (target) => target.server !== false,
-  );
+  const targetsWithServerBinaries = RELEASE_TARGETS.filter((target) => target.server !== false);
   assert.equal(targetsWithServerBinaries.length, 5);
 });
 
