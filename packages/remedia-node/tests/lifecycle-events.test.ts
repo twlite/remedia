@@ -5,7 +5,13 @@ import { afterAll, beforeAll, test } from 'vitest';
 import { PlaybackSessionEvents, Remedia, VoiceSessionEvents } from '../lib/index.js';
 type PlaybackSessionEventName = import('../lib/index.js').PlaybackSessionEvents;
 const typedPlaybackEvent: PlaybackSessionEventName = PlaybackSessionEvents.playbackCompleted;
-import { createHeldAudioServer, createWaveFixture, makeWave, waitFor } from './helpers.js';
+import {
+  createHeldAudioServer,
+  createWaveFixture,
+  makeWave,
+  pauseHeldPlayback,
+  waitFor,
+} from './helpers.js';
 
 let fixture: Awaited<ReturnType<typeof createWaveFixture>>;
 
@@ -90,16 +96,11 @@ test('emits pause/resume and configuration transitions only after successful cha
     const starting = playback.play({ url: held.url });
     await held.ready;
     await starting;
-    // The fixture deliberately keeps the HTTP response open. Wait until pause
-    // is queued, then release bounded chunks until the decoder reaches a frame
-    // boundary. The rest of the long source remains unread for the test.
-    const pausing = playback.pause();
-    for (let attempt = 0; playback.state !== 'paused' && attempt < 64; attempt++) {
-      held.sendNext(16 * 1024);
-      await new Promise<void>((resolve) => setImmediate(resolve));
-    }
+    // Wait for native pause completion while feeding just enough HTTP data to
+    // release any blocked FFmpeg read. Do not use a fixed number of immediate
+    // event-loop turns: the native worker can lag on loaded Windows runners.
+    await pauseHeldPlayback(playback, held);
     assert.equal(playback.state, 'paused');
-    await pausing;
     await playback.pause();
     await playback.filters.set('anull');
     await playback.filters.set('anull');
