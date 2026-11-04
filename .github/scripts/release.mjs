@@ -209,6 +209,7 @@ export function assertPackedManifest(manifest, { name, version, kind }) {
         manifest.version,
     );
   }
+  if (manifest.license !== 'MIT') throw new Error(name + ' must declare license MIT.');
   if (manifest.private === true)
     throw new Error('Refusing to publish private package ' + name + '.');
 
@@ -313,7 +314,7 @@ function readTarManifest(tarball) {
   return JSON.parse(manifestJson);
 }
 
-function assertTarContents(tarball, manifest, kind) {
+export function assertTarContents(tarball, manifest, kind) {
   const entries = execFileSync('tar', ['-tzf', tarball], { encoding: 'utf8' }).trim().split('\n');
   const required =
     kind === 'platform'
@@ -327,10 +328,20 @@ function assertTarContents(tarball, manifest, kind) {
             'package/README.md',
           ]
         : ['package/dist/index.js', 'package/dist/index.d.ts', 'package/README.md'];
+  required.push(
+    'package/LICENSE',
+    'package/THIRD_PARTY_NOTICES.md',
+    'package/THIRD_PARTY_LICENSES.txt',
+  );
   for (const file of required) {
     if (!entries.includes(file)) {
       throw new Error('Packed ' + manifest.name + ' is missing required file ' + file + '.');
     }
+  }
+  for (const file of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt']) {
+    const actual = execFileSync('tar', ['-xOf', tarball, 'package/' + file]);
+    if (!actual.equals(readFileSync(join(rootDir, file))))
+      throw new Error('Packed notice differs: ' + file);
   }
 }
 
@@ -382,12 +393,44 @@ export function verifyReleaseArtifacts(bindingsDirectory, serversDirectory) {
   return artifacts;
 }
 
+export function stageReleaseLicenses(directory, workspaceRoot = rootDir) {
+  mkdirSync(directory, { recursive: true });
+  for (const file of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt']) {
+    copyFileSync(join(workspaceRoot, file), join(directory, file));
+  }
+}
+
+export function packServerArchives(serversDirectory, workspaceRoot = rootDir) {
+  stageReleaseLicenses(serversDirectory, workspaceRoot);
+  for (const target of RELEASE_TARGETS.filter((item) => item.server !== false)) {
+    const binary = 'remedia-server-' + target.triple + (target.extension ?? '');
+    const archive = join(serversDirectory, 'remedia-server-' + target.triple + '.tar.gz');
+    execFileSync('tar', [
+      '-czf',
+      archive,
+      '-C',
+      serversDirectory,
+      binary,
+      'LICENSE',
+      'THIRD_PARTY_NOTICES.md',
+      'THIRD_PARTY_LICENSES.txt',
+    ]);
+    for (const file of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt']) {
+      const actual = execFileSync('tar', ['-xOf', archive, file]);
+      if (!actual.equals(readFileSync(join(workspaceRoot, file)))) {
+        throw new Error('Server archive has mismatched ' + file + ': ' + archive);
+      }
+    }
+  }
+}
+
 export function packRelease(
   { version, bindingsDirectory, serversDirectory, outputDirectory },
   workspaceRoot = rootDir,
 ) {
   parseReleaseVersion(version);
   const artifactSet = verifyReleaseArtifacts(bindingsDirectory, serversDirectory);
+  packServerArchives(serversDirectory, workspaceRoot);
   const nodeManifestPath = join(workspaceRoot, 'packages/remedia-node/package.json');
   const nodeManifest = JSON.parse(readFileSync(nodeManifestPath, 'utf8'));
   // Release packaging must not silently drop any configured napi-rs target.
@@ -441,6 +484,19 @@ export function packRelease(
   const packed = [];
   for (const target of artifactSet) {
     const directory = join(platformDirectory, target.suffix);
+    stageReleaseLicenses(directory, workspaceRoot);
+    const platformManifestPath = join(directory, 'package.json');
+    const platformManifest = JSON.parse(readFileSync(platformManifestPath, 'utf8'));
+    platformManifest.license = 'MIT';
+    platformManifest.files = [
+      ...new Set([
+        ...(platformManifest.files ?? [platformManifest.main]),
+        'LICENSE',
+        'THIRD_PARTY_NOTICES.md',
+        'THIRD_PARTY_LICENSES.txt',
+      ]),
+    ];
+    writeFileSync(platformManifestPath, JSON.stringify(platformManifest, null, 2) + '\n');
     const tarball = packPackage(directory, outputDirectory);
     const manifest = readTarManifest(tarball);
     assertPackedManifest(manifest, {

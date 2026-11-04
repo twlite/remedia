@@ -12,7 +12,7 @@ installation.
 
 ## Release-tested platforms
 
-Stable releases include these native packages after each target passes its native build, Rust tests,
+The beta release pipeline includes these native packages after each target passes its native build, Rust tests,
 binary inspection, and Node.js integration tests:
 
 | Runtime target         | N-API package                 |
@@ -27,20 +27,19 @@ These release jobs run with Node.js 22.18, 24, and 26. The package declares Node
 The Node-API addon also has runtime tests for decoding and playback, addon loading, Discord voice
 components, the embedded client, and the standalone server using the built server binary.
 
-The following targets are experimental and are not included in published platform packages:
+Additional npm platform packages are included by the current release packer:
 
-| Target                   | Current dependency or verification gap                                                                        |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------- |
-| Linux x64 and ARM64 musl | cargo-zigbuild supplies a cross-linker, but the workflow has no target-built FFmpeg 7 sysroot                 |
-| Linux ARMv7 GNU          | The FFmpeg 7 recipe has no ARMv7 libraries, headers, or cross pkg-config metadata                             |
-| Windows x86 MSVC         | The configured FFmpeg 7 libraries are x64 only                                                                |
-| Windows ARM64 MSVC       | Matching FFmpeg 7 ARM64 import libraries and DLLs are not configured                                          |
-| Android ARM64 and ARMv7  | The workflow configures NDK 27.2 linkers for API 24, but has no FFmpeg 7 builds for those ABIs                |
-| FreeBSD x64              | A FreeBSD 15 VM attempts native build and runtime tests after installing FFmpeg 7; it is not a release target |
+| Target                     | Verification configured in CI                                         |
+| -------------------------- | --------------------------------------------------------------------- |
+| Linux x64 and ARM64 musl   | Cross-build with target FFmpeg 7; no native runtime integration tests |
+| Linux ARMv7 hard-float GNU | Cross-build with target FFmpeg 7; no native runtime integration tests |
+| Windows x86 and ARM64 MSVC | Cross-build with target FFmpeg 7; no native runtime integration tests |
+| Android ARM64 and ARMv7    | NDK 27.2 / API 24 cross-build; no native runtime integration tests    |
+| FreeBSD x64                | FreeBSD 15.1 VM build and native runtime integration tests            |
 
-The experimental jobs do not stop required target tests and their artifacts are not published. WASI
-is excluded. A target becomes part of an npm release only after its FFmpeg 7 dependencies, runtime
-tests, and package metadata have been verified.
+These describe workflow coverage, not confirmation that a particular release run passed.
+The package gate requires all 13 configured addon artifacts. Only the five native runner targets
+in the first table have standalone server release binaries. WASI is excluded.
 
 ## FFmpeg runtime libraries
 
@@ -69,3 +68,56 @@ prevent a GNU addon from being installed as a musl addon.
 embedded playback, so applications that use only remote server nodes can install the client without
 the native package. During release packing, pnpm resolves this workspace peer dependency to the
 actual released @remedia/node version.
+
+## Install the public beta
+
+```sh
+npm install @remedia/node@0.1.0-beta.1
+# Remote-only consumers need only this package:
+npm install @remedia/client@0.1.0-beta.1
+```
+
+Both packages require Node.js 22.18.0 or newer and use ESM. See
+[bindings](/docs/node/bindings) and [client configuration](/docs/client/overview) for API examples.
+
+## Runtime discovery and troubleshooting
+
+Install a shared FFmpeg **7** build matching the process CPU and OS/libc, including its transitive
+shared dependencies. Having an `ffmpeg` executable on `PATH` alone is insufficient.
+
+- Linux: install the libraries into the loader's configured directories (and update `ldconfig` when
+  appropriate), or set `LD_LIBRARY_PATH=/path/to/ffmpeg7/lib` before starting Node or the server.
+  FreeBSD also supports `LD_LIBRARY_PATH`, commonly with libraries under `/usr/local/lib`.
+- macOS: use `brew install ffmpeg@7`; before launch set
+  `DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib"`. Mach-O install names may refer to the
+  Homebrew prefix used at build time. Inspect with `otool -L`; a different prefix may require a
+  local source build. Protected launch contexts may strip `DYLD_*` variables.
+- Windows: add the directory containing `avcodec-61.dll`, `avformat-61.dll`, `avutil-59.dll`,
+  `avfilter-10.dll`, `swresample-5.dll` and their dependencies to `PATH` before launch. Install
+  the Microsoft Visual C++ v14 Redistributable matching the process architecture.
+- Android: supply matching shared libraries in the application's native library search path;
+  these packages have build-only verification and are not a tested Android deployment recipe.
+
+For `Cannot find native binding`, `ERR_DLOPEN_FAILED`, missing DLL, or missing shared-library
+errors, check that optional npm dependencies are enabled and that the selected `@remedia/node-*`
+package matches Node's architecture (`node -p process.arch`) and Linux libc. Reinstall with optional
+dependencies enabled if necessary. Inspect linked libraries with `ldd` on Linux/FreeBSD,
+`otool -L` on macOS, or `dumpbin /DEPENDENTS` on Windows; resolve every missing dependency and
+restart with the loader environment set. ABI majors from another FFmpeg release are not substitutes;
+do not rename or symlink incompatible major versions. `FFMPEG_DIR` and `PKG_CONFIG_PATH` are
+build settings, not a runtime loader configuration. Source builds need development headers,
+Rust, libclang, and the tools in the contributor guide.
+
+## Licensing and distributed notices
+
+FFmpeg libraries are installed independently and are not bundled with npm packages or server
+binaries. Their licensing depends on the build selected by the user, including enabled components
+and external libraries. GPL-enabled installations are not rejected. Users must comply with the
+applicable licensing requirements; see [FFmpeg's official licensing information](https://ffmpeg.org/legal.html)
+and [source](https://git.ffmpeg.org/ffmpeg.git). This is distinct from libopus, which is statically
+included through `opus2`'s bundled backend, and other native Rust dependencies included in binaries.
+
+Every npm package, including platform packages, contains `LICENSE` and `THIRD_PARTY_NOTICES.md` plus the `THIRD_PARTY_LICENSES.txt` appendix.
+Standalone server releases include per-target `.tar.gz` archives with the executable and all three files,
+as well as raw executables and accompanying notices. Keep the notices with redistributed binaries.
+See [licensing and media responsibility](/docs/licensing).

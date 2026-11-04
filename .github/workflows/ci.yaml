@@ -319,7 +319,7 @@ jobs:
             echo "Unable to query the remote tag $tag." >&2
             exit "$result"
           fi
-      - name: Create or update the GitHub release and attach server binaries
+      - name: Create or update the GitHub release and attach server binaries and licensed archives
         env:
           RELEASE_VERSION: ${{ needs.release-detection.outputs.version }}
           IS_PRERELEASE: ${{ needs.release-detection.outputs.prerelease }}

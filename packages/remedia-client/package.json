@@ -2,11 +2,15 @@
   "name": "@remedia/client",
   "version": "0.1.0",
   "description": "Hybrid embedded and remote client SDK for Remedia",
+  "license": "MIT",
   "author": "Twilight <hello@twlite.dev>",
   "repository": "https://github.com/twlite/remedia.git",
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "THIRD_PARTY_LICENSES.txt"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -26,7 +30,8 @@
     "test:server": "vitest run tests/server-integration.test.ts",
     "test:hybrid": "vitest run tests/hybrid.test.ts",
     "test:watch": "vitest",
-    "typecheck": "tsc -p tsconfig.test.json --noEmit"
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "prepack": "node ../../.github/scripts/stage-licenses.mjs"
   },
   "dependencies": {
     "ws": "^8.22.1"

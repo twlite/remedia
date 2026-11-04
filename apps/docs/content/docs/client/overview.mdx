@@ -11,6 +11,21 @@ does not pass through WebSocket or start a local server. Remote-only consumers d
 libraries or the native addon; `@remedia/node` is an optional peer dependency used only for embedded
 node configurations.
 
+## Installation
+
+Requires Node.js 22.18.0 or newer (ESM).
+
+```sh
+npm install @remedia/client@0.1.0-beta.1
+# Only embedded configurations also need:
+npm install @remedia/node@0.1.0-beta.1
+```
+
+For remote-only usage, omit all `embedded` entries from the node pool below. The client machine
+needs neither FFmpeg nor the addon; the server host needs FFmpeg 7. See
+[distribution and native load troubleshooting](/docs/node/distribution) and
+[licensing and media responsibility](/docs/licensing).
+
 ## Configure a node pool
 
 ```ts

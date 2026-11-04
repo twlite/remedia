@@ -77,6 +77,41 @@ limitations. The [observability guide](apps/docs/content/docs/observability/conf
 covers structured logs, bounded diagnostic routing, and opt-in OTLP traces and metrics. The
 [Fumadocs overview](apps/docs/content/docs/index.mdx) groups documentation by workspace module.
 
+## Installation
+
+The upcoming public prerelease is `0.1.0-beta.1`. Both packages require Node.js **22.18.0 or newer**
+and expose ESM entrypoints.
+
+```sh
+# Embedded engine (install FFmpeg 7 shared libraries separately first)
+npm install @remedia/node@0.1.0-beta.1
+# Remote-only SDK (no local addon or FFmpeg required)
+npm install @remedia/client@0.1.0-beta.1
+# Hybrid/embedded SDK applications need both packages
+npm install @remedia/client@0.1.0-beta.1 @remedia/node@0.1.0-beta.1
+```
+
+Installing `@remedia/node` does not install FFmpeg. The standalone server also needs independently
+installed FFmpeg 7 libraries on its host. Neither distribution bundles FFmpeg.
+See the [distribution guide](apps/docs/content/docs/node/distribution.mdx) for native targets,
+runtime library discovery, and load-error troubleshooting.
+
+```js
+import { Remedia } from '@remedia/node';
+
+const remedia = await Remedia.create();
+try {
+  const playback = remedia.createPlaybackSession();
+  await playback.play({ file: './audio.wav' });
+  console.log(await playback.wait());
+} finally {
+  await remedia.close();
+}
+```
+
+This standalone session decodes into a null output; it does not play through local speakers.
+See the [client README](packages/remedia-client/README.md) for remote Discord integration.
+
 ## Development
 
 You need Rust via rustup, Node.js 22.18 or newer, and pnpm 12.16.1. The workspace declares Rust
@@ -111,3 +146,14 @@ outbound network access for remote media URLs.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup details, platform notes, and pull request
 guidance.
+
+## License and media responsibility
+
+Remedia is a general-purpose media processing and transport engine. It does not provide media
+content or grant rights to access or use third-party media. Developers and operators are responsible
+for ensuring their use complies with applicable laws, intellectual property rights, and third-party
+service terms.
+
+Remedia is provided under the [MIT License](LICENSE) without warranty. Dependency terms remain
+separate; see [third-party notices](THIRD_PARTY_NOTICES.md), including bundled libopus and
+independently installed FFmpeg.

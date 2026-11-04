@@ -3,6 +3,7 @@ resolver = "3"
 members = ["crates/*", "packages/remedia-node"]
 
 [workspace.package]
+license = "MIT"
 edition = "2024"
 rust-version = "1.88"
 

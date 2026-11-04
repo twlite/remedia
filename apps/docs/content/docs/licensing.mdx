@@ -1,0 +1,29 @@
+---
+title: Licensing and media responsibility
+description: Remedia's MIT license, dependency notices, and responsibility for media use.
+---
+
+# Licensing and media responsibility
+
+Remedia is a general-purpose media processing and transport engine. It does not provide media
+content or grant rights to access or use third-party media. Developers and operators integrating
+Remedia are responsible for ensuring their use of media complies with applicable laws, intellectual
+property rights, and the terms of third-party services. Remedia is provided under the MIT License
+without warranty.
+
+The [MIT license](https://github.com/twlite/remedia/blob/main/LICENSE) applies to Remedia;
+third-party dependencies retain their own terms. Distributed npm packages and server archives
+include `LICENSE` and `THIRD_PARTY_NOTICES.md` plus the `THIRD_PARTY_LICENSES.txt` appendix. The
+[notices](https://github.com/twlite/remedia/blob/main/THIRD_PARTY_NOTICES.md) reproduce dependency
+copyright, license conditions, and disclaimers, including the bundled libopus backend.
+
+FFmpeg 7 is dynamically linked and independently installed, not included in Remedia distributions.
+Its license depends on your chosen build, including GPL-enabled components and external libraries.
+Remedia does not enforce LGPL-only builds. You must comply with applicable requirements for your
+selected FFmpeg build and deployment. Consult the [official FFmpeg licensing information](https://ffmpeg.org/legal.html)
+and [source code](https://git.ffmpeg.org/ffmpeg.git).
+
+Some native dependencies use MPL-2.0; the notices identify exact published source versions. Preserve
+the applicable notices and provide recipients access to the covered source as required by those
+terms when redistributing. The presence of these files is not a guarantee of legal compliance.
+See [package distribution](/docs/node/distribution) for FFmpeg ABI versions and runtime setup.

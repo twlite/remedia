@@ -12,7 +12,7 @@ FFmpeg libraries, and yields normalized PCM frames incrementally.
 The output is interleaved 48 kHz stereo `f32` in Front Left / Front Right order. Core can encode PCM
 to transport-independent Opus packets, and `remedia-discord` can send packets over an outbound voice
 connection with DAVE encryption. Live playback through a configured Discord bot has been exercised;
-CI remains credential-free and does not connect to Discord. The private `@remedia/node` package provides an in-process API for playback, external Discord
+CI remains credential-free and does not connect to Discord. The public `@remedia/node` package provides an in-process API for playback, external Discord
 voice sessions, diagnostics, and local byte streams. `remedia-server` provides authenticated
 WebSocket RPC, and the pure TypeScript `@remedia/client` can orchestrate embedded nodes, remote nodes,
 or a hybrid pool.

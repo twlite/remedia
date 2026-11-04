@@ -7,6 +7,9 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
   assertPackedManifest,
+  assertTarContents,
+  packServerArchives,
+  stageReleaseLicenses,
   detectRelease,
   parseReleaseSubject,
   parseReleaseVersion,
@@ -32,6 +35,7 @@ function packageSet(directory, version) {
       kind: 'platform',
       tarball,
       manifest: {
+        license: 'MIT',
         name,
         version,
         os: [target.os],
@@ -55,6 +59,7 @@ function packageSet(directory, version) {
       kind: 'node',
       tarball: rootTarball,
       manifest: {
+        license: 'MIT',
         name: '@remedia/node',
         version,
         optionalDependencies,
@@ -67,6 +72,7 @@ function packageSet(directory, version) {
       kind: 'client',
       tarball: clientTarball,
       manifest: {
+        license: 'MIT',
         name: '@remedia/client',
         version,
         peerDependencies: { '@remedia/node': version },
@@ -94,6 +100,7 @@ test('accepts the napi-rs ARMv7 GNU package manifest without a libc field', () =
   assert.ok(target);
   assert.equal(target.libc, undefined);
   const manifest = {
+    license: 'MIT',
     name: '@remedia/node-linux-arm-gnueabihf',
     version: '0.1.0',
     os: ['linux'],
@@ -199,6 +206,7 @@ test('synchronizes npm workspace versions without rewriting workspace protocols'
         JSON.stringify(
           packagePath.includes('client')
             ? {
+                license: 'MIT',
                 name: '@remedia/client',
                 version: '0.1.0',
                 peerDependencies: { '@remedia/node': 'workspace:*' },
@@ -227,6 +235,7 @@ test('validates packed workspace dependency resolution and required N-API packag
     () =>
       assertPackedManifest(
         {
+          license: 'MIT',
           name: '@remedia/client',
           version: '1.0.0',
           peerDependencies: { '@remedia/node': 'workspace:*' },
@@ -237,6 +246,7 @@ test('validates packed workspace dependency resolution and required N-API packag
   );
   assertPackedManifest(
     {
+      license: 'MIT',
       name: '@remedia/client',
       version: '1.0.0',
       peerDependencies: { '@remedia/node': '1.0.0' },
@@ -247,6 +257,7 @@ test('validates packed workspace dependency resolution and required N-API packag
     () =>
       assertPackedManifest(
         {
+          license: 'MIT',
           name: '@remedia/node',
           version: '1.0.0',
           optionalDependencies: {},
@@ -278,6 +289,18 @@ test('matches release server artifacts to the target-triple filenames staged by 
 
   try {
     assert.equal(verifyReleaseArtifacts(bindings, servers).length, RELEASE_TARGETS.length);
+    packServerArchives(servers);
+    for (const target of RELEASE_TARGETS.filter((item) => item.server !== false)) {
+      const archive = path.join(servers, 'remedia-server-' + target.triple + '.tar.gz');
+      const entries = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' });
+      assert.ok(entries.includes('remedia-server-' + target.triple + (target.extension ?? '')));
+      for (const file of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt']) {
+        assert.deepEqual(
+          execFileSync('tar', ['-xOf', archive, file]),
+          readFileSync(path.resolve(file)),
+        );
+      }
+    }
     const requiredServer = path.join(servers, 'remedia-server-' + RELEASE_TARGETS[0].triple);
     rmSync(requiredServer);
     assert.throws(
@@ -450,6 +473,60 @@ test('fails closed on registry errors or missing required artifacts', async () =
       }),
       /verified platform packages/,
     );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('actual workspace tarballs carry exact root licenses and notices', () => {
+  const directory = temporaryDirectory();
+  const root = path.resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+  try {
+    for (const name of ['node', 'client']) {
+      const packageDirectory = path.join(root, 'packages/remedia-' + name);
+      execFileSync('pnpm', ['run', name === 'node' ? 'build:types' : 'build'], {
+        cwd: packageDirectory,
+        stdio: 'ignore',
+      });
+      execFileSync('pnpm', ['pack', '--pack-destination', directory], {
+        cwd: packageDirectory,
+        stdio: 'ignore',
+      });
+      const version = JSON.parse(readFileSync(path.join(packageDirectory, 'package.json'))).version;
+      const tarball = path.join(directory, 'remedia-' + name + '-' + version + '.tgz');
+      const manifest = JSON.parse(execFileSync('tar', ['-xOf', tarball, 'package/package.json']));
+      assert.equal(manifest.license, 'MIT');
+      assertTarContents(tarball, manifest, name);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('platform tarballs require all exact license files, including negative cases', () => {
+  const directory = temporaryDirectory();
+  try {
+    const fixture = path.join(directory, 'platform');
+    mkdirSync(fixture);
+    const manifest = { name: '@remedia/node-darwin-arm64', main: 'node.darwin-arm64.node' };
+    writeFileSync(path.join(fixture, 'package.json'), JSON.stringify(manifest));
+    writeFileSync(path.join(fixture, manifest.main), 'packaging fixture, not a native binary');
+    stageReleaseLicenses(fixture);
+    manifest.version = '0.1.0-beta.1';
+    writeFileSync(path.join(fixture, 'package.json'), JSON.stringify(manifest));
+    const pack = () => {
+      execFileSync('pnpm', ['pack', '--pack-destination', directory], {
+        cwd: fixture,
+        stdio: 'ignore',
+      });
+      return path.join(directory, 'remedia-node-darwin-arm64-' + manifest.version + '.tgz');
+    };
+    assertTarContents(pack(), manifest, 'platform');
+    rmSync(path.join(fixture, 'THIRD_PARTY_NOTICES.md'));
+    assert.throws(() => assertTarContents(pack(), manifest, 'platform'), /missing required file/);
+    stageReleaseLicenses(fixture);
+    writeFileSync(path.join(fixture, 'LICENSE'), 'incorrect');
+    assert.throws(() => assertTarContents(pack(), manifest, 'platform'), /notice differs/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

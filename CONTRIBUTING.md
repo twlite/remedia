@@ -18,8 +18,8 @@ Opus adapter builds libopus from bundled source and links it statically. Playbac
 libavfilter. Install development headers for libavformat, libavcodec, libavutil, libavfilter, and
 libswresample, plus `pkg-config` and Clang/libclang for the bindings build. Remedia does not require
 system libopus headers or libraries.
-The CI workflow lists all 13 requested Rust targets. Only the five targets below are required for
-release builds and runtime tests; experimental jobs cannot publish packages or block those tests.
+The CI workflow lists all 13 requested Rust targets. The five primary targets below run native integration tests. The release packer requires addon
+artifacts for all 13 targets, including the additional cross-build targets.
 
 | Target                  | CI level     | Native verification                                                                            |
 | ----------------------- | ------------ | ---------------------------------------------------------------------------------------------- |
@@ -34,11 +34,11 @@ release builds and runtime tests; experimental jobs cannot publish packages or b
 | Windows x86 MSVC        | Experimental | Build-only; target-specific FFmpeg 7.1.1 x86 libraries use pinned vcpkg                        |
 | Windows ARM64 MSVC      | Experimental | Build-only cross-compile; target-specific FFmpeg 7.1.1 ARM64 libraries use pinned vcpkg        |
 | Android ARM64 and ARMv7 | Experimental | Build-only; pinned NDK 27.2, API 24 linkers, and target-built FFmpeg 7.1.1                     |
-| FreeBSD x86_64          | Experimental | FreeBSD 15.1 VM installs FFmpeg 7 and runs native build and runtime tests                      |
+| FreeBSD x86_64          | Experimental | FreeBSD 15.1 VM builds FFmpeg 7 and runs native build and runtime tests                        |
 
-The experimental N-API and server artifacts are excluded from package publication. WASI is not in
-the workflow. Promote an experimental target only after its FFmpeg 7 dependency pipeline, runtime
-tests, and release packaging have been verified.
+All 13 N-API targets are included in npm release packaging. Standalone server binaries cover only
+the five primary targets. WASI is not in the workflow. Build-only coverage does not establish native
+runtime compatibility.
 
 Remedia targets the FFmpeg 7 ABI and dynamically links FFmpeg. Its Opus adapter builds libopus from
 the locked bundled source and statically links it into native binaries. FFmpeg executables are used
@@ -47,7 +47,7 @@ specifications are in `.github/native-deps/` and pin FFmpeg 7.1.1 and pkg-config
 and Windows. The Linux and Android cross-build recipe is in
 `.github/scripts/build-ffmpeg-cross.sh`; Windows x86 and ARM64 use the pinned target triplets in
 `.github/native-deps/windows-cross/vcpkg.json`. Experimental targets are not runtime-verified except
-for the FreeBSD VM job, and none of their artifacts are published as platform packages. A successful
+for the FreeBSD VM job, and their artifacts are published as additional platform packages. A successful
 cross-build alone does not establish that the target runtime can load the addon or its FFmpeg shared
 libraries.
 
@@ -176,8 +176,8 @@ test.
 
 Compiling `@remedia/node` from source requires the pinned Rust toolchain, target-compatible FFmpeg 7
 development libraries, and libclang. The bundled Opus source is built and statically linked by
-Cargo. Installing a prebuilt platform addon from a
-future published package would not need those build tools and does not install FFmpeg during package
+Cargo. Installing a prebuilt platform addon from the
+published package does not need those build tools and does not install FFmpeg during package
 installation. The published N-API package does not bundle FFmpeg or compile native code during
 npm/pnpm installation. Consumers must install FFmpeg 7 shared runtime libraries for a supported
 target; see the [Node.js distribution guide](apps/docs/content/docs/node/distribution.mdx).
@@ -192,8 +192,8 @@ Stable and prerelease releases are created by pushing a commit to main whose ent
 The workflow overrides the @remedia/node and @remedia/client npm versions in each CI checkout
 before installing, building, or packing. It does not commit those overrides or alter Rust crate
 versions. @napi-rs/cli creates platform packages and synchronizes their versions; pnpm pack
-resolves the client's workspace:* peer dependency in the packed manifest. Only the five required
-native targets are packed and published. Exact package versions already on npm are skipped, and
+resolves the client's workspace:* peer dependency in the packed manifest. All 13 configured
+addon targets are packed and published. Exact package versions already on npm are skipped, and
 platform packages publish before @remedia/node, followed by @remedia/client.
 
 Before enabling releases, configure npm Trusted Publishing for each package the workflow publishes:
@@ -258,3 +258,17 @@ Pull requests should explain the change and its scope, link a related issue when
 include relevant documentation updates. Run the checks that apply to the change and report any
 platform-specific checks that could not be run. Keep pull requests focused and avoid presenting
 planned capabilities as already implemented.
+
+## Release license inventory
+
+`LICENSE` applies to Remedia. `THIRD_PARTY_NOTICES.md` highlights the major components, including
+bundled libopus and native cryptography. `THIRD_PARTY_LICENSES.txt` preserves the full redistribution
+texts from the locked Cargo graph and the client's `ws` runtime dependency.
+It includes exact source download links for MPL-covered dependencies. Review and refresh this
+inventory when dependencies or native build options change; preserve upstream texts verbatim.
+Development tools and docs dependencies are not bundled in the npm packages or server binaries.
+
+Package `prepack` scripts copy the root license and notices into each workspace package. The release
+packer also stages them into every generated platform package, checks their exact tarball contents,
+and builds per-target server archives with all three files. Run `pnpm test:release`; the tarball tests build the
+TypeScript packages. These packaging checks do not replace dependency or legal review.

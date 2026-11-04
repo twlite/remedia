@@ -25,3 +25,11 @@ report.*.json
 .DS_Store
 .idea/
 .vscode/*.local.json
+
+# Copies staged from the root by prepack
+packages/remedia-node/LICENSE
+packages/remedia-node/THIRD_PARTY_NOTICES.md
+packages/remedia-client/LICENSE
+packages/remedia-client/THIRD_PARTY_NOTICES.md
+packages/remedia-node/THIRD_PARTY_LICENSES.txt
+packages/remedia-client/THIRD_PARTY_LICENSES.txt
