@@ -11,9 +11,9 @@ Requires Node.js **22.18.0 or newer** and ESM.
 
 ```sh
 # Remote only: FFmpeg runs on the server, not the client machine
-npm install @remedia/client@0.1.0-beta.1
+npm install @remedia/client
 # Add this only for embedded nodes
-npm install @remedia/node@0.1.0-beta.1
+npm install @remedia/node
 ```
 
 The following remote-only example assumes an authenticated Discord Gateway client named `discord`

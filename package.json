@@ -9,7 +9,8 @@
     "format:check": "oxfmt . --check",
     "test:release": "node --test .github/scripts/release.test.mjs",
     "typecheck": "pnpm --recursive --if-present run typecheck",
-    "check": "pnpm lint && pnpm typecheck && pnpm format:check && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && pnpm --filter @remedia/node test && pnpm --filter @remedia/client test && pnpm --filter discord-app test"
+    "check": "pnpm lint && pnpm typecheck && pnpm format:check && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && pnpm --filter @remedia/node test && pnpm --filter @remedia/client test && pnpm --filter discord-app test",
+    "test:ci": "node --test .github/scripts/ci-changes.test.mjs"
   },
   "devDependencies": {
     "oxfmt": "0.75.0",

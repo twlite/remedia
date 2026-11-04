@@ -31,7 +31,7 @@ middleware can cancel or reject a start before native playback. See the
 Requires Node.js **22.18.0 or newer** (ESM).
 
 ```sh
-npm install @remedia/node@0.1.0-beta.1
+npm install @remedia/node
 ```
 
 Install FFmpeg 7 shared libraries separately before importing the package. npm does not install

@@ -84,11 +84,11 @@ and expose ESM entrypoints.
 
 ```sh
 # Embedded engine (install FFmpeg 7 shared libraries separately first)
-npm install @remedia/node@0.1.0-beta.1
+npm install @remedia/node
 # Remote-only SDK (no local addon or FFmpeg required)
-npm install @remedia/client@0.1.0-beta.1
+npm install @remedia/client
 # Hybrid/embedded SDK applications need both packages
-npm install @remedia/client@0.1.0-beta.1 @remedia/node@0.1.0-beta.1
+npm install @remedia/client @remedia/node
 ```
 
 Installing `@remedia/node` does not install FFmpeg. The standalone server also needs independently

@@ -3,7 +3,59 @@ name: CI
 on:
   push:
     branches: [main, 'fix/**']
+    paths:
+      - 'crates/**'
+      - 'packages/**'
+      - 'apps/docs/**'
+      - 'apps/discord/**'
+      - '.cargo/**'
+      - '.github/workflows/**'
+      - '.github/scripts/**'
+      - '.github/native-deps/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'tsconfig.base.json'
+      - '.oxlintrc.json'
+      - '.oxfmtrc.json'
+      - '.editorconfig'
+      - '.gitattributes'
+      - '.gitignore'
+      - '!**/*.md'
+      - 'apps/docs/content/**'
+      - 'LICENSE'
+      - 'THIRD_PARTY_NOTICES.md'
+      - 'THIRD_PARTY_LICENSES.txt'
   pull_request:
+    paths:
+      - 'crates/**'
+      - 'packages/**'
+      - 'apps/docs/**'
+      - 'apps/discord/**'
+      - '.cargo/**'
+      - '.github/workflows/**'
+      - '.github/scripts/**'
+      - '.github/native-deps/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'tsconfig.base.json'
+      - '.oxlintrc.json'
+      - '.oxfmtrc.json'
+      - '.editorconfig'
+      - '.gitattributes'
+      - '.gitignore'
+      - '!**/*.md'
+      - 'apps/docs/content/**'
+      - 'LICENSE'
+      - 'THIRD_PARTY_NOTICES.md'
+      - 'THIRD_PARTY_LICENSES.txt'
   workflow_dispatch:
 
 concurrency:
@@ -19,9 +71,10 @@ env:
 
 jobs:
   release-detection:
-    name: Detect release commit
+    name: Detect release and changed paths
     runs-on: ubuntu-24.04
     outputs:
+      native: ${{ steps.changes.outputs.native }}
       is_release: ${{ steps.detect.outputs.is_release }}
       version: ${{ steps.detect.outputs.version }}
       npm_tag: ${{ steps.detect.outputs.npm_tag }}
@@ -30,15 +83,19 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
+      - id: changes
+        name: Select checks from changed paths
+        run: node .github/scripts/ci-changes.mjs
       - id: detect
         name: Parse the latest main commit subject
         run: node .github/scripts/release.mjs detect
 
   checks:
-    name: Lint, types, Rust checks, and docs
+    name: Lint, types, tests, and docs
     needs: release-detection
     runs-on: ubuntu-24.04
     steps:
@@ -46,6 +103,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: mamba-org/setup-micromamba@v3
+        if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
         with:
           environment-file: .github/native-deps/ffmpeg7.yml
           environment-name: remedia-ffmpeg7
@@ -54,6 +112,7 @@ jobs:
           cache-environment-key: checks-ffmpeg7-${{ hashFiles('.github/native-deps/ffmpeg7.yml') }}
           cache-downloads: true
       - name: Select the repository Rust toolchain
+        if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
         run: rustup show active-toolchain
       - uses: pnpm/action-setup@v6.1.0
         with:
@@ -70,10 +129,12 @@ jobs:
         run: node .github/scripts/release.mjs sync "$RELEASE_VERSION"
       - run: pnpm install --frozen-lockfile
       - name: Install libclang development files for Rust checks
+        if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends libclang-dev
       - name: Configure native dependency paths
+        if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
         shell: micromamba-shell {0}
         run: |
           echo "FFMPEG_DIR=$CONDA_PREFIX" >> "$GITHUB_ENV"
@@ -83,6 +144,7 @@ jobs:
           if [ -z "$libclang_path" ]; then echo "libclang.so not found under /usr/lib/llvm-*" >&2; exit 1; fi
           echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
       - name: Verify FFmpeg 7 build dependencies
+        if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
         shell: micromamba-shell {0}
         run: node .github/scripts/verify-native-deps.mjs --build
       - run: pnpm lint
@@ -96,13 +158,17 @@ jobs:
           pnpm exec oxfmt .
           git diff -- .github/scripts/release.test.mjs
       - run: cargo fmt --all -- --check
+        if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
       - run: pnpm --filter @remedia/client test
       - run: pnpm --filter discord-app test
+      - run: pnpm test:ci
       - run: pnpm test:release
       - run: pnpm --filter docs build
 
   supported-platforms:
+    if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
     name: Required native targets
     needs: release-detection
     strategy:
@@ -145,6 +211,7 @@ jobs:
       release_version: ${{ needs.release-detection.outputs.version }}
 
   additional-platforms:
+    if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
     name: Additional native npm release targets
     needs: release-detection
     strategy:
@@ -193,6 +260,7 @@ jobs:
       release_version: ${{ needs.release-detection.outputs.version }}
 
   package-release:
+    if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
     name: Verify and pack npm release
     needs: [release-detection, checks, supported-platforms, additional-platforms]
     runs-on: ubuntu-24.04
