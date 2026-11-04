@@ -398,6 +398,9 @@ jobs:
           if [ "${{ inputs.target }}" = "armv7-unknown-linux-gnueabihf" ]; then
             sudo apt-get install --yes --no-install-recommends gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf binutils-arm-linux-gnueabihf
             echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
+            # libopus_sys builds bundled Opus with NEON intrinsics. GCC's
+            # default ARMv7 hard-float target does not imply a NEON FPU.
+            echo "CFLAGS_armv7_unknown_linux_gnueabihf=-mfpu=neon -mfloat-abi=hard" >> "$GITHUB_ENV"
           fi
           libclang_path="$(find /usr/lib/llvm-* -name libclang.so -print -quit)"
           test -n "$libclang_path"
@@ -633,6 +636,9 @@ jobs:
             gmake -j3
             sudo gmake install
           )
+          # FreeBSD places upstream pkg-config files under lib/pkgconfig;
+          # initialize the search path before verifying the new installation.
+          export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/libdata/pkgconfig
           test "$(pkg-config --modversion libavcodec | cut -d. -f1)" = 61
           test "$(pkg-config --modversion libavformat | cut -d. -f1)" = 61
           test "$(pkg-config --modversion libavfilter | cut -d. -f1)" = 10
