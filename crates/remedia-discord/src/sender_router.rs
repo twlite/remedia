@@ -549,8 +549,7 @@ mod tests {
         let replacement_packets = replacement_voice.wait_for_packets(1);
         assert_eq!(replacement_packets.len(), 1);
         assert_eq!(
-            replacement_packets[0].1.start_sample,
-            960,
+            replacement_packets[0].1.start_sample, 960,
             "the parked packet keeps its source position"
         );
         assert_eq!(
