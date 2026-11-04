@@ -82,7 +82,10 @@ test('the release list exactly matches all configured napi targets', () => {
   );
   assert.deepEqual(RELEASE_TARGETS.map(({ triple }) => triple), manifest.napi.targets);
   assert.equal(RELEASE_TARGETS.length, 13);
-  assert.equal(RELEASE_TARGETS.filter((target) => target.server !== false).length, 5);
+  assert.equal(
+    RELEASE_TARGETS.filter((target) => target.server !== false).length,
+    5,
+  );
 });
 
 test('parses stable releases and dynamic lowercase prerelease tags', () => {
