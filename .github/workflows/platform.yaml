@@ -401,6 +401,9 @@ jobs:
             # libopus_sys builds bundled Opus with NEON intrinsics. GCC's
             # default ARMv7 hard-float target does not imply a NEON FPU.
             echo "CFLAGS_armv7_unknown_linux_gnueabihf=-mfpu=neon -mfloat-abi=hard" >> "$GITHUB_ENV"
+            # build-ffmpeg-cross.sh only sets this on cache misses. Cargo must
+            # use the ARM cross-linker even when cached native libraries exist.
+            echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
           fi
           libclang_path="$(find /usr/lib/llvm-* -name libclang.so -print -quit)"
           test -n "$libclang_path"
