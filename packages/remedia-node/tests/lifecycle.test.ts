@@ -4,7 +4,12 @@ import { createServer } from 'node:http';
 import { afterAll, beforeAll, test } from 'vitest';
 
 import { Remedia } from '../lib/index.js';
-import { createHeldAudioServer, createWaveFixture, makeWave, pauseHeldPlayback } from './helpers.js';
+import {
+  createHeldAudioServer,
+  createWaveFixture,
+  makeWave,
+  pauseHeldPlayback,
+} from './helpers.js';
 
 let fixture: Awaited<ReturnType<typeof createWaveFixture>>;
 
