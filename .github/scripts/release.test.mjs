@@ -99,7 +99,11 @@ test('accepts the napi-rs ARMv7 GNU package manifest without a libc field', () =
     os: ['linux'],
     cpu: ['arm'],
   };
-  assertPackedManifest(manifest, { name: manifest.name, version: manifest.version, kind: 'platform' });
+  assertPackedManifest(manifest, {
+    name: manifest.name,
+    version: manifest.version,
+    kind: 'platform',
+  });
 });
 
 test('parses stable releases and dynamic lowercase prerelease tags', () => {
