@@ -494,6 +494,10 @@ mod tests {
         let cancellation = CancellationToken::new();
         let stopped = router.sink();
         stopped.send_packet(packet(0), &cancellation).unwrap();
+        // The fake transport receives queued packets on a different thread.
+        // Observe the old packet before cancellation so this test verifies
+        // generation isolation rather than racing the mock receiver.
+        voice.wait_for_packets(1);
         stopped.cancel();
 
         let skipped = router.sink();
@@ -502,7 +506,7 @@ mod tests {
         skipped.send_packet(packet(960), &cancellation).unwrap();
         skipped.finish(&cancellation).unwrap();
 
-        let packets = voice.packets();
+        let packets = voice.wait_for_packets(2);
         assert_eq!(packets.len(), 2);
         assert_ne!(packets[0].0, packets[1].0);
         assert_eq!(voice.connection().state(), ConnectionState::Connected);
