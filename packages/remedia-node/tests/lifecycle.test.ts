@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { afterAll, beforeAll, test } from 'vitest';
 
 import { Remedia } from '../lib/index.js';
-import { createHeldAudioServer, createWaveFixture, makeWave, waitFor } from './helpers.js';
+import { createHeldAudioServer, createWaveFixture, makeWave, pauseHeldPlayback } from './helpers.js';
 
 let fixture: Awaited<ReturnType<typeof createWaveFixture>>;
 
@@ -112,19 +112,14 @@ test('pause and resume gate playback while an HTTP source is held open', async (
     await held.ready;
     await starting;
 
-    const pausing = playback.pause();
-    await waitFor(() =>
-      playback.state === 'pausing' || playback.state === 'paused' ? true : undefined,
-    );
-    // Release enough bytes for any in-flight HTTP read to return, but keep the
-    // response open. EOF is sent only after pause has been acknowledged.
-    assert.ok(held.sendNext(512 * 1024) > 0);
-    await pausing;
+    await pauseHeldPlayback(playback, held);
     assert.equal(playback.state, 'paused');
 
-    held.finish();
+    // Resume while the response is still held open, so the unpaced decoder
+    // cannot reach natural EOF before we observe the resumed state.
     await playback.resume();
     assert.equal(playback.state, 'playing');
+    held.finish();
     assert.equal(await playback.wait(), 'completed');
   } finally {
     await playback.dispose();
