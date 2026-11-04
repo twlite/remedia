@@ -3,6 +3,8 @@ use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
+#[cfg(test)]
+use std::sync::Condvar;
 use std::time::Duration;
 
 use flume::{Receiver, Sender};
@@ -2252,6 +2254,7 @@ fn heartbeat_expired(last_ack: Instant, now: Instant, interval: Duration) -> boo
 pub(crate) struct TestVoiceConnection {
     connection: DiscordVoiceConnection,
     packets: Arc<Mutex<Vec<(u64, EncodedOpusPacket)>>>,
+    packets_changed: Arc<Condvar>,
     controls: Arc<Mutex<Vec<&'static str>>>,
     actor: Option<std::thread::JoinHandle<()>>,
 }
@@ -2282,14 +2285,19 @@ impl TestVoiceConnection {
             worker: Mutex::new(None),
         });
         let packets = Arc::new(Mutex::new(Vec::new()));
+        let packets_changed = Arc::new(Condvar::new());
         let controls = Arc::new(Mutex::new(Vec::new()));
         let actor_packets = Arc::clone(&packets);
+        let actor_packets_changed = Arc::clone(&packets_changed);
         let actor_controls = Arc::clone(&controls);
         let actor_cancellation = cancellation.clone();
         let actor = std::thread::spawn(move || {
             while !actor_cancellation.is_cancelled() {
                 match packet_rx.recv_timeout(Duration::from_millis(2)) {
-                    Ok(packet) => lock(&actor_packets).push((packet.generation, packet.packet)),
+                    Ok(packet) => {
+                        lock(&actor_packets).push((packet.generation, packet.packet));
+                        actor_packets_changed.notify_all();
+                    }
                     Err(flume::RecvTimeoutError::Timeout) => {}
                     Err(flume::RecvTimeoutError::Disconnected) => break,
                 }
@@ -2319,6 +2327,7 @@ impl TestVoiceConnection {
         Self {
             connection: DiscordVoiceConnection { inner },
             packets,
+            packets_changed,
             controls,
             actor: Some(actor),
         }
@@ -2330,6 +2339,24 @@ impl TestVoiceConnection {
 
     pub(crate) fn packets(&self) -> Vec<(u64, EncodedOpusPacket)> {
         lock(&self.packets).clone()
+    }
+
+    /// Wait for the mock receiver to record queued packets, not merely for
+    /// send_packet() to return after enqueueing them.
+    pub(crate) fn wait_for_packets(&self, count: usize) -> Vec<(u64, EncodedOpusPacket)> {
+        let packets = lock(&self.packets);
+        let (packets, _) = self
+            .packets_changed
+            .wait_timeout_while(packets, Duration::from_secs(2), |packets| {
+                packets.len() < count
+            })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            packets.len() >= count,
+            "mock voice worker received {} packets; expected at least {count}",
+            packets.len()
+        );
+        packets.clone()
     }
 
     pub(crate) fn controls(&self) -> Vec<&'static str> {
