@@ -315,7 +315,7 @@ jobs:
           retention-days: 7
 
   publish:
-    name: Publish verified packages with npm OIDC
+    name: Publish verified packages with npm token or OIDC
     if: needs.release-detection.outputs.is_release == 'true'
     needs: [release-detection, package-release]
     runs-on: ubuntu-24.04
@@ -344,7 +344,13 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.release-detection.outputs.version }}
           NPM_TAG: ${{ needs.release-detection.outputs.npm_tag }}
-        run: node .github/scripts/release.mjs publish "$RELEASE_VERSION" "$NPM_TAG" "$RUNNER_TEMP/npm-release-packages/release-packages.json"
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/remedia-publish.npmrc"
+            printf '%s\n' '//registry.npmjs.org/:_authToken=${NPM_TOKEN}' > "$NPM_CONFIG_USERCONFIG"
+          fi
+          node .github/scripts/release.mjs publish "$RELEASE_VERSION" "$NPM_TAG" "$RUNNER_TEMP/npm-release-packages/release-packages.json"
 
   github-release:
     name: Create GitHub tag and release

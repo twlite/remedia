@@ -213,7 +213,7 @@ resolves the client's workspace:* peer dependency in the packed manifest. All 13
 addon targets are packed and published. Exact package versions already on npm are skipped, and
 platform packages publish before @remedia/node, followed by @remedia/client.
 
-Before enabling releases, configure npm Trusted Publishing for each package the workflow publishes:
+For token-free releases, configure npm Trusted Publishing for each package the workflow publishes:
 
 - @remedia/node-linux-x64-gnu
 - @remedia/node-linux-arm64-gnu
@@ -224,9 +224,13 @@ Before enabling releases, configure npm Trusted Publishing for each package the 
 - @remedia/client
 
 For every package, choose GitHub Actions with organization/user twlite, repository remedia, and
-workflow filename ci.yaml. Leave the environment unset and allow direct publishing. Do not add an
-NPM_TOKEN or other npm authentication secret. The workflow uses a GitHub-hosted Node 24 runner and
-npm 11.21.0; only its publish job receives id-token: write. See npm's
+workflow filename ci.yaml. Leave the environment unset and allow direct publishing. Alternatively,
+set the optional repository Actions secret `NPM_TOKEN` to a token with publish access to the release
+packages. The publish step configures token credentials only when the secret is present; otherwise
+it relies on OIDC Trusted Publishing. npm 11.21.0 can still prefer OIDC when Trusted Publishing is
+already configured; the optional token also supports publishing when OIDC is unavailable.
+The workflow uses a GitHub-hosted Node 24 runner and npm 11.21.0; only its publish job receives
+id-token: write, also used for provenance when publishing with a token. See npm's
 [trusted publisher setup guide](https://docs.npmjs.com/trusted-publishers/).
 `cargo test -p remedia-core` runs deterministic file, in-memory, streaming, and local-HTTP decoder tests. The
 core tests cover decoder conversion, seeking, playback lifecycle, native FFmpeg filtergraph processing,
