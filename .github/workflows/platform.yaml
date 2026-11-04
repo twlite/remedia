@@ -48,7 +48,7 @@ jobs:
         if: inputs.release_version != ''
         env:
           RELEASE_VERSION: ${{ inputs.release_version }}
-        run: node .github/scripts/release.mjs sync "$RELEASE_VERSION"
+        run: node .github/scripts/release.mjs sync
       - name: Select the repository Rust toolchain
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@v2.9.3
@@ -277,7 +277,7 @@ jobs:
         if: inputs.release_version != ''
         env:
           RELEASE_VERSION: ${{ inputs.release_version }}
-        run: node .github/scripts/release.mjs sync "$RELEASE_VERSION"
+        run: node .github/scripts/release.mjs sync
       - name: Install Linux FFmpeg 7 runtime libraries
         if: inputs.os == 'linux'
         uses: mamba-org/setup-micromamba@v3
@@ -555,7 +555,7 @@ jobs:
         if: inputs.os != 'freebsd' && inputs.release_version != ''
         env:
           RELEASE_VERSION: ${{ inputs.release_version }}
-        run: node .github/scripts/release.mjs sync "$RELEASE_VERSION"
+        run: node .github/scripts/release.mjs sync
       - name: Install workspace dependencies for the target build probe
         if: inputs.os != 'freebsd'
         run: pnpm install --frozen-lockfile
