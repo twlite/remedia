@@ -11,7 +11,7 @@ test('successful commands are public and include the invoking user', async () =>
 
   assert.deepEqual(
     calls.map(({ method }) => method),
-    ['deferReply', 'followUp', 'deleteReply'],
+    ['deferReply', 'followUp'],
   );
   assert.deepEqual(calls[0]?.value, { flags: 64 });
   const followUp = calls[1]?.value as {
