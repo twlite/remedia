@@ -90,7 +90,13 @@ set -euo pipefail
 # target below and cannot parse the Rust 'unknown' vendor in that flag.
 args=()
 for arg in "\$@"; do
-  case "\$arg" in --target=*) ;; *) args+=("\$arg") ;; esac
+  case "\$arg" in
+    --target=*) ;;
+    # The Zig 0.14 bundled linker does not accept GNU ld's Cortex-A53
+    # erratum flag. Keep this target experimental until runtime verified.
+    -Wl,--fix-cortex-a53-843419) ;;
+    *) args+=("\$arg") ;;
+  esac
 done
 exec zig cc -target '$zig_triple' "\${args[@]}"
 EOF
