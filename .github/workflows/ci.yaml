@@ -137,8 +137,8 @@ jobs:
       server_suffix: ${{ matrix.server_suffix }}
       release_version: ${{ needs.release-detection.outputs.version }}
 
-  experimental-platforms:
-    name: Experimental build-only targets
+  additional-platforms:
+    name: Additional native npm release targets
     needs: release-detection
     strategy:
       fail-fast: false
@@ -182,13 +182,12 @@ jobs:
       target: ${{ matrix.target }}
       runner: ${{ matrix.runner }}
       os: ${{ matrix.os }}
-      tier: experimental
+      tier: cross
       release_version: ${{ needs.release-detection.outputs.version }}
 
   package-release:
     name: Verify and pack npm release
-    if: needs.release-detection.outputs.is_release == 'true'
-    needs: [release-detection, checks, supported-platforms]
+    needs: [release-detection, checks, supported-platforms, additional-platforms]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
@@ -203,6 +202,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - name: Apply the release version before package installation
+        if: needs.release-detection.outputs.is_release == 'true'
         env:
           RELEASE_VERSION: ${{ needs.release-detection.outputs.version }}
         run: node .github/scripts/release.mjs sync "$RELEASE_VERSION"
@@ -224,7 +224,8 @@ jobs:
           RELEASE_VERSION: ${{ needs.release-detection.outputs.version }}
         run: |
           mkdir -p "$RUNNER_TEMP/npm-packages"
-          node .github/scripts/release.mjs pack "$RELEASE_VERSION" "$RUNNER_TEMP/bindings" "$RUNNER_TEMP/servers" "$RUNNER_TEMP/npm-packages"
+          version="${RELEASE_VERSION:-$(node -p "require('./packages/remedia-node/package.json').version")}"
+          node .github/scripts/release.mjs pack "$version" "$RUNNER_TEMP/bindings" "$RUNNER_TEMP/servers" "$RUNNER_TEMP/npm-packages"
       - uses: actions/upload-artifact@v7
         with:
           name: npm-release-packages

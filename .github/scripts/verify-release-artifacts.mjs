@@ -9,5 +9,8 @@ if (!bindingsDirectory || !serversDirectory) {
 
 const artifacts = verifyReleaseArtifacts(bindingsDirectory, serversDirectory);
 for (const artifact of artifacts) {
-  console.log('Verified ' + artifact.triple + ': ' + artifact.addon + ' and ' + artifact.server);
+  console.log(
+    'Verified ' + artifact.triple + ': ' + artifact.addon +
+      (artifact.server ? ' and ' + artifact.server : ' (N-API addon only)'),
+  );
 }
