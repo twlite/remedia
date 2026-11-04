@@ -2292,9 +2292,12 @@ impl TestVoiceConnection {
         let actor_controls = Arc::clone(&controls);
         let actor_cancellation = cancellation.clone();
         let actor = std::thread::spawn(move || {
+            let mut processed_id = 0;
+            let mut pending_barriers = Vec::new();
             while !actor_cancellation.is_cancelled() {
                 match packet_rx.recv_timeout(Duration::from_millis(2)) {
                     Ok(packet) => {
+                        processed_id = processed_id.max(packet.id);
                         lock(&actor_packets).push((packet.generation, packet.packet));
                         actor_packets_changed.notify_all();
                     }
@@ -2307,21 +2310,32 @@ impl TestVoiceConnection {
                             lock(&actor_controls).push("flush");
                             let _ = ack.send(Ok(()));
                         }
-                        Control::Pause { ack, .. } => {
+                        Control::Pause { target_id, ack } => {
                             lock(&actor_controls).push("pause");
-                            let _ = ack.send(Ok(()));
+                            pending_barriers.push((target_id, ack));
                         }
                         Control::Resume { ack } => {
                             lock(&actor_controls).push("resume");
                             let _ = ack.send(Ok(()));
                         }
-                        Control::Finish { ack, .. } => {
+                        Control::Finish { target_id, ack } => {
                             lock(&actor_controls).push("finish");
-                            let _ = ack.send(Ok(()));
+                            pending_barriers.push((target_id, ack));
                         }
                         Control::Cancel { .. } => lock(&actor_controls).push("cancel"),
                     }
                 }
+                // Controls and packets use separate channels. Defer acknowledgements
+                // until the target packet is recorded, but keep receiving both channels
+                // so a control observed before its packets cannot deadlock the actor.
+                pending_barriers.retain(|(target_id, ack)| {
+                    if processed_id >= *target_id {
+                        let _ = ack.send(Ok(()));
+                        false
+                    } else {
+                        true
+                    }
+                });
             }
         });
         Self {
@@ -2451,6 +2465,61 @@ async fn resume_for_actor(
 mod tests {
     use super::*;
     use remedia_core::CancellationToken;
+
+    #[test]
+    fn mock_packet_barriers_wait_for_target_without_blocking_other_channels() {
+        for finish in [false, true] {
+            let voice = TestVoiceConnection::new(42);
+            let (ack, result) = mpsc::sync_channel(1);
+            let control = if finish {
+                Control::Finish { target_id: 2, ack }
+            } else {
+                Control::Pause { target_id: 2, ack }
+            };
+            voice.connection.inner.control_tx.send(control).unwrap();
+
+            // A later control acknowledgement proves the actor observed the
+            // barrier before any packets, and remained able to receive controls.
+            let (ack, resumed) = mpsc::sync_channel(1);
+            voice
+                .connection
+                .inner
+                .control_tx
+                .send(Control::Resume { ack })
+                .unwrap();
+            resumed
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .unwrap();
+            assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+
+            for id in 1..=2 {
+                voice
+                    .connection
+                    .inner
+                    .packet_tx
+                    .send(QueuedPacket {
+                        generation: 0,
+                        id,
+                        packet: EncodedOpusPacket {
+                            bytes: SILENCE_PACKET.to_vec(),
+                            samples_per_channel: 960,
+                            media_samples_per_channel: 960,
+                            start_sample: (id - 1) * 960,
+                        },
+                    })
+                    .unwrap();
+                voice.wait_for_packets(id as usize);
+                if id == 1 {
+                    assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+                }
+            }
+            result
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .unwrap();
+        }
+    }
 
     #[test]
     fn endpoint_is_secure_and_pins_voice_gateway_v8() {

@@ -466,7 +466,7 @@ mod tests {
             assert_eq!(voice.connection().voice_connection_id(), connection_id);
         }
 
-        let packets = voice.packets();
+        let packets = voice.wait_for_packets(3);
         assert_eq!(packets.len(), 3);
         assert!(packets.windows(2).all(|pair| pair[0].0 < pair[1].0));
         assert_eq!(
@@ -636,7 +636,8 @@ mod tests {
             Some(PlaybackProcessingMode::Transcoding)
         );
 
-        let packets = voice.packets();
+        // Completion drains each sender's packets before the next playback.
+        let packets = voice.wait_for_packets(3);
         assert!(packets.len() > 2);
         let sender_generations = packets
             .iter()
