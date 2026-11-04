@@ -87,7 +87,14 @@ jobs:
         run: node .github/scripts/verify-native-deps.mjs --build
       - run: pnpm lint
       - run: pnpm typecheck
-      - run: pnpm format:check
+      - name: Check formatting
+        id: formatting
+        run: pnpm format:check
+      - name: Show expected formatting changes
+        if: failure() && steps.formatting.outcome == 'failure'
+        run: |
+          pnpm exec oxfmt .
+          git diff -- .github/scripts/release.test.mjs
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: pnpm --filter @remedia/client test
