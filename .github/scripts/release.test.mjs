@@ -80,7 +80,10 @@ test('the release list exactly matches all configured napi targets', () => {
   const manifest = JSON.parse(
     readFileSync(path.join(workspaceRoot, 'packages/remedia-node/package.json'), 'utf8'),
   );
-  assert.deepEqual(RELEASE_TARGETS.map(({ triple }) => triple), manifest.napi.targets);
+  assert.deepEqual(
+    RELEASE_TARGETS.map(({ triple }) => triple),
+    manifest.napi.targets,
+  );
   assert.equal(RELEASE_TARGETS.length, 13);
   const targetsWithServerBinaries = RELEASE_TARGETS.filter((target) => target.server !== false);
   assert.equal(targetsWithServerBinaries.length, 5);
