@@ -89,6 +89,19 @@ test('the release list exactly matches all configured napi targets', () => {
   assert.equal(targetsWithServerBinaries.length, 5);
 });
 
+test('accepts the napi-rs ARMv7 GNU package manifest without a libc field', () => {
+  const target = RELEASE_TARGETS.find((item) => item.triple === 'armv7-unknown-linux-gnueabihf');
+  assert.ok(target);
+  assert.equal(target.libc, undefined);
+  const manifest = {
+    name: '@remedia/node-linux-arm-gnueabihf',
+    version: '0.1.0',
+    os: ['linux'],
+    cpu: ['arm'],
+  };
+  assertPackedManifest(manifest, { name: manifest.name, version: manifest.version, kind: 'platform' });
+});
+
 test('parses stable releases and dynamic lowercase prerelease tags', () => {
   assert.deepEqual(parseReleaseSubject('chore: release 1.2.3'), {
     version: '1.2.3',

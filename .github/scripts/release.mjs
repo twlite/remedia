@@ -67,7 +67,7 @@ export const RELEASE_TARGETS = [
     suffix: 'linux-arm-gnueabihf',
     os: 'linux',
     cpu: 'arm',
-    libc: 'glibc',
+    // napi-rs does not declare npm libc for this GNU ARMv7 target.
     server: false,
   },
   {
