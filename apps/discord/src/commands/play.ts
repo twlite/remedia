@@ -6,16 +6,17 @@ import {
   parseHttpUrl,
   withCommandReply,
 } from '../voice/command-helpers.js';
+import { resolveMediaUrl } from 'src/util/helpers.js';
 
 export default {
   data: {
     name: 'play',
-    description: 'Play or queue media from an HTTP or HTTPS URL.',
+    description: 'Play or queue media from a URL.',
     options: [
       {
         type: 3,
         name: 'url',
-        description: 'Raw media URL supported by the installed FFmpeg libraries.',
+        description: 'Direct HTTP/HTTPS media URL.',
         required: true,
       },
     ],
@@ -23,7 +24,9 @@ export default {
   async execute(interaction) {
     await withCommandReply(interaction, async () => {
       const context = getVoiceCommandContext(interaction);
-      const url = parseHttpUrl(interaction.options.getString('url', true));
+      const input = parseHttpUrl(interaction.options.getString('url', true));
+      const url = resolveMediaUrl(input);
+
       const result = await VoiceRuntime.current.playback.enqueue(
         context.guildId,
         context.channelId,
@@ -34,13 +37,17 @@ export default {
         },
         context.textChannel,
       );
+
       const source = displayTrack(result.track);
+
       if (result.started) {
         const duration = result.track.info?.durationMs;
         const length =
           duration === undefined || duration === null ? '' : ` (${formatDuration(duration)})`;
+
         return `Starting ${source}${length}. Playback updates will be posted in this channel.`;
       }
+
       return `Queued #${result.queuePosition}: ${source}.`;
     });
   },
