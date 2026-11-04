@@ -517,6 +517,9 @@ mod tests {
         let sender = Arc::new(router.sink());
         let cancellation = CancellationToken::new();
         sender.send_packet(packet(0), &cancellation).unwrap();
+        // The fake voice receiver runs on its own thread. Ensure it has
+        // recorded the old packet before checking transport isolation.
+        old_voice.wait_for_packets(1);
         let playback_generation = lock(&router.inner.state)
             .active_playback_generation
             .expect("playback should remain active during replacement");
@@ -543,9 +546,10 @@ mod tests {
         sender.finish(&cancellation).unwrap();
 
         assert_eq!(old_voice.packets().len(), 1);
-        assert_eq!(replacement_voice.packets().len(), 1);
+        let replacement_packets = replacement_voice.wait_for_packets(1);
+        assert_eq!(replacement_packets.len(), 1);
         assert_eq!(
-            replacement_voice.packets()[0].1.start_sample,
+            replacement_packets[0].1.start_sample,
             960,
             "the parked packet keeps its source position"
         );
