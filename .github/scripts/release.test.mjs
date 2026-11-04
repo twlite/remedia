@@ -75,6 +75,37 @@ function packageSet(directory, version) {
   ];
 }
 
+test('the release list exactly matches all configured napi targets', () => {
+  const workspaceRoot = path.resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+  const manifest = JSON.parse(
+    readFileSync(path.join(workspaceRoot, 'packages/remedia-node/package.json'), 'utf8'),
+  );
+  assert.deepEqual(
+    RELEASE_TARGETS.map(({ triple }) => triple),
+    manifest.napi.targets,
+  );
+  assert.equal(RELEASE_TARGETS.length, 13);
+  const targetsWithServerBinaries = RELEASE_TARGETS.filter((target) => target.server !== false);
+  assert.equal(targetsWithServerBinaries.length, 5);
+});
+
+test('accepts the napi-rs ARMv7 GNU package manifest without a libc field', () => {
+  const target = RELEASE_TARGETS.find((item) => item.triple === 'armv7-unknown-linux-gnueabihf');
+  assert.ok(target);
+  assert.equal(target.libc, undefined);
+  const manifest = {
+    name: '@remedia/node-linux-arm-gnueabihf',
+    version: '0.1.0',
+    os: ['linux'],
+    cpu: ['arm'],
+  };
+  assertPackedManifest(manifest, {
+    name: manifest.name,
+    version: manifest.version,
+    kind: 'platform',
+  });
+});
+
 test('parses stable releases and dynamic lowercase prerelease tags', () => {
   assert.deepEqual(parseReleaseSubject('chore: release 1.2.3'), {
     version: '1.2.3',
@@ -237,15 +268,27 @@ test('matches release server artifacts to the target-triple filenames staged by 
   writeFileSync(path.join(bindings, 'native.d.ts'), 'declarations');
   for (const target of RELEASE_TARGETS) {
     writeFileSync(path.join(bindings, 'node.' + target.suffix + '.node'), 'addon');
-    writeFileSync(
-      path.join(servers, 'remedia-server-' + target.triple + (target.extension ?? '')),
-      'server',
-    );
+    if (target.server !== false) {
+      writeFileSync(
+        path.join(servers, 'remedia-server-' + target.triple + (target.extension ?? '')),
+        'server',
+      );
+    }
   }
 
   try {
     assert.equal(verifyReleaseArtifacts(bindings, servers).length, RELEASE_TARGETS.length);
-    rmSync(path.join(servers, 'remedia-server-' + RELEASE_TARGETS[0].triple));
+    const requiredServer = path.join(servers, 'remedia-server-' + RELEASE_TARGETS[0].triple);
+    rmSync(requiredServer);
+    assert.throws(
+      () => verifyReleaseArtifacts(bindings, servers),
+      /Required verified release artifact/,
+    );
+    writeFileSync(requiredServer, 'server');
+
+    const addonOnlyTarget = RELEASE_TARGETS.find((target) => target.server === false);
+    assert.ok(addonOnlyTarget);
+    rmSync(path.join(bindings, 'node.' + addonOnlyTarget.suffix + '.node'));
     assert.throws(
       () => verifyReleaseArtifacts(bindings, servers),
       /Required verified release artifact/,

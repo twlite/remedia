@@ -44,6 +44,67 @@ export const RELEASE_TARGETS = [
     os: 'win32',
     cpu: 'x64',
   },
+  // Additional publishable N-API targets. The standalone server release
+  // currently remains scoped to the five native runner targets above.
+  {
+    triple: 'x86_64-unknown-linux-musl',
+    suffix: 'linux-x64-musl',
+    os: 'linux',
+    cpu: 'x64',
+    libc: 'musl',
+    server: false,
+  },
+  {
+    triple: 'aarch64-unknown-linux-musl',
+    suffix: 'linux-arm64-musl',
+    os: 'linux',
+    cpu: 'arm64',
+    libc: 'musl',
+    server: false,
+  },
+  {
+    triple: 'armv7-unknown-linux-gnueabihf',
+    suffix: 'linux-arm-gnueabihf',
+    os: 'linux',
+    cpu: 'arm',
+    // napi-rs does not declare npm libc for this GNU ARMv7 target.
+    server: false,
+  },
+  {
+    triple: 'i686-pc-windows-msvc',
+    suffix: 'win32-ia32-msvc',
+    os: 'win32',
+    cpu: 'ia32',
+    server: false,
+  },
+  {
+    triple: 'aarch64-pc-windows-msvc',
+    suffix: 'win32-arm64-msvc',
+    os: 'win32',
+    cpu: 'arm64',
+    server: false,
+  },
+  {
+    triple: 'aarch64-linux-android',
+    suffix: 'android-arm64',
+    os: 'android',
+    cpu: 'arm64',
+    server: false,
+  },
+  {
+    triple: 'armv7-linux-androideabi',
+    suffix: 'android-arm-eabi',
+    os: 'android',
+    cpu: 'arm',
+    server: false,
+  },
+  {
+    triple: 'x86_64-unknown-freebsd',
+    suffix: 'freebsd-x64',
+    os: 'freebsd',
+    cpu: 'x64',
+    server: false,
+  },
 ];
 
 const workspacePackages = [
@@ -307,14 +368,16 @@ export function verifyReleaseArtifacts(bindingsDirectory, serversDirectory) {
   for (const target of RELEASE_TARGETS) {
     const addon = join(bindingsDirectory, 'node.' + target.suffix + '.node');
     const server =
-      join(serversDirectory, 'remedia-server-' + target.triple) + (target.extension ?? '');
-    for (const required of [addon, server]) {
+      target.server === false
+        ? undefined
+        : join(serversDirectory, 'remedia-server-' + target.triple) + (target.extension ?? '');
+    for (const required of [addon, ...(server ? [server] : [])]) {
       if (!existsSync(required))
         throw new Error('Required verified release artifact is missing: ' + required);
       if (readFileSync(required).byteLength === 0)
         throw new Error('Release artifact is empty: ' + required);
     }
-    artifacts.push({ ...target, addon, server });
+    artifacts.push({ ...target, addon, ...(server ? { server } : {}) });
   }
   return artifacts;
 }
@@ -327,9 +390,16 @@ export function packRelease(
   const artifactSet = verifyReleaseArtifacts(bindingsDirectory, serversDirectory);
   const nodeManifestPath = join(workspaceRoot, 'packages/remedia-node/package.json');
   const nodeManifest = JSON.parse(readFileSync(nodeManifestPath, 'utf8'));
+  // Release packaging must not silently drop any configured napi-rs target.
+  const configuredTargets = nodeManifest.napi?.targets;
+  if (
+    JSON.stringify(configuredTargets) !==
+    JSON.stringify(RELEASE_TARGETS.map(({ triple }) => triple))
+  ) {
+    throw new Error('RELEASE_TARGETS must exactly match @remedia/node napi.targets');
+  }
   nodeManifest.version = version;
   nodeManifest.private = false;
-  nodeManifest.napi.targets = RELEASE_TARGETS.map(({ triple }) => triple);
   writeFileSync(nodeManifestPath, JSON.stringify(nodeManifest, null, 2) + '\n');
   for (const generated of ['native.js', 'native.d.ts']) {
     copyFileSync(

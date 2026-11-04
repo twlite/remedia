@@ -377,9 +377,9 @@ jobs:
           REMEDIA_SERVER_BINARY: ${{ runner.temp }}/remedia-server/remedia-server-${{ inputs.target }}${{ inputs.server_suffix }}
         run: pnpm --filter @remedia/client test:server
 
-  experimental-build:
-    if: inputs.tier == 'experimental'
-    name: Experimental target build ${{ inputs.target }}
+  cross-build:
+    if: inputs.tier == 'cross'
+    name: Build ${{ inputs.target }} for npm
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 90
     steps:
@@ -575,7 +575,7 @@ jobs:
         if: inputs.os == 'linux' || inputs.os == 'android'
         shell: bash
         run: node .github/scripts/verify-native-deps.mjs --build
-      - name: Build the experimental Linux N-API addon
+      - name: Build Linux N-API addon for distribution
         if: inputs.os == 'linux'
         working-directory: packages/remedia-node
         shell: bash
@@ -586,7 +586,7 @@ jobs:
             *-musl) pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target "$RUST_TARGET" --cross-compile ;;
             *) pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target "$RUST_TARGET" ;;
           esac
-      - name: Build the experimental Android N-API addon
+      - name: Build Android N-API addon for distribution
         if: inputs.os == 'android'
         working-directory: packages/remedia-node
         shell: bash
@@ -597,13 +597,21 @@ jobs:
         if: inputs.os == 'windows'
         shell: pwsh
         run: node .github/scripts/verify-native-deps.mjs --build
-      - name: Build the experimental Windows N-API addon
+      - name: Build Windows N-API addon for distribution
         if: inputs.os == 'windows'
         working-directory: packages/remedia-node
         shell: pwsh
         env:
           RUST_TARGET: ${{ inputs.target }}
         run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target $env:RUST_TARGET
+      - name: Upload cross-built native bindings for npm
+        if: inputs.os != 'freebsd'
+        uses: actions/upload-artifact@v7
+        with:
+          name: bindings-${{ inputs.target }}
+          path: packages/remedia-node/node.*.node
+          if-no-files-found: error
+          retention-days: 7
       - name: Start FreeBSD 15.1 native VM
         if: inputs.os == 'freebsd'
         uses: cross-platform-actions/action@v1.7.0
@@ -666,13 +674,11 @@ jobs:
           pnpm --filter @remedia/client test
           pnpm --filter @remedia/client test:hybrid
           REMEDIA_SERVER_BINARY="$PWD/target/release/remedia-server" pnpm --filter @remedia/client test:server
-      - name: Upload experimental FreeBSD compile and runtime-tested artifacts
+      - name: Upload runtime-tested FreeBSD N-API release binding
         if: inputs.os == 'freebsd'
         uses: actions/upload-artifact@v7
         with:
-          name: experimental-${{ inputs.target }}
-          path: |
-            packages/remedia-node/node.freebsd-x64.node
-            target/release/remedia-server
+          name: bindings-${{ inputs.target }}
+          path: packages/remedia-node/node.freebsd-x64.node
           if-no-files-found: error
           retention-days: 7
