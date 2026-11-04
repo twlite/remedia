@@ -13,14 +13,19 @@ const LOG_MESSAGE_BYTES: usize = 2_048;
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(10);
 const MAX_RATE_LIMIT_ENTRIES: usize = 256;
 
-// On x86_64 System V targets (Linux and macOS), bindgen represents C's
-// `va_list` typedef as a one-element array. As a function parameter, C adjusts
-// that array type to a pointer, so FFmpeg's callback and formatting declarations
-// expect this pointer instead. Other supported targets expose `va_list` in a
-// form that already matches the generated function signatures.
-#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+// On x86_64 System V targets (Linux, macOS and FreeBSD), bindgen represents
+// C's `va_list` typedef as a one-element array. Function parameters adjust
+// that array to a pointer, so the generated FFmpeg callbacks expect
+// `*mut __va_list_tag` rather than the array typedef itself.
+#[cfg(all(
+    target_arch = "x86_64",
+    any(target_os = "linux", target_os = "macos", target_os = "freebsd")
+))]
 type FfmpegVaList = *mut ffi::__va_list_tag;
-#[cfg(not(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos"))))]
+#[cfg(not(all(
+    target_arch = "x86_64",
+    any(target_os = "linux", target_os = "macos", target_os = "freebsd")
+)))]
 type FfmpegVaList = ffi::va_list;
 
 thread_local! {
