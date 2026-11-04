@@ -49,7 +49,7 @@ else
       local_nm='arm-linux-gnueabihf-nm'
       local_ranlib='arm-linux-gnueabihf-ranlib'
       local_strip='arm-linux-gnueabihf-strip'
-      target_sysroot='/usr/arm-linux-gnueabihf'
+      # Let the cross-GCC driver use its own tested sysroot and multilib search paths.
       ;;
     aarch64-linux-android)
       target_os='android'
@@ -85,7 +85,20 @@ else
     local_as="$tools_dir/as"
     cat > "$local_cc" <<EOF
 #!/usr/bin/env bash
-exec zig cc -target '$zig_triple' "\$@"
+set -euo pipefail
+# cc-rs adds the Rust triple as --target=...; Zig requires the normalized
+# target below and cannot parse the Rust 'unknown' vendor in that flag.
+args=()
+for arg in "\$@"; do
+  case "\$arg" in
+    --target=*) ;;
+    # The Zig 0.14 bundled linker does not accept GNU ld's Cortex-A53
+    # erratum flag. Keep this target experimental until runtime verified.
+    -Wl,--fix-cortex-a53-843419) ;;
+    *) args+=("\$arg") ;;
+  esac
+done
+exec zig cc -target '$zig_triple' "\${args[@]}"
 EOF
     cat > "$local_as" <<EOF
 #!/usr/bin/env bash
@@ -97,7 +110,7 @@ exec zig ar "$@"
 EOF
     cat > "$tools_dir/nm" <<'EOF'
 #!/usr/bin/env bash
-exec zig nm "$@"
+exec llvm-nm "$@"
 EOF
     cat > "$tools_dir/ranlib" <<'EOF'
 #!/usr/bin/env bash
@@ -105,7 +118,7 @@ exec zig ranlib "$@"
 EOF
     cat > "$tools_dir/strip" <<'EOF'
 #!/usr/bin/env bash
-exec zig strip "$@"
+exec llvm-strip "$@"
 EOF
     chmod +x "$local_cc" "$local_as" "$tools_dir/ar" "$tools_dir/nm" "$tools_dir/ranlib" "$tools_dir/strip"
     local_ar="$tools_dir/ar"
@@ -156,12 +169,20 @@ EOF
   if [[ -n "$target_cpu" ]]; then
     configure_args+=("--cpu=$target_cpu")
   fi
+  if [[ "$target" == 'armv7-unknown-linux-gnueabihf' ]]; then
+    # Ubuntu's ARM hard-float cross GCC needs an explicit FPU when FFmpeg
+    # sets -march=armv7-a (otherwise cc1 reports no FPU for -mfloat-abi=hard).
+    configure_args+=("--extra-cflags=-mfpu=neon -mfloat-abi=hard")
+  fi
   if [[ -n "$target_sysroot" ]]; then
     configure_args+=("--sysroot=$target_sysroot")
   fi
 
   pushd "$source_dir" >/dev/null
-  ./configure "${configure_args[@]}"
+  if ! ./configure "${configure_args[@]}"; then
+    cat ffbuild/config.log >&2 || true
+    exit 1
+  fi
   make -j"${FFMPEG_BUILD_JOBS:-2}"
   make install
   popd >/dev/null

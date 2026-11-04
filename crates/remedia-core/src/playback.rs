@@ -1915,7 +1915,10 @@ fn fail_session(
     cancellation: &CancellationToken,
     output: &Arc<dyn MediaOutput>,
 ) {
-    if is_stopped(shared, generation) {
+    // An explicit stop may cancel the source while FFmpeg is still probing.
+    // Cancellation must not race ahead of stop() and turn the session into a
+    // terminal failure before stop() has a chance to mark it Stopped.
+    if cancellation.is_cancelled() || is_stopped(shared, generation) {
         return;
     }
 
@@ -3230,7 +3233,7 @@ mod tests {
 
     #[test]
     fn native_opus_filter_changes_keep_playback_active_and_packet_timeline_contiguous() {
-        let source = TempWave::constant(96_000, 4096);
+        let source = TempWave::constant(960_000, 4096);
         let session = Arc::new(PlaybackSession::new());
         session.set_volume(0.75).unwrap();
         let (sink, gate) = StepPacketSink::new();
@@ -3285,7 +3288,7 @@ mod tests {
         assert_eq!(session.wait(), PlaybackState::Completed);
         assert_eq!(
             session.position().media.map(|media| media.position),
-            Some(Duration::from_secs(2))
+            Some(Duration::from_secs(20))
         );
         let snapshot = gate.snapshot();
         assert!(snapshot.finished);
@@ -3764,6 +3767,14 @@ mod tests {
                 .map_err(|error| error.to_string());
             update_gate.record_filter_update(result);
         });
+        // Wait until the update thread has actually queued the transition.
+        // Otherwise, on fast platforms the test releases every blocked packet
+        // before that thread is scheduled, drains the finite Opus fixture, and
+        // observes a successful config change only after natural EOF.
+        assert!(
+            gate.wait_for_pending_filter(&session),
+            "live filter update is pending while packet output is blocked"
+        );
         let deadline = Instant::now() + TEST_TIMEOUT;
         let mut after_calls = 0;
         let mut released_packets = 0;

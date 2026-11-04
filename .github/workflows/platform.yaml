@@ -394,10 +394,16 @@ jobs:
         if: inputs.os == 'linux' || inputs.os == 'android'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends clang libclang-dev pkg-config build-essential git
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev llvm pkg-config build-essential git nasm
           if [ "${{ inputs.target }}" = "armv7-unknown-linux-gnueabihf" ]; then
             sudo apt-get install --yes --no-install-recommends gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf binutils-arm-linux-gnueabihf
             echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
+            # libopus_sys builds bundled Opus with NEON intrinsics. GCC's
+            # default ARMv7 hard-float target does not imply a NEON FPU.
+            echo "CFLAGS_armv7_unknown_linux_gnueabihf=-mfpu=neon -mfloat-abi=hard" >> "$GITHUB_ENV"
+            # build-ffmpeg-cross.sh only sets this on cache misses. Cargo must
+            # use the ARM cross-linker even when cached native libraries exist.
+            echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
           fi
           libclang_path="$(find /usr/lib/llvm-* -name libclang.so -print -quit)"
           test -n "$libclang_path"
@@ -438,6 +444,19 @@ jobs:
             echo "CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=$linker" >> "$GITHUB_ENV"
             echo "CC_armv7_linux_androideabi=$linker" >> "$GITHUB_ENV"
           fi
+          # Bindgen runs on the Linux host. Force the target NDK headers and
+          # Clang builtins instead of mixing in host glibc headers.
+          ndk_clang="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
+          builtin_headers="$("$ndk_clang" -print-resource-dir)/include"
+          sysroot="$ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          if [ "${{ inputs.target }}" = "aarch64-linux-android" ]; then
+            android_target=aarch64-linux-android24
+            target_headers=aarch64-linux-android
+          else
+            android_target=armv7a-linux-androideabi24
+            target_headers=arm-linux-androideabi
+          fi
+          echo "BINDGEN_EXTRA_CLANG_ARGS=--target=$android_target --sysroot=$sysroot -nostdinc -isystem $builtin_headers -isystem $sysroot/usr/include -isystem $sysroot/usr/include/$target_headers" >> "$GITHUB_ENV"
       - name: Install the MSVC target toolchain
         if: inputs.os == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
@@ -466,10 +485,12 @@ jobs:
           RUST_TARGET: ${{ inputs.target }}
         run: |
           $vcpkgRoot = Join-Path $env:RUNNER_TEMP 'remedia-vcpkg'
-          git init $vcpkgRoot
-          git -C $vcpkgRoot remote add origin https://github.com/microsoft/vcpkg.git
-          git -C $vcpkgRoot fetch --depth=1 origin afa249f12f52ed8a3b919f195495ba8b330288d1
-          git -C $vcpkgRoot checkout --detach FETCH_HEAD
+          # vcpkg versioned ports resolve historical Git tree objects, which are
+          # unavailable in a depth=1 checkout even when the baseline commit exists.
+          git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg full clone failed' }
+          git -C $vcpkgRoot checkout --detach afa249f12f52ed8a3b919f195495ba8b330288d1
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg pinned checkout failed' }
           & (Join-Path $vcpkgRoot 'bootstrap-vcpkg.bat') -disableMetrics
           if ($LASTEXITCODE -ne 0) { throw 'vcpkg bootstrap failed' }
 
@@ -488,6 +509,13 @@ jobs:
           "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
           "VCPKG_INSTALL_ROOT=$installRoot" >> $env:GITHUB_ENV
           "VCPKG_TARGET_TRIPLET=$triplet" >> $env:GITHUB_ENV
+          # Git for Windows also provides a link.exe (GNU coreutils). Pin
+          # Cargo's linker to MSVC instead of relying on PATH resolution.
+          $msvcTarget = if ($triplet -eq 'x86-windows') { 'x86' } else { 'arm64' }
+          $msvcLinker = Join-Path $env:VCToolsInstallDir "bin\\Hostx64\\$msvcTarget\\link.exe"
+          if (!(Test-Path -LiteralPath $msvcLinker)) { throw "MSVC linker not found: $msvcLinker" }
+          $rustTriple = if ($triplet -eq 'x86-windows') { 'I686_PC_WINDOWS_MSVC' } else { 'AARCH64_PC_WINDOWS_MSVC' }
+          "CARGO_TARGET_${rustTriple}_LINKER=$msvcLinker" >> $env:GITHUB_ENV
       - name: Configure Windows target FFmpeg and host libclang paths
         if: inputs.os == 'windows'
         shell: pwsh
@@ -596,9 +624,27 @@ jobs:
         run: |
           set -euo pipefail
           sudo pkg update -f
-          sudo pkg install -y curl node npm cmake pkgconf llvm19 ffmpeg7
-          test "$(ffmpeg -version | head -n 1 | sed -E 's/.* version ([0-9]+).*/\1/')" = 7
+          sudo pkg install -y curl git node24 npm-node24 cmake pkgconf llvm19 gmake nasm
+          # The FreeBSD 15 package repositories do not contain the ffmpeg7
+          # package. Compile the same pinned FFmpeg 7.1.1 revision used by the
+          # cross-platform jobs instead of installing an unrelated FFmpeg major.
+          ffmpeg_source="$HOME/remedia-ffmpeg-7"
+          git init -q "$ffmpeg_source"
+          git -C "$ffmpeg_source" remote add origin https://github.com/FFmpeg/FFmpeg.git
+          git -C "$ffmpeg_source" fetch --quiet --depth=1 origin db69d06eeeab4f46da15030a80d539efb4503ca8
+          git -C "$ffmpeg_source" checkout --quiet --detach FETCH_HEAD
+          (
+            cd "$ffmpeg_source"
+            ./configure --cc=cc --host-cc=cc --prefix=/usr/local --enable-shared --disable-static --disable-programs --disable-doc --disable-debug --disable-autodetect --enable-network --enable-pic
+            gmake -j3
+            sudo gmake install
+          )
+          # FreeBSD places upstream pkg-config files under lib/pkgconfig;
+          # initialize the search path before verifying the new installation.
+          export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/libdata/pkgconfig
           test "$(pkg-config --modversion libavcodec | cut -d. -f1)" = 61
+          test "$(pkg-config --modversion libavformat | cut -d. -f1)" = 61
+          test "$(pkg-config --modversion libavfilter | cut -d. -f1)" = 10
           curl https://sh.rustup.rs -sSf --output rustup.sh
           sh rustup.sh -y --profile minimal --default-toolchain 1.99.1
           source "$HOME/.cargo/env"

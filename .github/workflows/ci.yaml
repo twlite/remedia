@@ -68,6 +68,10 @@ jobs:
           RELEASE_VERSION: ${{ needs.release-detection.outputs.version }}
         run: node .github/scripts/release.mjs sync "$RELEASE_VERSION"
       - run: pnpm install --frozen-lockfile
+      - name: Install libclang development files for Rust checks
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libclang-dev
       - name: Configure native dependency paths
         shell: micromamba-shell {0}
         run: |
@@ -75,7 +79,7 @@ jobs:
           echo "PKG_CONFIG_PATH=$CONDA_PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
           libclang_path="$(find /usr/lib/llvm-* -name libclang.so -print -quit)"
-          test -n "$libclang_path"
+          if [ -z "$libclang_path" ]; then echo "libclang.so not found under /usr/lib/llvm-*" >&2; exit 1; fi
           echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
       - name: Verify FFmpeg 7 build dependencies
         shell: micromamba-shell {0}
