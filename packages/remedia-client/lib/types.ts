@@ -2,42 +2,68 @@ import type { Readable } from 'node:stream';
 
 /** Event names shared by embedded and remote playback-session adapters. */
 export const PlaybackSessionEvents = {
+  /** Emitted after a source starts and its stream information is available. */
   playbackStarted: 'playbackStarted',
+  /** Emitted when a source generation reaches natural end-of-stream. */
   playbackCompleted: 'playbackCompleted',
+  /** Emitted when a source generation is explicitly stopped or cancelled. */
   playbackStopped: 'playbackStopped',
+  /** Emitted when a source generation fails to open, decode, process, or deliver output. */
   playbackFailed: 'playbackFailed',
+  /** Emitted when playback is paused without replacing its source generation. */
   playbackPaused: 'playbackPaused',
+  /** Emitted when paused playback resumes. */
   playbackResumed: 'playbackResumed',
+  /** Emitted after seeking to a source timeline position. */
   playbackSeeked: 'playbackSeeked',
+  /** Emitted when the configured session filtergraph changes. */
   filterChanged: 'filterChanged',
+  /** Emitted when the configured session linear gain changes. */
   volumeChanged: 'volumeChanged',
+  /** Emitted when a session is unregistered and its owned resources are released. */
   sessionDisposed: 'sessionDisposed',
 } as const;
 
+/** Union of the stable event names defined by PlaybackSessionEvents. */
 export type PlaybackSessionEvents =
   (typeof PlaybackSessionEvents)[keyof typeof PlaybackSessionEvents];
 
+/** Stable event names for typed VoiceSessionEvents subscriptions. */
 export const VoiceSessionEvents = {
+  /** Emitted when the Discord transport lifecycle state changes. */
   voiceStateChanged: 'voiceStateChanged',
+  /** Emitted when voice connection or recovery fails. */
   voiceFailed: 'voiceFailed',
 } as const;
 
+/** Union of the stable event names defined by VoiceSessionEvents. */
 export type VoiceSessionEvents = (typeof VoiceSessionEvents)[keyof typeof VoiceSessionEvents];
 
+/** Stable event names for typed RemediaClientEventNames subscriptions. */
 export const RemediaClientEventNames = {
+  /** Emitted when a configured node becomes healthy. */
   nodeConnected: 'nodeConnected',
+  /** Emitted when a configured node disconnects or loses its remote session. */
   nodeDisconnected: 'nodeDisconnected',
+  /** Emitted after a remote client session resumes and its guild snapshot is reconciled. */
   sessionResumed: 'sessionResumed',
+  /** Emitted when a remote client session cannot be resumed. */
   sessionLost: 'sessionLost',
+  /** Emitted for a sequenced lifecycle notification received from a remote server. */
   nodeEvent: 'nodeEvent',
+  /** Emitted when a remote server reports dropped buffered events. */
   eventsLost: 'eventsLost',
+  /** Emitted when sticky routing assigns a guild to a configured node. */
   guildAssigned: 'guildAssigned',
+  /** Emitted when a guild assignment is released. */
   guildReleased: 'guildReleased',
 } as const;
 
+/** Union of the stable event names defined by RemediaClientEventNames. */
 export type RemediaClientEventNames =
   (typeof RemediaClientEventNames)[keyof typeof RemediaClientEventNames];
 
+/** Lifecycle state of a playback pipeline, independent of its voice transport state. */
 export type PlaybackState =
   | 'idle'
   | 'starting'
@@ -50,6 +76,7 @@ export type PlaybackState =
   | 'completed'
   | 'failed';
 
+/** Discord transport lifecycle state, including credential negotiation and recovery. */
 export type VoiceConnectionState =
   | 'connecting'
   | 'negotiating_dave'
@@ -59,86 +86,177 @@ export type VoiceConnectionState =
   | 'disconnected'
   | 'failed';
 
+/** Metadata and format information for the selected audio stream; unavailable measurements are null. */
 export interface AudioStreamInfo {
+  /** Zero-based index of the selected audio stream in the media container. */
   streamIndex: number;
+  /** Codec name reported by the selected audio stream. */
   codec: string;
+  /** Encoded stream sample rate in Hz, or null when unknown; playback output is normalized separately. */
   sampleRate: number | null;
+  /** Encoded stream channel count, or null when unknown. */
   channels: number | null;
+  /** Encoded stream channel layout description, or null when unknown. */
   channelLayout: string | null;
+  /** Source duration in milliseconds, or null when unknown. */
   durationMs: number | null;
+  /** Stream bit rate in bits per second, or null when unknown. */
   bitRate: number | null;
+  /** Container or stream metadata keyed by native tag name. */
   metadata: Readonly<Record<string, string>>;
 }
 
+/** Source and output timeline measurements in milliseconds; unsupported measurements are null. */
 export interface PlaybackPosition {
+  /** Position on the original source timeline in milliseconds, or null when unavailable. */
   mediaMs: number | null;
+  /** Whether source position comes from a timestamp or an estimate; null when unavailable. */
   mediaPositionAccuracy: 'timestamp' | 'estimated' | null;
+  /**
+   * Duration of audio submitted to the output in milliseconds; may differ from source position after filtering.
+   */
   submittedMs: number;
+  /** Output-reported played duration in milliseconds, or null when the output does not provide it. */
   playedMs: number | null;
 }
 
+/** Latest known playback state and persistent configuration for one guild player. */
 export interface PlaybackSnapshot {
+  /** Current playback lifecycle state. */
   state: PlaybackState;
+  /** Source generation used to correlate playback events; independent of transport replacement generations. */
   generation: number;
+  /** Active passthrough or PCM transcoding path, or null before a processing path is known. */
   processingMode: 'passthrough' | 'transcoding' | null;
+  /** Latest source and output timeline measurements in milliseconds. */
   position: PlaybackPosition;
+  /** Source duration in milliseconds, or null when unknown. */
   durationMs: number | null;
+  /** Selected source information, or null before source metadata is available. */
   source: AudioStreamInfo | null;
+  /** Trusted raw FFmpeg audio filtergraph, or null to disable filtering; defaults to null. */
   filterGraph: string | null;
+  /** Session master linear gain from 0 through 2, independent of filtergraph processing; defaults to 1. */
   volume: number;
-  lastError: { code: string; message: string } | null;
+  /** Most recent structured playback failure, or null when none is recorded. */
+  lastError: {
+    /** Machine-readable error code supplied by the remote server. */
+    code: string;
+    /** Human-readable diagnostic or failure description. */
+    message: string;
+  } | null;
 }
 
+/**
+ * Encoded media input. Files and HTTP(S) URLs work in both modes; owned bytes and caller-owned binary Readables require embedded playback.
+ */
 export type MediaSource =
-  | { file: string }
-  | { url: string }
-  | { buffer: Buffer | Uint8Array }
-  | { stream: Readable };
+  | {
+      /** Local media file path; remote mode resolves it on the server and enforces configured file roots. */
+      file: string;
+    }
+  | {
+      /** HTTP(S) media URL opened by the selected engine; remote nodes enforce server URL policy. */
+      url: string;
+    }
+  | {
+      /** Owned encoded media bytes, supported by embedded nodes only. */
+      buffer: Buffer | Uint8Array;
+    }
+  | {
+      /**
+       * Caller-owned binary Readable, consumed with bounded backpressure in embedded mode; Remedia does not destroy it.
+       */
+      stream: Readable;
+    };
 
-export type RemoteMediaSource = { file: string } | { url: string };
+/**
+ * Media location opened by the server: an allowed server-local file or HTTP(S) URL. Client byte uploads are unsupported.
+ */
+export type RemoteMediaSource =
+  | {
+      /** Local media file path; remote mode resolves it on the server and enforces configured file roots. */
+      file: string;
+    }
+  | {
+      /** HTTP(S) media URL opened by the selected engine; remote nodes enforce server URL policy. */
+      url: string;
+    };
 
+/** Execution mode of a configured Remedia node. */
 export type NodeType = 'embedded' | 'remote';
+/** Client-observed availability of a node and its resumable client session. */
 export type NodeStatus = 'connecting' | 'healthy' | 'disconnected' | 'session_lost' | 'closed';
 
+/** Latest capacity, transport, processing, CPU, and memory statistics reported by a node. */
 export interface NodeStatistics {
+  /** Number of currently allocated players on the node. */
   playersActive: number;
+  /** Maximum number of players allowed by the node. */
   playersMaximum: number;
+  /** Number of currently open remote connections. */
   connectionsActive: number;
+  /** Maximum number of remote connections allowed by the node. */
   connectionsMaximum: number;
+  /** Node-reported transport health status. */
   transportHealth: string;
+  /** Node-reported audio processing health status. */
   processingHealth: string;
+  /** Node-reported CPU measurements; unsupported measurements are null. */
   cpu: Readonly<Record<string, number | null>>;
+  /** Node-reported memory measurements; unsupported measurements are null. */
   memory: Readonly<Record<string, number | null>>;
 }
 
+/** Read-only client view of a node, its health, capacity, and assigned guilds. */
 export interface NodeSnapshot {
+  /** Application-configured node identifier, unique within the client node pool. */
   id: string;
+  /** Discriminant selecting embedded or remote node execution. */
   type: NodeType;
+  /** Current node availability or guild assignment status. */
   status: NodeStatus;
+  /** Runtime server identity reported by the remote node, or null before discovery or for embedded nodes. */
   nodeId: string | null;
+  /** Server software version, or null before it is reported. */
   version: string | null;
+  /** Negotiated RPC protocol version, or null for an uninitialized or embedded node. */
   protocolVersion: number | null;
+  /** Latest node statistics, or null before a report is available. */
   statistics: NodeStatistics | null;
+  /** Maximum simultaneous guild assignments considered by client-side node selection. */
   capacity: number;
+  /** Guild IDs currently assigned to this node by the client. */
   assignedGuilds: readonly string[];
+  /** Latest node connection or protocol failure message, or null when none is recorded. */
   lastError: string | null;
 }
 
+/** HTTP Basic authentication credentials for a remote node; keep these values private. */
 export interface RemoteNodeAuth {
+  /** Remote HTTP Basic authentication username. */
   username: string;
+  /** Remote HTTP Basic authentication password; do not log this value. */
   password: string;
 }
 
+/** Configuration for an in-process native engine; requires the optional @remedia/node package. */
 export interface EmbeddedNodeConfig {
+  /** Discriminant selecting embedded or remote node execution. */
   type: 'embedded';
+  /** Application-configured node identifier, unique within the client node pool. */
   id: string;
   /** Maximum simultaneous guild sessions used by client-side selection. Defaults to 64. */
   capacity?: number;
 }
 
+/** Connection and capacity configuration for one standalone WebSocket server. */
 export interface RemoteNodeConfig {
+  /** Discriminant selecting embedded or remote node execution. */
   type: 'remote';
+  /** Application-configured node identifier, unique within the client node pool. */
   id: string;
+  /** Remote node endpoint using remedia, remedias, ws, or wss scheme. */
   url: string;
   /** Explicit auth takes precedence over URL userinfo. */
   auth?: RemoteNodeAuth;
@@ -146,134 +264,317 @@ export interface RemoteNodeConfig {
   capacity?: number;
 }
 
+/** Configuration for either an embedded native engine or a remote server. */
 export type RemediaNodeConfig = EmbeddedNodeConfig | RemoteNodeConfig;
 
+/** Discord Gateway OP 4 payload sent through the application-owned bot connection. */
 export interface DiscordGatewayVoicePayload {
+  /** Discord Gateway operation code; voice state requests use 4. */
   op: 4;
+  /** Gateway payload data; voice requests contain guild, channel, and self-state fields. */
   d: {
+    /** Discord guild snowflake to route through the bot Gateway. */
     guild_id: string;
+    /** Voice channel snowflake, or null to leave voice. */
     channel_id: string | null;
-    self_mute: false;
-    self_deaf: false;
+    /** Discord self-mute flag; independent of playback volume and pause. */
+    self_mute: boolean;
+    /** Discord self-deaf flag; independent of playback volume and pause. */
+    self_deaf: boolean;
   };
 }
 
+/**
+ * Application callback that routes an OP 4 payload to the shard responsible for a guild.
+ * @param guildId - Discord guild snowflake used to route the operation.
+ * @param payload - Discord Gateway OP 4 payload to send through the guild shard.
+ */
 export type DiscordGatewaySend = (
   guildId: string,
   payload: DiscordGatewayVoicePayload,
 ) => void | Promise<void>;
 
+/** Raw Discord Gateway packet forwarded by the host application; unrelated dispatches are ignored. */
 export interface DiscordGatewayPacket {
+  /** Gateway dispatch event name, when the packet represents a dispatch. */
   t?: string;
+  /** Gateway dispatch sequence used to reject stale events, when supplied by the host. */
   s?: number;
+  /** Raw event-specific Gateway payload, validated only for supported voice dispatches. */
   d?: unknown;
+  /**
+   * Additional Gateway packet fields forwarded unchanged by the host application.
+   * @param key - Additional Gateway packet field name.
+   */
   [key: string]: unknown;
 }
 
+/**
+ * Identity, initial playback configuration, and Gateway voice flags for one guild session. The channel is a mutable destination, while userId identifies the bot.
+ */
 export interface DiscordSessionOptions {
+  /** Discord Gateway self-deaf state; defaults to true. */
+  selfDeaf?: boolean;
+  /** Discord Gateway self-mute state; defaults to false. */
+  selfMute?: boolean;
+  /** Session master linear gain, finite from 0 through 2; defaults to 1. */
+  volume?: number;
+  /** Trusted raw FFmpeg audio filtergraph; defaults to null. Native syntax validation occurs during backend configuration before playback. */
+  filterGraph?: string | null;
+  /** Discord guild snowflake as a decimal string; unique within the owning client. */
   guildId: string;
+  /** Discord voice channel snowflake as a decimal string; the requested mutable destination. */
   channelId: string;
+  /** Discord bot user snowflake as a decimal string; separate from Remedia session identity. */
   userId: string;
-  /** Pin this guild to a configured node. Without it, capacity-aware selection is used. */
+  /** Configured identifier of the Remedia node associated with this resource. */
   nodeId?: string;
 }
 
+/**
+ * Local metadata and cancellation options for one playback generation; session configuration persists across generations.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
+ */
 export interface PlayOptions<Metadata = unknown> {
   /** Arbitrary application-owned value retained in this process and attached to one generation. */
   customMetadata?: Metadata;
-  /** Cancels an awaited pre-play hook or stops this generation after startup. */
+  /**
+   * Optional cancellation signal; cancellation before startup prevents playback, and cancellation after startup stops that generation.
+   */
   signal?: AbortSignal;
 }
 
+/**
+ * Correlation fields identifying the session and source generation that produced a playback event.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
+ */
 export interface PlaybackEventIdentity<Metadata = unknown> {
+  /** Opaque Remedia session identity used to correlate events; distinct from the Discord bot user ID. */
   sessionId: string;
+  /** Discord guild snowflake as a decimal string; unique within the owning client. */
   guildId: string;
+  /** Configured node identifier associated with this resource; null when no node has been assigned. */
   nodeId: string | null;
+  /** Source generation used to correlate playback events; independent of transport replacement generations. */
   generation: number;
+  /** Application-owned metadata retained locally for the source generation and attached to its events. */
   customMetadata?: Metadata;
+  /** True when a terminal notification was reconstructed from an authoritative remote snapshot. */
   reconstructed?: boolean;
 }
 
+/**
+ * Typed argument tuples for playback events. Terminal events refer to their originating source generation.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
+ */
 export type PlaybackLifecycleEventMap<Metadata = unknown> = {
+  /** Emitted after a source starts and its stream information is available. */
   [PlaybackSessionEvents.playbackStarted]: [
-    PlaybackEventIdentity<Metadata> & { state: 'playing'; info: AudioStreamInfo },
+    PlaybackEventIdentity<Metadata> & {
+      /** Current playback lifecycle state. */
+      state: 'playing';
+      /** Metadata for the audio stream that started playback. */
+      info: AudioStreamInfo;
+    },
   ];
+  /** Emitted when a source generation reaches natural end-of-stream. */
   [PlaybackSessionEvents.playbackCompleted]: [
-    PlaybackEventIdentity<Metadata> & { state: 'completed'; position: PlaybackPosition },
+    PlaybackEventIdentity<Metadata> & {
+      /** Current playback lifecycle state. */
+      state: 'completed';
+      /** Latest source and output timeline measurements in milliseconds. */
+      position: PlaybackPosition;
+    },
   ];
+  /** Emitted when a source generation is explicitly stopped or cancelled. */
   [PlaybackSessionEvents.playbackStopped]: [
-    PlaybackEventIdentity<Metadata> & { state: 'stopped'; reason?: string },
+    PlaybackEventIdentity<Metadata> & {
+      /** Current playback lifecycle state. */
+      state: 'stopped';
+      /** Optional explanation for cancellation or a terminal playback event. */
+      reason?: string;
+    },
   ];
+  /** Emitted when a source generation fails to open, decode, process, or deliver output. */
   [PlaybackSessionEvents.playbackFailed]: [
-    PlaybackEventIdentity<Metadata> & { state: 'failed'; error: Error },
+    PlaybackEventIdentity<Metadata> & {
+      /** Current playback lifecycle state. */
+      state: 'failed';
+      /** Error object describing the operation or source failure. */
+      error: Error;
+    },
   ];
+  /** Emitted when playback is paused without replacing its source generation. */
   [PlaybackSessionEvents.playbackPaused]: [
-    PlaybackEventIdentity<Metadata> & { previousState: PlaybackState; state: 'paused' },
+    PlaybackEventIdentity<Metadata> & {
+      /** Playback or transport lifecycle state before this transition. */
+      previousState: PlaybackState;
+      /** Current playback lifecycle state. */
+      state: 'paused';
+    },
   ];
+  /** Emitted when paused playback resumes. */
   [PlaybackSessionEvents.playbackResumed]: [
-    PlaybackEventIdentity<Metadata> & { previousState: PlaybackState; state: 'playing' },
+    PlaybackEventIdentity<Metadata> & {
+      /** Playback or transport lifecycle state before this transition. */
+      previousState: PlaybackState;
+      /** Current playback lifecycle state. */
+      state: 'playing';
+    },
   ];
+  /** Emitted after seeking to a source timeline position. */
   [PlaybackSessionEvents.playbackSeeked]: [
-    PlaybackEventIdentity<Metadata> & { positionMs: number; previousPositionMs: number | null },
+    PlaybackEventIdentity<Metadata> & {
+      /** Requested source timeline position in milliseconds. */
+      positionMs: number;
+      /** Source timeline position before seeking, in milliseconds, or null when unknown. */
+      previousPositionMs: number | null;
+    },
   ];
+  /** Emitted when the configured session filtergraph changes. */
   [PlaybackSessionEvents.filterChanged]: [
-    PlaybackEventIdentity<Metadata> & { previousGraph: string | null; graph: string | null },
+    PlaybackEventIdentity<Metadata> & {
+      /** Filtergraph active before this change, or null when filtering was disabled. */
+      previousGraph: string | null;
+      /** Current raw FFmpeg audio filtergraph, or null when filtering is disabled. */
+      graph: string | null;
+    },
   ];
+  /** Emitted when the configured session linear gain changes. */
   [PlaybackSessionEvents.volumeChanged]: [
-    PlaybackEventIdentity<Metadata> & { previousVolume: number; volume: number },
+    PlaybackEventIdentity<Metadata> & {
+      /** Linear master gain before this change. */
+      previousVolume: number;
+      /** Session master linear gain from 0 through 2, independent of filtergraph processing; defaults to 1. */
+      volume: number;
+    },
   ];
 };
 
+/** Correlation fields identifying the session that produced a voice transport event. */
 export interface VoiceEventIdentity {
+  /** Opaque Remedia session identity used to correlate events; distinct from the Discord bot user ID. */
   sessionId: string;
+  /** Discord guild snowflake as a decimal string; unique within the owning client. */
   guildId: string;
+  /** Configured node identifier associated with this resource; null when no node has been assigned. */
   nodeId: string | null;
 }
 
+/** Typed argument tuples for voice transport state changes and failures. */
 export type VoiceLifecycleEventMap = {
+  /** Emitted when the Discord transport lifecycle state changes. */
   [VoiceSessionEvents.voiceStateChanged]: [
-    VoiceEventIdentity & { previousState: VoiceConnectionState; state: VoiceConnectionState },
+    VoiceEventIdentity & {
+      /** Playback or transport lifecycle state before this transition. */
+      previousState: VoiceConnectionState;
+      /** Current playback lifecycle state. */
+      state: VoiceConnectionState;
+    },
   ];
-  [VoiceSessionEvents.voiceFailed]: [VoiceEventIdentity & { state: 'failed'; error: Error }];
+  /** Emitted when voice connection or recovery fails. */
+  [VoiceSessionEvents.voiceFailed]: [
+    VoiceEventIdentity & {
+      /** Current playback lifecycle state. */
+      state: 'failed';
+      /** Error object describing the operation or source failure. */
+      error: Error;
+    },
+  ];
 };
 
+/**
+ * Combined playback, voice, and disposal events emitted by a Discord session.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
+ */
 export type DiscordSessionEvents<Metadata = unknown> = PlaybackLifecycleEventMap<Metadata> &
   VoiceLifecycleEventMap & {
-    [PlaybackSessionEvents.sessionDisposed]: [VoiceEventIdentity & { generation: number }];
+    /** Emitted when a session is unregistered and its owned resources are released. */
+    [PlaybackSessionEvents.sessionDisposed]: [
+      VoiceEventIdentity & {
+        /** Source generation used to correlate playback events; independent of transport replacement generations. */
+        generation: number;
+      },
+    ];
   };
 
+/**
+ * Caller-owned media input, metadata, and cancellation signal supplied to each awaited pre-play hook.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
+ */
 export interface BeforePlayContext<Metadata = unknown> {
+  /** Caller-owned encoded input that the hooks inspect before the decoder opens it. */
   readonly source: MediaSource;
+  /** Application-owned metadata retained locally for the source generation and attached to its events. */
   readonly customMetadata: Metadata | undefined;
+  /** Cancellation signal for this hook invocation; check it before performing asynchronous work. */
   readonly signal: AbortSignal;
 }
 
-export type BeforePlayResult = void | { cancel: true; reason?: string };
+/**
+ * Hook result: return nothing to continue, or cancel with an optional explanation to reject playback with AbortError.
+ */
+export type BeforePlayResult = void | {
+  /** Return true from a pre-play hook to reject playback before opening the source. */
+  cancel: true;
+  /** Optional explanation for cancellation or a terminal playback event. */
+  reason?: string;
+};
+/**
+ * Awaited local callback run before a source opens; rejection or cancellation prevents that source from starting.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
+ * @param context - Source, local metadata, and cancellation signal supplied to the awaited hooks.
+ * @returns Nothing to continue, or a cancellation result; a promise is awaited before source opening.
+ */
 export type BeforePlayHook<Metadata = unknown> = (
   context: BeforePlayContext<Metadata>,
 ) => BeforePlayResult | Promise<BeforePlayResult>;
 
+/** Cancellation and timeout controls for obtaining credentials and establishing a voice transport. */
 export interface DiscordConnectOptions {
+  /** Optional signal that cancels Gateway negotiation and pending transport setup. */
   signal?: AbortSignal;
+  /** Maximum connection negotiation time in milliseconds; defaults to 45000. */
   timeoutMs?: number;
 }
 
+/** Read-only identity, availability, statistics, and assignments for a configured node. */
 export interface RemoteNodeView {
+  /** Application-configured node identifier, unique within the client node pool. */
   readonly id: string;
+  /** Discriminant selecting embedded or remote node execution. */
   readonly type: NodeType;
+  /** Current node availability or guild assignment status. */
   readonly status: NodeStatus;
+  /** Runtime server identity reported by the remote node, or null before discovery or for embedded nodes. */
   readonly nodeId: string | null;
+  /** Latest node statistics, or null before a report is available. */
   readonly statistics: NodeStatistics | null;
+  /** Guild IDs currently assigned to this node by the client. */
   readonly assignedGuilds: readonly string[];
 }
 
+/**
+ * Application selection callback that chooses a configured node ID from the eligible healthy nodes.
+ * @param nodes - Eligible healthy node snapshots with available capacity.
+ * @param context - Guild being assigned and its source, when available.
+ * @returns Configured identifier of an eligible node, directly or through a promise.
+ */
 export type NodeSelection = (
   nodes: readonly NodeSnapshot[],
-  context: { guildId: string; source?: MediaSource },
+  context: {
+    /** Discord guild snowflake as a decimal string; unique within the owning client. */
+    guildId: string;
+    /** Selected source information, or null before source metadata is available. */
+    source?: MediaSource;
+  },
 ) => string | Promise<string>;
 
+/** Node pool, bot Gateway integration, and bounded remote-request settings for a client. */
 export interface RemediaClientOptions {
+  /** Configured embedded and remote nodes; at least one node and unique configured IDs are required. */
   nodes: readonly RemediaNodeConfig[];
+  /** Application Gateway callback that sends OP 4 through the shard responsible for a guild. */
   send: DiscordGatewaySend;
   /** Discord bot snowflake sent as `X-Remedia-Bot-Id` on remote WebSocket handshakes. */
   botUserId?: string;
@@ -285,37 +586,96 @@ export interface RemediaClientOptions {
   selectNode?: NodeSelection;
 }
 
+/** Sticky routing of one guild to a configured node; lost assignments remain until disposal. */
 export interface GuildAssignment {
+  /** Discord guild snowflake as a decimal string; unique within the owning client. */
   guildId: string;
+  /** Configured identifier of the Remedia node associated with this resource. */
   nodeId: string;
+  /** Execution mode of the assigned backend, or null before assignment. */
   nodeType: NodeType;
+  /** Current node availability or guild assignment status. */
   status: 'assigned' | 'lost';
 }
 
+/** Sequenced server notification scoped to a remote client session. */
 export interface ServerLifecycleEvent {
+  /** Configured identifier of the Remedia node associated with this resource. */
   nodeId: string;
+  /** Server or diagnostic event name. */
   event: string;
+  /** Opaque Remedia session identity used to correlate events; distinct from the Discord bot user ID. */
   sessionId: string;
+  /** Monotonic server event sequence used to detect missed or stale notifications. */
   sequence: number;
+  /** Event-specific structured payload. */
   data: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * Session and node lifecycle events forwarded by the client, including assignment and resumption notifications.
+ */
 export interface RemediaClientEvents
   extends PlaybackLifecycleEventMap<unknown>, VoiceLifecycleEventMap {
+  /** Emitted when a configured node becomes healthy. */
   [RemediaClientEventNames.nodeConnected]: [NodeSnapshot];
-  [RemediaClientEventNames.nodeDisconnected]: [{ node: NodeSnapshot; error: Error | null }];
-  [RemediaClientEventNames.sessionResumed]: [{ node: NodeSnapshot; guildIds: readonly string[] }];
-  [RemediaClientEventNames.sessionLost]: [
-    { node: NodeSnapshot; guildIds: readonly string[]; reason: string },
+  /** Emitted when a configured node disconnects or loses its remote session. */
+  [RemediaClientEventNames.nodeDisconnected]: [
+    {
+      /** Snapshot of the node associated with this notification. */
+      node: NodeSnapshot;
+      /** Most recent playback or voice failure message, or null when no error is available. */
+      error: Error | null;
+    },
   ];
+  /** Emitted after a remote client session resumes and its guild snapshot is reconciled. */
+  [RemediaClientEventNames.sessionResumed]: [
+    {
+      /** Snapshot of the node associated with this notification. */
+      node: NodeSnapshot;
+      /** Guild snowflakes affected by the lost or resumed remote client session. */
+      guildIds: readonly string[];
+    },
+  ];
+  /** Emitted when a remote client session cannot be resumed. */
+  [RemediaClientEventNames.sessionLost]: [
+    {
+      /** Snapshot of the node associated with this notification. */
+      node: NodeSnapshot;
+      /** Guild snowflakes affected by the lost or resumed remote client session. */
+      guildIds: readonly string[];
+      /** Optional explanation for cancellation or a terminal playback event. */
+      reason: string;
+    },
+  ];
+  /** Emitted for a sequenced lifecycle notification received from a remote server. */
   [RemediaClientEventNames.nodeEvent]: [ServerLifecycleEvent];
-  [RemediaClientEventNames.eventsLost]: [{ nodeId: string; count: number }];
+  /** Emitted when a remote server reports dropped buffered events. */
+  [RemediaClientEventNames.eventsLost]: [
+    {
+      /** Configured identifier of the Remedia node associated with this resource. */
+      nodeId: string;
+      /** Number of server notifications omitted from the bounded event buffer. */
+      count: number;
+    },
+  ];
+  /** Emitted when sticky routing assigns a guild to a configured node. */
   [RemediaClientEventNames.guildAssigned]: [GuildAssignment];
+  /** Emitted when a guild assignment is released. */
   [RemediaClientEventNames.guildReleased]: [GuildAssignment];
-  [PlaybackSessionEvents.sessionDisposed]: [VoiceEventIdentity & { generation: number }];
+  /** Emitted when a session is unregistered and its owned resources are released. */
+  [PlaybackSessionEvents.sessionDisposed]: [
+    VoiceEventIdentity & {
+      /** Source generation used to correlate playback events; independent of transport replacement generations. */
+      generation: number;
+    },
+  ];
 }
 
+/** Terminal state and source generation returned by a playback completion wait. */
 export interface PlaybackCompletion {
+  /** Source generation used to correlate playback events; independent of transport replacement generations. */
   generation: number;
+  /** Current playback lifecycle state. */
   state: Extract<PlaybackState, 'completed' | 'failed' | 'stopped'>;
 }

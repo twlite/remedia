@@ -1027,6 +1027,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
 
   async connectWithCredentials(
     credentials: {
+      channelId?: string;
       sessionId: string;
       token: string;
       endpoint: string;
@@ -1068,7 +1069,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
       this.#assertCurrentVoiceGeneration(generation);
       await this.#node.connectVoice(
         this.#options.guildId,
-        this.#options.channelId,
+        credentials.channelId ?? this.#options.channelId,
         credentials,
         generation,
       );

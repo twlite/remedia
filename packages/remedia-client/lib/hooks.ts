@@ -1,9 +1,17 @@
 import type { BeforePlayContext, BeforePlayHook, MediaSource } from './types.js';
 
-/** Ordered, awaited local middleware, intentionally separate from lifecycle event listeners. */
+/**
+ * Ordered, awaited local middleware, intentionally separate from lifecycle event listeners.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
+ */
 export class PlaybackHooks<Metadata = unknown> {
   readonly #beforePlay: BeforePlayHook<Metadata>[] = [];
 
+  /**
+   * Append an awaited pre-play hook. Hooks run in registration order before a source opens.
+   * @param hook - Local callback to await before opening each source; returning cancel rejects playback.
+   * @returns An idempotent function that removes this hook registration.
+   */
   beforePlay(hook: BeforePlayHook<Metadata>): () => void {
     if (typeof hook !== 'function') throw new TypeError('beforePlay hook must be a function');
     this.#beforePlay.push(hook);
@@ -13,6 +21,13 @@ export class PlaybackHooks<Metadata = unknown> {
     };
   }
 
+  /**
+   * Run registered pre-play hooks in order and reject on cancellation or hook failure.
+   * @param source - Encoded media input; Buffer and caller-owned binary Readable inputs require embedded mode.
+   * @param customMetadata - Application-owned metadata associated with this source generation.
+   * @param signal - Cancellation signal that aborts this operation.
+   * @returns Resolves when every hook permits playback; cancellation rejects with AbortError.
+   */
   async runBeforePlay(
     source: MediaSource,
     customMetadata: Metadata | undefined,
@@ -34,7 +49,11 @@ export class PlaybackHooks<Metadata = unknown> {
     }
   }
 
-  /** @internal */
+  /**
+   * Remove all registered hooks and release their application references.
+   *
+   * @internal
+   */
   clear(): void {
     this.#beforePlay.length = 0;
   }

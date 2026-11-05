@@ -82,6 +82,11 @@ export class RemediaClient
     if (this.#nodes.size === 0) throw new TypeError('at least one Remedia node must be configured');
   }
 
+  /**
+   * Create an independent engine or client and initialize its configured resources.
+   * @param options - Node pool, bot Gateway callback, bot identity, and bounded remote request settings.
+   * @returns The initialized instance; inspect node health before using a remote assignment.
+   */
   static async create(options: RemediaClientOptions): Promise<RemediaClient> {
     validateOptions(options);
     const client = new RemediaClient(options);
@@ -97,6 +102,7 @@ export class RemediaClient
     return client;
   }
 
+  /** Configured embedded and remote nodes; at least one node and unique configured IDs are required. */
   get nodes(): readonly NodeSnapshot[] {
     return [...this.#nodes.values()].map((node) => node.snapshot);
   }
@@ -106,11 +112,22 @@ export class RemediaClient
     return [...this.#assignments.values()].map((assignment) => ({ ...assignment }));
   }
 
+  /**
+   * Look up the sticky backend assignment for a guild.
+   * @param guildId - Discord guild snowflake used to route the operation.
+   * @returns A copy of the assignment, or undefined when the guild is unassigned.
+   */
   getAssignment(guildId: string): GuildAssignment | undefined {
     const assignment = this.#assignments.get(guildId);
     return assignment ? { ...assignment } : undefined;
   }
 
+  /**
+   * Register one guild session with initial playback and voice configuration. Duplicate guild registration throws.
+   * @param options - Guild and bot identity, requested channel, initial processing settings, and voice flags.
+   * @returns The unconnected session; call connect() to request a Gateway voice join.
+   * @typeParam Metadata - Application-owned metadata attached to playback generations.
+   */
   createDiscordSession<Metadata = unknown>(
     options: DiscordSessionOptions,
   ): DiscordSession<Metadata> {
@@ -126,6 +143,10 @@ export class RemediaClient
     return session;
   }
 
+  /**
+   * Forward a raw bot Gateway packet to the matching voice session; unrelated packets are ignored.
+   * @param packet - Raw packet from this bot's Gateway dispatch stream.
+   */
   receive(packet: unknown): void {
     if (this.#closed || !isRecord(packet)) return;
     const sequence =
@@ -155,6 +176,10 @@ export class RemediaClient
       );
   }
 
+  /**
+   * Dispose owned sessions, close node resources, and release the client or engine.
+   * @returns Resolves after cleanup; rejects when a resource fails to close.
+   */
   close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise;
     if (this.#closed) return Promise.resolve();
@@ -180,21 +205,46 @@ export class RemediaClient
     return this.#closePromise;
   }
 
-  /** @internal */
-  sendVoicePayload(guildId: string, channelId: string | null): void | Promise<void> {
+  /**
+   * Send a voice state request through the caller-owned Discord Gateway connection.
+   *
+   * @internal
+   * @param guildId - Discord guild snowflake used to route the operation.
+   * @param channelId - Destination Discord voice channel snowflake; null requests a leave where supported.
+   * @param selfDeaf - Discord self-deaf flag; defaults to true.
+   * @param selfMute - Discord self-mute flag; defaults to false.
+   */
+  sendVoicePayload(
+    guildId: string,
+    channelId: string | null,
+    selfDeaf = true,
+    selfMute = false,
+  ): void | Promise<void> {
     if (this.#closed) throw new Error('RemediaClient has been closed');
     return this.#send(guildId, {
       op: 4,
-      d: { guild_id: guildId, channel_id: channelId, self_mute: false, self_deaf: false },
+      d: { guild_id: guildId, channel_id: channelId, self_mute: selfMute, self_deaf: selfDeaf },
     });
   }
 
-  /** @internal */
+  /**
+   * Read the last accepted Gateway dispatch sequence.
+   *
+   * @internal
+   * @returns The dispatch sequence, or undefined before one is observed.
+   */
   gatewaySequence(): number | undefined {
     return this.#gatewaySequence;
   }
 
-  /** @internal */
+  /**
+   * Allocate or reuse a sticky guild backend under the client assignment lock.
+   *
+   * @internal
+   * @param options - Guild identity, node preference, and retained session configuration.
+   * @param onDispose - Callback invoked when this wrapper releases its owning registration.
+   * @returns The assigned backend; rejects when the node is unavailable or at capacity.
+   */
   async resolveBackend(options: DiscordSessionOptions, onDispose: () => void) {
     this.#assertOpen();
     return this.#withAssignmentLock(async () => {
@@ -233,8 +283,16 @@ export class RemediaClient
     });
   }
 
-  /** @internal */
-  releaseSession(session: { readonly guildId: string }): void {
+  /**
+   * Unregister the guild session and release its sticky node assignment.
+   *
+   * @internal
+   * @param session - Guild session whose registration and assignment should be released.
+   */
+  releaseSession(session: {
+    /** Discord guild snowflake as a decimal string; unique within the owning client. */
+    readonly guildId: string;
+  }): void {
     this.#sessions.delete(session.guildId);
     const assignment = this.#assignments.get(session.guildId);
     if (assignment) {

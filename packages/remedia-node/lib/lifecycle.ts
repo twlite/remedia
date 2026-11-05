@@ -3,82 +3,172 @@ import type { AudioStreamInfo, PlaybackPosition, PlaybackState } from './types.j
 
 /** Stable names for playback/session event subscriptions and emission. */
 export const PlaybackSessionEvents = {
+  /** Emitted after a source starts and its stream information is available. */
   playbackStarted: 'playbackStarted',
+  /** Emitted when a source generation reaches natural end-of-stream. */
   playbackCompleted: 'playbackCompleted',
+  /** Emitted when a source generation is explicitly stopped or cancelled. */
   playbackStopped: 'playbackStopped',
+  /** Emitted when a source generation fails to open, decode, process, or deliver output. */
   playbackFailed: 'playbackFailed',
+  /** Emitted when playback is paused without replacing its source generation. */
   playbackPaused: 'playbackPaused',
+  /** Emitted when paused playback resumes. */
   playbackResumed: 'playbackResumed',
+  /** Emitted after seeking to a source timeline position. */
   playbackSeeked: 'playbackSeeked',
+  /** Emitted when the configured session filtergraph changes. */
   filterChanged: 'filterChanged',
+  /** Emitted when the configured session linear gain changes. */
   volumeChanged: 'volumeChanged',
+  /** Emitted when a session is unregistered and its owned resources are released. */
   sessionDisposed: 'sessionDisposed',
 } as const;
 
+/** Union of the stable event names defined by PlaybackSessionEvents. */
 export type PlaybackSessionEvents =
   (typeof PlaybackSessionEvents)[keyof typeof PlaybackSessionEvents];
 
+/** Stable event names for typed VoiceSessionEvents subscriptions. */
 export const VoiceSessionEvents = {
+  /** Emitted when the Discord transport lifecycle state changes. */
   voiceStateChanged: 'voiceStateChanged',
+  /** Emitted when voice connection or recovery fails. */
   voiceFailed: 'voiceFailed',
 } as const;
 
+/** Union of the stable event names defined by VoiceSessionEvents. */
 export type VoiceSessionEvents = (typeof VoiceSessionEvents)[keyof typeof VoiceSessionEvents];
 
+/** Stable event names for typed RemediaEvents subscriptions. */
 export const RemediaEvents = {
   ...PlaybackSessionEvents,
   ...VoiceSessionEvents,
+  /** Emitted for a structured native diagnostic event. */
   debug: 'debug',
 } as const;
 
+/** Union of the stable event names defined by RemediaEvents. */
 export type RemediaEvents = (typeof RemediaEvents)[keyof typeof RemediaEvents];
 
+/**
+ * Correlation fields identifying the session and source generation that produced a playback event.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
+ */
 export interface PlaybackEventIdentity<Metadata = unknown> {
+  /** Opaque Remedia session identity used to correlate events; distinct from the Discord bot user ID. */
   sessionId: string;
+  /** Discord guild snowflake as a decimal string; unique within the owning client. */
   guildId?: string;
+  /** Node identifier; embedded session events use null. */
   nodeId: string | null;
+  /** Source generation used to correlate playback events; independent of transport replacement generations. */
   generation: number;
+  /** Application-owned metadata retained locally for the source generation and attached to its events. */
   customMetadata?: Metadata;
   /** True only when a terminal event was reconstructed from an authoritative remote snapshot. */
   reconstructed?: boolean;
 }
 
+/**
+ * Typed argument tuples for playback lifecycle notifications.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
+ */
 export type PlaybackLifecycleEvents<Metadata = unknown> = {
+  /** Emitted after a source starts and its stream information is available. */
   [PlaybackSessionEvents.playbackStarted]: [
-    PlaybackEventIdentity<Metadata> & { state: 'playing'; info: AudioStreamInfo },
+    PlaybackEventIdentity<Metadata> & {
+      /** Current playback lifecycle state. */
+      state: 'playing';
+      /** Metadata for the audio stream that started playback. */
+      info: AudioStreamInfo;
+    },
   ];
+  /** Emitted when a source generation reaches natural end-of-stream. */
   [PlaybackSessionEvents.playbackCompleted]: [
-    PlaybackEventIdentity<Metadata> & { state: 'completed'; position: PlaybackPosition },
+    PlaybackEventIdentity<Metadata> & {
+      /** Current playback lifecycle state. */
+      state: 'completed';
+      /** Latest source and output timeline measurements in milliseconds. */
+      position: PlaybackPosition;
+    },
   ];
+  /** Emitted when a source generation is explicitly stopped or cancelled. */
   [PlaybackSessionEvents.playbackStopped]: [
-    PlaybackEventIdentity<Metadata> & { state: 'stopped'; reason?: string },
+    PlaybackEventIdentity<Metadata> & {
+      /** Current playback lifecycle state. */
+      state: 'stopped';
+      /** Optional explanation for cancellation or a terminal playback event. */
+      reason?: string;
+    },
   ];
+  /** Emitted when a source generation fails to open, decode, process, or deliver output. */
   [PlaybackSessionEvents.playbackFailed]: [
-    PlaybackEventIdentity<Metadata> & { state: 'failed'; error: Error },
+    PlaybackEventIdentity<Metadata> & {
+      /** Current playback lifecycle state. */
+      state: 'failed';
+      /** Error object describing the operation or source failure. */
+      error: Error;
+    },
   ];
+  /** Emitted when playback is paused without replacing its source generation. */
   [PlaybackSessionEvents.playbackPaused]: [
-    PlaybackEventIdentity<Metadata> & { previousState: PlaybackState; state: 'paused' },
+    PlaybackEventIdentity<Metadata> & {
+      /** Playback or transport lifecycle state before this transition. */
+      previousState: PlaybackState;
+      /** Current playback lifecycle state. */
+      state: 'paused';
+    },
   ];
+  /** Emitted when paused playback resumes. */
   [PlaybackSessionEvents.playbackResumed]: [
-    PlaybackEventIdentity<Metadata> & { previousState: PlaybackState; state: 'playing' },
+    PlaybackEventIdentity<Metadata> & {
+      /** Playback or transport lifecycle state before this transition. */
+      previousState: PlaybackState;
+      /** Current playback lifecycle state. */
+      state: 'playing';
+    },
   ];
+  /** Emitted after seeking to a source timeline position. */
   [PlaybackSessionEvents.playbackSeeked]: [
-    PlaybackEventIdentity<Metadata> & { positionMs: number; previousPositionMs: number | null },
+    PlaybackEventIdentity<Metadata> & {
+      /** Requested source timeline position in milliseconds. */
+      positionMs: number;
+      /** Source timeline position before seeking, in milliseconds, or null when unknown. */
+      previousPositionMs: number | null;
+    },
   ];
+  /** Emitted when the configured session filtergraph changes. */
   [PlaybackSessionEvents.filterChanged]: [
-    PlaybackEventIdentity<Metadata> & { previousGraph: string | null; graph: string | null },
+    PlaybackEventIdentity<Metadata> & {
+      /** Filtergraph active before this change, or null when filtering was disabled. */
+      previousGraph: string | null;
+      /** Current raw FFmpeg audio filtergraph, or null when filtering is disabled. */
+      graph: string | null;
+    },
   ];
+  /** Emitted when the configured session linear gain changes. */
   [PlaybackSessionEvents.volumeChanged]: [
-    PlaybackEventIdentity<Metadata> & { previousVolume: number; volume: number },
+    PlaybackEventIdentity<Metadata> & {
+      /** Linear master gain before this change. */
+      previousVolume: number;
+      /** Session master linear gain from 0 through 2, independent of filtergraph processing; defaults to 1. */
+      volume: number;
+    },
   ];
 };
 
+/** Correlation fields identifying the session that produced a voice transport event. */
 export interface VoiceEventIdentity {
+  /** Opaque Remedia session identity used to correlate events; distinct from the Discord bot user ID. */
   sessionId: string;
+  /** Discord guild snowflake as a decimal string; unique within the owning client. */
   guildId: string;
+  /** Node identifier; embedded session events use null. */
   nodeId: string | null;
 }
 
+/** Normalized voice lifecycle state used in events; DAVE negotiation uses negotiating_dave. */
 export type LifecycleVoiceState =
   | 'connecting'
   | 'negotiating_dave'
@@ -88,52 +178,132 @@ export type LifecycleVoiceState =
   | 'disconnected'
   | 'failed';
 
+/** Typed argument tuples for voice transport notifications, independent of playback generation. */
 export type VoiceLifecycleEvents = {
+  /** Emitted when the Discord transport lifecycle state changes. */
   [VoiceSessionEvents.voiceStateChanged]: [
-    VoiceEventIdentity & { previousState: LifecycleVoiceState; state: LifecycleVoiceState },
+    VoiceEventIdentity & {
+      /** Playback or transport lifecycle state before this transition. */
+      previousState: LifecycleVoiceState;
+      /** Current playback lifecycle state. */
+      state: LifecycleVoiceState;
+    },
   ];
-  [VoiceSessionEvents.voiceFailed]: [VoiceEventIdentity & { state: 'failed'; error: Error }];
+  /** Emitted when voice connection or recovery fails. */
+  [VoiceSessionEvents.voiceFailed]: [
+    VoiceEventIdentity & {
+      /** Current playback lifecycle state. */
+      state: 'failed';
+      /** Error object describing the operation or source failure. */
+      error: Error;
+    },
+  ];
 };
 
+/**
+ * Combined playback, voice, and disposal event arguments for a session.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
+ */
 export type SessionLifecycleEvents<Metadata = unknown> = PlaybackLifecycleEvents<Metadata> &
   VoiceLifecycleEvents & {
+    /** Emitted when a session is unregistered and its owned resources are released. */
     [PlaybackSessionEvents.sessionDisposed]: [
-      { sessionId: string; guildId?: string; nodeId: string | null; generation: number },
+      {
+        /** Opaque Remedia session identity used to correlate events; distinct from the Discord bot user ID. */
+        sessionId: string;
+        /** Discord guild snowflake as a decimal string; unique within the owning client. */
+        guildId?: string;
+        /** Node identifier; embedded session events use null. */
+        nodeId: string | null;
+        /** Source generation used to correlate playback events; independent of transport replacement generations. */
+        generation: number;
+      },
     ];
   };
 
+/**
+ * Playback and disposal event arguments emitted by an embedded playback wrapper.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
+ */
 export type PlaybackSessionEventMap<Metadata = unknown> = PlaybackLifecycleEvents<Metadata> & {
+  /** Emitted when a session is unregistered and its owned resources are released. */
   [PlaybackSessionEvents.sessionDisposed]: [
-    { sessionId: string; guildId?: string; nodeId: string | null; generation: number },
+    {
+      /** Opaque Remedia session identity used to correlate events; distinct from the Discord bot user ID. */
+      sessionId: string;
+      /** Discord guild snowflake as a decimal string; unique within the owning client. */
+      guildId?: string;
+      /** Node identifier; embedded session events use null. */
+      nodeId: string | null;
+      /** Source generation used to correlate playback events; independent of transport replacement generations. */
+      generation: number;
+    },
   ];
 };
 
+/** Session lifecycle events and native diagnostic notifications forwarded by the embedded engine. */
 export interface RemediaLifecycleEvents extends SessionLifecycleEvents<unknown> {
+  /** Emitted for a structured native diagnostic event. */
   [RemediaEvents.debug]: [import('./types.js').DiagnosticEvent];
 }
 
+/**
+ * Local metadata and cancellation options for one playback generation; session configuration persists across generations.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
+ */
 export interface PlayOptions<Metadata = unknown> {
+  /** Application-owned metadata retained locally for the source generation and attached to its events. */
   customMetadata?: Metadata;
-  /** Aborting before startup cancels hooks; aborting after startup stops this playback. */
+  /**
+   * Optional cancellation signal; cancellation before startup prevents playback, and cancellation after startup stops that generation.
+   */
   signal?: AbortSignal;
 }
 
+/**
+ * Caller-owned media input, metadata, and cancellation signal supplied to each awaited pre-play hook.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
+ */
 export interface BeforePlayContext<Metadata = unknown> {
+  /** Caller-owned encoded input that the hooks inspect before the decoder opens it. */
   readonly source: MediaSource;
+  /** Application-owned metadata retained locally for the source generation and attached to its events. */
   readonly customMetadata: Metadata | undefined;
-  /** Aborted when the operation signal fires or the session is disposed. */
+  /** Cancellation signal for this hook invocation; check it before performing asynchronous work. */
   readonly signal: AbortSignal;
 }
 
-export type BeforePlayResult = void | { cancel: true; reason?: string };
+/**
+ * Hook result: return nothing to continue, or cancel with an optional explanation to reject playback with AbortError.
+ */
+export type BeforePlayResult = void | {
+  /** Return true from a pre-play hook to reject playback before opening the source. */
+  cancel: true;
+  /** Optional explanation for cancellation or a terminal playback event. */
+  reason?: string;
+};
+/**
+ * Awaited local callback run before a source opens; rejection or cancellation prevents that source from starting.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
+ * @param context - Source, local metadata, and cancellation signal supplied to the awaited hooks.
+ * @returns Nothing to continue, or a cancellation result; a promise is awaited before source opening.
+ */
 export type BeforePlayHook<Metadata = unknown> = (
   context: BeforePlayContext<Metadata>,
 ) => BeforePlayResult | Promise<BeforePlayResult>;
 
-/** Ordered, awaited local middleware. It is not a server authorization mechanism. */
+/**
+ * Ordered, awaited local middleware. It is not a server authorization mechanism.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
+ */
 export class PlaybackHooks<Metadata = unknown> {
   readonly #beforePlay: BeforePlayHook<Metadata>[] = [];
 
+  /**
+   * Append an awaited pre-play hook. Hooks run in registration order before a source opens.
+   * @param hook - Local callback to await before opening each source; returning cancel rejects playback.
+   * @returns An idempotent function that removes this hook registration.
+   */
   beforePlay(hook: BeforePlayHook<Metadata>): () => void {
     if (typeof hook !== 'function') throw new TypeError('beforePlay hook must be a function');
     this.#beforePlay.push(hook);
@@ -143,6 +313,11 @@ export class PlaybackHooks<Metadata = unknown> {
     };
   }
 
+  /**
+   * Run registered pre-play hooks in order and reject on cancellation or hook failure.
+   * @param context - Source, local metadata, and cancellation signal supplied to the awaited hooks.
+   * @returns Resolves when every hook permits playback; cancellation rejects with AbortError.
+   */
   async runBeforePlay(context: BeforePlayContext<Metadata>): Promise<void> {
     for (const hook of [...this.#beforePlay]) {
       if (context.signal.aborted) throw abortError(context.signal.reason);
@@ -165,6 +340,14 @@ export class PlaybackHooks<Metadata = unknown> {
   }
 }
 
+/**
+ * Create playback event correlation fields for one local source generation.
+ * @param generation - Native source generation associated with the lifecycle notification.
+ * @param customMetadata - Application-owned metadata associated with this source generation.
+ * @returns Identity fields with metadata included only when provided.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
+ * @param sessionId - Opaque Remedia session identity used for event correlation.
+ */
 export function lifecycleContext<Metadata>(
   sessionId: string,
   generation: number,

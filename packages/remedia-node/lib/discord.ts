@@ -23,6 +23,9 @@ import type {
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 45_000;
 
+/**
+ * Identity, initial playback configuration, and Gateway voice flags for one guild session. The channel is a mutable destination, while userId identifies the bot.
+ */
 export interface DiscordSessionOptions {
   /** Discord server snowflake as a decimal string. */
   guildId: string;
@@ -30,10 +33,19 @@ export interface DiscordSessionOptions {
   channelId: string;
   /** Bot user snowflake as a decimal string. */
   userId: string;
+  /** Discord Gateway self-deaf state; defaults to true. */
+  selfDeaf?: boolean;
+  /** Discord Gateway self-mute state; defaults to false. */
+  selfMute?: boolean;
+  /** Session master linear gain, finite from 0 through 2; defaults to 1. */
+  volume?: number;
+  /** Trusted raw FFmpeg audio filtergraph; defaults to null. Native syntax validation occurs during backend configuration before playback. */
+  filterGraph?: string | null;
 }
 
+/** Cancellation and timeout controls for obtaining credentials and establishing a voice transport. */
 export interface DiscordConnectOptions {
-  /** Abort the Gateway request and any pending connection attempt. */
+  /** Optional signal that cancels Gateway negotiation and pending transport setup. */
   signal?: AbortSignal;
   /** Maximum time to receive Gateway credentials and establish voice transport/DAVE. */
   timeoutMs?: number;
@@ -62,6 +74,7 @@ interface ConnectAttempt {
   requestSent: boolean;
   settled: boolean;
   internal: boolean;
+  moving?: boolean;
   retryCount: number;
   transportGeneration: number | undefined;
 }
@@ -70,19 +83,29 @@ interface ConnectAttempt {
  * One Discord voice session. The caller supplies a Gateway send adapter to `Remedia.create()` and
  * forwards raw dispatch packets to `Remedia.receive()`; this session collects the matching voice
  * credentials and opens the native transport after both dispatches arrive.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
  */
 export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   SessionLifecycleEvents<Metadata>
 > {
+  /** Opaque Remedia session identity used to correlate events; distinct from the Discord bot user ID. */
   readonly sessionId = randomUUID();
+  /** Discord guild snowflake as a decimal string; unique within the owning client. */
   readonly guildId: string;
-  readonly channelId: string;
+  #channelId: string;
+  #selfDeaf: boolean;
+  #selfMute: boolean;
+  #closing = false;
+  #disposeWork: Promise<void> | undefined;
+  /** Discord bot user snowflake as a decimal string; separate from Remedia session identity. */
   readonly userId: string;
 
   readonly #native: NativeRemedia;
   readonly #gateway: DiscordGatewayAdapter;
   readonly #onDispose: () => void;
+  /** Persistent raw FFmpeg filtergraph controls for this session. */
   readonly filters: FilterControls;
+  /** Ordered, awaited local pre-play hooks; listeners are separate from hooks. */
   readonly hooks = new PlaybackHooks<Metadata>();
   #playback: PlaybackSession<Metadata> | undefined;
   #playbackSubscriptions: { playback: PlaybackSession<Metadata>; detach: () => void } | undefined;
@@ -108,7 +131,13 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   #configurationWork: Promise<void> = Promise.resolve();
   #nativeStateTimer: ReturnType<typeof setInterval> | undefined;
 
-  /** @internal Constructed by `Remedia.createDiscordSession()`. */
+  /**
+   * @internal Constructed by `Remedia.createDiscordSession()`.
+   * @param native - Owning native engine instance; its resources must outlive this wrapper.
+   * @param gateway - Adapter for the application-owned Discord Gateway connection.
+   * @param options - Configuration and lifecycle options for this operation.
+   * @param onDispose - Callback invoked when this wrapper releases its owning registration.
+   */
   constructor(
     native: NativeRemedia,
     gateway: DiscordGatewayAdapter,
@@ -117,8 +146,23 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   ) {
     super();
     this.guildId = validateSnowflake('guildId', options.guildId);
-    this.channelId = validateSnowflake('channelId', options.channelId);
+    this.#channelId = validateSnowflake('channelId', options.channelId);
     this.userId = validateSnowflake('userId', options.userId);
+    validateVolume(options.volume ?? 1);
+    if (
+      options.filterGraph !== undefined &&
+      options.filterGraph !== null &&
+      (typeof options.filterGraph !== 'string' || !options.filterGraph.trim())
+    )
+      throw new TypeError('filterGraph must be a non-empty string or null');
+    for (const value of [options.selfDeaf, options.selfMute]) {
+      if (value !== undefined && typeof value !== 'boolean')
+        throw new TypeError('voice flags must be boolean');
+    }
+    this.#volume = options.volume ?? 1;
+    this.#filterGraph = options.filterGraph ?? null;
+    this.#selfDeaf = options.selfDeaf ?? true;
+    this.#selfMute = options.selfMute ?? false;
     this.#native = native;
     this.#gateway = gateway;
     this.#onDispose = onDispose;
@@ -127,6 +171,86 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       (graph) => this.#replaceFilterGraph(graph),
       () => this.#replaceFilterGraph(null),
     );
+  }
+
+  /** Current requested voice destination; independent of playback identity. */
+  get channelId(): string {
+    return this.#channelId;
+  }
+  /** Discord Gateway self-deaf state; defaults to true and persists across moves and recovery. */
+  get selfDeaf(): boolean {
+    return this.#selfDeaf;
+  }
+  /** Discord Gateway self-mute state; defaults to false and persists across moves and recovery. */
+  get selfMute(): boolean {
+    return this.#selfMute;
+  }
+
+  /**
+   * Replace only the voice transport. A newer move supersedes a pending move.
+   * @param channelId - Destination Discord voice channel snowflake as a positive decimal string.
+   * @returns Resolves when the requested destination connects; rejects on supersession, cancellation, or connection failure.
+   */
+  move(channelId: string): Promise<void> {
+    this.#assertNotDisposed();
+    validateSnowflake('channelId', channelId);
+    if (this.#connectionState === 'disconnecting')
+      return Promise.reject(new Error('Discord session is disconnecting'));
+    if (channelId === this.channelId) return this.connect();
+    const previous = this.#attempt;
+    if (previous) {
+      this.#finishAttempt(previous);
+      previous.reject(abortError('Discord voice connection was superseded by move()'));
+    }
+    this.#channelId = channelId;
+    if (!this.#nativeSession) return this.connect();
+    const attempt = this.#createAttempt(DEFAULT_CONNECT_TIMEOUT_MS, undefined, true);
+    attempt.moving = true;
+    this.#attempt = attempt;
+    this.#voiceState = undefined;
+    this.#voiceServer = undefined;
+    this.#voiceServerUnavailable = false;
+    this.#setConnectionState('connecting');
+    this.#suspendCurrentNativeTransport(attempt);
+    this.#requestGatewayJoin(attempt);
+    return attempt.promise;
+  }
+
+  /**
+   * Update Discord self-deaf state without rebuilding playback. Unchanged values send nothing.
+   * @param enabled - The requested Discord self-state flag.
+   * @returns Resolves after storing the flag or sending its Gateway update; rejects if the update fails.
+   */
+  setSelfDeaf(enabled: boolean): Promise<void> {
+    return this.#setVoiceFlag('deaf', enabled);
+  }
+  /**
+   * Update Discord self-mute state without changing audio gain or playback pause. Unchanged values send nothing.
+   * @param enabled - The requested Discord self-state flag.
+   * @returns Resolves after storing the flag or sending its Gateway update; rejects if the update fails.
+   */
+  setSelfMute(enabled: boolean): Promise<void> {
+    return this.#setVoiceFlag('mute', enabled);
+  }
+
+  async #setVoiceFlag(flag: 'deaf' | 'mute', enabled: boolean): Promise<void> {
+    this.#assertNotDisposed();
+    if (typeof enabled !== 'boolean') throw new TypeError('voice flag must be boolean');
+    await this.#serializeConfiguration(async () => {
+      this.#assertNotDisposed();
+      if (this.#connectionState === 'disconnecting')
+        throw new Error('Discord session is disconnecting');
+      if ((flag === 'deaf' ? this.#selfDeaf : this.#selfMute) === enabled) return;
+      if (this.#joinRequested)
+        await this.#gateway.setVoiceChannel(
+          this.guildId,
+          this.channelId,
+          flag === 'deaf' ? enabled : this.#selfDeaf,
+          flag === 'mute' ? enabled : this.#selfMute,
+        );
+      if (flag === 'deaf') this.#selfDeaf = enabled;
+      else this.#selfMute = enabled;
+    });
   }
 
   /** Current voice transport state. A connected voice WebSocket may temporarily be reconnecting. */
@@ -153,11 +277,13 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     }
   }
 
+  /** Current playback lifecycle state. */
   get state(): PlaybackState {
     if (this.#playback) return this.#playback.state;
     return this.connectionState === 'failed' ? 'failed' : 'idle';
   }
 
+  /** Latest source and output timeline measurements in milliseconds. */
   get position(): PlaybackPosition {
     return (
       this.#playback?.position ?? {
@@ -169,10 +295,12 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     );
   }
 
+  /** Source duration in milliseconds, or null when unknown. */
   get durationMs(): number | null {
     return this.#playback?.durationMs ?? null;
   }
 
+  /** Most recent playback or voice failure message, or null when no error is available. */
   get error(): string | null {
     return this.#playback?.error ?? this.connectionError;
   }
@@ -187,7 +315,12 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     return this.#playback?.currentGeneration ?? this.#playbackGeneration;
   }
 
-  /** Set master gain independently of this session's configured filtergraph. */
+  /**
+   * Set master gain independently of this session's configured filtergraph.
+   * @param gain - Finite linear master gain from 0 through 2; 1 leaves amplitude unchanged.
+   * @returns Resolves after the gain is stored or applied; rejects for non-finite gain or values outside 0 through 2.
+   * @throws {RangeError} If gain is non-finite or outside the inclusive range 0 through 2.
+   */
   async setVolume(gain: number): Promise<void> {
     this.#assertNotDisposed();
     validateVolume(gain);
@@ -216,6 +349,8 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   /**
    * Request a Gateway voice join and wait until both voice dispatches have arrived and the native
    * voice transport has completed its DAVE setup. Repeated calls while connecting share a promise.
+   * @param options - Optional cancellation signal and positive timeout in milliseconds; defaults to 45000.
+   * @returns Resolves when connected; rejects on timeout, cancellation, session loss, or transport failure.
    */
   connect(options: DiscordConnectOptions = {}): Promise<void> {
     this.#assertNotDisposed();
@@ -257,8 +392,12 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   /**
    * Begin playback on this connected voice session. The decoder and Opus encoder remain in core;
    * this object only associates their output with the native Discord transport.
+   * @param source - Encoded media input; Buffer and caller-owned binary Readable inputs require embedded mode.
+   * @param options - Optional metadata for this generation and a cancellation signal.
+   * @returns Selected stream metadata once startup succeeds; rejects if hooks, input opening, or playback startup fail.
    */
-  play(source: MediaSource, options: PlayOptions<Metadata> = {}): Promise<AudioStreamInfo> {
+  async play(source: MediaSource, options: PlayOptions<Metadata> = {}): Promise<AudioStreamInfo> {
+    await this.#configurationWork;
     return this.#requirePlayback()
       .play(source, options)
       .then((info) => {
@@ -267,22 +406,43 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       });
   }
 
+  /**
+   * Pause the current playback without replacing its decoder or source generation.
+   * @returns Resolves when the backend accepts the pause request.
+   */
   pause(): Promise<void> {
     return this.#requireExistingPlayback().pause();
   }
 
+  /**
+   * Resume paused playback on its existing source generation.
+   * @returns Resolves when the backend accepts the resume request.
+   */
   resume(): Promise<void> {
     return this.#requireExistingPlayback().resume();
   }
 
+  /**
+   * Seek on the original media timeline; non-seekable and one-shot sources may reject.
+   * @param positionMs - Non-negative finite position on the original media timeline, in milliseconds.
+   * @returns Resolves after the backend accepts the seek; rejects for invalid positions or unsupported inputs.
+   */
   seek(positionMs: number): Promise<void> {
     return this.#requireExistingPlayback().seek(positionMs);
   }
 
+  /**
+   * Stop the active playback generation and release its input without leaving the voice channel.
+   * @returns Resolves after the backend stops the active source.
+   */
   stop(): Promise<void> {
     return this.#requireExistingPlayback().stop();
   }
 
+  /**
+   * Wait for the current playback generation to reach a terminal state.
+   * @returns The terminal playback state for the generation captured by this wait.
+   */
   wait(): Promise<PlaybackState> {
     return this.#requireExistingPlayback().wait();
   }
@@ -290,6 +450,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   /**
    * Leave the Discord channel through Gateway OP 4 and close the native transport. This does not
    * dispose the wrapper, so `connect()` can be called again with fresh Gateway dispatches.
+   * @returns Resolves after cleanup; concurrent disconnects share cleanup work.
    */
   disconnect(): Promise<void> {
     if (this.#disposed) return Promise.resolve();
@@ -302,9 +463,19 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     return this.#disconnectPromise;
   }
 
-  /** Disconnect and unregister this session. */
-  async dispose(): Promise<void> {
+  /**
+   * Disconnect and unregister this session.
+   * @returns Resolves after disposal; rejects if resource cleanup fails.
+   */
+  dispose(): Promise<void> {
+    if (this.#disposeWork) return this.#disposeWork;
+    this.#disposeWork = this.#dispose();
+    return this.#disposeWork;
+  }
+
+  async #dispose(): Promise<void> {
     if (this.#disposed) return;
+    this.#closing = true;
     try {
       await this.disconnect();
     } finally {
@@ -319,7 +490,13 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     }
   }
 
-  /** @internal Routes a parsed raw Gateway dispatch to this guild's active voice lifecycle. */
+  /**
+   * @internal Routes a parsed raw Gateway dispatch to this guild's active voice lifecycle.
+   * @param event - Event name identifying the typed notification or Gateway voice dispatch.
+   * @param data - Validated guild-scoped Gateway dispatch data.
+   * @param sequence - Gateway dispatch sequence, when supplied by the host application.
+   * @param epoch - Gateway READY epoch used to reset stale-sequence tracking.
+   */
   receiveGatewayDispatch(
     event: string,
     data: Record<string, unknown>,
@@ -410,6 +587,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       return;
     }
     if (data.channel_id === null) {
+      if (this.#attempt?.moving) return;
       if (this.#connectionState === 'connected' || this.#connectionState === 'reconnecting') {
         this.#handleGatewayDisconnect();
       }
@@ -501,6 +679,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       resolve = res;
       reject = rej;
     });
+    void promise.catch(() => {});
     let attempt!: ConnectAttempt;
     const onTimeout = (): void => {
       const error = new Error(`Discord voice connection timed out after ${timeoutMs} ms`);
@@ -532,7 +711,12 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   #requestGatewayJoin(attempt: ConnectAttempt): void {
     let sendPromise: void | Promise<void>;
     try {
-      sendPromise = this.#gateway.setVoiceChannel(this.guildId, this.channelId);
+      sendPromise = this.#gateway.setVoiceChannel(
+        this.guildId,
+        this.channelId,
+        this.#selfDeaf,
+        this.#selfMute,
+      );
     } catch (error) {
       if (!this.#retryCredentialRefresh(attempt, asError(error))) {
         this.#failAttempt(attempt, asError(error), true);
@@ -758,7 +942,9 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       this.#voiceServer = undefined;
       this.#voiceServerUnavailable = false;
     }
-    if (attempt?.internal && this.#nativeSession) {
+    if (attempt?.moving) {
+      // Keep playback suspended for an explicit retry or disconnect.
+    } else if (attempt?.internal && this.#nativeSession) {
       try {
         this.#native.failVoiceRecovery(
           this.#nativeSession.voiceId,
@@ -786,6 +972,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
 
   #failAttempt(attempt: ConnectAttempt, error: Error, leaveGateway: boolean): void {
     if (this.#attempt !== attempt) return;
+    if (attempt.moving) this.#suspendCurrentNativeTransport(attempt);
     this.#generation += 1;
     this.#finishAttempt(attempt);
     this.#connectionError = error.name === 'AbortError' ? undefined : error.message;
@@ -796,7 +983,9 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       this.#voiceServer = undefined;
       this.#voiceServerUnavailable = false;
     }
-    if (attempt.internal && this.#nativeSession) {
+    if (attempt.moving) {
+      // Keep playback suspended for an explicit retry or disconnect.
+    } else if (attempt.internal && this.#nativeSession) {
       try {
         this.#native.failVoiceRecovery(
           this.#nativeSession.voiceId,
@@ -817,6 +1006,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   #retryCredentialRefresh(attempt: ConnectAttempt, _error: Error): boolean {
     if (
       !attempt.internal ||
+      attempt.moving ||
       this.#attempt !== attempt ||
       attempt.settled ||
       attempt.retryCount >= 2 ||
@@ -977,7 +1167,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   }
 
   #assertNotDisposed(): void {
-    if (this.#disposed) throw new Error('Discord voice session has been disposed');
+    if (this.#disposed || this.#closing) throw new Error('Discord voice session has been disposed');
   }
 
   #setConnectionState(state: VoiceConnectionState): void {

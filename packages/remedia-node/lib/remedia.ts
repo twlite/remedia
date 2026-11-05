@@ -12,6 +12,7 @@ import {
 import { PlaybackSession } from './playback.js';
 import { toDiagnosticEvent, type DebugListener, type DiagnosticEvent } from './types.js';
 
+/** Optional Gateway integration for the embedded engine; required when creating Discord sessions. */
 export interface RemediaOptions {
   /** Send raw Gateway payloads through the application's existing Discord client or shard. */
   send: DiscordGatewaySend;
@@ -54,7 +55,11 @@ export class Remedia extends RemediaEventEmitter<RemediaLifecycleEvents> {
     });
   }
 
-  /** Create an independent native context using REMEDIA_* and OTEL_* environment settings. */
+  /**
+   * Create an independent native context using REMEDIA_* and OTEL_* environment settings.
+   * @param options - Optional bot Gateway callback; required when creating Discord sessions.
+   * @returns An initialized independent native engine context.
+   */
   static async create(options?: RemediaOptions): Promise<Remedia> {
     return new Remedia(await NativeRemedia.create(), options);
   }
@@ -64,8 +69,11 @@ export class Remedia extends RemediaEventEmitter<RemediaLifecycleEvents> {
     return this.#native.droppedDebugEvents;
   }
 
-  /** Register a structured native diagnostic listener. */
-  /** Create a local decoder session that discards its PCM output. */
+  /**
+   * Create a local decoder session that discards its PCM output.
+   * @returns An independent playback session owned by this engine until disposal.
+   * @typeParam Metadata - Application-owned metadata attached to playback generations.
+   */
   createPlaybackSession<Metadata = unknown>(): PlaybackSession<Metadata> {
     this.#assertOpen();
     let playback: PlaybackSession<Metadata>;
@@ -81,7 +89,12 @@ export class Remedia extends RemediaEventEmitter<RemediaLifecycleEvents> {
     return playback;
   }
 
-  /** Create a Gateway-managed voice session. Call `connect()` to send OP 4 and join the channel. */
+  /**
+   * Create a Gateway-managed voice session. Call `connect()` to send OP 4 and join the channel.
+   * @param options - Guild and bot identity, requested channel, initial processing settings, and voice flags.
+   * @returns The unconnected session; call connect() to request a Gateway voice join.
+   * @typeParam Metadata - Application-owned metadata attached to playback generations.
+   */
   createDiscordSession<Metadata = unknown>(
     options: DiscordSessionOptions,
   ): DiscordSession<Metadata> {
@@ -101,7 +114,10 @@ export class Remedia extends RemediaEventEmitter<RemediaLifecycleEvents> {
     return session;
   }
 
-  /** Forward a raw Discord Gateway packet to the matching in-process voice session. */
+  /**
+   * Forward a raw Discord Gateway packet to the matching in-process voice session.
+   * @param packet - Raw packet from this bot's Gateway dispatch stream.
+   */
   receive(packet: unknown): void {
     if (this.#closed || !this.#gateway) return;
     const dispatch = this.#gateway.receive(packet);
@@ -111,7 +127,10 @@ export class Remedia extends RemediaEventEmitter<RemediaLifecycleEvents> {
       ?.receiveGatewayDispatch(dispatch.event, dispatch.data, dispatch.sequence, dispatch.epoch);
   }
 
-  /** Stop all playbacks, disconnect transports, flush telemetry, and release native resources. */
+  /**
+   * Stop all playbacks, disconnect transports, flush telemetry, and release native resources.
+   * @returns Resolves after cleanup; rejects when a resource fails to close.
+   */
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;

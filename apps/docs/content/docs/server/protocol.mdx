@@ -165,3 +165,19 @@ already attached session.
 
 `client.close` releases resources immediately. Expiry and graceful shutdown do the same. Active
 sessions are in-memory only and are lost when the server process restarts.
+
+## SDK channel movement and session configuration
+
+The logical guild identity is `(clientSessionId, guildId)`; `channelId` is a mutable destination.
+Different bot identities may own the same guild on the same server. The server does not enforce
+cross-client uniqueness of `(botUserId, guildId)`; applications must avoid competing controllers
+for the same bot. Detached resumable sessions retain their ownership and resources until resumption,
+explicit close, or expiry. No cross-client takeover or transport sharing is performed.
+
+The SDK's `move(channelId)` uses existing `voice.suspend` and generation-fenced `voice.connect`
+with the new channel and fresh Gateway credentials. It preserves the guild player and playback
+generation. There is no new RPC command or protocol version. Initial gain and filters use the existing
+`player.volume.set` and `player.filter.set` commands before `player.play`; configuration persists
+across tracks and transport generations. Self-deaf and self-mute are Gateway OP 4 fields managed
+by the application-side SDK, so they add no server wire fields. See the
+[client session configuration guide](/docs/client/overview#session-configuration-and-channel-movement).

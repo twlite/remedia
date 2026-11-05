@@ -22,7 +22,10 @@ import {
 } from './types.js';
 import { FilterControls, validateVolume } from './filters.js';
 
-/** Controls one playback session. Local sessions decode into a no-op output. */
+/**
+ * Controls one playback session. Local sessions decode into a no-op output.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
+ */
 export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
   PlaybackSessionEventMap<Metadata>
 > {
@@ -32,7 +35,9 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
   readonly #terminalGenerations = new Set<number>();
   readonly #metadata = new Map<number, Metadata | undefined>();
   readonly #startedGenerations = new Set<number>();
+  /** Ordered, awaited local pre-play hooks; listeners are separate from hooks. */
   readonly hooks: PlaybackHooks<Metadata>;
+  /** Persistent raw FFmpeg filtergraph controls for this session. */
   readonly filters: FilterControls;
   #input: ReadableInputHandle | undefined;
   #disposed = false;
@@ -43,7 +48,16 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
   #latestGeneration = 0;
   #guildId: string | undefined;
 
-  /** @internal */
+  /**
+   * Construct this wrapper with its owning services. Use the owning engine or client factory for application code.
+   *
+   * @internal
+   * @param native - Owning native engine instance; its resources must outlive this wrapper.
+   * @param playbackId - Opaque native playback identity owned by this wrapper.
+   * @param onDispose - Callback invoked when this wrapper releases its owning registration.
+   * @param guildId - Discord guild snowflake used to route the operation.
+   * @param hooks - Optional shared pre-play hooks for the owning Discord session.
+   */
   constructor(
     native: NativeRemedia,
     playbackId: string,
@@ -74,10 +88,12 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     return this.#latestGeneration;
   }
 
+  /** Current playback lifecycle state. */
   get state(): PlaybackState {
     return this.#native.playbackState(this.#playbackId) as PlaybackState;
   }
 
+  /** Latest source and output timeline measurements in milliseconds. */
   get position(): PlaybackPosition {
     const position = this.#native.playbackPosition(this.#playbackId);
     return {
@@ -92,10 +108,12 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     };
   }
 
+  /** Source duration in milliseconds, or null when unknown. */
   get durationMs(): number | null {
     return this.#native.playbackDurationMs(this.#playbackId) ?? null;
   }
 
+  /** Most recent playback or voice failure message, or null when no error is available. */
   get error(): string | null {
     return this.#native.playbackError(this.#playbackId) ?? null;
   }
@@ -105,7 +123,12 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     return this.#native.playbackVolume(this.#playbackId);
   }
 
-  /** Set master gain independently of the raw filtergraph. */
+  /**
+   * Set master gain independently of the raw filtergraph.
+   * @param gain - Finite linear master gain from 0 through 2; 1 leaves amplitude unchanged.
+   * @returns Resolves after the gain is stored or applied; rejects for non-finite gain or values outside 0 through 2.
+   * @throws {RangeError} If gain is non-finite or outside the inclusive range 0 through 2.
+   */
   async setVolume(gain: number): Promise<void> {
     this.#assertActive();
     validateVolume(gain);
@@ -119,6 +142,12 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     });
   }
 
+  /**
+   * Open one media source and begin a new playback generation using the persistent session configuration. Stop active playback before starting another source.
+   * @param source - Encoded media input; Buffer and caller-owned binary Readable inputs require embedded mode.
+   * @param options - Optional metadata for this generation and a cancellation signal.
+   * @returns Selected stream metadata once startup succeeds; rejects if hooks, input opening, or playback startup fail.
+   */
   async play(source: MediaSource, options: PlayOptions<Metadata> = {}): Promise<AudioStreamInfo> {
     this.#assertActive();
     if (this.#starting || isPlaybackActive(this.state)) {
@@ -197,6 +226,10 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     }
   }
 
+  /**
+   * Pause the current playback without replacing its decoder or source generation.
+   * @returns Resolves when the backend accepts the pause request.
+   */
   async pause(): Promise<void> {
     this.#assertActive();
     const previousState = this.state;
@@ -210,6 +243,10 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     }
   }
 
+  /**
+   * Resume paused playback on its existing source generation.
+   * @returns Resolves when the backend accepts the resume request.
+   */
   async resume(): Promise<void> {
     this.#assertActive();
     const previousState = this.state;
@@ -223,6 +260,11 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     }
   }
 
+  /**
+   * Seek on the original media timeline; non-seekable and one-shot sources may reject.
+   * @param positionMs - Non-negative finite position on the original media timeline, in milliseconds.
+   * @returns Resolves after the backend accepts the seek; rejects for invalid positions or unsupported inputs.
+   */
   async seek(positionMs: number): Promise<void> {
     this.#assertActive();
     const previousPositionMs = this.position.mediaMs;
@@ -236,6 +278,10 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     }
   }
 
+  /**
+   * Stop the active playback generation and release its input without leaving the voice channel.
+   * @returns Resolves after the backend stops the active source.
+   */
   async stop(): Promise<void> {
     this.#assertActive();
     const previousState = this.state;
@@ -250,6 +296,10 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     }
   }
 
+  /**
+   * Wait for the current playback generation to reach a terminal state.
+   * @returns The terminal playback state for the generation captured by this wait.
+   */
   async wait(): Promise<PlaybackState> {
     this.#assertActive();
     // Capture synchronously so the native blocking waiter stays bound to the source
@@ -262,7 +312,10 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     }
   }
 
-  /** Stop and release this standalone playback session. */
+  /**
+   * Stop and release this standalone playback session.
+   * @returns Resolves after disposal; rejects if resource cleanup fails.
+   */
   async dispose(): Promise<void> {
     if (this.#disposed) return;
     this.#playController?.abort(new Error('playback session disposed'));
@@ -284,7 +337,12 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     }
   }
 
-  /** @internal */
+  /**
+   * Detach and cancel this wrapper's bounded input pump without destroying the caller-owned Readable.
+   *
+   * @internal
+   * @returns Resolves after the input pump has released its listeners and native queue.
+   */
   async releaseInput(): Promise<void> {
     await this.#releaseInput();
   }

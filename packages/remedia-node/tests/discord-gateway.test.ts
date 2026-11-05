@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
+import { PassThrough } from 'node:stream';
 import { test } from 'vitest';
 
 import type { NativeRemedia, NativeVoiceOptions } from '../native.js';
-import { DiscordSession } from '../lib/discord.js';
+import { DiscordSession, type DiscordSessionOptions } from '../lib/discord.js';
 import { DiscordGatewayAdapter, type DiscordGatewayVoicePayload } from '../lib/gateway.js';
 
 const sessionOptions = {
@@ -516,6 +517,9 @@ function createHarness(
   const voiceStates = new Map<string, string>();
   const playbackStates = new Map<string, string>();
   let nextVoiceId = 1;
+  const operations: string[] = [];
+  const volumes = new Map<string, number>();
+  const graphs = new Map<string, string>();
 
   const native = {
     connectVoice: async (options: NativeVoiceOptions) => {
@@ -545,12 +549,29 @@ function createHarness(
     failVoiceRecovery: (voiceId: string) => failedRecoveries.push(voiceId),
     playbackState: (playbackId: string) => playbackStates.get(playbackId) ?? 'idle',
     playbackGeneration: () => 1,
-    playbackFilterGraph: () => null,
-    playbackVolume: () => 1,
+    validateFilterGraph: async () => {},
+    playbackSetFilterGraph: async (id: string, graph: string) => {
+      operations.push('filter');
+      graphs.set(id, graph);
+    },
+    playbackSetVolume: async (id: string, gain: number) => {
+      operations.push('volume');
+      volumes.set(id, gain);
+    },
+    playbackFilterGraph: (id: string) => graphs.get(id) ?? null,
+    playbackVolume: (id: string) => volumes.get(id) ?? 1,
+    createByteStream: () => {
+      operations.push('input');
+      return 'one-shot';
+    },
+    writeByteStream: async () => {},
+    finishByteStream: async () => {},
+    cancelByteStream: () => {},
     playbackPosition: () => ({ submittedMs: 0 }),
     playbackDurationMs: () => 100_000,
     playbackError: () => null,
     play: async (playbackId: string) => {
+      operations.push('play');
       playbackStates.set(playbackId, 'playing');
       return {
         streamIndex: 0,
@@ -582,6 +603,7 @@ function createHarness(
 
   return {
     gateway,
+    operations,
     sent,
     connections,
     replacements,
@@ -605,7 +627,7 @@ function createHarness(
           );
       }
     },
-    session(options = sessionOptions) {
+    session(options: DiscordSessionOptions = sessionOptions) {
       if (sessions.has(options.guildId)) {
         throw new Error(`a Discord voice session already exists for guild ${options.guildId}`);
       }
@@ -653,7 +675,7 @@ function op4(guildId: string, channelId: string | null): DiscordGatewayVoicePayl
       guild_id: guildId,
       channel_id: channelId,
       self_mute: false,
-      self_deaf: false,
+      self_deaf: true,
     },
   };
 }
@@ -670,3 +692,121 @@ async function waitFor(findValue: () => boolean | undefined): Promise<void> {
   }
   throw new Error('timed out waiting for the expected voice state');
 }
+
+test('intentional movement preserves paused playback and supersedes pending destinations', async () => {
+  const h = createHarness();
+  const session = h.session();
+  const joined = session.connect();
+  h.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('session'), 1));
+  h.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('token'), 2));
+  await joined;
+  await session.play({ file: 'fixture.wav' });
+  await session.pause();
+  const generation = session.generation;
+  const first = session.move('234567890123456780');
+  const rejected = assert.rejects(first, /superseded/);
+  const channelId = '234567890123456781';
+  const second = session.move(channelId);
+  h.receive(
+    gatewayPacket('VOICE_STATE_UPDATE', { ...voiceState('session'), channel_id: channelId }, 3),
+  );
+  h.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('new-token'), 4));
+  await second;
+  await rejected;
+  assert.equal(session.channelId, channelId);
+  assert.equal(session.state, 'paused');
+  assert.equal(session.generation, generation);
+  assert.equal(h.connections.length, 1);
+  assert.equal(h.replacements.at(-1)?.options.channelId, channelId);
+  assert.equal(h.releasedVoiceIds.length, 0);
+  const sent = h.sent.length;
+  await session.move(channelId);
+  assert.equal(h.sent.length, sent);
+  await session.dispose();
+  assert.equal(h.releasedVoiceIds.length, 1);
+});
+
+test('voice flags persist across moves and unchanged values send nothing', async () => {
+  const h = createHarness();
+  const session = h.session();
+  await session.setSelfDeaf(false);
+  await session.setSelfMute(true);
+  assert.equal(h.sent.length, 0);
+  const joined = session.connect();
+  assert.equal(h.sent.at(-1)?.payload.d.self_deaf, false);
+  assert.equal(h.sent.at(-1)?.payload.d.self_mute, true);
+  h.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('session'), 1));
+  h.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('token'), 2));
+  await joined;
+  await session.setSelfDeaf(true);
+  const count = h.sent.length;
+  await session.setSelfDeaf(true);
+  assert.equal(h.sent.length, count);
+  const move = session.move('234567890123456780');
+  assert.equal(h.sent.at(-1)?.payload.d.self_deaf, true);
+  assert.equal(h.sent.at(-1)?.payload.d.self_mute, true);
+  const rejected = assert.rejects(move, /disconnect/);
+  await session.dispose();
+  await rejected;
+  assert.equal(h.releasedVoiceIds.length, 1);
+});
+
+test('initial processing precedes one-shot playback and moving does not reopen its input', async () => {
+  const h = createHarness();
+  const session = h.session({ ...sessionOptions, volume: 0.6, filterGraph: 'anull' });
+  const joined = session.connect();
+  h.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('session'), 1));
+  h.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('token'), 2));
+  await joined;
+  const stream = new PassThrough();
+  await session.play({ stream });
+  assert.deepEqual(h.operations, ['filter', 'volume', 'input', 'play']);
+  const channelId = '234567890123456780';
+  const moved = session.move(channelId);
+  h.receive(
+    gatewayPacket('VOICE_STATE_UPDATE', { ...voiceState('session'), channel_id: channelId }, 3),
+  );
+  h.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('fresh'), 4));
+  await moved;
+  assert.equal(session.state, 'playing');
+  assert.equal(session.volume, 0.6);
+  assert.equal(session.filters.graph, 'anull');
+  assert.deepEqual(h.operations, ['filter', 'volume', 'input', 'play']);
+  await session.dispose();
+  assert.equal(stream.destroyed, false);
+  assert.equal(stream.listenerCount('readable'), 0);
+  assert.equal(stream.listenerCount('error'), 0);
+});
+
+test('failed intentional move retains playback for retry without automatic recovery failure', async () => {
+  let fail = true;
+  const h = createHarness(undefined, undefined, async () => {
+    if (fail) throw new Error('move failed');
+  });
+  const session = h.session();
+  const joined = session.connect();
+  h.receive(gatewayPacket('VOICE_STATE_UPDATE', voiceState('session'), 1));
+  h.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('token'), 2));
+  await joined;
+  await session.play({ file: 'fixture.wav' });
+  const channelId = '234567890123456780';
+  const moved = session.move(channelId);
+  const failure = assert.rejects(moved, /move failed/);
+  h.receive(
+    gatewayPacket('VOICE_STATE_UPDATE', { ...voiceState('session'), channel_id: channelId }, 3),
+  );
+  h.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('fresh'), 4));
+  await failure;
+  assert.equal(session.connectionState, 'failed');
+  assert.equal(session.state, 'playing');
+  assert.deepEqual(h.failedRecoveries, []);
+  fail = false;
+  const retry = session.connect();
+  h.receive(
+    gatewayPacket('VOICE_STATE_UPDATE', { ...voiceState('session'), channel_id: channelId }, 5),
+  );
+  h.receive(gatewayPacket('VOICE_SERVER_UPDATE', voiceServer('retry'), 6));
+  await retry;
+  assert.equal(h.connections.length, 1);
+  await session.dispose();
+});

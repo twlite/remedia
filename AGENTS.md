@@ -50,6 +50,15 @@ These describe intended responsibilities, not a claim that every component or fe
 - Keep TypeScript interfaces strict and avoid untyped escape hatches where practical.
 - Expose a small public API. Document important invariants, units, lifetimes, ownership, input formats, and failure cases.
 - Never change generated bindings or generated files manually when a source-of-truth generator exists.
+- Document every public TypeScript interface, type, class, property, accessor, constructor, function,
+  and method with meaningful JSDoc suitable for generated API documentation. Include a `@param`
+  tag for every declared parameter (including optional and rest parameters), using its exact name
+  and explaining its meaning, units, constraints, and defaults where applicable. Include `@returns`
+  for returned values/promises, relevant `@throws`/rejection behavior, and generic type parameter
+  documentation. Describe lifecycle, ownership, nullability, and embedded/remote limitations where
+  they affect callers. Keep these comments aligned with the implementation and preserve them in
+  emitted declarations. Document generated APIs in their source of truth, never by hand-editing
+  generated bindings. JSDoc supplements the required `apps/docs` guides and references.
 
 ### Node package source layout
 

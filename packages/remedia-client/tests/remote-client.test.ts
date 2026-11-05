@@ -93,7 +93,7 @@ describe('remote Discord playback', () => {
         guild_id: GUILD_ID,
         channel_id: CHANNEL_ID,
         self_mute: false,
-        self_deaf: false,
+        self_deaf: true,
       });
       client.receive({
         op: 0,
@@ -507,7 +507,9 @@ describe('remote Discord playback', () => {
       expect(voice.connectionState).toBe('connected');
       expect(voice.state).toBe('stopped');
       expect(started).toBe(1);
-      expect(server.voiceConnectRequests).toBe(3);
+      // Configuration serialization may skip a superseded intermediate credential set.
+      expect(server.voiceConnectRequests).toBeGreaterThanOrEqual(2);
+      expect(server.voiceConnectRequests).toBeLessThanOrEqual(3);
       expect(server.voiceConnectionCredentials.at(-1)?.sessionId).toBe('voice-session-b');
       expect(server.voiceDisconnectRequests).toBe(0);
       await voice.disconnect();
@@ -593,7 +595,9 @@ describe('remote Discord playback', () => {
       expect(voice.connectionState).toBe('connected');
       expect(voice.state).toBe('stopped');
       expect(started).toBe(1);
-      expect(server.voiceConnectRequests).toBe(3);
+      // Configuration serialization may skip a superseded intermediate credential set.
+      expect(server.voiceConnectRequests).toBeGreaterThanOrEqual(2);
+      expect(server.voiceConnectRequests).toBeLessThanOrEqual(3);
       expect(server.voiceConnectionCredentials.at(-1)?.sessionId).toBe('voice-session-b');
       expect(server.voiceDisconnectRequests).toBe(0);
       await voice.disconnect();

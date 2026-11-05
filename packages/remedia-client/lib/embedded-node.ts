@@ -47,6 +47,9 @@ interface EmbeddedDiscordSession extends EmbeddedPlayback {
   readonly connectionError: string | null;
   readonly sessionId: string;
   readonly generation: number;
+  move(channelId: string): Promise<void>;
+  setSelfDeaf(enabled: boolean): Promise<void>;
+  setSelfMute(enabled: boolean): Promise<void>;
   connect(options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void>;
   disconnect(): Promise<void>;
   dispose(): Promise<void>;
@@ -238,6 +241,16 @@ class EmbeddedGuildBackend extends RemediaEventEmitter<GuildBackendEvents> imple
       volume: this.volume,
       lastError: this.error ? { code: 'playback_failed', message: this.error } : null,
     };
+  }
+
+  move(channelId: string): Promise<void> {
+    return this.#session.move(channelId);
+  }
+  setSelfDeaf(enabled: boolean): Promise<void> {
+    return this.#session.setSelfDeaf(enabled);
+  }
+  setSelfMute(enabled: boolean): Promise<void> {
+    return this.#session.setSelfMute(enabled);
   }
 
   async connect(options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void> {

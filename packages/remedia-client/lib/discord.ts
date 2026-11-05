@@ -43,14 +43,45 @@ interface ConnectAttempt {
   transportGeneration: number | undefined;
   voiceSuspension: Promise<void> | undefined;
   internal: boolean;
+  moving?: boolean;
   retryCount: number;
 }
 
+/** Internal client services used by a guild session for Gateway routing, backend allocation, and cleanup. */
 export interface DiscordSessionRuntime {
-  sendVoicePayload(guildId: string, channelId: string | null): void | Promise<void>;
+  /**
+   * Send a voice state request through the caller-owned Discord Gateway connection.
+   * @param guildId - Discord guild snowflake used to route the operation.
+   * @param channelId - Destination Discord voice channel snowflake; null requests a leave where supported.
+   * @param selfDeaf - Discord self-deaf flag; defaults to true.
+   * @param selfMute - Discord self-mute flag; defaults to false.
+   */
+  sendVoicePayload(
+    guildId: string,
+    channelId: string | null,
+    selfDeaf?: boolean,
+    selfMute?: boolean,
+  ): void | Promise<void>;
+  /**
+   * Read the last accepted Gateway dispatch sequence.
+   * @returns The dispatch sequence, or undefined before one is observed.
+   */
   gatewaySequence(): number | undefined;
+  /**
+   * Allocate or reuse a sticky guild backend under the client assignment lock.
+   * @param options - Guild identity, node preference, and retained session configuration.
+   * @param onDispose - Callback invoked when this wrapper releases its owning registration.
+   * @returns The assigned backend; rejects when the node is unavailable or at capacity.
+   */
   resolveBackend(options: DiscordSessionOptions, onDispose: () => void): Promise<GuildBackend>;
-  releaseSession(session: { readonly guildId: string }): void;
+  /**
+   * Unregister the guild session and release its sticky node assignment.
+   * @param session - Guild session whose registration and assignment should be released.
+   */
+  releaseSession(session: {
+    /** Discord guild snowflake as a decimal string; unique within the owning client. */
+    readonly guildId: string;
+  }): void;
 }
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 45_000;
@@ -67,17 +98,30 @@ interface PlaybackAbortBinding {
   generation: number | undefined;
 }
 
-/** A Discord voice player with a node-sticky backend, whether embedded or remote. */
+/**
+ * A Discord voice player with a node-sticky backend, whether embedded or remote.
+ * @typeParam Metadata - Application-owned metadata attached to playback generations.
+ */
 export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   DiscordSessionEvents<Metadata>
 > {
+  /** Opaque Remedia session identity used to correlate events; distinct from the Discord bot user ID. */
   readonly sessionId = randomUUID();
+  /** Discord guild snowflake as a decimal string; unique within the owning client. */
   readonly guildId: string;
-  readonly channelId: string;
+  #channelId: string;
+  #selfDeaf: boolean;
+  #selfMute: boolean;
+  #closing = false;
+  #disconnectWork: Promise<void> | undefined;
+  #disposeWork: Promise<void> | undefined;
+  /** Discord bot user snowflake as a decimal string; separate from Remedia session identity. */
   readonly userId: string;
   readonly #runtime: DiscordSessionRuntime;
   readonly #options: DiscordSessionOptions;
+  /** Persistent raw FFmpeg filtergraph controls for this session. */
   readonly filters: FilterControls;
+  /** Ordered, awaited local pre-play hooks; listeners are separate from hooks. */
   readonly hooks = new PlaybackHooks<Metadata>();
   readonly #metadataByGeneration = new Map<number, Metadata | undefined>();
   readonly #startedGenerations = new Set<number>();
@@ -90,6 +134,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   #boundBackend: GuildBackend | undefined;
   readonly #backendUnsubscribers: Array<() => void> = [];
   #backend: GuildBackend | undefined;
+  #backendWork: Promise<GuildBackend> | undefined;
   #attempt: ConnectAttempt | undefined;
   #joinRequested = false;
   #disposed = false;
@@ -109,13 +154,33 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   #sessionLossReason: string | undefined;
   #voiceFailureEmitted = false;
 
+  /**
+   * Construct this wrapper with its owning services. Use the owning engine or client factory for application code.
+   * @param runtime - Owning client services for Gateway routing, backend allocation, and cleanup.
+   * @param options - Configuration and lifecycle options for this operation.
+   */
   constructor(runtime: DiscordSessionRuntime, options: DiscordSessionOptions) {
     super();
     this.#runtime = runtime;
-    this.#options = options;
+    this.#options = { ...options };
     this.guildId = validateSnowflake('guildId', options.guildId);
-    this.channelId = validateSnowflake('channelId', options.channelId);
+    this.#channelId = validateSnowflake('channelId', options.channelId);
     this.userId = validateSnowflake('userId', options.userId);
+    validateVolume(options.volume ?? 1);
+    if (
+      options.filterGraph !== undefined &&
+      options.filterGraph !== null &&
+      (typeof options.filterGraph !== 'string' || !options.filterGraph.trim())
+    )
+      throw new TypeError('filterGraph must be a non-empty string or null');
+    for (const value of [options.selfDeaf, options.selfMute]) {
+      if (value !== undefined && typeof value !== 'boolean')
+        throw new TypeError('voice flags must be boolean');
+    }
+    this.#volume = options.volume ?? 1;
+    this.#filterGraph = options.filterGraph ?? null;
+    this.#selfDeaf = options.selfDeaf ?? true;
+    this.#selfMute = options.selfMute ?? false;
     this.filters = new FilterControls(
       () => this.#filterGraph,
       (graph) => this.#replaceFilterGraph(graph),
@@ -123,17 +188,107 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     );
   }
 
+  /** Current requested voice destination; independent of playback identity. */
+  get channelId(): string {
+    return this.#channelId;
+  }
+  /** Discord Gateway self-deaf state; defaults to true and persists across moves and recovery. */
+  get selfDeaf(): boolean {
+    return this.#selfDeaf;
+  }
+  /** Discord Gateway self-mute state; defaults to false and persists across moves and recovery. */
+  get selfMute(): boolean {
+    return this.#selfMute;
+  }
+
+  /**
+   * Replace only the voice transport. A newer move supersedes a pending move.
+   * @param channelId - Destination Discord voice channel snowflake as a positive decimal string.
+   * @returns Resolves when the requested destination connects; rejects on supersession, cancellation, or connection failure.
+   */
+  move(channelId: string): Promise<void> {
+    this.#assertOpen();
+    validateSnowflake('channelId', channelId);
+    if (this.#connectionState === 'disconnecting')
+      return Promise.reject(new Error('Discord session is disconnecting'));
+    if (channelId === this.channelId) return this.connect();
+    const previous = this.#attempt;
+    if (previous) {
+      this.#finishAttempt(previous);
+      previous.reject(abortError('Discord voice connection was superseded by move()'));
+    }
+    this.#channelId = channelId;
+    this.#options.channelId = channelId;
+    if (!this.#backend) return this.connect();
+    const attempt = this.#newAttempt(DEFAULT_CONNECT_TIMEOUT_MS, undefined, true);
+    attempt.moving = true;
+    this.#attempt = attempt;
+    this.#voiceSessionId = undefined;
+    this.#voiceServer = undefined;
+    this.#setConnectionState('connecting');
+    this.#suspendRemoteVoice(attempt);
+    void this.#connect(attempt, {});
+    return attempt.promise;
+  }
+
+  /**
+   * Update Discord self-deaf state without rebuilding playback. Unchanged values send nothing.
+   * @param enabled - The requested Discord self-state flag.
+   * @returns Resolves after storing the flag or sending its Gateway update; rejects if the update fails.
+   */
+  setSelfDeaf(enabled: boolean): Promise<void> {
+    return this.#setVoiceFlag('deaf', enabled);
+  }
+  /**
+   * Update Discord self-mute state without changing audio gain or playback pause. Unchanged values send nothing.
+   * @param enabled - The requested Discord self-state flag.
+   * @returns Resolves after storing the flag or sending its Gateway update; rejects if the update fails.
+   */
+  setSelfMute(enabled: boolean): Promise<void> {
+    return this.#setVoiceFlag('mute', enabled);
+  }
+
+  async #setVoiceFlag(flag: 'deaf' | 'mute', enabled: boolean): Promise<void> {
+    this.#assertOpen();
+    if (typeof enabled !== 'boolean') throw new TypeError('voice flag must be boolean');
+    await this.#serializeConfiguration(async () => {
+      this.#assertOpen();
+      if (this.#connectionState === 'disconnecting')
+        throw new Error('Discord session is disconnecting');
+      if ((flag === 'deaf' ? this.#selfDeaf : this.#selfMute) === enabled) return;
+      if (this.#backend?.nodeType === 'embedded') {
+        if (flag === 'deaf') await this.#backend.setSelfDeaf?.(enabled);
+        else await this.#backend.setSelfMute?.(enabled);
+      } else if (this.#joinRequested) {
+        await this.#runtime.sendVoicePayload(
+          this.guildId,
+          this.channelId,
+          flag === 'deaf' ? enabled : this.#selfDeaf,
+          flag === 'mute' ? enabled : this.#selfMute,
+        );
+      }
+      this.#options.selfDeaf = flag === 'deaf' ? enabled : this.#selfDeaf;
+      this.#options.selfMute = flag === 'mute' ? enabled : this.#selfMute;
+      if (flag === 'deaf') this.#selfDeaf = enabled;
+      else this.#selfMute = enabled;
+    });
+  }
+
+  /** Configured node identifier associated with this resource; null when no node has been assigned. */
   get nodeId(): string | null {
     return this.#backend?.nodeId ?? null;
   }
 
+  /** Execution mode of the assigned backend, or null before assignment. */
   get nodeType(): 'embedded' | 'remote' | null {
     return this.#backend?.nodeType ?? null;
   }
 
+  /** Current Discord transport lifecycle state, independent of playback pause or completion. */
   get connectionState(): VoiceConnectionState {
     if (this.#disposed) return 'disconnected';
     if (
+      this.#connectionState === 'disconnected' ||
       this.#connectionState === 'connecting' ||
       this.#connectionState === 'negotiating_dave' ||
       this.#connectionState === 'disconnecting' ||
@@ -143,34 +298,42 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     return this.#backend?.connectionState ?? this.#connectionState;
   }
 
+  /** Most recent voice connection failure message, or null when no error is available. */
   get connectionError(): string | null {
     return this.#connectionError ?? this.#backend?.error ?? null;
   }
 
+  /** Current playback lifecycle state. */
   get state(): PlaybackState {
     return this.#backend?.state ?? (this.connectionState === 'failed' ? 'failed' : 'idle');
   }
 
+  /** Latest source and output timeline measurements in milliseconds. */
   get position(): PlaybackPosition {
     return this.#backend?.position ?? emptyPosition();
   }
 
+  /** Source duration in milliseconds, or null when unknown. */
   get durationMs(): number | null {
     return this.#backend?.durationMs ?? null;
   }
 
+  /** Most recent playback or voice failure message, or null when no error is available. */
   get error(): string | null {
     return this.#backend?.error ?? this.#connectionError;
   }
 
+  /** Session master linear gain from 0 through 2, independent of filtergraph processing; defaults to 1. */
   get volume(): number {
     return this.#backend?.volume ?? this.#volume;
   }
 
+  /** Latest known playback snapshot, including persistent configuration and source generation. */
   get snapshot(): PlaybackSnapshot {
     return this.#backend?.snapshot ?? emptySnapshot(this.#filterGraph, this.#volume);
   }
 
+  /** Whether a backend is unassigned, assigned, or lost after its remote session disappears. */
   get assignmentStatus(): 'unassigned' | 'assigned' | 'lost' {
     if (!this.#backend) return 'unassigned';
     return this.#backend.state === 'failed' && this.#backend.error?.includes('session')
@@ -178,6 +341,11 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       : 'assigned';
   }
 
+  /**
+   * Join the requested voice destination and wait for Gateway credentials and transport readiness. Concurrent calls share the pending attempt.
+   * @param options - Optional cancellation signal and positive timeout in milliseconds; defaults to 45000.
+   * @returns Resolves when connected; rejects on timeout, cancellation, session loss, or transport failure.
+   */
   connect(options: DiscordConnectOptions = {}): Promise<void> {
     this.#assertOpen();
     if (this.#attempt) return this.#attempt.promise;
@@ -203,6 +371,12 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     return attempt.promise;
   }
 
+  /**
+   * Open one media source and begin a new playback generation using the persistent session configuration. Stop active playback before starting another source.
+   * @param source - Encoded media input; Buffer and caller-owned binary Readable inputs require embedded mode.
+   * @param options - Optional metadata for this generation and a cancellation signal.
+   * @returns Selected stream metadata once startup succeeds; rejects if hooks, input opening, or playback startup fail.
+   */
   play(source: MediaSource, options: PlayOptions<Metadata> = {}): Promise<AudioStreamInfo> {
     const work = this.#startPlayback(source, options);
     this.#playPromise = work;
@@ -256,6 +430,9 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       await this.hooks.runBeforePlay(source, options.customMetadata, controller.signal);
       this.#assertOpen();
       if (controller.signal.aborted) throw abortError('playback was cancelled');
+      await this.#configurationWork;
+      this.#assertOpen();
+      if (controller.signal.aborted) throw abortError('playback was cancelled');
       const playRequest = backend.play(source, {
         ...(options.customMetadata === undefined ? {} : { customMetadata: options.customMetadata }),
         signal: controller.signal,
@@ -284,17 +461,34 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     }
   }
 
+  /**
+   * Pause the current playback without replacing its decoder or source generation.
+   * @returns Resolves when the backend accepts the pause request.
+   */
   pause(): Promise<void> {
     return this.#requireExistingBackend().pause();
   }
+  /**
+   * Resume paused playback on its existing source generation.
+   * @returns Resolves when the backend accepts the resume request.
+   */
   resume(): Promise<void> {
     return this.#requireExistingBackend().resume();
   }
+  /**
+   * Seek on the original media timeline; non-seekable and one-shot sources may reject.
+   * @param positionMs - Non-negative finite position on the original media timeline, in milliseconds.
+   * @returns Resolves after the backend accepts the seek; rejects for invalid positions or unsupported inputs.
+   */
   seek(positionMs: number): Promise<void> {
     if (!Number.isFinite(positionMs) || positionMs < 0)
       return Promise.reject(new RangeError('positionMs must be non-negative'));
     return this.#requireExistingBackend().seek(positionMs);
   }
+  /**
+   * Stop the active playback generation and release its input without leaving the voice channel.
+   * @returns Resolves after the backend stops the active source.
+   */
   stop(): Promise<void> {
     return this.#stopPlayback();
   }
@@ -304,6 +498,10 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     this.#clearPlayAbortBinding();
   }
 
+  /**
+   * Wait for the current playback generation to reach a terminal state.
+   * @returns The terminal playback state; a superseded client generation is reported as stopped.
+   */
   async wait(): Promise<PlaybackState> {
     this.#assertOpen();
     if (this.#playPromise) await this.#playPromise;
@@ -312,12 +510,22 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     return completion.state;
   }
 
+  /**
+   * Refresh the latest playback snapshot from its backend.
+   * @returns The refreshed snapshot, or the retained initial snapshot before backend allocation.
+   */
   async refresh(): Promise<PlaybackSnapshot> {
     this.#assertOpen();
     if (!this.#backend) return this.snapshot;
     return this.#backend.refresh();
   }
 
+  /**
+   * Set persistent linear master gain independently of the configured filtergraph; unchanged gain emits no change event.
+   * @param gain - Finite linear master gain from 0 through 2; 1 leaves amplitude unchanged.
+   * @returns Resolves after the gain is stored or applied; rejects for non-finite gain or values outside 0 through 2.
+   * @throws {RangeError} If gain is non-finite or outside the inclusive range 0 through 2.
+   */
   async setVolume(gain: number): Promise<void> {
     this.#assertOpen();
     validateVolume(gain);
@@ -342,20 +550,40 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     });
   }
 
+  /**
+   * Cancel connection attempts, leave Gateway voice, and close the transport and active playback. The wrapper can reconnect afterward.
+   * @returns Resolves after cleanup; concurrent disconnects share cleanup work.
+   */
   disconnect(): Promise<void> {
     if (this.#disposed) return Promise.resolve();
-    return this.#disconnect(true);
+    if (this.#disconnectWork) return this.#disconnectWork;
+    const work = this.#disconnect(true);
+    this.#disconnectWork = work.finally(() => {
+      this.#disconnectWork = undefined;
+    });
+    return this.#disconnectWork;
   }
 
-  async dispose(): Promise<void> {
+  /**
+   * Disconnect and unregister this session, releasing its owned resources. Repeated calls share disposal work.
+   * @returns Resolves after disposal; rejects if resource cleanup fails.
+   */
+  dispose(): Promise<void> {
+    if (this.#disposeWork) return this.#disposeWork;
+    this.#disposeWork = this.#dispose();
+    return this.#disposeWork;
+  }
+
+  async #dispose(): Promise<void> {
     if (this.#disposed) return;
     const abortBinding = this.#playAbortBinding;
     this.#clearPlayAbortBinding(abortBinding);
     (abortBinding?.controller ?? this.#playController)?.abort(
       new Error('Discord session disposed'),
     );
+    this.#closing = true;
     try {
-      await this.#disconnect(true);
+      await this.disconnect();
     } finally {
       this.#disposed = true;
       try {
@@ -377,7 +605,15 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     }
   }
 
-  /** @internal */
+  /**
+   * Route a validated guild voice dispatch through the current connection attempt. Stale sequences and unrelated users or channels are ignored.
+   *
+   * @internal
+   * @param event - Event name identifying the typed notification or Gateway voice dispatch.
+   * @param data - Validated guild-scoped Gateway dispatch data.
+   * @param sequence - Gateway dispatch sequence, when supplied by the host application.
+   * @param epoch - Gateway READY epoch used to reset stale-sequence tracking.
+   */
   receiveGatewayDispatch(
     event: string,
     data: Record<string, unknown>,
@@ -412,7 +648,12 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     else if (event === 'VOICE_SERVER_UPDATE') this.#receiveVoiceServer(data);
   }
 
-  /** @internal */
+  /**
+   * Mark the remote session unavailable and fail pending operations for its retained assignment.
+   *
+   * @internal
+   * @param reason - Explanation for remote session loss or operation failure.
+   */
   markSessionLost(reason: string): void {
     this.#sessionLossReason = reason;
     const active = isPlaybackActive(this.state);
@@ -442,11 +683,12 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     try {
       const backend = await this.#ensureBackend();
       if (!this.#isCurrent(attempt)) return;
-      await this.#applyConfiguration(backend);
+      await this.#serializeConfiguration(() => this.#applyConfiguration(backend));
+      if (!this.#isCurrent(attempt)) return;
       if (backend.nodeType === 'embedded') {
-        await backend.connect(options);
+        if (attempt.moving) await backend.move?.(this.channelId);
+        else await backend.connect(options);
         if (!this.#isCurrent(attempt)) {
-          await backend.disconnect();
           return;
         }
         this.#setConnectionState('connected');
@@ -454,9 +696,16 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
         attempt.resolve();
       } else {
         backend.validateIdentity?.(this.userId);
-        this.#setConnectionState(attempt.internal ? 'reconnecting' : 'connecting');
+        this.#setConnectionState(
+          attempt.internal && !attempt.moving ? 'reconnecting' : 'connecting',
+        );
         this.#joinRequested = true;
-        await this.#runtime.sendVoicePayload(this.guildId, this.channelId);
+        await this.#runtime.sendVoicePayload(
+          this.guildId,
+          this.channelId,
+          this.#selfDeaf,
+          this.#selfMute,
+        );
         if (!this.#isCurrent(attempt)) return;
         attempt.requestSent = true;
         this.#tryStartRemoteConnection(attempt);
@@ -469,6 +718,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   #receiveVoiceState(data: Record<string, unknown>): void {
     if (data.user_id !== this.userId || !this.#joinRequested) return;
     if (data.channel_id === null) {
+      if (this.#attempt?.moving) return;
       if (this.#connectionState === 'connected' || this.#connectionState === 'reconnecting') {
         this.#handleExternalDisconnect();
       }
@@ -496,7 +746,14 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       this.#voiceSessionId = data.session_id;
       this.#setConnectionState('reconnecting');
       this.#suspendRemoteVoice(attempt);
-      void Promise.resolve(this.#runtime.sendVoicePayload(this.guildId, this.channelId))
+      void Promise.resolve(
+        this.#runtime.sendVoicePayload(
+          this.guildId,
+          this.channelId,
+          this.#selfDeaf,
+          this.#selfMute,
+        ),
+      )
         .then(() => {
           if (this.#attempt === attempt) attempt.requestSent = true;
           this.#tryStartRemoteConnection(attempt);
@@ -561,7 +818,14 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       attempt.credentialRevision += 1;
       this.#setConnectionState('reconnecting');
       this.#suspendRemoteVoice(attempt);
-      void Promise.resolve(this.#runtime.sendVoicePayload(this.guildId, this.channelId))
+      void Promise.resolve(
+        this.#runtime.sendVoicePayload(
+          this.guildId,
+          this.channelId,
+          this.#selfDeaf,
+          this.#selfMute,
+        ),
+      )
         .then(() => {
           if (this.#attempt === attempt) attempt.requestSent = true;
           this.#tryStartRemoteConnection(attempt);
@@ -588,7 +852,9 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     this.#attempt = attempt;
     this.#setConnectionState('reconnecting');
     this.#suspendRemoteVoice(attempt);
-    void Promise.resolve(this.#runtime.sendVoicePayload(this.guildId, this.channelId))
+    void Promise.resolve(
+      this.#runtime.sendVoicePayload(this.guildId, this.channelId, this.#selfDeaf, this.#selfMute),
+    )
       .then(() => {
         if (!this.#isCurrent(attempt)) return;
         attempt.requestSent = true;
@@ -621,6 +887,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
         const transportGeneration =
           attempt.transportGeneration ?? this.#nextTransportGeneration(attempt);
         const credentials = {
+          channelId: this.channelId,
           sessionId: state.sessionId,
           token: server.token,
           endpoint: server.endpoint,
@@ -629,7 +896,10 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
         try {
           await attempt.voiceSuspension;
           if (credentialRevision !== attempt.credentialRevision) continue;
-          await backend.connectWithCredentials?.(credentials, transportGeneration);
+          await this.#serializeConfiguration(async () => {
+            if (!this.#isCurrent(attempt)) return;
+            await backend.connectWithCredentials?.(credentials, transportGeneration);
+          });
         } catch (error) {
           if (!this.#isCurrent(attempt)) return;
           if (credentialRevision !== attempt.credentialRevision) continue;
@@ -769,6 +1039,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       }
     }
     try {
+      await this.#backendWork?.catch(() => undefined);
       await this.#backend?.disconnect(transportGeneration);
     } catch (error) {
       errors.push(asError(error));
@@ -808,11 +1079,12 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
 
   #failAttempt(attempt: ConnectAttempt, error: Error, leaveGateway: boolean): void {
     if (this.#attempt !== attempt) return;
+    if (attempt.moving) this.#suspendRemoteVoice(attempt);
     this.#finishAttempt(attempt);
     this.#connectionError = error.name === 'AbortError' ? null : error.message;
     this.#setConnectionState(error.name === 'AbortError' ? 'disconnected' : 'failed');
     if (error.name !== 'AbortError') this.#emitVoiceFailure(error);
-    if (attempt.internal && error.name !== 'AbortError') {
+    if (attempt.internal && !attempt.moving && error.name !== 'AbortError') {
       const transportGeneration = this.#nextTransportGeneration();
       void this.#backend?.failVoiceRecovery?.(transportGeneration).catch(() => undefined);
     }
@@ -828,6 +1100,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   #retryGatewayCredentials(attempt: ConnectAttempt, _error: Error): boolean {
     if (
       !attempt.internal ||
+      attempt.moving ||
       !this.#isCurrent(attempt) ||
       attempt.retryCount >= 2 ||
       this.#disposed
@@ -842,7 +1115,9 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     attempt.credentialRevision += 1;
     this.#suspendRemoteVoice(attempt);
     this.#setConnectionState('reconnecting');
-    void Promise.resolve(this.#runtime.sendVoicePayload(this.guildId, this.channelId))
+    void Promise.resolve(
+      this.#runtime.sendVoicePayload(this.guildId, this.channelId, this.#selfDeaf, this.#selfMute),
+    )
       .then(() => {
         if (!this.#isCurrent(attempt)) return;
         attempt.requestSent = true;
@@ -868,22 +1143,37 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   }
 
   async #ensureBackend(): Promise<GuildBackend> {
-    if (!this.#backend) {
+    if (this.#backendWork) return this.#backendWork;
+    if (this.#backend) return this.#backend;
+    const work = (async () => {
       let backend: GuildBackend | undefined;
       backend = await this.#runtime.resolveBackend(this.#options, () => {
         if (this.#backend === backend) this.#backend = undefined;
         this.#runtime.releaseSession(this);
       });
+      if (this.#disposed || this.#closing || this.#connectionState === 'disconnecting') {
+        await backend.dispose();
+        throw new Error('Discord session closed during backend allocation');
+      }
       this.#backend = backend;
-      await this.#applyConfiguration(backend);
+      await this.#serializeConfiguration(() => this.#applyConfiguration(backend));
       this.#bindBackend(backend);
+      return backend;
+    })();
+    this.#backendWork = work;
+    try {
+      return await work;
+    } finally {
+      if (this.#backendWork === work) this.#backendWork = undefined;
     }
-    return this.#backend;
   }
 
   async #replaceFilterGraph(graph: string | null): Promise<void> {
     this.#assertOpen();
     await this.#serializeConfiguration(async () => {
+      this.#assertOpen();
+      if (this.#connectionState === 'disconnecting')
+        throw new Error('Discord session is disconnecting');
       const previousGraph = this.#filterGraph;
       if (previousGraph === graph) return;
       if (this.#backend) {
@@ -947,6 +1237,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
 
     const onVoiceState = (event: VoiceLifecycleEventMap['voiceStateChanged'][0]): void => {
       const state = event.state;
+      if (this.#attempt && state === 'connected') return;
       if (this.#connectionState === state) return;
       if (
         (state === 'failed' || state === 'disconnected') &&
@@ -1120,7 +1411,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   }
 
   #assertOpen(): void {
-    if (this.#disposed) throw new Error('Discord session has been disposed');
+    if (this.#disposed || this.#closing) throw new Error('Discord session has been disposed');
     if (this.#sessionLossReason) {
       throw new SessionLostError(
         this.#backend?.nodeId ?? 'unknown',
@@ -1131,6 +1422,11 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   }
 }
 
+/**
+ * Parse a relevant raw Gateway voice dispatch; unrelated or malformed packets are ignored.
+ * @param packet - Raw packet from this bot's Gateway dispatch stream.
+ * @returns A guild-scoped voice dispatch, or undefined when the packet is not relevant.
+ */
 export function parseGatewayDispatch(packet: DiscordGatewayPacket):
   | {
       event: string;

@@ -8,8 +8,18 @@ type EventArgs<Key, Events> = Events extends [never]
     ? Events[Key]
     : never;
 
-/** EventEmitter-compatible base that isolates synchronous listener failures from engine work. */
+/**
+ * EventEmitter-compatible base that isolates synchronous listener failures from engine work.
+ * @typeParam Events - Type used to correlate typed event keys and argument tuples.
+ */
 export class RemediaEventEmitter<Events extends EventMap<Events>> extends EventEmitter<Events> {
+  /**
+   * Emit a typed lifecycle event while isolating exceptions thrown by application listeners.
+   * @param event - Event name identifying the typed notification or Gateway voice dispatch.
+   * @param args - Typed event arguments delivered to registered listeners.
+   * @returns Whether at least one listener handled the event, or false when a listener threw.
+   * @typeParam Key - Type used to correlate typed event keys and argument tuples.
+   */
   override emit<Key>(event: EventKey<Key, Events>, ...args: EventArgs<Key, Events>): boolean {
     try {
       return super.emit(event, ...args);

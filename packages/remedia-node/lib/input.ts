@@ -3,17 +3,45 @@ import type { Readable } from 'node:stream';
 
 import type { NativeMediaSource, NativeRemedia } from '../native.js';
 
+/**
+ * Encoded media input. Files and HTTP(S) URLs work in both modes; owned bytes and caller-owned binary Readables require embedded playback.
+ */
 export type MediaSource =
-  | { file: string }
-  | { url: string }
-  | { buffer: Buffer | Uint8Array }
-  | { stream: Readable };
+  | {
+      /** Local media file path; remote mode resolves it on the server and enforces configured file roots. */
+      file: string;
+    }
+  | {
+      /** HTTP(S) media URL opened by the selected engine; remote nodes enforce server URL policy. */
+      url: string;
+    }
+  | {
+      /** Owned encoded media bytes, supported by embedded nodes only. */
+      buffer: Buffer | Uint8Array;
+    }
+  | {
+      /**
+       * Caller-owned binary Readable, consumed with bounded backpressure in embedded mode; Remedia does not destroy it.
+       */
+      stream: Readable;
+    };
 
+/** Internal bounded byte-stream input and cancellation handle owned by a playback wrapper. */
 export interface ReadableInputHandle {
+  /** Native byte-stream source fed by the bounded input pump. */
   readonly source: NativeMediaSource;
+  /**
+   * Cancel the native byte queue and detach input-pump listeners without destroying the caller-owned stream.
+   * @returns Resolves after the input pump has released its resources.
+   */
   cancel(): Promise<void>;
 }
 
+/**
+ * Convert a file, HTTP(S) URL, or owned byte input to the native media representation.
+ * @param source - Encoded media input; Buffer and caller-owned binary Readable inputs require embedded mode.
+ * @returns A native source; bytes are copied into an owned Buffer.
+ */
 export function toNativeSource(
   source: Exclude<MediaSource, { stream: Readable }>,
 ): NativeMediaSource {
@@ -22,6 +50,12 @@ export function toNativeSource(
   return { kind: 'buffer', bytes: Buffer.from(source.buffer) };
 }
 
+/**
+ * Start a bounded native input pump for a caller-owned binary Readable.
+ * @param native - Owning native engine instance; its resources must outlive this wrapper.
+ * @param stream - Caller-owned binary Readable to consume with bounded native backpressure.
+ * @returns Native stream source and an idempotent cancellation handle.
+ */
 export function createReadableInput(native: NativeRemedia, stream: Readable): ReadableInputHandle {
   const streamId = native.createByteStream();
   const cancellation = new AbortController();
