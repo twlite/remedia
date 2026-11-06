@@ -230,16 +230,53 @@ The server rejects late connect, suspend, and failure RPCs from older
 generations, so out-of-order request tasks cannot install stale credentials
 after a newer disconnect or migration has taken effect.
 
-There is no cross-node playback migration. A replacement node does not have the original decoder,
-filter graph, voice transport, or exact playback position, and it needs fresh Discord Gateway voice
-credentials. The application must explicitly dispose or rebuild a lost session. Session credentials
+Cross-node migration is a break-before-make operation. A replacement node must reconnect its
+voice transport and restart any active URL source from an approximate media position. A connected session can now use explicit `voice.migrate(targetNodeId)` to restart on another healthy node; see the section below. A lost backend is not automatically recoverable by migration. Session credentials
 are memory-only; restarting the client process cannot resume old sessions. A Remedia server restart
 also destroys its in-memory sessions.
 
-Each server is an independent node. The client does not proxy between nodes, coordinate them, or
-fail over an existing guild. `players.active` is treated as an allocation capacity signal, not a
+Each server is an independent node. The client does not proxy media between nodes or
+automatically fail over existing guilds. `players.active` is treated as an allocation capacity signal, not a
 measurement of CPU work. For server configuration, authentication, and TLS guidance, see the
 [server guide](/docs/server/overview) and [deployment guide](/docs/server/deployment).
+
+## Explicit cross-node migration
+
+```ts
+const session = remedia.createDiscordSession({
+  guildId,
+  channelId,
+  userId,
+  nodeId: 'media-a',
+});
+await session.connect();
+await session.play({ url: 'https://example.net/song.mp3' });
+
+// Once the media position is available:
+await session.migrate('media-b');
+console.log(session.nodeId); // 'media-b'
+```
+
+`migrate(nodeId)` reserves capacity on a healthy destination node before touching the source.
+It disconnects and disposes the original backend, commits the new sticky assignment, then
+requests fresh Discord Gateway credentials and connects the destination. The logical JavaScript
+`DiscordSession` remains the same object. Volume, filtergraph, channel, self-deaf and self-mute
+settings persist. A `guildMigrated` client event contains `guildId`, `fromNodeId`,
+`toNodeId`, and `nodeType`.
+
+For an active source, the SDK currently supports HTTP(S) URL playback with an observed
+`position.mediaMs`. The destination opens a new decoder and seeks to the last observed source
+position; it also restores the paused state and local `customMetadata`. This starts a new
+backend playback generation and emits a new `playbackStarted`. There may be audible gaps or
+brief playback from the beginning before the seek completes. Exact sample continuity and
+preservation of a pending `wait()` call are not guaranteed. Active `{ file }`, `{ buffer }`,
+`{ stream }`, unknown-position sources, and transitional playback states are rejected
+before cutover. Idle players can migrate without a source.
+
+If the destination is full or unhealthy, the migration fails without touching the source.
+After the source backend is released, a failed destination connection is not rolled back:
+the destination assignment remains and callers can retry `connect()`. This is explicit
+migration, not automatic failover, and cannot resurrect a lost source or a one-shot stream.
 
 ## Session configuration and channel movement
 

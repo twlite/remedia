@@ -45,6 +45,7 @@ export class RemediaClient
   readonly #nodes = new Map<string, NodeAdapter>();
   readonly #sessions = new Map<string, ManagedDiscordSession>();
   readonly #assignments = new Map<string, GuildAssignment>();
+  readonly #migrationReservations = new Map<string, string>();
   readonly #selectNode: NodeSelection | undefined;
   #assignmentWork: Promise<void> = Promise.resolve();
   #gatewaySequence: number | undefined;
@@ -306,6 +307,61 @@ export class RemediaClient
   }
 
   /**
+   * Reserve a destination backend without changing the current guild assignment.
+   * The caller must dispose the returned backend if it does not commit.
+   * @internal
+   */
+  async prepareMigration(
+    options: DiscordSessionOptions,
+    targetNodeId: string,
+  ): Promise<import('./adapters.js').GuildBackend> {
+    this.#assertOpen();
+    return this.#withAssignmentLock(async () => {
+      const current = this.#assignments.get(options.guildId);
+      if (!current || current.status !== 'assigned')
+        throw new NodeSelectionError(`guild ${options.guildId} has no usable assignment`);
+      if (current.nodeId === targetNodeId)
+        throw new NodeSelectionError('migration destination must differ from the assigned node');
+      if (this.#migrationReservations.has(options.guildId))
+        throw new NodeSelectionError(`guild ${options.guildId} already has a migration pending`);
+      const target = this.#getPinnedNode(targetNodeId, options.guildId);
+      const backend = target.createGuildSession({ ...options, nodeId: targetNodeId }, () => {
+        if (this.#migrationReservations.get(options.guildId) === targetNodeId)
+          this.#migrationReservations.delete(options.guildId);
+      });
+      this.#migrationReservations.set(options.guildId, targetNodeId);
+      return backend;
+    });
+  }
+
+  /** Commit a prepared migration after old backend ownership has been released. @internal */
+  async commitMigration(guildId: string, fromNodeId: string, toNodeId: string): Promise<void> {
+    await this.#withAssignmentLock(async () => {
+      const current = this.#assignments.get(guildId);
+      const target = this.#nodes.get(toNodeId);
+      if (
+        current?.nodeId !== fromNodeId ||
+        this.#migrationReservations.get(guildId) !== toNodeId ||
+        !target
+      )
+        throw new NodeSelectionError(`guild ${guildId} migration assignment changed before commit`);
+      this.#migrationReservations.delete(guildId);
+      this.#assignments.set(guildId, {
+        guildId,
+        nodeId: target.id,
+        nodeType: target.type,
+        status: 'assigned',
+      });
+      this.emit(ClientEvent.guildMigrated, {
+        guildId,
+        fromNodeId,
+        toNodeId,
+        nodeType: target.type,
+      });
+    });
+  }
+
+  /**
    * Unregister the guild session and release its sticky node assignment.
    *
    * @internal
@@ -316,6 +372,7 @@ export class RemediaClient
     readonly guildId: string;
   }): void {
     this.#sessions.delete(session.guildId);
+    this.#migrationReservations.delete(session.guildId);
     const assignment = this.#assignments.get(session.guildId);
     if (assignment) {
       this.#assignments.delete(session.guildId);
@@ -329,9 +386,9 @@ export class RemediaClient
       const snapshot = node.snapshot;
       const capacity = snapshot.capacity;
       const stats = snapshot.statistics;
-      const reserved = [...this.#assignments.values()].filter(
-        (assignment) => assignment.nodeId === node.id,
-      ).length;
+      const reserved =
+        [...this.#assignments.values()].filter((assignment) => assignment.nodeId === node.id)
+          .length + [...this.#migrationReservations.values()].filter((id) => id === node.id).length;
       const active = Math.max(stats?.playersActive ?? 0, snapshot.assignedGuilds.length, reserved);
       return (
         capacity > 0 &&
@@ -355,12 +412,14 @@ export class RemediaClient
       healthy.sort((left, right) => {
         const leftStats = left.snapshot.statistics;
         const rightStats = right.snapshot.statistics;
-        const leftReserved = [...this.#assignments.values()].filter(
-          (assignment) => assignment.nodeId === left.id,
-        ).length;
-        const rightReserved = [...this.#assignments.values()].filter(
-          (assignment) => assignment.nodeId === right.id,
-        ).length;
+        const leftReserved =
+          [...this.#assignments.values()].filter((assignment) => assignment.nodeId === left.id)
+            .length +
+          [...this.#migrationReservations.values()].filter((id) => id === left.id).length;
+        const rightReserved =
+          [...this.#assignments.values()].filter((assignment) => assignment.nodeId === right.id)
+            .length +
+          [...this.#migrationReservations.values()].filter((id) => id === right.id).length;
         const leftUsage =
           Math.max(
             leftStats?.playersActive ?? 0,
@@ -393,7 +452,8 @@ export class RemediaClient
     const active = Math.max(
       snapshot.statistics?.playersActive ?? 0,
       snapshot.assignedGuilds.length,
-      [...this.#assignments.values()].filter((assignment) => assignment.nodeId === nodeId).length,
+      [...this.#assignments.values()].filter((assignment) => assignment.nodeId === nodeId).length +
+        [...this.#migrationReservations.values()].filter((id) => id === nodeId).length,
     );
     if (
       node.status !== 'healthy' ||
@@ -425,16 +485,16 @@ export class RemediaClient
     node.on(RemoteNodeEvent.sessionLost, ({ snapshot, guildIds, reason }) => {
       for (const guildId of guildIds) {
         const assignment = this.#assignments.get(guildId);
-        if (assignment?.nodeId === node.id)
-          this.#assignments.set(guildId, { ...assignment, status: 'lost' });
+        if (assignment?.nodeId !== node.id) continue;
+        this.#assignments.set(guildId, { ...assignment, status: 'lost' });
         this.#sessions.get(guildId)?.markSessionLost(reason);
       }
       this.emit(ClientEvent.sessionLost, { node: snapshot, guildIds, reason });
     });
     node.on(RemoteNodeEvent.guildLost, ({ guildId }) => {
       const assignment = this.#assignments.get(guildId);
-      if (assignment?.nodeId === node.id)
-        this.#assignments.set(guildId, { ...assignment, status: 'lost' });
+      if (assignment?.nodeId !== node.id) return;
+      this.#assignments.set(guildId, { ...assignment, status: 'lost' });
       this.#sessions
         .get(guildId)
         ?.markSessionLost('guild session is missing from the resumed server snapshot');

@@ -57,6 +57,8 @@ export const RemediaClientEventNames = {
   guildAssigned: 'guildAssigned',
   /** Emitted when a guild assignment is released. */
   guildReleased: 'guildReleased',
+  /** Emitted when a guild switches between configured nodes. */
+  guildMigrated: 'guildMigrated',
 } as const;
 
 /** Union of the stable event names defined by RemediaClientEventNames. */
@@ -663,6 +665,10 @@ export interface RemediaClientEvents
   [RemediaClientEventNames.guildAssigned]: [GuildAssignment];
   /** Emitted when a guild assignment is released. */
   [RemediaClientEventNames.guildReleased]: [GuildAssignment];
+  /** Emitted after a guild's destination assignment has committed. */
+  [RemediaClientEventNames.guildMigrated]: [
+    { guildId: string; fromNodeId: string; toNodeId: string; nodeType: NodeType },
+  ];
   /** Emitted when a session is unregistered and its owned resources are released. */
   [PlaybackSessionEvents.sessionDisposed]: [
     VoiceEventIdentity & {

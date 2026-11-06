@@ -82,6 +82,10 @@ export interface DiscordSessionRuntime {
     /** Discord guild snowflake as a decimal string; unique within the owning client. */
     readonly guildId: string;
   }): void;
+  /** Reserve a destination backend while keeping the original sticky assignment. */
+  prepareMigration(options: DiscordSessionOptions, targetNodeId: string): Promise<GuildBackend>;
+  /** Switch the sticky assignment only after the original backend is released. */
+  commitMigration(guildId: string, fromNodeId: string, toNodeId: string): Promise<void>;
 }
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 45_000;
@@ -153,6 +157,9 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   #playPromise: Promise<AudioStreamInfo> | undefined;
   #sessionLossReason: string | undefined;
   #voiceFailureEmitted = false;
+  #migrationWork: Promise<void> | undefined;
+  #migratableSource: { url: string } | undefined;
+  #migratableMetadata: Metadata | undefined;
 
   /**
    * Construct this wrapper with its owning services. Use the owning engine or client factory for application code.
@@ -199,6 +206,123 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   /** Discord Gateway self-mute state; defaults to false and persists across moves and recovery. */
   get selfMute(): boolean {
     return this.#selfMute;
+  }
+
+  /**
+   * Move this Discord session to another configured node. The public session object remains
+   * stable. Active URL playback is restarted on the destination and sought to the last observed
+   * media position; an exact or gapless audio handoff is not guaranteed. One-shot sources and
+   * active local files are rejected before the source backend is changed.
+   *
+   * The destination is reserved before stopping the original backend. If connection or replay
+   * fails after cutover, the destination remains assigned and connect() may be retried.
+   */
+  migrate(nodeId: string): Promise<void> {
+    this.#assertOpen();
+    if (this.#migrationWork) return this.#migrationWork;
+    const work = this.#migrate(nodeId);
+    this.#migrationWork = work;
+    void work
+      .finally(() => {
+        if (this.#migrationWork === work) this.#migrationWork = undefined;
+      })
+      .catch(() => undefined);
+    return work;
+  }
+
+  async #migrate(nodeId: string): Promise<void> {
+    if (!nodeId || typeof nodeId !== 'string')
+      throw new TypeError('nodeId must be a non-empty string');
+    const previous = this.#backend;
+    if (!previous) throw new Error('connect the Discord session before migrating');
+    if (previous.nodeId === nodeId) return;
+    if (
+      this.#attempt ||
+      this.#playStarting ||
+      this.#disconnectWork ||
+      this.#closing ||
+      this.connectionState !== 'connected'
+    )
+      throw new Error('cannot migrate during connection, playback startup, or disconnection');
+
+    await this.#configurationWork;
+    const snapshot = await previous.refresh();
+    const active = snapshot.state === 'playing' || snapshot.state === 'paused';
+    if (!active && isPlaybackActive(snapshot.state))
+      throw new Error('cannot migrate while playback is transitioning between states');
+    const source = active ? this.#migratableSource : undefined;
+    const metadata = active ? this.#migratableMetadata : undefined;
+    if (
+      active &&
+      (!source || snapshot.position.mediaMs === null || !Number.isFinite(snapshot.position.mediaMs))
+    )
+      throw new Error('active migration requires a replayable URL and a known media position');
+    const positionMs = active ? Math.max(0, snapshot.position.mediaMs!) : 0;
+    const paused = snapshot.state === 'paused' || snapshot.state === 'pausing';
+    const destination = await this.#runtime.prepareMigration(
+      {
+        ...this.#options,
+        channelId: this.channelId,
+        volume: this.#volume,
+        filterGraph: this.#filterGraph,
+        selfDeaf: this.#selfDeaf,
+        selfMute: this.#selfMute,
+      },
+      nodeId,
+    );
+    let cutover = false;
+    try {
+      this.#assertOpen();
+      this.#detachBackend();
+      this.#backend = undefined;
+      await previous.disconnect(this.#nextTransportGeneration());
+      await previous.dispose();
+      cutover = true;
+      await this.#runtime.commitMigration(this.guildId, previous.nodeId, destination.nodeId);
+      this.#options.nodeId = destination.nodeId;
+      this.#backend = destination;
+      this.#bindBackend(destination);
+      this.#clearPlayAbortBinding();
+      this.#startedGenerations.clear();
+      this.#terminalGenerations.clear();
+      this.#metadataByGeneration.clear();
+      this.#earlyPlaybackEvents.clear();
+      this.#playbackGeneration = 0;
+      this.#playPromise = undefined;
+      this.#migratableSource = undefined;
+      this.#migratableMetadata = undefined;
+      this.#joinRequested = false;
+      this.#voiceSessionId = undefined;
+      this.#voiceServer = undefined;
+      this.#connectionError = null;
+      this.#voiceFailureEmitted = false;
+      this.#setConnectionState('disconnected');
+      await this.connect();
+      if (source) {
+        // The replacement decoder uses its own source generation, so replay is a new start.
+        this.#playPromise = this.#startPlayback(
+          source,
+          metadata === undefined ? {} : { customMetadata: metadata },
+        );
+        await this.#playPromise;
+        if (positionMs > 0) await destination.seek(positionMs);
+        if (paused) await destination.pause();
+      }
+    } catch (error) {
+      if (!cutover) {
+        await destination.dispose().catch(() => undefined);
+        if (this.#backend === undefined) {
+          // An unsuccessful old-backend teardown may leave the old node recoverable.
+          this.#backend = previous;
+          this.#bindBackend(previous);
+        }
+      } else if (this.#backend === undefined) {
+        this.#backend = destination;
+        this.#bindBackend(destination);
+        this.#setConnectionState('failed');
+      }
+      throw error;
+    }
   }
 
   /**
@@ -378,6 +502,8 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
    * @returns Selected stream metadata once startup succeeds; rejects if hooks, input opening, or playback startup fail.
    */
   play(source: MediaSource, options: PlayOptions<Metadata> = {}): Promise<AudioStreamInfo> {
+    if (this.#migrationWork)
+      return Promise.reject(new Error('playback cannot start during node migration'));
     const work = this.#startPlayback(source, options);
     this.#playPromise = work;
     return work;
@@ -442,6 +568,8 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       this.#playbackGeneration = result.generation;
       if (abortBinding) abortBinding.generation = result.generation;
       this.#metadataByGeneration.set(result.generation, options.customMetadata);
+      this.#migratableSource = 'url' in source ? { url: source.url } : undefined;
+      this.#migratableMetadata = options.customMetadata;
       this.#boundMetadata(result.generation);
       this.#flushEarlyEvents(result.generation);
       if (controller.signal.aborted) throw abortError('playback was cancelled');
@@ -576,6 +704,8 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
 
   async #dispose(): Promise<void> {
     if (this.#disposed) return;
+    this.#closing = true;
+    await this.#migrationWork?.catch(() => undefined);
     const abortBinding = this.#playAbortBinding;
     this.#clearPlayAbortBinding(abortBinding);
     (abortBinding?.controller ?? this.#playController)?.abort(
@@ -593,6 +723,8 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
         this.hooks.clear();
         this.#metadataByGeneration.clear();
         this.#earlyPlaybackEvents.clear();
+        this.#migratableSource = undefined;
+        this.#migratableMetadata = undefined;
         this.emit(PlaybackEvent.sessionDisposed, {
           sessionId: this.sessionId,
           guildId: this.guildId,
@@ -1148,7 +1280,9 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     const work = (async () => {
       let backend: GuildBackend | undefined;
       backend = await this.#runtime.resolveBackend(this.#options, () => {
-        if (this.#backend === backend) this.#backend = undefined;
+        // A migrated backend must not unregister the wrapper when its old node is disposed.
+        if (this.#backend !== backend) return;
+        this.#backend = undefined;
         this.#runtime.releaseSession(this);
       });
       if (this.#disposed || this.#closing || this.#connectionState === 'disconnecting') {
@@ -1334,6 +1468,10 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     if (terminal) {
       this.#metadataByGeneration.delete(generation);
       this.#startedGenerations.delete(generation);
+      if (generation === this.#playbackGeneration) {
+        this.#migratableSource = undefined;
+        this.#migratableMetadata = undefined;
+      }
     }
   }
 

@@ -56,7 +56,7 @@ its own bot ID.
 
 Guilds are assigned to healthy nodes using player capacity and remain sticky to that node. Remote
 sessions reconnect and attempt server-side session resumption. The SDK reports expired sessions;
-it does not migrate active playback or Discord voice transports across nodes. Remote nodes accept
+it supports explicit cross-node migration for connected sessions, with replay-and-seek recovery for active HTTP(S) URL playback. Remote nodes accept
 server-accessible URLs and file paths. Buffer and Readable inputs require an embedded node selected
 with `nodeId`.
 
@@ -74,6 +74,22 @@ reconnection reconciliation, and metadata lifetime.
 
 See the [Fumadocs client guide](https://github.com/twlite/remedia/blob/main/apps/docs/content/docs/client/overview.mdx) for connection
 strings, configuration, lifecycle, and recovery semantics.
+
+## Cross-node migration
+
+`await voice.migrate('media-b')` moves an already connected guild between configured healthy
+nodes. The client reserves the destination first, then closes the old transport and decoder,
+updates the sticky assignment, reconnects using fresh Gateway credentials, and restores its
+volume, filtergraph, channel, and self flags. The original `DiscordSession` object stays usable.
+Observe `RemediaClientEventNames.guildMigrated` for a successful assignment cutover.
+
+When playing or paused, only a replayable `{ url }` source with a known media position can
+migrate. Remedia starts a **new playback generation** on the destination and seeks to the
+snapshot's source position, restoring pause state and application `customMetadata`. This is not
+gapless playback and is not a decoder/packet transfer. Buffer, Readable, local file, and
+unknown-position active sources are rejected before cutover. A failed destination connection
+after cutover leaves that node assigned; the application can retry `connect()` and playback.
+Migration is explicit, not automatic load shedding or failover.
 
 ## Development
 
