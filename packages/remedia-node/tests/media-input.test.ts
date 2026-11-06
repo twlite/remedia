@@ -99,6 +99,39 @@ test('feeds Readable input in irregular chunks and completes on clean EOF', asyn
   }
 });
 
+
+test('seeks forward through a binary Readable without caching the whole source', async () => {
+  const encoded = makeWave(3);
+  const source = Readable.from(
+    (async function* () {
+      for (let offset = 0; offset < encoded.length; offset += 1024) {
+        await new Promise((resolve) => setTimeout(resolve, 3));
+        yield encoded.subarray(offset, Math.min(offset + 1024, encoded.length));
+      }
+    })(),
+    { objectMode: false, highWaterMark: 1024 },
+  );
+  const remedia = await Remedia.create();
+  const playback = remedia.createPlaybackSession();
+
+  try {
+    await playback.play({ stream: source });
+    await playback.pause();
+    await playback.seek(1_200);
+    assert.equal(playback.state, 'paused');
+    assert.equal(playback.position.submittedMs, 1_200);
+    await assert.rejects(playback.seek(500), /backwards|seek/i);
+    assert.equal(playback.state, 'paused');
+    assert.equal(playback.position.submittedMs, 1_200);
+    await playback.resume();
+    assert.equal(playback.state, 'playing');
+  } finally {
+    await playback.dispose();
+    await remedia.close();
+    source.destroy();
+  }
+});
+
 test('decodes concurrent Readable sources in independent playback sessions', async () => {
   const remedia = await Remedia.create();
   const playbacks = [remedia.createPlaybackSession(), remedia.createPlaybackSession()];
