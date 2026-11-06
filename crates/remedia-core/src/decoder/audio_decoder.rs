@@ -268,7 +268,7 @@ impl AudioDecoder {
     /// operation fails with [`DecoderError::UnsupportedSeeking`] when the
     /// demuxer or source cannot seek.
     pub fn seek(&mut self, position: Duration) -> Result<(), DecoderError> {
-        self.seek_with_pending(position, None)
+        self.seek_with_pending(position, &mut None)
     }
 
     /// A worker may already hold one decoded frame that has not been submitted
@@ -276,7 +276,7 @@ impl AudioDecoder {
     pub(crate) fn seek_with_pending(
         &mut self,
         position: Duration,
-        pending_frame: Option<DecodedPcmFrame>,
+        pending_frame: &mut Option<DecodedPcmFrame>,
     ) -> Result<(), DecoderError> {
         let _log_capture = crate::ffmpeg_logging::capture();
         self.check_cancelled()?;
@@ -319,6 +319,7 @@ impl AudioDecoder {
         self.reader.next_source_sample = Some(target_sample);
         self.reader.clear_packet_history();
         self.finished = false;
+        *pending_frame = None;
         Ok(())
     }
 
@@ -329,7 +330,7 @@ impl AudioDecoder {
         &mut self,
         target_sample: u64,
         target: Duration,
-        mut first_frame: Option<DecodedPcmFrame>,
+        first_frame: &mut Option<DecodedPcmFrame>,
     ) -> Result<(), DecoderError> {
         let first_available = first_frame
             .as_ref()
