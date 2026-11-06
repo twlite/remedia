@@ -4,7 +4,14 @@ import { Readable } from 'node:stream';
 import { afterAll, beforeAll, test } from 'vitest';
 
 import { Remedia } from '../lib/index.js';
-import { createWaveFixture, makeWave, waitFor } from './helpers.js';
+import {
+  createHeldReadable,
+  createWaveFixture,
+  feedWhilePending,
+  makeWave,
+  pauseHeldPlayback,
+  waitFor,
+} from './helpers.js';
 
 let fixture: Awaited<ReturnType<typeof createWaveFixture>>;
 
@@ -96,6 +103,41 @@ test('feeds Readable input in irregular chunks and completes on clean EOF', asyn
   } finally {
     await playback.dispose();
     await remedia.close();
+  }
+});
+
+test('seeks forward through a binary Readable without caching the whole source', async () => {
+  // FFmpeg needs sufficient bytes to probe a live WAV before play() resolves.
+  // Leave the input open and feed the next bytes whenever native work needs to
+  // cross a decoder boundary.
+  const held = createHeldReadable(makeWave(60));
+  const remedia = await Remedia.create();
+  const playback = remedia.createPlaybackSession();
+
+  try {
+    await feedWhilePending(
+      playback.play({ stream: held.stream }),
+      held,
+      'opening held Readable playback',
+    );
+    await pauseHeldPlayback(playback, held);
+
+    // The target is computed from bytes actually supplied, not from elapsed
+    // wall time. It therefore remains forward-only on slow and fast runners.
+    const targetMs = Math.ceil(held.suppliedMs) + 4_000;
+    await feedWhilePending(playback.seek(targetMs), held, 'forward Readable seek');
+
+    assert.equal(playback.state, 'paused');
+    assert.equal(playback.position.submittedMs, targetMs);
+    await assert.rejects(playback.seek(500), /backwards|seek/i);
+    assert.equal(playback.state, 'paused');
+    assert.equal(playback.position.submittedMs, targetMs);
+    await playback.resume();
+    assert.equal(playback.state, 'playing');
+  } finally {
+    await playback.dispose();
+    await remedia.close();
+    held.close();
   }
 });
 

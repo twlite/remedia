@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type ServerResponse } from 'node:http';
+import { PassThrough } from 'node:stream';
 
 export async function createWaveFixture(durationSeconds = 0.25): Promise<{
   directory: string;
@@ -171,6 +172,78 @@ export async function pauseHeldPlayback(
   if (playback.state !== 'paused') {
     throw new Error(`playback pause resolved in unexpected state ${playback.state}`);
   }
+}
+
+/**
+ * Feed an incremental source while a native playback command is pending.
+ *
+ * Commands are serviced at decoder boundaries. A blocked FFmpeg read cannot
+ * acknowledge a pause or seek until more input arrives, so tests must keep
+ * the source moving while awaiting their command.
+ */
+export async function feedWhilePending<T>(
+  operation: Promise<T>,
+  held: { sendNext(chunkBytes?: number): number },
+  description: string,
+  timeoutMs = 8_000,
+): Promise<T> {
+  const result: { settled: boolean; value?: T; error?: unknown; failed: boolean } = {
+    settled: false,
+    failed: false,
+  };
+  const completion = operation.then(
+    (value) => {
+      result.value = value;
+      result.settled = true;
+    },
+    (error: unknown) => {
+      result.error = error;
+      result.failed = true;
+      result.settled = true;
+    },
+  );
+  const deadline = Date.now() + timeoutMs;
+  while (!result.settled && Date.now() < deadline) {
+    if (held.sendNext(8 * 1024) === 0) {
+      throw new Error(`${description}: source exhausted before the native operation settled`);
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  if (!result.settled) {
+    throw new Error(`${description} did not settle within ${timeoutMs}ms`);
+  }
+  await completion;
+  if (result.failed) throw result.error;
+  return result.value as T;
+}
+
+/** A controllable finite WAV source for FFmpeg's non-seekable custom IO tests. */
+export function createHeldReadable(wave: Buffer): {
+  stream: PassThrough;
+  get suppliedMs(): number;
+  sendNext(chunkBytes?: number): number;
+  close(): void;
+} {
+  const stream = new PassThrough({ highWaterMark: 64 * 1024 });
+  let offset = Math.min(512 * 1024, wave.length);
+  stream.write(wave.subarray(0, offset));
+  return {
+    stream,
+    get suppliedMs() {
+      return Math.max(0, (offset - 44) / 96);
+    },
+    sendNext(chunkBytes = 8 * 1024) {
+      const end = Math.min(offset + chunkBytes, wave.length);
+      if (end === offset) return 0;
+      stream.write(wave.subarray(offset, end));
+      const count = end - offset;
+      offset = end;
+      return count;
+    },
+    close() {
+      stream.destroy();
+    },
+  };
 }
 
 export async function waitFor<T>(findValue: () => T | undefined, timeoutMs = 2_000): Promise<T> {

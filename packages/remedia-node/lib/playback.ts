@@ -261,7 +261,9 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
   }
 
   /**
-   * Seek on the original media timeline; non-seekable and one-shot sources may reject.
+   * Seek on the original media timeline. Binary Readable inputs support forward-only
+   * seeking by decoding and discarding skipped audio; backwards seeking rejects.
+   * Large forward jumps may wait for the producer to supply the skipped bytes.
    * @param positionMs - Non-negative finite position on the original media timeline, in milliseconds.
    * @returns Resolves after the backend accepts the seek; rejects for invalid positions or unsupported inputs.
    */

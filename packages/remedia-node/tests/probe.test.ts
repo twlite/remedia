@@ -4,7 +4,13 @@ import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
 import { test } from 'vitest';
 import { Remedia } from '../lib/index.js';
-import { createWaveFixture, makeWave } from './helpers.js';
+import {
+  createHeldReadable,
+  createWaveFixture,
+  feedWhilePending,
+  makeWave,
+  pauseHeldPlayback,
+} from './helpers.js';
 
 test('probes file, local HTTP, Buffer, Uint8Array and disposable one-shot streams without playback events', async () => {
   const fixture = await createWaveFixture();
@@ -98,19 +104,28 @@ test('unknown non-seekable duration remains null and probes preserve active play
     unknown.writeUInt32LE(0xffffffff, 40);
     const info = await engine.probe({ stream: Readable.from([unknown]) });
     assert.equal(info.durationMs, null);
-    const stream = new Readable({ read() {} });
-    stream.push(makeWave(5));
+    // Keep the input open with sufficient initial bytes for FFmpeg probing.
+    // Feeding during pause prevents the decoder from waiting indefinitely for
+    // data before reaching a control boundary.
+    const held = createHeldReadable(makeWave(60));
     const playback = engine.createPlaybackSession();
-    // A finite source exercises the existing normal playback path independently.
-    await playback.play({ stream });
-    await playback.pause();
-    const state = playback.state;
-    const generation = playback.currentGeneration;
-    await engine.probe({ buffer: bytes });
-    assert.equal(playback.state, state);
-    assert.equal(playback.currentGeneration, generation);
-    await playback.stop();
-    await playback.dispose();
+    try {
+      await feedWhilePending(
+        playback.play({ stream: held.stream }),
+        held,
+        'opening held Readable playback',
+      );
+      await pauseHeldPlayback(playback, held);
+      const state = playback.state;
+      const generation = playback.currentGeneration;
+      await engine.probe({ buffer: bytes });
+      assert.equal(playback.state, state);
+      assert.equal(playback.currentGeneration, generation);
+      await playback.stop();
+    } finally {
+      await playback.dispose();
+      held.close();
+    }
   } finally {
     await engine.close();
   }

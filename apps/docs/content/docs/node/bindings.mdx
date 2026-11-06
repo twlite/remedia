@@ -167,8 +167,12 @@ decoder state and `playback.error` or the rejected `play()` Promise, not through
 diagnostic events.
 
 In-memory buffers support byte-offset seeking when FFmpeg can seek the
-container. A producer-backed Readable is non-seekable; seeking it returns an
-unsupported-seeking error. File and HTTP behavior is unchanged, and supported
+container. A producer-backed Readable supports **forward-only** media-time
+seeking: Remedia decodes and discards audio until the target without caching
+the skipped stream. Backward seeks reject without stopping playback or flushing
+the output. Forward seeks may take time because the source must supply all
+intervening bytes; a requested position already passed by decoder read-ahead
+cannot be recovered. File and HTTP behavior is unchanged, and supported
 containers/codecs depend on the installed native FFmpeg libraries.
 
 ## Playback controls

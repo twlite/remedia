@@ -631,9 +631,8 @@ pub(super) fn worker_loop(
                     data.processing_mode = Some(PlaybackProcessingMode::Transcoding);
                     shared.changed.notify_all();
                 }
-                match decoder.seek(request.position) {
+                match decoder.seek_with_pending(request.position, &mut pending_frame) {
                     Ok(()) => {
-                        pending_frame = None;
                         input_finished = false;
                         let target_sample = samples_from_duration(request.position);
                         if let Err(error) = processor.reset(target_sample) {
