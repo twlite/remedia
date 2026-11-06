@@ -89,13 +89,22 @@ track.
 
 ## Seeking and position
 
-`seek(Duration)` is supported while playing or paused. The decoder uses FFmpeg's
-demuxer seek, flushes codec/resampler state, discards decoded samples before the
-target, and clears its pending frames. The session asks the output to flush its
-buffered audio before it resumes delivery. A known duration is checked before
-the request is sent. HTTP sources may not support seeking; the server must support
-the range behavior required by its FFmpeg protocol. Unsupported sources return
-`PlaybackError::UnsupportedSeeking` and keep the current playback state.
+`seek(Duration)` is supported while playing or paused. For files, buffers, and
+seekable HTTP inputs, the decoder asks FFmpeg's demuxer to seek, flushes
+codec/resampler state, and discards samples before the target. The session flushes
+pre-seek output before resuming delivery. HTTP seeking depends on the server
+and container, and a known source duration is checked before the request.
+
+For one-shot `InputSource::byte_stream`, seeking is **forward only**. The decoder
+reads and discards audio up to the requested media timestamp, retaining only
+its bounded input queue and decoder buffers. It never rewinds the producer or
+estimates byte offsets from bitrate. Large jumps require consuming the intervening
+encoded data and can take time or incur CPU/network work. Backward requests
+return `PlaybackError::UnsupportedSeeking` without flushing output or stopping
+the session. The earliest decodable sample can be slightly ahead of the last
+submitted position because FFmpeg and the playback worker read ahead. A seek
+past EOF returns `SeekOutOfRange`; a stalled producer keeps the seek waiting
+until data arrives or the operation is cancelled.
 
 ## Native FFmpeg filtergraphs and master volume
 
