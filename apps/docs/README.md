@@ -16,3 +16,10 @@ pnpm --filter docs start
 
 The landing page is `content/docs/index.mdx`. Shared layout and source configuration are under
 `src/lib/`.
+
+## Social previews
+
+The homepage and documentation pages generate branded 1200 × 630 PNG images at build time.
+Set `NEXT_PUBLIC_SITE_URL` to the public deployment origin (including `https://`) when deploying
+outside Vercel so Open Graph and Twitter image URLs resolve to the public site. Vercel uses
+Next.js deployment URL defaults when this override is omitted. No external image service is required.
