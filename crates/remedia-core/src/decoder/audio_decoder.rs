@@ -391,8 +391,7 @@ impl AudioDecoder {
                 retained_start.saturating_add(frame.frame.samples_per_channel as u64);
             for buffered in &mut self.pending_frames {
                 buffered.frame.start_sample = next_sample;
-                next_sample =
-                    next_sample.saturating_add(buffered.frame.samples_per_channel as u64);
+                next_sample = next_sample.saturating_add(buffered.frame.samples_per_channel as u64);
             }
             self.next_sample_position = Some(next_sample);
 
