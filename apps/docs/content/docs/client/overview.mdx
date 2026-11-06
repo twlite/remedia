@@ -244,7 +244,10 @@ measurement of CPU work. For server configuration, authentication, and TLS guida
 
 ```ts
 const session = remedia.createDiscordSession({
-  guildId, channelId, userId, nodeId: 'media-a',
+  guildId,
+  channelId,
+  userId,
+  nodeId: 'media-a',
 });
 await session.connect();
 await session.play({ url: 'https://example.net/song.mp3' });
