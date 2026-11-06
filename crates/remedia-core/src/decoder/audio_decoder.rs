@@ -263,10 +263,10 @@ impl AudioDecoder {
         self.cancellation.clone()
     }
 
-    /// Seek to a media position. FFmpeg may seek to an earlier keyframe; audio
-    /// before the requested output sample is discarded after decoding. The
-    /// operation fails with [`DecoderError::UnsupportedSeeking`] when the
-    /// demuxer or source cannot seek.
+    /// Seek to a media position. Seekable inputs use FFmpeg's demuxer, while
+    /// one-shot byte streams can only move forward by decoding and discarding
+    /// audio until the requested position. Backward byte-stream requests and
+    /// demuxers that cannot seek return [`DecoderError::UnsupportedSeeking`].
     pub fn seek(&mut self, position: Duration) -> Result<(), DecoderError> {
         self.seek_with_pending(position, &mut None)
     }
