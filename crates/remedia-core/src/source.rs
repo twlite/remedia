@@ -37,7 +37,9 @@ impl InputSource {
         Self::Bytes(Arc::new(bytes.into()))
     }
 
-    /// Create a non-seekable streaming input and its bounded byte producer.
+    /// Create a byte-wise non-seekable input and its bounded byte producer.
+    /// Playback can still seek *forward in media time* by decoding and discarding
+    /// frames; backwards seeking requires a rewindable source.
     ///
     /// Writes to the returned [`ByteStreamWriter`] block when `max_pending_bytes`
     /// are waiting for the decoder. Dropping or cancelling the decoder wakes
