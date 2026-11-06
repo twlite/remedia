@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { PassThrough, Readable } from 'node:stream';
+import { Readable } from 'node:stream';
 import { afterAll, beforeAll, test } from 'vitest';
 
 import { Remedia } from '../lib/index.js';
-import { createWaveFixture, makeWave, pauseHeldPlayback, waitFor } from './helpers.js';
+import {
+  createHeldReadable,
+  createWaveFixture,
+  feedWhilePending,
+  makeWave,
+  pauseHeldPlayback,
+  waitFor,
+} from './helpers.js';
 
 let fixture: Awaited<ReturnType<typeof createWaveFixture>>;
 
@@ -100,36 +107,21 @@ test('feeds Readable input in irregular chunks and completes on clean EOF', asyn
 });
 
 test('seeks forward through a binary Readable without caching the whole source', async () => {
-  // The null output is unpaced. Feed only an initial segment before pausing,
-  // otherwise fast runners can decode beyond the seek target first.
-  const encoded = makeWave(8);
-  const source = new PassThrough({ highWaterMark: 1024 });
-  const pauseFeedLimit = 44 + 48_000 * 2 * 2; // 2 seconds
-  let offset = 44 + 48_000 * 2; // 1 second of data for FFmpeg startup
-  source.write(encoded.subarray(0, offset));
-
-  const feedForPause = {
-    sendNext(chunkBytes = 8192): number {
-      const end = Math.min(pauseFeedLimit, offset + chunkBytes);
-      const count = end - offset;
-      if (count) source.write(encoded.subarray(offset, end));
-      offset = end;
-      return count;
-    },
-  };
+  // FFmpeg needs sufficient bytes to probe a live WAV before play() resolves.
+  // Leave the input open and feed the next bytes whenever native work needs to
+  // cross a decoder boundary.
+  const held = createHeldReadable(makeWave(60));
   const remedia = await Remedia.create();
   const playback = remedia.createPlaybackSession();
 
   try {
-    await playback.play({ stream: source });
-    await pauseHeldPlayback(playback, feedForPause);
+    await playback.play({ stream: held.stream });
+    await pauseHeldPlayback(playback, held);
 
-    const targetMs = 3_200; // Always ahead of the most data supplied before pausing
-    const seeking = playback.seek(targetMs);
-    const seekFeedLimit = 44 + 48_000 * 2 * 4; // Supply enough data to cross the target
-    source.write(encoded.subarray(offset, seekFeedLimit));
-    offset = seekFeedLimit;
-    await seeking;
+    // The target is computed from bytes actually supplied, not from elapsed
+    // wall time. It therefore remains forward-only on slow and fast runners.
+    const targetMs = Math.ceil(held.suppliedMs) + 4_000;
+    await feedWhilePending(playback.seek(targetMs), held, 'forward Readable seek');
 
     assert.equal(playback.state, 'paused');
     assert.equal(playback.position.submittedMs, targetMs);
@@ -141,7 +133,7 @@ test('seeks forward through a binary Readable without caching the whole source',
   } finally {
     await playback.dispose();
     await remedia.close();
-    source.destroy();
+    held.close();
   }
 });
 
