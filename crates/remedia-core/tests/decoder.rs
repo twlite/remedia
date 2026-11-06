@@ -320,18 +320,21 @@ fn producer_failure_after_open_propagates_during_decoding() {
 }
 
 #[test]
-fn non_seekable_streams_return_typed_seek_errors() {
+fn byte_stream_seeks_forward_and_rejects_backward_seek_without_losing_audio() {
     let bytes = pcm16_wave(48_000, &[vec![2048; 480]]);
     let (source, writer) = InputSource::byte_stream(4096).unwrap();
     writer.write(&bytes).unwrap();
     writer.finish().unwrap();
     let mut decoder = AudioDecoder::open(source).unwrap();
 
+    decoder.seek(Duration::from_millis(1)).unwrap();
     assert!(matches!(
-        decoder.seek(Duration::from_millis(1)),
+        decoder.seek(Duration::ZERO),
         Err(DecoderError::UnsupportedSeeking(_))
     ));
-    assert_eq!(frame_count(&collect_frames(&mut decoder)), 480);
+    let remaining = collect_frames(&mut decoder);
+    assert_eq!(remaining[0].start_sample, 48);
+    assert_eq!(frame_count(&remaining), 432);
 }
 
 #[test]
