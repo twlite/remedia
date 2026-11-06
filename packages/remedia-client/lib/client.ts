@@ -471,16 +471,16 @@ export class RemediaClient
     node.on(RemoteNodeEvent.sessionLost, ({ snapshot, guildIds, reason }) => {
       for (const guildId of guildIds) {
         const assignment = this.#assignments.get(guildId);
-        if (assignment?.nodeId === node.id)
-          this.#assignments.set(guildId, { ...assignment, status: 'lost' });
+        if (assignment?.nodeId !== node.id) continue;
+        this.#assignments.set(guildId, { ...assignment, status: 'lost' });
         this.#sessions.get(guildId)?.markSessionLost(reason);
       }
       this.emit(ClientEvent.sessionLost, { node: snapshot, guildIds, reason });
     });
     node.on(RemoteNodeEvent.guildLost, ({ guildId }) => {
       const assignment = this.#assignments.get(guildId);
-      if (assignment?.nodeId === node.id)
-        this.#assignments.set(guildId, { ...assignment, status: 'lost' });
+      if (assignment?.nodeId !== node.id) return;
+      this.#assignments.set(guildId, { ...assignment, status: 'lost' });
       this.#sessions
         .get(guildId)
         ?.markSessionLost('guild session is missing from the resumed server snapshot');
