@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { afterAll, beforeAll, test } from 'vitest';
 
 import { Remedia } from '../lib/index.js';
-import { createWaveFixture, makeWave, waitFor } from './helpers.js';
+import { createWaveFixture, makeWave, pauseHeldPlayback, waitFor } from './helpers.js';
 
 let fixture: Awaited<ReturnType<typeof createWaveFixture>>;
 
@@ -100,28 +100,42 @@ test('feeds Readable input in irregular chunks and completes on clean EOF', asyn
 });
 
 test('seeks forward through a binary Readable without caching the whole source', async () => {
-  const encoded = makeWave(3);
-  const source = Readable.from(
-    (async function* () {
-      for (let offset = 0; offset < encoded.length; offset += 1024) {
-        await new Promise((resolve) => setTimeout(resolve, 3));
-        yield encoded.subarray(offset, Math.min(offset + 1024, encoded.length));
-      }
-    })(),
-    { objectMode: false, highWaterMark: 1024 },
-  );
+  // The null output is unpaced. Feed only an initial segment before pausing,
+  // otherwise fast runners can decode beyond the seek target first.
+  const encoded = makeWave(8);
+  const source = new PassThrough({ highWaterMark: 1024 });
+  const pauseFeedLimit = 44 + 48_000 * 2 * 2; // 2 seconds
+  let offset = 44 + 48_000 * 2; // 1 second of data for FFmpeg startup
+  source.write(encoded.subarray(0, offset));
+
+  const feedForPause = {
+    sendNext(chunkBytes = 8192): number {
+      const end = Math.min(pauseFeedLimit, offset + chunkBytes);
+      const count = end - offset;
+      if (count) source.write(encoded.subarray(offset, end));
+      offset = end;
+      return count;
+    },
+  };
   const remedia = await Remedia.create();
   const playback = remedia.createPlaybackSession();
 
   try {
     await playback.play({ stream: source });
-    await playback.pause();
-    await playback.seek(1_200);
+    await pauseHeldPlayback(playback, feedForPause);
+
+    const targetMs = 3_200; // Always ahead of the most data supplied before pausing
+    const seeking = playback.seek(targetMs);
+    const seekFeedLimit = 44 + 48_000 * 2 * 4; // Supply enough data to cross the target
+    source.write(encoded.subarray(offset, seekFeedLimit));
+    offset = seekFeedLimit;
+    await seeking;
+
     assert.equal(playback.state, 'paused');
-    assert.equal(playback.position.submittedMs, 1_200);
+    assert.equal(playback.position.submittedMs, targetMs);
     await assert.rejects(playback.seek(500), /backwards|seek/i);
     assert.equal(playback.state, 'paused');
-    assert.equal(playback.position.submittedMs, 1_200);
+    assert.equal(playback.position.submittedMs, targetMs);
     await playback.resume();
     assert.equal(playback.state, 'playing');
   } finally {
