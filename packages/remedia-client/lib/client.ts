@@ -311,7 +311,10 @@ export class RemediaClient
    * The caller must dispose the returned backend if it does not commit.
    * @internal
    */
-  async prepareMigration(options: DiscordSessionOptions, targetNodeId: string): Promise<import('./adapters.js').GuildBackend> {
+  async prepareMigration(
+    options: DiscordSessionOptions,
+    targetNodeId: string,
+  ): Promise<import('./adapters.js').GuildBackend> {
     this.#assertOpen();
     return this.#withAssignmentLock(async () => {
       const current = this.#assignments.get(options.guildId);
@@ -336,7 +339,11 @@ export class RemediaClient
     await this.#withAssignmentLock(async () => {
       const current = this.#assignments.get(guildId);
       const target = this.#nodes.get(toNodeId);
-      if (current?.nodeId !== fromNodeId || this.#migrationReservations.get(guildId) !== toNodeId || !target)
+      if (
+        current?.nodeId !== fromNodeId ||
+        this.#migrationReservations.get(guildId) !== toNodeId ||
+        !target
+      )
         throw new NodeSelectionError(`guild ${guildId} migration assignment changed before commit`);
       this.#migrationReservations.delete(guildId);
       this.#assignments.set(guildId, {
@@ -345,7 +352,12 @@ export class RemediaClient
         nodeType: target.type,
         status: 'assigned',
       });
-      this.emit(ClientEvent.guildMigrated, { guildId, fromNodeId, toNodeId, nodeType: target.type });
+      this.emit(ClientEvent.guildMigrated, {
+        guildId,
+        fromNodeId,
+        toNodeId,
+        nodeType: target.type,
+      });
     });
   }
 
@@ -374,9 +386,9 @@ export class RemediaClient
       const snapshot = node.snapshot;
       const capacity = snapshot.capacity;
       const stats = snapshot.statistics;
-      const reserved = [...this.#assignments.values()].filter(
-        (assignment) => assignment.nodeId === node.id,
-      ).length + [...this.#migrationReservations.values()].filter((id) => id === node.id).length;
+      const reserved =
+        [...this.#assignments.values()].filter((assignment) => assignment.nodeId === node.id)
+          .length + [...this.#migrationReservations.values()].filter((id) => id === node.id).length;
       const active = Math.max(stats?.playersActive ?? 0, snapshot.assignedGuilds.length, reserved);
       return (
         capacity > 0 &&
@@ -400,12 +412,14 @@ export class RemediaClient
       healthy.sort((left, right) => {
         const leftStats = left.snapshot.statistics;
         const rightStats = right.snapshot.statistics;
-        const leftReserved = [...this.#assignments.values()].filter(
-          (assignment) => assignment.nodeId === left.id,
-        ).length + [...this.#migrationReservations.values()].filter((id) => id === left.id).length;
-        const rightReserved = [...this.#assignments.values()].filter(
-          (assignment) => assignment.nodeId === right.id,
-        ).length + [...this.#migrationReservations.values()].filter((id) => id === right.id).length;
+        const leftReserved =
+          [...this.#assignments.values()].filter((assignment) => assignment.nodeId === left.id)
+            .length +
+          [...this.#migrationReservations.values()].filter((id) => id === left.id).length;
+        const rightReserved =
+          [...this.#assignments.values()].filter((assignment) => assignment.nodeId === right.id)
+            .length +
+          [...this.#migrationReservations.values()].filter((id) => id === right.id).length;
         const leftUsage =
           Math.max(
             leftStats?.playersActive ?? 0,
