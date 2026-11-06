@@ -177,6 +177,10 @@ jobs:
         run: node .github/scripts/verify-native-deps.mjs --build
       - run: pnpm lint
       - run: pnpm typecheck
+      - name: Print migration formatting patch
+        run: |
+          pnpm exec oxfmt apps/docs/content/docs/client/overview.mdx packages/remedia-client/lib/client.ts packages/remedia-client/lib/discord.ts packages/remedia-client/tests/migration.test.ts
+          git diff -- apps/docs/content/docs/client/overview.mdx packages/remedia-client/lib/client.ts packages/remedia-client/lib/discord.ts packages/remedia-client/tests/migration.test.ts
       - name: Check formatting
         id: formatting
         run: pnpm format:check
