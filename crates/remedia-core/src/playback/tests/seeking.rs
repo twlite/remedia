@@ -90,8 +90,9 @@ fn forward_seek_in_byte_stream_discards_audio_without_storing_the_skipped_input(
     let before_resume = gate.snapshot().accepted.len();
 
     session.resume().unwrap();
-    assert!(gate.wait_for_accepted(before_resume + 1));
+    assert!(gate.wait_for_calls(before_resume + 1));
     gate.release(1);
+    assert!(gate.wait_for_accepted(before_resume + 1));
     let snapshot = gate.snapshot();
     let (start, first_sample) = snapshot.accepted[before_resume];
     assert!(start >= 55_200, "pre-seek PCM must not reach output");
