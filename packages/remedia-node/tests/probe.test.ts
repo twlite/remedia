@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { PassThrough, Readable } from 'node:stream';
+import { Readable } from 'node:stream';
 import { test } from 'vitest';
 import { Remedia } from '../lib/index.js';
-import { createWaveFixture, makeWave, pauseHeldPlayback } from './helpers.js';
+import { createHeldReadable, createWaveFixture, makeWave, pauseHeldPlayback } from './helpers.js';
 
 test('probes file, local HTTP, Buffer, Uint8Array and disposable one-shot streams without playback events', async () => {
   const fixture = await createWaveFixture();
@@ -98,25 +98,14 @@ test('unknown non-seekable duration remains null and probes preserve active play
     unknown.writeUInt32LE(0xffffffff, 40);
     const info = await engine.probe({ stream: Readable.from([unknown]) });
     assert.equal(info.durationMs, null);
-    // Feed the active playback incrementally. A null output can decode a
-    // fully pushed stream before pause() runs, leaving the worker blocked on
-    // the next input read and unable to acknowledge the pause request.
-    const encoded = makeWave(5);
-    const stream = new PassThrough({ highWaterMark: 1024 });
-    let offset = 44 + 48_000 * 2;
-    stream.write(encoded.subarray(0, offset));
+    // Keep the input open with sufficient initial bytes for FFmpeg probing.
+    // Feeding during pause prevents the decoder from waiting indefinitely for
+    // data before reaching a control boundary.
+    const held = createHeldReadable(makeWave(60));
     const playback = engine.createPlaybackSession();
     try {
-      await playback.play({ stream });
-      await pauseHeldPlayback(playback, {
-        sendNext(chunkBytes = 8192): number {
-          const end = Math.min(offset + chunkBytes, encoded.length);
-          const count = end - offset;
-          if (count) stream.write(encoded.subarray(offset, end));
-          offset = end;
-          return count;
-        },
-      });
+      await playback.play({ stream: held.stream });
+      await pauseHeldPlayback(playback, held);
       const state = playback.state;
       const generation = playback.currentGeneration;
       await engine.probe({ buffer: bytes });
@@ -125,7 +114,7 @@ test('unknown non-seekable duration remains null and probes preserve active play
       await playback.stop();
     } finally {
       await playback.dispose();
-      stream.destroy();
+      held.close();
     }
   } finally {
     await engine.close();
