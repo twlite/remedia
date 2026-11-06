@@ -165,6 +165,11 @@ fn forward_seek_uses_media_timestamps_for_compressed_mp3_byte_streams() {
     decoder.seek(Duration::from_millis(120)).unwrap();
     let next = decoder.next_frame().unwrap().unwrap();
     assert!(next.start_sample >= 5_760);
+    let following = decoder.next_frame().unwrap().unwrap();
+    assert_eq!(
+        following.start_sample,
+        next.start_sample + next.samples_per_channel as u64
+    );
     assert!(matches!(
         decoder.seek(Duration::from_millis(50)),
         Err(crate::error::DecoderError::UnsupportedSeeking(_))
