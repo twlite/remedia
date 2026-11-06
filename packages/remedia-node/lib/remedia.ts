@@ -1,3 +1,5 @@
+import { createReadableInput, toNativeSource, type MediaSource } from './input.js';
+import { toStreamInfo, type AudioStreamInfo } from './types.js';
 import { EventEmitter } from 'node:events';
 import { RemediaEventEmitter } from './events.js';
 import { NativeRemedia } from '../native.js';
@@ -16,6 +18,14 @@ import { toDiagnosticEvent, type DebugListener, type DiagnosticEvent } from './t
 export interface RemediaOptions {
   /** Send raw Gateway payloads through the application's existing Discord client or shard. */
   send: DiscordGatewaySend;
+}
+
+/** Cancellation and deadline for disposable metadata inspection. */
+export interface ProbeOptions {
+  /** Cancels input I/O and releases probe resources; never destroys caller-owned Readables. */
+  signal?: AbortSignal;
+  /** Total deadline in milliseconds, from 1 through 4294967295; defaults to 15000. */
+  timeoutMs?: number;
 }
 
 interface PlaybackResource {
@@ -40,6 +50,7 @@ interface DiscordSessionResource {
  */
 export class Remedia extends RemediaEventEmitter<RemediaLifecycleEvents> {
   readonly #native: NativeRemedia;
+  readonly #probes = new Set<AbortController>();
   readonly #sessions = new Set<PlaybackResource>();
   readonly #discordSessions = new Map<string, DiscordSessionResource>();
   readonly #gateway: DiscordGatewayAdapter | undefined;
@@ -62,6 +73,47 @@ export class Remedia extends RemediaEventEmitter<RemediaLifecycleEvents> {
    */
   static async create(options?: RemediaOptions): Promise<Remedia> {
     return new Remedia(await NativeRemedia.create(), options);
+  }
+
+  /**
+   * Inspect a disposable source without creating playback or voice resources. Readables may be partially or fully consumed.
+   * @param source - Encoded input; acquire a fresh source for subsequent playback.
+   * @param options - Cancellation and total deadline; defaults to 15000 ms.
+   * @returns Available stream metadata, with unknown numeric fields null; rejects invalid media, cancellation, timeout, or capacity exhaustion.
+   */
+  async probe(source: MediaSource, options: ProbeOptions = {}): Promise<AudioStreamInfo> {
+    this.#assertOpen();
+    const timeoutMs = options.timeoutMs ?? 15_000;
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 0xffffffff)
+      throw new RangeError('invalid probe timeoutMs');
+    options.signal?.throwIfAborted();
+    const id = this.#native.createProbe();
+    const controller = new AbortController();
+    this.#probes.add(controller);
+    const abort = (): void => {
+      controller.abort();
+      this.#native.cancelProbe(id);
+    };
+    options.signal?.addEventListener('abort', abort, { once: true });
+    controller.signal.addEventListener('abort', () => this.#native.cancelProbe(id), { once: true });
+    let input: ReturnType<typeof createReadableInput> | undefined;
+    try {
+      const nativeSource =
+        'stream' in source
+          ? (input = createReadableInput(this.#native, source.stream)).source
+          : toNativeSource(source);
+      const info = await this.#native.probe(id, nativeSource, timeoutMs);
+      controller.signal.throwIfAborted();
+      return toStreamInfo(info);
+    } catch (error) {
+      controller.signal.throwIfAborted();
+      throw error;
+    } finally {
+      options.signal?.removeEventListener('abort', abort);
+      this.#native.cancelProbe(id);
+      await input?.cancel();
+      this.#probes.delete(controller);
+    }
   }
 
   /** Number of diagnostic events dropped by either bounded event queue. */
@@ -134,6 +186,7 @@ export class Remedia extends RemediaEventEmitter<RemediaLifecycleEvents> {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    for (const controller of this.#probes) controller.abort();
     const voiceCleanup = await Promise.allSettled(
       [...this.#discordSessions.values()].map((session) => session.dispose()),
     );

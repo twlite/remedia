@@ -102,6 +102,28 @@ export class RemediaClient
     return client;
   }
 
+  /**
+   * Inspect disposable media independently of guild routing. Multiple healthy nodes require an explicit nodeId.
+   * @param source - Encoded media; remote nodes support only server-accessible files and HTTP(S) URLs.
+   * @param options - Node selection, cancellation, and total deadline, defaulting to 15000 ms.
+   * @returns Available AudioStreamInfo; rejects unavailable or ambiguous nodes, unsupported inputs, timeout, or cancellation.
+   */
+  async probe(
+    source: MediaSource,
+    options: import('./types.js').ClientProbeOptions = {},
+  ): Promise<import('./types.js').AudioStreamInfo> {
+    this.#assertOpen();
+    const eligible = [...this.#nodes.values()].filter((node) => node.status === 'healthy');
+    const node = options.nodeId
+      ? this.#nodes.get(options.nodeId)
+      : eligible.length === 1
+        ? eligible[0]
+        : undefined;
+    if (!node || node.status !== 'healthy')
+      throw new NodeSelectionError('probe requires one healthy node or an explicit healthy nodeId');
+    return node.probe(source, options);
+  }
+
   /** Configured embedded and remote nodes; at least one node and unique configured IDs are required. */
   get nodes(): readonly NodeSnapshot[] {
     return [...this.#nodes.values()].map((node) => node.snapshot);

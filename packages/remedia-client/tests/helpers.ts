@@ -64,6 +64,8 @@ export class FakeServerNode {
   #closed = false;
   finishBeforePlayResponse = false;
   playerPlayRequests = 0;
+  probeGate: (() => Promise<void>) | undefined;
+  probeCancelRequests = 0;
   voiceConnectRequests = 0;
   readonly voiceConnectionCredentials: Array<{
     sessionId: string;
@@ -182,6 +184,22 @@ export class FakeServerNode {
     let error: { code: string; message: string } | null = null;
     try {
       switch (command) {
+        case 'media.probe':
+          await this.probeGate?.();
+          result = {
+            streamIndex: 0,
+            codec: 'mp3',
+            sampleRate: 44100,
+            channels: 2,
+            durationMs: null,
+            bitRate: null,
+            metadata: { title: 'Probe fixture' },
+          };
+          break;
+        case 'media.probe.cancel':
+          this.probeCancelRequests++;
+          result = { cancelled: true };
+          break;
         case 'node.protocol_version':
           result = { version: this.protocolVersion };
           break;

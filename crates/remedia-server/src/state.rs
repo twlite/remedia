@@ -71,6 +71,7 @@ pub(crate) struct ConnectionContext {
     pub(crate) bot_user_id: u64,
     pub(crate) active_session: watch::Sender<Option<Arc<ClientSession>>>,
     pub(crate) session_control: tokio::sync::Mutex<()>,
+    pub(crate) probes: Mutex<std::collections::HashMap<String, remedia_core::CancellationToken>>,
     request_window: Mutex<(Instant, usize)>,
 }
 
@@ -416,202 +417,6 @@ impl ServerInner {
     }
 }
 
-impl ConnectionContext {
-    pub(crate) fn new(id: String, principal: String, bot_user_id: u64) -> Self {
-        let (active_session, _) = watch::channel(None);
-        Self {
-            id,
-            principal,
-            bot_user_id,
-            active_session,
-            session_control: tokio::sync::Mutex::new(()),
-            request_window: Mutex::new((Instant::now(), 0)),
-        }
-    }
-
-    pub(crate) fn allows_request(&self, maximum_per_second: usize) -> bool {
-        let mut window = lock(&self.request_window);
-        if window.0.elapsed() >= Duration::from_secs(1) {
-            *window = (Instant::now(), 0);
-        }
-        if window.1 >= maximum_per_second {
-            return false;
-        }
-        window.1 += 1;
-        true
-    }
-
-    pub(crate) fn session(&self) -> Option<Arc<ClientSession>> {
-        self.active_session.borrow().clone()
-    }
-
-    pub(crate) fn set_session(&self, session: Option<Arc<ClientSession>>) {
-        self.active_session.send_replace(session);
-    }
-}
-
-impl ClientSession {
-    pub(crate) fn ensure_open(&self) -> Result<(), StateError> {
-        if self.closed.load(Ordering::Acquire) {
-            Err(StateError::UnknownSession)
-        } else {
-            Ok(())
-        }
-    }
-
-    pub(crate) fn attached_to(&self, connection_id: &str) -> bool {
-        lock(&self.attached_connection).as_deref() == Some(connection_id)
-            && !self.closed.load(Ordering::Acquire)
-    }
-
-    pub(crate) fn subscribe(&self) -> broadcast::Receiver<serde_json::Value> {
-        lock(&self.initial_event_rx)
-            .take()
-            .unwrap_or_else(|| self.event_tx.subscribe())
-    }
-
-    pub(crate) fn emit(&self, name: &str, data: serde_json::Value) {
-        let sequence = self.event_sequence.fetch_add(1, Ordering::AcqRel) + 1;
-        let _ = self.event_tx.send(event(name, &self.id, sequence, data));
-    }
-
-    pub(crate) fn guild_snapshots(&self) -> Vec<serde_json::Value> {
-        lock(&self.guilds)
-            .values()
-            .map(|guild| guild.snapshot())
-            .collect()
-    }
-
-    pub(crate) fn snapshot(&self) -> serde_json::Value {
-        serde_json::json!({
-            "sessionId": self.id,
-            "botUserId": self.bot_user_id.to_string(),
-            "guilds": self.guild_snapshots(),
-        })
-    }
-}
-
-impl GuildSession {
-    pub(crate) fn ensure_open(&self) -> Result<(), StateError> {
-        if self.closed.load(Ordering::Acquire) {
-            Err(StateError::UnknownSession)
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Claim the single terminal lifecycle notification for an RPC source generation.
-    pub(crate) fn claim_terminal_event(&self, generation: u64) -> bool {
-        let mut previous = self.terminal_generation.load(Ordering::Acquire);
-        loop {
-            if previous >= generation {
-                return false;
-            }
-            match self.terminal_generation.compare_exchange_weak(
-                previous,
-                generation,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return true,
-                Err(current) => previous = current,
-            }
-        }
-    }
-
-    pub(crate) fn snapshot(&self) -> serde_json::Value {
-        let voice = lock(&self.voice);
-        let voice_state = if self.voice_reconnecting.load(Ordering::Acquire) {
-            Some("reconnecting")
-        } else {
-            voice.as_ref().map(|voice| match voice.state() {
-                remedia_discord::ConnectionState::NegotiatingDave => "negotiating_dave",
-                remedia_discord::ConnectionState::Connected => "connected",
-                remedia_discord::ConnectionState::Reconnecting => "reconnecting",
-                remedia_discord::ConnectionState::Disconnecting => "disconnecting",
-                remedia_discord::ConnectionState::Disconnected => "disconnected",
-                remedia_discord::ConnectionState::Failed => "failed",
-            })
-        };
-        serde_json::json!({
-            "guildSessionId": self.id,
-            "guildId": self.guild_id,
-            "botUserId": self.bot_user_id.to_string(),
-            "playback": playback_snapshot(
-                &self.playback,
-                self.source_generation.load(Ordering::Acquire),
-            ),
-            "voiceState": voice_state,
-        })
-    }
-}
-
-pub(crate) fn playback_snapshot(playback: &PlaybackSession, generation: u64) -> serde_json::Value {
-    let position = playback.position();
-    let media = position.media.map(|media| {
-        serde_json::json!({
-            "positionMs": media.position.as_millis(),
-            "accuracy": match media.accuracy {
-                remedia_core::MediaPositionAccuracy::Timestamp => "timestamp",
-                remedia_core::MediaPositionAccuracy::Estimated => "estimated",
-            },
-        })
-    });
-    let processing_mode = playback.processing_mode().map(|mode| match mode {
-        remedia_core::PlaybackProcessingMode::Passthrough => "passthrough",
-        remedia_core::PlaybackProcessingMode::Transcoding => "transcoding",
-    });
-    let duration_ms = playback.duration().map(|duration| duration.as_millis());
-    let last_error = playback.last_error().map(|_| {
-        serde_json::json!({
-            "code": "playback_failed",
-            "message": "Playback failed; see server diagnostics for details.",
-        })
-    });
-    let source = playback.info().map(|info| {
-        serde_json::json!({
-            "codec": info.codec,
-            "sampleRate": info.sample_rate,
-            "channels": info.channels,
-            "channelLayout": info.channel_layout,
-            "durationMs": info.duration.map(|duration| duration.as_millis()),
-            "bitRate": info.bit_rate,
-            "streamIndex": info.stream_index,
-            "metadata": info.metadata,
-        })
-    });
-    serde_json::json!({
-        "state": playback_state_name(playback.state()),
-        "generation": generation,
-        "processingMode": processing_mode,
-        "position": {
-            "media": media,
-            "submittedMs": position.submitted.as_millis(),
-            "playedMs": position.played.map(|duration| duration.as_millis()),
-        },
-        "durationMs": duration_ms,
-        "source": source,
-        "filterGraph": playback.filter_graph(),
-        "volume": playback.volume(),
-        "lastError": last_error,
-    })
-}
-
-pub(crate) fn playback_state_name(state: PlaybackState) -> &'static str {
-    match state {
-        PlaybackState::Idle => "idle",
-        PlaybackState::Starting => "starting",
-        PlaybackState::Playing => "playing",
-        PlaybackState::Pausing => "pausing",
-        PlaybackState::Resuming => "resuming",
-        PlaybackState::Paused => "paused",
-        PlaybackState::Stopping => "stopping",
-        PlaybackState::Stopped => "stopped",
-        PlaybackState::Completed => "completed",
-        PlaybackState::Failed => "failed",
-    }
-}
-
 pub(crate) fn opaque_id(bytes: usize) -> String {
     let mut value = vec![0_u8; bytes];
     random::<[u8; 32]>()
@@ -635,14 +440,11 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::opaque_id;
+mod tests;
 
-    #[test]
-    fn opaque_ids_have_expected_entropy_length_and_hex_format() {
-        let id = opaque_id(32);
-        assert_eq!(id.len(), 64);
-        assert!(id.bytes().all(|byte| byte.is_ascii_hexdigit()));
-        assert_ne!(id, opaque_id(32));
-    }
-}
+mod connection;
+
+mod sessions;
+
+mod snapshot;
+pub(crate) use snapshot::*;

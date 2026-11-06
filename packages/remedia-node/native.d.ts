@@ -102,6 +102,24 @@ export declare class NativeRemedia {
   playbackError(playbackId: string): string | null
   /** Stop and forget a standalone playback session. Voice sessions remain connected. */
   disposePlaybackSession(playbackId: string): Promise<void>
+  /**
+   * Register a cancellable probe; at most eight operations may be outstanding.
+   * @returns A disposable native operation identifier; rejects if closed or at capacity.
+   */
+  createProbe(): string
+  /**
+   * Cancel and release a disposable probe handle. Repeated calls are harmless.
+   * @param id - Operation identifier returned by createProbe.
+   */
+  cancelProbe(id: string): void
+  /**
+   * Inspect encoded input asynchronously without creating playback resources.
+   * @param id - Disposable operation identifier returned by createProbe.
+   * @param source - Encoded file, URL, owned bytes or bounded byte-stream handle.
+   * @param timeoutMs - Positive total deadline in milliseconds.
+   * @returns Available metadata; rejects invalid media, timeout, cancellation or capacity exhaustion.
+   */
+  probe(id: string, source: NativeMediaSource, timeoutMs: number): Promise<NativeStreamInfo>
 }
 
 export interface NativeDiagnosticEvent {

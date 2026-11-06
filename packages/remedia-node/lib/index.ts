@@ -12,7 +12,7 @@ export {
   RemediaEvents,
   VoiceSessionEvents,
 } from './lifecycle.js';
-export { Remedia, type RemediaOptions } from './remedia.js';
+export { Remedia, type ProbeOptions, type RemediaOptions } from './remedia.js';
 export type { MediaSource } from './input.js';
 export type {
   AudioStreamInfo,

@@ -3,6 +3,7 @@ mod discord;
 mod input;
 mod native;
 mod playback;
+mod probe;
 mod runtime;
 #[cfg(test)]
 mod tests;

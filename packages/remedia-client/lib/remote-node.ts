@@ -397,6 +397,36 @@ export class RemoteNodeAdapter
     return this.request('voice.state', { guildId });
   }
 
+  /**
+   * Inspect disposable media without assigning a guild or creating playback.
+   * @param source - Encoded media supported by this backend.
+   * @param options - Cancellation and total deadline, defaulting to 15000 ms.
+   * @returns Available stream metadata; rejects unavailable nodes, invalid inputs, timeout, or cancellation.
+   */
+  async probe(
+    source: MediaSource,
+    options: import('./types.js').ProbeOptions = {},
+  ): Promise<AudioStreamInfo> {
+    this.#assertHealthy();
+    if ('buffer' in source || 'stream' in source)
+      throw new UnsupportedMediaSourceError(
+        'remote probes support only server-accessible URLs and files',
+      );
+    const timeoutMs = options.timeoutMs ?? 15000;
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 0xffffffff)
+      throw new RangeError('invalid probe timeoutMs');
+    const remote =
+      'url' in source ? { type: 'url', url: source.url } : { type: 'file', path: source.file };
+    return toStreamInfo(
+      await this.#rpc!.request<Record<string, unknown>>(
+        'media.probe',
+        { source: remote, timeoutMs },
+        { ...options, timeoutMs: timeoutMs + 1000 },
+      ),
+      this.id,
+    );
+  }
+
   async play(
     guildId: string,
     source: { type: 'url'; url: string } | { type: 'file'; path: string },

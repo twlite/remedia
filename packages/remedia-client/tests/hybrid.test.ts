@@ -239,3 +239,22 @@ function onceEvent<Event extends keyof RemediaClientEvents>(
     client.on(event, listener as never);
   });
 }
+
+it('delegates disposable probes to the embedded engine without guild assignments', async () => {
+  const client = await RemediaClient.create({
+    nodes: [{ type: 'embedded', id: 'native' }],
+    send: () => undefined,
+  });
+  try {
+    const { readFile } = await import('node:fs/promises');
+    const { Readable } = await import('node:stream');
+    const bytes = await readFile(
+      new URL('../../../crates/remedia-core/tests/fixtures/generated-tone.mp3', import.meta.url),
+    );
+    const info = await client.probe({ stream: Readable.from([bytes]) });
+    expect(info.codec).toMatch(/^mp3/);
+    expect(client.assignments).toEqual([]);
+  } finally {
+    await client.close();
+  }
+});

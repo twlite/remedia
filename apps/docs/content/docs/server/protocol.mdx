@@ -181,3 +181,37 @@ generation. There is no new RPC command or protocol version. Initial gain and fi
 across tracks and transport generations. Self-deaf and self-mute are Gateway OP 4 fields managed
 by the application-side SDK, so they add no server wire fields. See the
 [client session configuration guide](/docs/client/overview#session-configuration-and-channel-movement).
+
+## Media probing
+
+After `client.create` or `client.resume`, an authenticated connection may send:
+
+```json
+{
+  "version": 1,
+  "id": "probe-1",
+  "command": "media.probe",
+  "params": {
+    "source": { "type": "url", "url": "https://example.com/audio.mp3" },
+    "timeoutMs": 15000
+  }
+}
+```
+
+File sources use `{"type":"file","path":"/allowed/audio.mp3"}` and resolve on the server.
+Existing URL policy and file-root authorization apply. Bytes and client Readables are unsupported.
+No guild ID, player or voice transport is involved. The result is the existing AudioStreamInfo
+object: `streamIndex`, `codec`, `sampleRate`, `channels`, `channelLayout`, `durationMs`, `bitRate`,
+and `metadata`. Unknown numeric fields are `null`; missing tags are absent.
+
+`timeoutMs` is optional, defaults to 15000 and must be an integer from 1 through 4294967295.
+The configured RPC request timeout also applies. Native work runs on blocking workers, with at most
+eight simultaneous probes server-wide and no waiting queue. Capacity errors use `resource_exhausted`;
+policy/parameter errors use `invalid_request`; native errors use `media_failed`, `cancelled` or
+`request_timeout`. Sources are closed immediately after inspection and never retained for playback.
+
+To cancel an outstanding probe on the same connection, send `media.probe.cancel` with
+`{"requestId":"probe-1"}`. It returns `{"cancelled":true}` even if the request already completed.
+Socket disconnect, request timeout and cancellation interrupt the native operation. Blocking workers
+retain their capacity permit until native cleanup finishes. FFmpeg discovery can consume source
+bytes and estimate durations; it does not establish future playback availability.

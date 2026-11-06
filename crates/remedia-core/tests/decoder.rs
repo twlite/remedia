@@ -788,3 +788,54 @@ fn request_path(stream: &TcpStream) -> String {
         .unwrap_or_default()
         .to_owned()
 }
+
+#[test]
+fn standalone_probe_shares_metadata_without_pcm_initialization() {
+    use remedia_core::{ProbeOptions, probe};
+    let bytes = pcm16_wave(22_050, &[vec![8192; 2205]]);
+    let file = TempFile::new("probe.wav", &bytes);
+    let expected = AudioDecoder::open(InputSource::file(&file.path))
+        .unwrap()
+        .info()
+        .clone();
+    assert_eq!(
+        probe(InputSource::file(&file.path), ProbeOptions::default()).unwrap(),
+        expected
+    );
+    assert_eq!(
+        probe(InputSource::bytes(bytes.clone()), ProbeOptions::default()).unwrap(),
+        expected
+    );
+    let (source, writer) = InputSource::byte_stream(1024).unwrap();
+    let producer = thread::spawn(move || {
+        let _ = writer.write_owned(bytes);
+        let _ = writer.finish();
+    });
+    let info = probe(source, ProbeOptions::default()).unwrap();
+    assert_eq!(info.codec, expected.codec);
+    assert!(!info.metadata.contains_key("title"));
+    producer.join().unwrap();
+    let (source, _writer) = InputSource::byte_stream(1024).unwrap();
+    assert!(matches!(
+        probe(
+            source,
+            ProbeOptions {
+                timeout: Duration::from_millis(20),
+                ..Default::default()
+            }
+        ),
+        Err(DecoderError::InputTimeout)
+    ));
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    assert!(matches!(
+        probe(
+            InputSource::file(&file.path),
+            ProbeOptions {
+                cancellation,
+                ..Default::default()
+            }
+        ),
+        Err(DecoderError::Cancelled)
+    ));
+}

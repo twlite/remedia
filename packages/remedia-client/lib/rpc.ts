@@ -79,6 +79,8 @@ export class RpcClient {
         reject,
         timer: setTimeout(() => {
           this.#remove(id);
+          if (command === 'media.probe')
+            void this.request('media.probe.cancel', { requestId: id }).catch(() => {});
           reject(
             new RemediaRpcError(
               this.#options.nodeId,
@@ -93,6 +95,8 @@ export class RpcClient {
       if (options.signal) {
         pending.abort = () => {
           this.#remove(id);
+          if (command === 'media.probe')
+            void this.request('media.probe.cancel', { requestId: id }).catch(() => {});
           reject(abortError());
         };
         options.signal.addEventListener('abort', pending.abort, { once: true });

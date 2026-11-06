@@ -21,6 +21,7 @@ pub(crate) struct RuntimeInner {
     pub(crate) diagnostic_drops: Arc<AtomicU64>,
     pub(crate) playbacks: Mutex<HashMap<String, PlaybackEntry>>,
     pub(crate) voices: Mutex<HashMap<String, VoiceEntry>>,
+    pub(crate) probes: Mutex<HashMap<String, CancellationToken>>,
     pub(crate) byte_streams: Mutex<HashMap<String, ByteStreamEntry>>,
     pub(crate) next_id: AtomicU64,
     pub(crate) closed: AtomicBool,

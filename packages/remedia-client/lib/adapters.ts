@@ -190,6 +190,13 @@ export interface GuildBackend extends EventEmitter<GuildBackendEvents> {
 
 /** Internal lifecycle, capacity, Gateway routing, and guild allocation contract for a configured node. */
 export interface NodeAdapter {
+  /**
+   * Inspect disposable media without assigning a guild or creating playback.
+   * @param source - Encoded media supported by this backend.
+   * @param options - Cancellation and total deadline, defaulting to 15000 ms.
+   * @returns Available stream metadata; rejects unavailable nodes, invalid inputs, timeout, or cancellation.
+   */
+  probe(source: MediaSource, options?: import('./types.js').ProbeOptions): Promise<AudioStreamInfo>;
   /** Application-configured node identifier, unique within the client node pool. */
   readonly id: string;
   /** Discriminant selecting embedded or remote node execution. */

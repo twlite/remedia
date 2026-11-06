@@ -679,3 +679,17 @@ export interface PlaybackCompletion {
   /** Current playback lifecycle state. */
   state: Extract<PlaybackState, 'completed' | 'failed' | 'stopped'>;
 }
+
+/** Cancellation and deadline for disposable metadata inspection. */
+export interface ProbeOptions {
+  /** Cancels input I/O and releases probe resources; never destroys caller-owned Readables. */
+  signal?: AbortSignal;
+  /** Total deadline in milliseconds, from 1 through 4294967295; defaults to 15000. */
+  timeoutMs?: number;
+}
+
+/** Probe routing independent of guild affinity. */
+export interface ClientProbeOptions extends ProbeOptions {
+  /** Explicit configured node ID; required when multiple healthy nodes exist. */
+  nodeId?: string;
+}

@@ -536,3 +536,29 @@ replacement itself does not emit playback stopped/completed/failed events.
 Gateway mocks verify orchestration and local native tests verify media lifecycles. Real Discord
 channel movement, same-channel multi-bot voice, credential ordering, and self flags still require
 an application integration test with Discord. Forward only each bot's own Gateway dispatch stream.
+
+## Probe media without playback
+
+```ts
+const info = await remedia.probe(
+  { stream: createTemporaryAudioStream() },
+  { signal: controller.signal, timeoutMs: 15_000 },
+);
+console.log(info.durationMs, info.metadata.title, info.metadata.artist);
+// Resolve a fresh resource independently when playback begins.
+```
+
+`Remedia.probe(source: MediaSource, options?: ProbeOptions): Promise<AudioStreamInfo>` supports
+files, HTTP(S) URLs, Buffer, Uint8Array and binary Readables. It uses the same stream metadata
+representation as playback. Missing numeric values remain `null`; missing tags are absent.
+The operation creates no playback or Discord session and can run alongside playback.
+
+`signal` cancels native input I/O. `timeoutMs` is a total deadline, defaults to 15000, and must be
+an integer from 1 through 4294967295. At most eight probes can be outstanding per engine, with
+eight native workers per addon process; additional operations reject. Invalid media, missing
+audio, input errors and timeouts reject. Closing the engine cancels its probes.
+
+Readable input uses the existing bounded native queue. It may be partially or fully consumed.
+On every completion path Remedia cancels the queue, detaches its listeners and releases input
+handles. It never destroys the caller-owned Readable. It does not rewind, cache, clone or preserve
+sources. A stalled input times out; non-seekable formats that require unavailable data may fail.

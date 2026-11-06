@@ -42,6 +42,7 @@ impl NativeRemedia {
                 diagnostic_drops: Arc::new(AtomicU64::new(0)),
                 playbacks: Mutex::new(HashMap::new()),
                 voices: Mutex::new(HashMap::new()),
+                probes: Mutex::new(HashMap::new()),
                 byte_streams: Mutex::new(HashMap::new()),
                 next_id: AtomicU64::new(1),
                 closed: AtomicBool::new(false),
@@ -60,6 +61,9 @@ impl NativeRemedia {
             return Ok(());
         }
 
+        for token in lock(&self.inner.probes).values() {
+            token.cancel();
+        }
         let playbacks: Vec<_> = lock(&self.inner.playbacks).values().cloned().collect();
         let voices: Vec<_> = lock(&self.inner.voices).values().cloned().collect();
         let byte_streams = std::mem::take(&mut *lock(&self.inner.byte_streams));

@@ -233,13 +233,23 @@ async fn handle_connection(
                             Ok(request) => request,
                             Err(error) => {
                                 let id = extract_request_id(&payload);
-                                let response = RpcResponse::failure(id, error.code, error.message);
+                                let response = RpcResponse::failure(id.clone(), error.code, error.message);
                                 if send_response(&outbound_tx, response).await.is_err() { break; }
                                 continue;
                             }
                         };
                         if !connection.allows_request(inner.config.limits.max_requests_per_second) {
                             let response = RpcResponse::failure(Some(request.id), "resource_exhausted", "request rate limit exceeded");
+                            if send_response(&outbound_tx, response).await.is_err() { break; }
+                            continue;
+                        }
+                        // Cancellation must remain available even when all worker slots are occupied.
+                        if request.command == "media.probe.cancel" {
+                            let id = Some(request.id.clone());
+                            let response = match rpc::execute(Arc::clone(&inner), Arc::clone(&connection), request).await {
+                                Ok(result) => RpcResponse::success(id, result),
+                                Err(error) => RpcResponse::failure(id, error.code, error.message),
+                            };
                             if send_response(&outbound_tx, response).await.is_err() { break; }
                             continue;
                         }
@@ -251,6 +261,20 @@ async fn handle_connection(
                                 continue;
                             }
                         };
+                        if request.command == "media.probe" {
+                            let duplicate = {
+                                let mut probes = lock(&connection.probes);
+                                if probes.contains_key(&request.id) { true } else {
+                                    probes.insert(request.id.clone(), remedia_core::CancellationToken::new());
+                                    false
+                                }
+                            };
+                            if duplicate {
+                                let response = RpcResponse::failure(Some(request.id), "invalid_request", "probe request ID is already active");
+                                if send_response(&outbound_tx, response).await.is_err() { break; }
+                                continue;
+                            }
+                        }
                         let inner = Arc::clone(&inner);
                         let connection = Arc::clone(&connection);
                         let outbound = outbound_tx.clone();
@@ -264,7 +288,7 @@ async fn handle_connection(
                                 command = command_name.as_str(),
                                 connection_id = connection.id.as_str(),
                             );
-                            let execute = rpc::execute(inner.clone(), connection, request)
+                            let execute = rpc::execute(inner.clone(), Arc::clone(&connection), request)
                                 .instrument(span);
                             let execute = if let Some(dispatch) = dispatch {
                                 execute.with_subscriber(dispatch)
@@ -272,10 +296,11 @@ async fn handle_connection(
                                 execute.with_subscriber(tracing::Dispatch::none())
                             };
                             let response = match tokio::time::timeout(request_timeout, execute).await {
-                                Ok(Ok(result)) => RpcResponse::success(id, result),
-                                Ok(Err(error)) => RpcResponse::failure(id, error.code, error.message),
-                                Err(_) => RpcResponse::failure(id, "request_timeout", "request exceeded the configured timeout"),
+                                Ok(Ok(result)) => RpcResponse::success(id.clone(), result),
+                                Ok(Err(error)) => RpcResponse::failure(id.clone(), error.code, error.message),
+                                Err(_) => RpcResponse::failure(id.clone(), "request_timeout", "request exceeded the configured timeout"),
                             };
+                            if let Some(token) = lock(&connection.probes).remove(id.as_ref().expect("request id")) { token.cancel(); }
                             let _ = send_response(&outbound, response).await;
                         });
                     }
@@ -295,6 +320,9 @@ async fn handle_connection(
         }
     }
 
+    for token in lock(&connection.probes).values() {
+        token.cancel();
+    }
     connection_cancel.cancel();
     if let Some(session) = connection.session() {
         inner.detach_client(session, &connection.id);

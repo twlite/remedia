@@ -89,6 +89,9 @@ describe('SDK against the Rust WebSocket server', () => {
       maxPendingRequests: 16,
     });
     await node.start();
+    const probed = await node.probe({ file: fixture });
+    expect(probed.codec).toMatch(/^mp3/);
+    expect(probed.durationMs).toBeGreaterThan(0);
     const guildId = '200000000000000901';
     await node.createGuild(guildId);
     const started = await node.play(guildId, { type: 'file', path: fixture });

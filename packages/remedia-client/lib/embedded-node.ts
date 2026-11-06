@@ -56,6 +56,7 @@ interface EmbeddedDiscordSession extends EmbeddedPlayback {
 }
 
 interface EmbeddedRemedia {
+  probe(source: MediaSource, options?: import('./types.js').ProbeOptions): Promise<AudioStreamInfo>;
   createDiscordSession(options: DiscordSessionOptions): EmbeddedDiscordSession;
   receive(packet: unknown): void;
   close(): Promise<void>;
@@ -126,6 +127,21 @@ export class EmbeddedNodeAdapter implements NodeAdapter {
       assignedGuilds: [...this.#sessions.keys()],
       lastError: this.#lastError,
     };
+  }
+
+  /**
+   * Inspect disposable media without assigning a guild or creating playback.
+   * @param source - Encoded media supported by this backend.
+   * @param options - Cancellation and total deadline, defaulting to 15000 ms.
+   * @returns Available stream metadata; rejects unavailable nodes, invalid inputs, timeout, or cancellation.
+   */
+  async probe(
+    source: MediaSource,
+    options?: import('./types.js').ProbeOptions,
+  ): Promise<AudioStreamInfo> {
+    if (this.#status !== 'healthy' || !this.#engine)
+      throw new Error(`embedded node ${this.id} is unavailable`);
+    return this.#engine.probe(source, options);
   }
 
   async start(): Promise<void> {

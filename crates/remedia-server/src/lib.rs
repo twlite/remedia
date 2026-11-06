@@ -1,6 +1,7 @@
 //! Authenticated, standalone WebSocket RPC server for the Remedia Rust engine.
 
 mod config;
+mod probe;
 mod protocol;
 mod rpc;
 mod server;

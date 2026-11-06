@@ -14,6 +14,8 @@ export {
   UnsupportedMediaSourceError,
 } from './errors.js';
 export type {
+  ProbeOptions,
+  ClientProbeOptions,
   AudioStreamInfo,
   BeforePlayContext,
   BeforePlayHook,

@@ -295,3 +295,30 @@ replacement itself does not emit playback stopped/completed/failed events.
 Gateway mocks verify orchestration and local native tests verify media lifecycles. Real Discord
 channel movement, same-channel multi-bot voice, credential ordering, and self flags still require
 an application integration test with Discord. Forward only each bot's own Gateway dispatch stream.
+
+## Standalone probing
+
+```ts
+const info = await client.probe(
+  { url: 'https://example.com/audio.mp3' },
+  { nodeId: 'media-1', signal: controller.signal, timeoutMs: 15_000 },
+);
+```
+
+`probe(source: MediaSource, options?: ClientProbeOptions): Promise<AudioStreamInfo>` delegates
+to embedded native probing or remote `media.probe`. It creates no guild assignment, playback
+session or voice transport. Supply `nodeId` when multiple healthy nodes exist; a single healthy
+node is selected automatically. Unknown, unhealthy or ambiguous nodes reject.
+
+Embedded nodes accept all MediaSource variants. Remote nodes accept only server-accessible files
+and HTTP(S) URLs; buffers and Readables reject with `UnsupportedMediaSourceError`. Cancellation
+sends a best-effort remote cancellation request; disconnect and server request deadlines also
+cancel native work. `timeoutMs` defaults to 15000 and is a positive 32-bit unsigned integer.
+Unknown numeric metadata stays `null`. See [native probing](/docs/node/bindings#probe-media-without-playback)
+for stream ownership and [the RPC reference](/docs/server/protocol#media-probing) for server limits.
+
+Metadata probing is independent of playback initialization and platform metadata extraction.
+A discord-player source plugin can obtain a YouTube title or thumbnail directly from its platform.
+When technical audio metadata is needed, it can resolve a temporary resource, call `probe`, then
+discard that resource. When playback begins, the plugin resolves a completely fresh source.
+Probing does not guarantee later resource availability or duration accuracy. Remedia hosts no source plugins.
