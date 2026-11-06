@@ -379,9 +379,23 @@ impl AudioDecoder {
                     .samples
                     .drain(..skip * usize::from(OUTPUT_CHANNELS));
                 frame.frame.samples_per_channel -= skip;
-                frame.frame.start_sample = frame.frame.start_sample.saturating_add(skip as u64);
-                frame.source_start_sample = Some(start + skip as u64);
             }
+
+            // FFmpeg timestamps and the decoder's running sample index may
+            // differ (notably for MP3 encoder delay). Rebase the retained PCM
+            // and any already decoded frames onto the source timeline.
+            let retained_start = start.saturating_add(skip as u64);
+            frame.frame.start_sample = retained_start;
+            frame.source_start_sample = Some(retained_start);
+            let mut next_sample =
+                retained_start.saturating_add(frame.frame.samples_per_channel as u64);
+            for buffered in &mut self.pending_frames {
+                buffered.frame.start_sample = next_sample;
+                next_sample =
+                    next_sample.saturating_add(buffered.frame.samples_per_channel as u64);
+            }
+            self.next_sample_position = Some(next_sample);
+
             // Put the first retained frame back for the regular playback loop.
             // Decoder state and the bounded byte-stream queue stay intact.
             self.pending_frames.push_front(frame);
