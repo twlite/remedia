@@ -116,10 +116,10 @@ test('seeks forward through a binary Readable without caching the whole source',
 
   try {
     await feedWhilePending(
-        playback.play({ stream: held.stream }),
-        held,
-        'opening held Readable playback',
-      );
+      playback.play({ stream: held.stream }),
+      held,
+      'opening held Readable playback',
+    );
     await pauseHeldPlayback(playback, held);
 
     // The target is computed from bytes actually supplied, not from elapsed
