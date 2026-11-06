@@ -1,25 +1,44 @@
 # Remedia documentation site
 
-This Next.js and Fumadocs app contains Remedia's user-facing documentation. Pages are grouped by
-workspace module under `content/docs/`: `core/` documents decoding and playback, `discord/` covers
-the outbound voice transport and bot harness, `node/` documents native bindings, `server/` covers
-authenticated WebSocket RPC and deployment, and `observability/` documents shared diagnostics. The
-`meta.json` files define titles and navigation order.
+This Next.js and Fumadocs app contains Remedia's user-facing documentation. Content lives under
+`content/docs/`, grouped by workspace module; `meta.json` files define navigation. The homepage
+is `src/app/(home)/page.tsx`. Shared layout and content configuration live in `src/lib/`.
 
-From the repository root, run:
+## Local development
+
+From the repository root:
 
 ```sh
 pnpm --filter docs dev
 pnpm --filter docs build
-pnpm --filter docs start
+python3 -m http.server 3000 --directory apps/docs/out
 ```
 
-The landing page is `content/docs/index.mdx`. Shared layout and source configuration are under
-`src/lib/`.
+The build uses Next.js `output: 'export'` and writes a self-contained static site to `apps/docs/out`.
+There is no production Node.js server or `next start` command. Search runs in the browser against
+the exported `/api/search` index. Social previews and Markdown endpoints are generated at build time.
+
+## GitHub Pages deployment
+
+`.github/workflows/deploy-docs.yaml` builds and deploys documentation changes pushed to `main`.
+It also supports manual dispatch on `main`. In repository **Settings → Pages**, select
+**GitHub Actions** as the build and deployment source. The workflow uploads `apps/docs/out` and
+deploys it through the `github-pages` environment; no native FFmpeg build is required.
+
+The workflow reads the site's URL and base path from `actions/configure-pages`, supporting both
+project sites such as `https://twlite.github.io/remedia` and custom-domain sites at `/`.
+For other static hosts, configure these build-time variables:
+
+- `NEXT_PUBLIC_SITE_URL`: the full public site URL, including any project path. Used for social image URLs.
+- `NEXT_PUBLIC_BASE_PATH`: the project path, such as `/remedia`, or an empty string for the domain root.
+
+Pages have trailing slashes so nested documentation URLs work on static hosts. Request-time
+Markdown negotiation and `.md` rewrites are unavailable without a server. Use the exported
+`/llms.txt`, `/llms-full.txt`, and `/llms.mdx/docs/<slug>/content.md` files instead; the docs copy
+buttons use those direct files.
 
 ## Social previews
 
 The homepage and documentation pages generate branded 1200 × 630 PNG images at build time.
-Set `NEXT_PUBLIC_SITE_URL` to the public deployment origin (including `https://`) when deploying
-outside Vercel so Open Graph and Twitter image URLs resolve to the public site. Vercel uses
-Next.js deployment URL defaults when this override is omitted. No external image service is required.
+No external image service is required. `NEXT_PUBLIC_SITE_URL` must include the project path when
+one is configured, so both homepage and per-page Open Graph and Twitter images resolve correctly.

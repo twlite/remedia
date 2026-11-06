@@ -1,7 +1,9 @@
 import { docsLlms } from '@/lib/source';
 
-export const revalidate = false;
+export const dynamic = 'force-static';
 
 export async function GET() {
-  return new Response(await docsLlms.index());
+  const index = await docsLlms.index();
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
+  return new Response(index.replaceAll('](/docs', `](${basePath}/docs`));
 }

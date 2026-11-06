@@ -25,7 +25,9 @@ export const source = loader({
 });
 
 export const docsLlms = llms(source, {
-  renderPage: async (page) => `# ${page.data.title} (${page.url})
+  renderPage: async (
+    page,
+  ) => `# ${page.data.title} (${process.env.NEXT_PUBLIC_BASE_PATH ?? ''}${page.url})
 
 ${await page.data.getText('processed')}`,
 });
