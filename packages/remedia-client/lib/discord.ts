@@ -222,18 +222,27 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     if (this.#migrationWork) return this.#migrationWork;
     const work = this.#migrate(nodeId);
     this.#migrationWork = work;
-    void work.finally(() => {
-      if (this.#migrationWork === work) this.#migrationWork = undefined;
-    }).catch(() => undefined);
+    void work
+      .finally(() => {
+        if (this.#migrationWork === work) this.#migrationWork = undefined;
+      })
+      .catch(() => undefined);
     return work;
   }
 
   async #migrate(nodeId: string): Promise<void> {
-    if (!nodeId || typeof nodeId !== 'string') throw new TypeError('nodeId must be a non-empty string');
+    if (!nodeId || typeof nodeId !== 'string')
+      throw new TypeError('nodeId must be a non-empty string');
     const previous = this.#backend;
     if (!previous) throw new Error('connect the Discord session before migrating');
     if (previous.nodeId === nodeId) return;
-    if (this.#attempt || this.#playStarting || this.#disconnectWork || this.#closing || this.connectionState !== 'connected')
+    if (
+      this.#attempt ||
+      this.#playStarting ||
+      this.#disconnectWork ||
+      this.#closing ||
+      this.connectionState !== 'connected'
+    )
       throw new Error('cannot migrate during connection, playback startup, or disconnection');
 
     await this.#configurationWork;
@@ -243,13 +252,23 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       throw new Error('cannot migrate while playback is transitioning between states');
     const source = active ? this.#migratableSource : undefined;
     const metadata = active ? this.#migratableMetadata : undefined;
-    if (active && (!source || snapshot.position.mediaMs === null || !Number.isFinite(snapshot.position.mediaMs)))
+    if (
+      active &&
+      (!source || snapshot.position.mediaMs === null || !Number.isFinite(snapshot.position.mediaMs))
+    )
       throw new Error('active migration requires a replayable URL and a known media position');
     const positionMs = active ? Math.max(0, snapshot.position.mediaMs!) : 0;
     const paused = snapshot.state === 'paused' || snapshot.state === 'pausing';
     const destination = await this.#runtime.prepareMigration(
-      { ...this.#options, channelId: this.channelId, volume: this.#volume, filterGraph: this.#filterGraph,
-        selfDeaf: this.#selfDeaf, selfMute: this.#selfMute }, nodeId,
+      {
+        ...this.#options,
+        channelId: this.channelId,
+        volume: this.#volume,
+        filterGraph: this.#filterGraph,
+        selfDeaf: this.#selfDeaf,
+        selfMute: this.#selfMute,
+      },
+      nodeId,
     );
     let cutover = false;
     try {
@@ -281,7 +300,10 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       await this.connect();
       if (source) {
         // The replacement decoder uses its own source generation, so replay is a new start.
-        this.#playPromise = this.#startPlayback(source, metadata === undefined ? {} : { customMetadata: metadata });
+        this.#playPromise = this.#startPlayback(
+          source,
+          metadata === undefined ? {} : { customMetadata: metadata },
+        );
         await this.#playPromise;
         if (positionMs > 0) await destination.seek(positionMs);
         if (paused) await destination.pause();
@@ -480,7 +502,8 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
    * @returns Selected stream metadata once startup succeeds; rejects if hooks, input opening, or playback startup fail.
    */
   play(source: MediaSource, options: PlayOptions<Metadata> = {}): Promise<AudioStreamInfo> {
-    if (this.#migrationWork) return Promise.reject(new Error('playback cannot start during node migration'));
+    if (this.#migrationWork)
+      return Promise.reject(new Error('playback cannot start during node migration'));
     const work = this.#startPlayback(source, options);
     this.#playPromise = work;
     return work;
