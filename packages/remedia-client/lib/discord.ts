@@ -238,7 +238,9 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
 
     await this.#configurationWork;
     const snapshot = await previous.refresh();
-    const active = isPlaybackActive(snapshot.state);
+    const active = snapshot.state === 'playing' || snapshot.state === 'paused';
+    if (!active && isPlaybackActive(snapshot.state))
+      throw new Error('cannot migrate while playback is transitioning between states');
     const source = active ? this.#migratableSource : undefined;
     const metadata = active ? this.#migratableMetadata : undefined;
     if (active && (!source || snapshot.position.mediaMs === null || !Number.isFinite(snapshot.position.mediaMs)))
@@ -258,6 +260,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       await previous.dispose();
       cutover = true;
       await this.#runtime.commitMigration(this.guildId, previous.nodeId, destination.nodeId);
+      this.#options.nodeId = destination.nodeId;
       this.#backend = destination;
       this.#bindBackend(destination);
       this.#joinRequested = false;
