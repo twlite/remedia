@@ -99,7 +99,6 @@ test('feeds Readable input in irregular chunks and completes on clean EOF', asyn
   }
 });
 
-
 test('seeks forward through a binary Readable without caching the whole source', async () => {
   const encoded = makeWave(3);
   const source = Readable.from(
