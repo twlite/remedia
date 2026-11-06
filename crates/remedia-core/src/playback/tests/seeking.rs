@@ -57,7 +57,6 @@ fn stop_and_seek_can_race_without_deadlock_or_stale_delivery() {
     assert!(lock(&session.worker).is_none());
 }
 
-
 #[test]
 fn forward_seek_in_byte_stream_discards_audio_without_storing_the_skipped_input() {
     let source = TempWave::from_samples(
@@ -96,7 +95,10 @@ fn forward_seek_in_byte_stream_discards_audio_without_storing_the_skipped_input(
     let snapshot = gate.snapshot();
     let (start, first_sample) = snapshot.accepted[before_resume];
     assert!(start >= 55_200, "pre-seek PCM must not reach output");
-    assert!(first_sample > 0.2, "the retained frame must come from the target segment");
+    assert!(
+        first_sample > 0.2,
+        "the retained frame must come from the target segment"
+    );
 
     session.stop().unwrap();
     feeder.join().unwrap();
