@@ -66,7 +66,9 @@ jobs:
         name: Select checks from changed paths
         run: node .github/scripts/ci-changes.mjs
       - id: detect
-        name: Parse the latest main commit subject
+        name: Parse and authorize the latest main release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: node .github/scripts/release.mjs detect
 
   draft-release:
@@ -84,6 +86,10 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
+      - name: Require repository collaborator write access
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/release.mjs authorize
       - name: Create or verify the immutable release tag
         env:
           RELEASE_VERSION: ${{ needs.release-detection.outputs.version }}
@@ -350,6 +356,10 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
+      - name: Require repository collaborator write access
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/release.mjs authorize
       - uses: actions/download-artifact@v8
         with:
           pattern: bindings-*
@@ -389,6 +399,10 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
+      - name: Require repository collaborator write access
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/release.mjs authorize
       - name: Install npm CLI with trusted publishing support
         run: |
           npm install --global npm@11.21.0
@@ -423,6 +437,10 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
+      - name: Require repository collaborator write access
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/release.mjs authorize
       - uses: actions/download-artifact@v8
         with:
           name: github-release-assets

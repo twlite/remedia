@@ -123,3 +123,17 @@ as well as raw executables, all 13 `.node` addons, and accompanying notices.
 Release assets are staged in a GitHub draft, which becomes public only after all npm packages
 have been published successfully. Keep the notices with redistributed binaries.
 See [licensing and media responsibility](/docs/licensing).
+
+## Release authorization
+
+The release workflow accepts an exact `chore: release x.y.z` or `chore: release x.y.z-tag.n`
+commit on `main`, either through a push or a manual workflow dispatch for that commit.
+Only repository collaborators with current **write**, **maintain**, or **admin** access may
+release. Both the original workflow actor and the actor initiating a rerun must qualify;
+commit author names and emails do not grant permission.
+
+CI verifies access through GitHub's repository permission API before marking a run as a release,
+and again before changing tags or drafts, uploading assets, publishing npm packages, or making
+the GitHub release public. Missing identities, insufficient access, and API failures block release
+actions. Normal pushes, pull requests, and manual dispatches without a release commit continue to
+run their existing checks. Releases remain restricted to `main`.

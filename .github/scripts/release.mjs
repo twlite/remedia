@@ -1,3 +1,4 @@
+import { authorizeRelease } from './release-authorization.mjs';
 import { execFileSync } from 'node:child_process';
 import {
   copyFileSync,
@@ -177,7 +178,7 @@ export function parseReleaseSubject(subject) {
 }
 
 export function detectRelease({ subject, eventName, ref }) {
-  if (eventName !== 'push' || ref !== 'refs/heads/main') return null;
+  if (!['push', 'workflow_dispatch'].includes(eventName) || ref !== 'refs/heads/main') return null;
   return parseReleaseSubject(subject);
 }
 
@@ -653,6 +654,7 @@ function writeGitHubOutput(values) {
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
+  if (command === 'authorize') return authorizeRelease();
   if (command === 'detect') {
     const subject = execFileSync(
       'git',
@@ -665,6 +667,7 @@ async function main() {
       ref: process.env.GITHUB_REF,
     });
     if (!release) return writeGitHubOutput({ is_release: 'false' });
+    await authorizeRelease();
     return writeGitHubOutput({
       is_release: 'true',
       version: release.version,
@@ -705,7 +708,7 @@ async function main() {
     }));
     return publishRelease({ packages, version, npmTag });
   }
-  throw new Error('Commands: detect, sync, pack, publish');
+  throw new Error('Commands: detect, authorize, sync, pack, publish');
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

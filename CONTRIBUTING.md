@@ -208,6 +208,16 @@ Stable and prerelease releases are created by pushing a commit to main whose ent
 prerelease release commits bypass change selection: empty commits and README-only release
 commits on main start the full release pipeline.
 
+Only collaborators with current repository **write**, **maintain**, or **admin** access may trigger
+release actions. CI checks both the original workflow actor and the actor initiating a rerun using
+GitHub's repository permission API. Read/triage access, missing identities, and failed permission
+lookups block release actions. Commit author names and emails are not used for authorization.
+Each tag, draft, upload, npm publication, and GitHub publication stage rechecks permissions before
+making changes, including when an individual job is rerun.
+
+Manual workflow dispatch on `main` can also release the selected commit when its subject matches
+the same release format. Dispatches on other branches or ordinary commits run checks only.
+
 The workflow overrides the @remedia/node and @remedia/client npm versions in each CI checkout
 before installing, building, or packing. It does not commit those overrides or alter Rust crate
 versions. @napi-rs/cli creates platform packages and synchronizes their versions; pnpm pack
