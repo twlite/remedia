@@ -335,7 +335,11 @@ impl AudioDecoder {
         let first_available = first_frame
             .as_ref()
             .or_else(|| self.pending_frames.front())
-            .map(|frame| frame.source_start_sample.unwrap_or(frame.frame.start_sample))
+            .map(|frame| {
+                frame
+                    .source_start_sample
+                    .unwrap_or(frame.frame.start_sample)
+            })
             .or(self.next_sample_position)
             .or_else(|| self.reader.source_boundary_sample());
         if first_available.is_some_and(|available| target_sample < available) {
@@ -360,7 +364,9 @@ impl AudioDecoder {
                 });
             };
 
-            let start = frame.source_start_sample.unwrap_or(frame.frame.start_sample);
+            let start = frame
+                .source_start_sample
+                .unwrap_or(frame.frame.start_sample);
             let end = start.saturating_add(frame.frame.samples_per_channel as u64);
             if end <= target_sample {
                 continue;
@@ -368,7 +374,10 @@ impl AudioDecoder {
 
             let skip = target_sample.saturating_sub(start) as usize;
             if skip != 0 {
-                frame.frame.samples.drain(..skip * usize::from(OUTPUT_CHANNELS));
+                frame
+                    .frame
+                    .samples
+                    .drain(..skip * usize::from(OUTPUT_CHANNELS));
                 frame.frame.samples_per_channel -= skip;
                 frame.frame.start_sample = frame.frame.start_sample.saturating_add(skip as u64);
                 frame.source_start_sample = Some(start + skip as u64);
