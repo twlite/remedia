@@ -263,6 +263,15 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       this.#options.nodeId = destination.nodeId;
       this.#backend = destination;
       this.#bindBackend(destination);
+      this.#clearPlayAbortBinding();
+      this.#startedGenerations.clear();
+      this.#terminalGenerations.clear();
+      this.#metadataByGeneration.clear();
+      this.#earlyPlaybackEvents.clear();
+      this.#playbackGeneration = 0;
+      this.#playPromise = undefined;
+      this.#migratableSource = undefined;
+      this.#migratableMetadata = undefined;
       this.#joinRequested = false;
       this.#voiceSessionId = undefined;
       this.#voiceServer = undefined;
@@ -271,12 +280,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       this.#setConnectionState('disconnected');
       await this.connect();
       if (source) {
-        // A new decoder has a new backend generation. Old deduplication state and metadata
-        // cannot be applied to its events if the target begins its generations at one.
-        this.#startedGenerations.clear();
-        this.#terminalGenerations.clear();
-        this.#metadataByGeneration.clear();
-        this.#playbackGeneration = 0;
+        // The replacement decoder uses its own source generation, so replay is a new start.
         this.#playPromise = this.#startPlayback(source, { customMetadata: metadata });
         await this.#playPromise;
         if (positionMs > 0) await destination.seek(positionMs);
@@ -677,6 +681,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
 
   async #dispose(): Promise<void> {
     if (this.#disposed) return;
+    this.#closing = true;
     await this.#migrationWork?.catch(() => undefined);
     const abortBinding = this.#playAbortBinding;
     this.#clearPlayAbortBinding(abortBinding);
