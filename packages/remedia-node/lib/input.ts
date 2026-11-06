@@ -21,7 +21,9 @@ export type MediaSource =
     }
   | {
       /**
-       * Caller-owned binary Readable, consumed with bounded backpressure in embedded mode; Remedia does not destroy it.
+       * Caller-owned binary Readable, consumed with bounded backpressure in embedded mode.
+       * Playback can seek forward, not backward, without caching prior input.
+       * Remedia does not destroy the caller-owned stream.
        */
       stream: Readable;
     };
