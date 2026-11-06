@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { test } from 'vitest';
 import { Remedia } from '../lib/index.js';
-import { createWaveFixture, makeWave } from './helpers.js';
+import { createWaveFixture, makeWave, pauseHeldPlayback } from './helpers.js';
 
 test('probes file, local HTTP, Buffer, Uint8Array and disposable one-shot streams without playback events', async () => {
   const fixture = await createWaveFixture();
@@ -98,19 +98,35 @@ test('unknown non-seekable duration remains null and probes preserve active play
     unknown.writeUInt32LE(0xffffffff, 40);
     const info = await engine.probe({ stream: Readable.from([unknown]) });
     assert.equal(info.durationMs, null);
-    const stream = new Readable({ read() {} });
-    stream.push(makeWave(5));
+    // Feed the active playback incrementally. A null output can decode a
+    // fully pushed stream before pause() runs, leaving the worker blocked on
+    // the next input read and unable to acknowledge the pause request.
+    const encoded = makeWave(5);
+    const stream = new PassThrough({ highWaterMark: 1024 });
+    let offset = 44 + 48_000 * 2;
+    stream.write(encoded.subarray(0, offset));
     const playback = engine.createPlaybackSession();
-    // A finite source exercises the existing normal playback path independently.
-    await playback.play({ stream });
-    await playback.pause();
-    const state = playback.state;
-    const generation = playback.currentGeneration;
-    await engine.probe({ buffer: bytes });
-    assert.equal(playback.state, state);
-    assert.equal(playback.currentGeneration, generation);
-    await playback.stop();
-    await playback.dispose();
+    try {
+      await playback.play({ stream });
+      await pauseHeldPlayback(playback, {
+        sendNext(chunkBytes = 8192): number {
+          const end = Math.min(offset + chunkBytes, encoded.length);
+          const count = end - offset;
+          if (count) stream.write(encoded.subarray(offset, end));
+          offset = end;
+          return count;
+        },
+      });
+      const state = playback.state;
+      const generation = playback.currentGeneration;
+      await engine.probe({ buffer: bytes });
+      assert.equal(playback.state, state);
+      assert.equal(playback.currentGeneration, generation);
+      await playback.stop();
+    } finally {
+      await playback.dispose();
+      stream.destroy();
+    }
   } finally {
     await engine.close();
   }
