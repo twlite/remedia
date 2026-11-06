@@ -4,7 +4,13 @@ import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
 import { test } from 'vitest';
 import { Remedia } from '../lib/index.js';
-import { createHeldReadable, createWaveFixture, makeWave, pauseHeldPlayback } from './helpers.js';
+import {
+  createHeldReadable,
+  createWaveFixture,
+  feedWhilePending,
+  makeWave,
+  pauseHeldPlayback,
+} from './helpers.js';
 
 test('probes file, local HTTP, Buffer, Uint8Array and disposable one-shot streams without playback events', async () => {
   const fixture = await createWaveFixture();
@@ -104,7 +110,11 @@ test('unknown non-seekable duration remains null and probes preserve active play
     const held = createHeldReadable(makeWave(60));
     const playback = engine.createPlaybackSession();
     try {
-      await playback.play({ stream: held.stream });
+      await feedWhilePending(
+        playback.play({ stream: held.stream }),
+        held,
+        'opening held Readable playback',
+      );
       await pauseHeldPlayback(playback, held);
       const state = playback.state;
       const generation = playback.currentGeneration;
