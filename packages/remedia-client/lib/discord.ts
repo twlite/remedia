@@ -281,7 +281,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       await this.connect();
       if (source) {
         // The replacement decoder uses its own source generation, so replay is a new start.
-        this.#playPromise = this.#startPlayback(source, { customMetadata: metadata });
+        this.#playPromise = this.#startPlayback(source, metadata === undefined ? {} : { customMetadata: metadata });
         await this.#playPromise;
         if (positionMs > 0) await destination.seek(positionMs);
         if (paused) await destination.pause();
