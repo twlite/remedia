@@ -33,6 +33,12 @@ remedia serve --config ./remedia.config.json
 
 Without a subcommand, `remedia` starts the server using `./remedia.config.json`. See [configuration](/docs/server/configuration) to create the config and supply secrets. The installers do **not** start a system service or open network ports.
 
+The archive contains two executables: `remedia-server`, a FFmpeg-independent administrative CLI, and `remedia-server-runtime`, which loads FFmpeg 9 only when you start the server or perform a native diagnostic. The installers deploy both executables together. The command wrappers in `~/.remedia/bin` point to the lightweight CLI.
+
+You can run `remedia-server --help`, `--version`, `--generate-config-file`, `--list`, and `update` without FFmpeg libraries. Server playback still requires the FFmpeg 9 shared libraries.
+
+
+
 ## FFmpeg 9 runtime
 
 Remedia uses FFmpeg's shared libraries, not an `ffmpeg` executable subprocess. For these installers, the FFmpeg 9.0.2 libraries and their runtime dependencies are installed into `~/.remedia/ffmpeg9`, outside the system library directories. The launchers configure the corresponding runtime search paths for each process.
