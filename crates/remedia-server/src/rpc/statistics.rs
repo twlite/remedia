@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn node_stats(server: &ServerInner) -> Value {
+pub(crate) fn node_stats(server: &ServerInner) -> Value {
     let (processing_failed, transport_failed) = {
         let sessions = lock(&server.sessions);
         sessions
