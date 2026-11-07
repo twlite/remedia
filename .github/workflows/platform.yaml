@@ -80,6 +80,14 @@ jobs:
           cache-environment: true
           cache-environment-key: ffmpeg9-${{ inputs.target }}-${{ hashFiles('.github/native-deps/ffmpeg9-windows.yml') }}
           cache-downloads: true
+      - name: Validate Windows installer syntax
+        if: inputs.os == 'windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path scripts/install.ps1).Path, [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }
       - name: Set up the MSVC environment
         if: inputs.os == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
