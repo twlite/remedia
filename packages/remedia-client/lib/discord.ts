@@ -468,7 +468,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
 
   /**
    * Join the requested voice destination and wait for Gateway credentials and transport readiness. Concurrent calls share the pending attempt.
-   * @param options - Optional cancellation signal and positive timeout in milliseconds; defaults to 45000.
+   * @param options - Optional cancellation signal and positive timeout in milliseconds; defaults to 100000.
    * @returns Resolves when connected; rejects on timeout, cancellation, session loss, or transport failure.
    */
   connect(options: DiscordConnectOptions = {}): Promise<void> {
