@@ -29,7 +29,9 @@ if (matches.length !== 1) {
 const path = matches[0];
 const content = readFileSync(path, 'utf8');
 if (!content.includes(original)) {
-  throw new Error(`The expected ${crate} Vulkan ABI assertion changed; inspect upstream before patching`);
+  throw new Error(
+    `The expected ${crate} Vulkan ABI assertion changed; inspect upstream before patching`,
+  );
 }
 
 writeFileSync(path, content.replace(original, corrected));

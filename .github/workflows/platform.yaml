@@ -582,7 +582,7 @@ jobs:
           RUST_TARGET: ${{ inputs.target }}
         run: |
           cargo fetch --locked --target "$RUST_TARGET"
-          cargo metadata --locked --offline --format-version=1 --filter-platform "$RUST_TARGET" > /dev/null
+          cargo metadata --locked --format-version=1 --filter-platform "$RUST_TARGET" > /dev/null
           node .github/scripts/patch-ffmpeg-sys-vulkan.mjs
       - name: Build Linux N-API addon for distribution
         if: inputs.os == 'linux'
