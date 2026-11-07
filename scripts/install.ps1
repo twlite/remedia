@@ -41,12 +41,13 @@ try {
     if (-not $mamba) {
       $mamba = Join-Path $binDir 'micromamba.exe'
       if (!(Test-Path $mamba)) {
-        $zip = Join-Path $tmp 'micromamba.zip'
-        Invoke-WebRequest 'https://micro.mamba.pm/api/micromamba/win-64/latest' -OutFile $zip
-        Expand-Archive $zip -DestinationPath (Join-Path $tmp 'mamba') -Force
-        $downloaded = Get-ChildItem (Join-Path $tmp 'mamba') -Filter micromamba.exe -Recurse | Select-Object -First 1
-        if (!$downloaded) { throw 'Unable to locate downloaded micromamba.exe.' }
-        Copy-Item $downloaded.FullName $mamba
+        $archive = Join-Path $tmp 'micromamba.tar.bz2'
+        Invoke-WebRequest 'https://micro.mamba.pm/api/micromamba/win-64/latest' -OutFile $archive
+        & tar -xf $archive -C $tmp 'Library/bin/micromamba.exe'
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to extract micromamba executable.' }
+        $downloaded = Join-Path $tmp 'Library/bin/micromamba.exe'
+        if (!(Test-Path $downloaded)) { throw 'Unable to locate downloaded micromamba.exe.' }
+        Copy-Item $downloaded $mamba
       }
     }
     $prefix = Join-Path $InstallDir 'ffmpeg9'
