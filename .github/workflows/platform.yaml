@@ -661,7 +661,9 @@ jobs:
           export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/libdata/pkgconfig
           test "$(pkg-config --modversion libavcodec | cut -d. -f1)" = 63
           test "$(pkg-config --modversion libavformat | cut -d. -f1)" = 63
+          test "$(pkg-config --modversion libavutil | cut -d. -f1)" = 61
           test "$(pkg-config --modversion libavfilter | cut -d. -f1)" = 12
+          test "$(pkg-config --modversion libswresample | cut -d. -f1)" = 7
           curl https://sh.rustup.rs -sSf --output rustup.sh
           sh rustup.sh -y --profile minimal --default-toolchain 1.99.1
           source "$HOME/.cargo/env"

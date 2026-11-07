@@ -1,6 +1,13 @@
 import { readdirSync } from 'node:fs';
 import { basename } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { ffmpegAbi } from './ffmpeg-abi.mjs';
+
+const requiredLinuxLibraries = [...ffmpegAbi].map(([library, major]) => `${library}.so.${major}`);
+const requiredMacLibraries = [...ffmpegAbi].map(([library, major]) => `${library}.${major}`);
+const requiredWindowsLibraries = [...ffmpegAbi].map(
+  ([library, major]) => `${library.slice(3)}-${major}.dll`,
+);
 
 const packageDirectory = 'packages/remedia-node';
 const addons = readdirSync(packageDirectory).filter((entry) => /^node\..+\.node$/.test(entry));
@@ -28,13 +35,7 @@ if (process.platform === 'linux') {
     }
     requireDependencies(
       dependencies,
-      [
-        'libavcodec.so.61',
-        'libavformat.so.61',
-        'libavutil.so.59',
-        'libavfilter.so.10',
-        'libswresample.so.5',
-      ],
+      requiredLinuxLibraries,
       binary,
     );
     const directDependencies = execFileSync('readelf', ['-d', binary], { encoding: 'utf8' });
@@ -50,7 +51,7 @@ if (process.platform === 'linux') {
     }
     requireDependencies(
       dependencies,
-      ['libavcodec.61', 'libavformat.61', 'libavutil.59', 'libavfilter.10', 'libswresample.5'],
+      requiredMacLibraries,
       binary,
     );
     rejectDynamicOpus(dependencies, binary, /libopus(?:\.\d+)?\.dylib/i);
@@ -65,7 +66,7 @@ if (process.platform === 'linux') {
     }
     requireDependencies(
       dependencies.toLowerCase(),
-      ['avcodec-61.dll', 'avformat-61.dll', 'avutil-59.dll', 'avfilter-10.dll', 'swresample-5.dll'],
+      requiredWindowsLibraries,
       binary,
     );
     rejectDynamicOpus(dependencies, binary, /opus\.dll/i);

@@ -1,14 +1,8 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { ffmpegAbi as expectedMajors } from './ffmpeg-abi.mjs';
 
-const expectedMajors = new Map([
-  ['libavcodec', '63'],
-  ['libavformat', '63'],
-  ['libavutil', '61'],
-  ['libavfilter', '12'],
-  ['libswresample', '7'],
-]);
 
 const mode = process.argv[2] ?? '--build';
 if (mode !== '--build' && mode !== '--runtime') {

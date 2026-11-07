@@ -75,8 +75,8 @@ Install Clang/libclang, then create the pinned dynamic FFmpeg environment used b
 
 ```sh
 sudo apt-get install clang libclang-dev
-micromamba create --name remedia-ffmpeg7 --file .github/native-deps/ffmpeg7.yml
-micromamba activate remedia-ffmpeg7
+micromamba create --name remedia-ffmpeg9 --file .github/native-deps/ffmpeg9.yml
+micromamba activate remedia-ffmpeg9
 export FFMPEG_DIR="$CONDA_PREFIX"
 export PKG_CONFIG_PATH="$CONDA_PREFIX/lib/pkgconfig"
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -91,8 +91,8 @@ Install Visual Studio 2022 Build Tools with the MSVC C++ workload, Rust's MSVC t
 micromamba. Use the pinned x64 development packages:
 
 ```powershell
-micromamba create --name remedia-ffmpeg7 --file .github/native-deps/ffmpeg7-windows.yml
-micromamba activate remedia-ffmpeg7
+micromamba create --name remedia-ffmpeg9 --file .github/native-deps/ffmpeg9-windows.yml
+micromamba activate remedia-ffmpeg9
 $env:FFMPEG_DIR = Join-Path $env:CONDA_PREFIX 'Library'
 $env:PKG_CONFIG_PATH = Join-Path $env:FFMPEG_DIR 'lib\pkgconfig'
 $env:LIBCLANG_PATH = Join-Path $env:CONDA_PREFIX 'Library\bin'
