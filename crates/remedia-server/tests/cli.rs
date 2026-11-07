@@ -50,7 +50,11 @@ fn cli_commands_remain_available_without_ffmpeg_loader_paths() {
         .args(["--generate-config-file", config.to_str().unwrap()])
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(config.exists());
     fs::remove_dir_all(root).unwrap();
 }
