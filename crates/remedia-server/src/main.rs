@@ -104,7 +104,13 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let path = default_config(cli.config)?;
             let config = ServerConfig::from_file_with_env(&path, &values)?;
             let server = Arc::new(ServerHandle::start(config).await?);
-            let instance = discovery::register(Arc::clone(&server)).await?;
+            let instance = match discovery::register(Arc::clone(&server)).await {
+                Ok(instance) => Some(instance),
+                Err(error) => {
+                    eprintln!("remedia-server: local status discovery unavailable: {error}");
+                    None
+                }
+            };
             println!(
                 "remedia-server listening on {} (WebSocket /v1/ws)",
                 server.local_addr()
