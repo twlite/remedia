@@ -64,7 +64,7 @@ export interface GuildBackend extends EventEmitter<GuildBackendEvents> {
   setSelfMute?(enabled: boolean): Promise<void>;
   /**
    * Join the requested voice destination and wait for Gateway credentials and transport readiness. Concurrent calls share the pending attempt.
-   * @param options - Optional cancellation signal and positive timeout in milliseconds; defaults to 45000.
+   * @param options - Optional cancellation signal and positive timeout in milliseconds; defaults to 100000.
    * @returns Resolves when connected; rejects on timeout, cancellation, session loss, or transport failure.
    */
   connect(options?: {
@@ -72,7 +72,7 @@ export interface GuildBackend extends EventEmitter<GuildBackendEvents> {
      * Optional cancellation signal; cancellation before startup prevents playback, and cancellation after startup stops that generation.
      */
     signal?: AbortSignal;
-    /** Maximum connection negotiation time in milliseconds; defaults to 45000. */
+    /** Maximum connection negotiation time in milliseconds; defaults to 100000. */
     timeoutMs?: number;
   }): Promise<void>;
   /**
