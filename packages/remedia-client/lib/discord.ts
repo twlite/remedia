@@ -5,7 +5,7 @@ import {
   PlaybackSessionEvents as PlaybackEvent,
   VoiceSessionEvents as VoiceEvent,
 } from './types.js';
-import { SessionLostError, asError } from './errors.js';
+import { RemediaRpcError, SessionLostError, asError } from './errors.js';
 import { FilterControls, validateVolume } from './filters.js';
 import { PlaybackHooks } from './hooks.js';
 import type { GuildBackend } from './adapters.js';
@@ -88,7 +88,8 @@ export interface DiscordSessionRuntime {
   commitMigration(guildId: string, fromNodeId: string, toNodeId: string): Promise<void>;
 }
 
-const DEFAULT_CONNECT_TIMEOUT_MS = 45_000;
+// Cover the dedicated 80-second remote voice RPC deadline plus Gateway dispatch latency.
+const DEFAULT_CONNECT_TIMEOUT_MS = 100_000;
 
 interface BufferedPlaybackEvent {
   event: keyof PlaybackLifecycleEventMap<unknown>;
@@ -1219,6 +1220,11 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     if (attempt.internal && !attempt.moving && error.name !== 'AbortError') {
       const transportGeneration = this.#nextTransportGeneration();
       void this.#backend?.failVoiceRecovery?.(transportGeneration).catch(() => undefined);
+    } else if (!attempt.internal && !attempt.moving && this.#backend?.nodeType === 'remote') {
+      // A voice.connect RPC may have timed out before the server finished. Fence
+      // that request before permitting a later join to install a stale transport.
+      const transportGeneration = this.#nextTransportGeneration();
+      void this.#backend.disconnect(transportGeneration).catch(() => undefined);
     }
     const shouldLeave = leaveGateway && this.#joinRequested;
     this.#joinRequested = false;
@@ -1229,9 +1235,14 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       );
   }
 
-  #retryGatewayCredentials(attempt: ConnectAttempt, _error: Error): boolean {
+  #retryGatewayCredentials(attempt: ConnectAttempt, error: Error): boolean {
+    const retryInitial =
+      !attempt.internal &&
+      this.#backend?.nodeType === 'remote' &&
+      error instanceof RemediaRpcError &&
+      (error.code === 'transport_failed' || error.code === 'request_timeout');
     if (
-      !attempt.internal ||
+      (!attempt.internal && !retryInitial) ||
       attempt.moving ||
       !this.#isCurrent(attempt) ||
       attempt.retryCount >= 2 ||
@@ -1242,7 +1253,15 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     attempt.retryCount += 1;
     attempt.requestSent = false;
     attempt.sequenceFloor = this.#runtime.gatewaySequence();
-    attempt.voiceState ??= this.#voiceSessionId ? { sessionId: this.#voiceSessionId } : undefined;
+    if (retryInitial) {
+      // A terminated first session must not be reused. Require new Gateway
+      // dispatches for both credentials rather than pairing a stale session ID
+      // with the replacement server token.
+      attempt.voiceState = undefined;
+      this.#voiceSessionId = undefined;
+    } else {
+      attempt.voiceState ??= this.#voiceSessionId ? { sessionId: this.#voiceSessionId } : undefined;
+    }
     attempt.voiceServer = undefined;
     attempt.credentialRevision += 1;
     this.#suspendRemoteVoice(attempt);
