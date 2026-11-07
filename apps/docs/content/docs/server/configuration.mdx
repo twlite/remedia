@@ -13,6 +13,23 @@ and missing environment variables stop startup with an error.
 cargo run -p remedia-server -- --config /etc/remedia/remedia.config.json
 ```
 
+You can generate a safer starter file with `remedia-server --generate-config-file [PATH]`.
+It will not overwrite existing files. For dotenv loading, diagnostic commands, and
+running-instance discovery, see the [server CLI guide](/docs/server/cli).
+
+```sh
+remedia-server --generate-config-file
+remedia-server --env-file .env --optional-env-file .env.remedia serve
+remedia-server doctor --env-file .env
+```
+
+Use `--env-file` for a required file and `--optional-env-file` for a file which may
+not exist. Both flags can be repeated. Required files load before optional files,
+last matching assignment wins among files, and the already-exported environment
+takes precedence over all file values. Empty and comment-only files are allowed;
+malformed assignments are errors. These values are used only for JSON
+`env('NAME')` references, not injected into process-global environment variables.
+
 The full example file is [`remedia.config.example.json`](https://github.com/twlite/remedia/blob/main/crates/remedia-server/remedia.config.example.json).
 
 ## Schema
