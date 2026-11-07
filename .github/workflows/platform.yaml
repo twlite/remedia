@@ -204,14 +204,14 @@ jobs:
       - name: Build standalone server
         if: inputs.os == 'linux'
         shell: micromamba-shell {0}
-        run: cargo build --release --locked -p remedia-server
+        run: cargo build --release --locked -p remedia-server --bins
       - name: Build standalone server (macOS)
         if: inputs.os == 'macos'
         shell: bash
-        run: cargo build --release --locked -p remedia-server
+        run: cargo build --release --locked -p remedia-server --bins
       - name: Build standalone server (Windows)
         if: inputs.os == 'windows'
-        run: cargo build --release --locked -p remedia-server
+        run: cargo build --release --locked -p remedia-server --bins
       - name: Build N-API addon
         if: inputs.os == 'linux'
         working-directory: packages/remedia-node
@@ -242,6 +242,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/remedia-server"
           cp "target/release/remedia-server$SERVER_SUFFIX" "$RUNNER_TEMP/remedia-server/remedia-server-$RUST_TARGET$SERVER_SUFFIX"
+          cp "target/release/remedia-server-runtime$SERVER_SUFFIX" "$RUNNER_TEMP/remedia-server/remedia-server-runtime-$RUST_TARGET$SERVER_SUFFIX"
       - name: Stage standalone server binary (Windows)
         if: inputs.os == 'windows'
         shell: pwsh
@@ -251,6 +252,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\remedia-server" | Out-Null
           Copy-Item target\release\remedia-server.exe "$env:RUNNER_TEMP\remedia-server\remedia-server-$env:RUST_TARGET$env:SERVER_SUFFIX"
+          Copy-Item target\release\remedia-server-runtime.exe "$env:RUNNER_TEMP\remedia-server\remedia-server-runtime-$env:RUST_TARGET$env:SERVER_SUFFIX"
       - uses: actions/upload-artifact@v7
         with:
           name: bindings-${{ inputs.target }}
@@ -263,7 +265,9 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: server-${{ inputs.target }}
-          path: ${{ runner.temp }}/remedia-server/remedia-server-${{ inputs.target }}${{ inputs.server_suffix }}
+          path: |
+            ${{ runner.temp }}/remedia-server/remedia-server-${{ inputs.target }}${{ inputs.server_suffix }}
+            ${{ runner.temp }}/remedia-server/remedia-server-runtime-${{ inputs.target }}${{ inputs.server_suffix }}
           if-no-files-found: error
           retention-days: 7
 
@@ -359,7 +363,9 @@ jobs:
         env:
           RUST_TARGET: ${{ inputs.target }}
           SERVER_SUFFIX: ${{ inputs.server_suffix }}
-        run: chmod +x "$RUNNER_TEMP/remedia-server/remedia-server-$RUST_TARGET$SERVER_SUFFIX"
+        run: |
+          chmod +x "$RUNNER_TEMP/remedia-server/remedia-server-$RUST_TARGET$SERVER_SUFFIX"
+          chmod +x "$RUNNER_TEMP/remedia-server/remedia-server-runtime-$RUST_TARGET$SERVER_SUFFIX"
       - name: Verify installed FFmpeg 9 dependencies (Linux)
         if: inputs.os == 'linux'
         shell: micromamba-shell {0}
@@ -685,7 +691,7 @@ jobs:
           fi
           pnpm install --frozen-lockfile
           cargo test --workspace --release --locked
-          cargo build --release --locked -p remedia-server
+          cargo build --release --locked -p remedia-server --bins
           pnpm --filter @remedia/node exec napi build --platform --esm --js native.js --dts native.d.ts --release --target x86_64-unknown-freebsd
           pnpm --filter @remedia/node build:types
           pnpm --filter @remedia/client build
