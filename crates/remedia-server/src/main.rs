@@ -73,13 +73,20 @@ async fn main() -> ExitCode {
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let uses_config = cli.generate_config_file.is_none()
         && !cli.list
-        && matches!(cli.command.as_ref(), None | Some(Commands::Serve | Commands::Doctor));
+        && matches!(
+            cli.command.as_ref(),
+            None | Some(Commands::Serve | Commands::Doctor)
+        );
     if !uses_config && (!cli.env_files.is_empty() || !cli.optional_env_files.is_empty()) {
-        return Err("--env-file and --optional-env-file are only valid with serve or doctor".into());
+        return Err(
+            "--env-file and --optional-env-file are only valid with serve or doctor".into(),
+        );
     }
     if let Some(path) = cli.generate_config_file {
         if cli.command.is_some() || cli.list || cli.json {
-            return Err("--generate-config-file cannot be combined with a command or --list/--json".into());
+            return Err(
+                "--generate-config-file cannot be combined with a command or --list/--json".into(),
+            );
         }
         return generate_config_file(&path);
     }
@@ -158,7 +165,10 @@ fn generate_config_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     file.write_all(&data)?;
     file.sync_all()?;
     println!("Generated {}", path.display());
-    println!("Set REMEDIA_RPC_PASSWORD, then run: remedia-server --config {}", path.display());
+    println!(
+        "Set REMEDIA_RPC_PASSWORD, then run: remedia-server --config {}",
+        path.display()
+    );
     Ok(())
 }
 
@@ -167,7 +177,11 @@ fn doctor(
     variables: &HashMap<String, String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Remedia server {}", env!("CARGO_PKG_VERSION"));
-    println!("Platform: {} / {}", std::env::consts::OS, std::env::consts::ARCH);
+    println!(
+        "Platform: {} / {}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
     println!("Executable: {}", std::env::current_exe()?.display());
     println!("FFmpeg libraries loaded by the current executable:");
     let expected = [63, 63, 61, 12, 7];
@@ -179,7 +193,11 @@ fn doctor(
         let runtime_major = packed >> 16;
         let runtime_minor = (packed >> 8) & 0xff;
         let runtime_micro = packed & 0xff;
-        let status = if runtime_major == major { "OK" } else { "INCOMPATIBLE" };
+        let status = if runtime_major == major {
+            "OK"
+        } else {
+            "INCOMPATIBLE"
+        };
         println!(
             "  {name:<12} {runtime_major}.{runtime_minor}.{runtime_micro}              (expected ABI {major}) {status}"
         );
@@ -190,7 +208,10 @@ fn doctor(
             println!("{key}: set");
         }
     }
-    println!("Environment file variables available for config interpolation: {}", variables.len());
+    println!(
+        "Environment file variables available for config interpolation: {}",
+        variables.len()
+    );
     if !abi_ok {
         return Err("FFmpeg runtime ABI versions do not match the required FFmpeg 9 majors".into());
     }
@@ -281,7 +302,11 @@ mod tests {
             Cli::try_parse_from(["remedia", "doctor"]).unwrap().command,
             Some(Commands::Doctor)
         ));
-        assert!(Cli::try_parse_from(["remedia", "--list", "--json"]).unwrap().list);
+        assert!(
+            Cli::try_parse_from(["remedia", "--list", "--json"])
+                .unwrap()
+                .list
+        );
         assert!(matches!(
             Cli::try_parse_from(["remedia", "upgrade", "--no-ffmpeg"])
                 .unwrap()
@@ -301,11 +326,18 @@ mod tests {
             ".env.local",
         ])
         .unwrap();
-        assert_eq!(args.generate_config_file, Some(PathBuf::from("remedia.config.json")));
+        assert_eq!(
+            args.generate_config_file,
+            Some(PathBuf::from("remedia.config.json"))
+        );
         assert_eq!(args.env_files, vec![PathBuf::from(".env")]);
         assert_eq!(args.optional_env_files, vec![PathBuf::from(".env.local")]);
-        let custom = Cli::try_parse_from(["remedia", "--generate-config-file", "custom.json"]).unwrap();
-        assert_eq!(custom.generate_config_file, Some(PathBuf::from("custom.json")));
+        let custom =
+            Cli::try_parse_from(["remedia", "--generate-config-file", "custom.json"]).unwrap();
+        assert_eq!(
+            custom.generate_config_file,
+            Some(PathBuf::from("custom.json"))
+        );
     }
 
     #[test]
@@ -319,7 +351,10 @@ mod tests {
         assert!(generate_config_file(&path).is_err());
         let content: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(content["bind"]["host"], "127.0.0.1");
-        assert_eq!(content["users"][0]["password"], "env('REMEDIA_RPC_PASSWORD')");
+        assert_eq!(
+            content["users"][0]["password"],
+            "env('REMEDIA_RPC_PASSWORD')"
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
