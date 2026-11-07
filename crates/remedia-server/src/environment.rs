@@ -18,7 +18,13 @@ pub fn load_files(
         let contents = match fs::read_to_string(path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound && !must_exist => continue,
-            Err(error) => return Err(format!("could not load environment file {}: {error}", path.display()).into()),
+            Err(error) => {
+                return Err(format!(
+                    "could not load environment file {}: {error}",
+                    path.display()
+                )
+                .into());
+            }
         };
         parse_file(path, &contents, &mut values)?;
     }
@@ -41,9 +47,15 @@ fn parse_file(
         };
         let key = key.trim();
         if !valid_key(key) {
-            return Err(format!("{}:{}: invalid environment variable name", path.display(), index + 1).into());
+            return Err(format!(
+                "{}:{}: invalid environment variable name",
+                path.display(),
+                index + 1
+            )
+            .into());
         }
-        let value = parse_value(raw).map_err(|why| format!("{}:{}: {why}", path.display(), index + 1))?;
+        let value =
+            parse_value(raw).map_err(|why| format!("{}:{}: {why}", path.display(), index + 1))?;
         values.insert(key.to_owned(), value);
     }
     Ok(())
@@ -51,7 +63,9 @@ fn parse_file(
 
 fn valid_key(key: &str) -> bool {
     let mut characters = key.chars();
-    characters.next().is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+    characters
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
         && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
 }
 
@@ -63,7 +77,13 @@ fn parse_value(raw: &str) -> Result<String, &'static str> {
         _ => {
             let mut end = input.len();
             for (offset, ch) in input.char_indices() {
-                if ch == '#' && (offset == 0 || input[..offset].chars().next_back().is_some_and(char::is_whitespace)) {
+                if ch == '#'
+                    && (offset == 0
+                        || input[..offset]
+                            .chars()
+                            .next_back()
+                            .is_some_and(char::is_whitespace))
+                {
                     end = offset;
                     break;
                 }
@@ -109,7 +129,12 @@ mod tests {
     #[test]
     fn parses_comments_quotes_and_precedence() {
         let mut values = HashMap::new();
-        parse_file(Path::new(".env"), "export A=' spaced # text '\nB=\"hello\\nworld\" # comment\nC=bare # comment\n", &mut values).unwrap();
+        parse_file(
+            Path::new(".env"),
+            "export A=' spaced # text '\nB=\"hello\\nworld\" # comment\nC=bare # comment\n",
+            &mut values,
+        )
+        .unwrap();
         assert_eq!(values["A"], " spaced # text ");
         assert_eq!(values["B"], "hello\nworld");
         assert_eq!(values["C"], "bare");
@@ -120,14 +145,20 @@ mod tests {
     #[test]
     fn rejects_malformed_lines_without_exposing_secrets() {
         let mut values = HashMap::new();
-        for contents in ["NO_EQUALS", "BAD-NAME=abc", "KEY=\"unfinished", "KEY=\"text\" trailing"] {
+        for contents in [
+            "NO_EQUALS",
+            "BAD-NAME=abc",
+            "KEY=\"unfinished",
+            "KEY=\"text\" trailing",
+        ] {
             assert!(parse_file(Path::new(".env"), contents, &mut values).is_err());
         }
     }
 
     #[test]
     fn required_missing_file_fails_and_optional_missing_file_does_not() {
-        let missing = std::env::temp_dir().join(format!("remedia-missing-env-{}.env", std::process::id()));
+        let missing =
+            std::env::temp_dir().join(format!("remedia-missing-env-{}.env", std::process::id()));
         let _ = fs::remove_file(&missing);
         assert!(load_files(std::slice::from_ref(&missing), &[]).is_err());
         assert!(load_files(&[], &[missing]).unwrap().is_empty());
