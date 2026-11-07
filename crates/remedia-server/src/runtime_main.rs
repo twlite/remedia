@@ -37,7 +37,9 @@ async fn main() -> ExitCode {
 
 async fn run(cli: RuntimeCli) -> Result<(), Box<dyn std::error::Error>> {
     let values = environment::load_files(&cli.env_files, &cli.optional_env_files)?;
-    let config_path = cli.config.unwrap_or(std::env::current_dir()?.join("remedia.config.json"));
+    let config_path = cli
+        .config
+        .unwrap_or(std::env::current_dir()?.join("remedia.config.json"));
     if cli.doctor {
         return doctor(&config_path, &values);
     }
@@ -67,7 +69,11 @@ fn doctor(
     variables: &HashMap<String, String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Remedia server {}", env!("CARGO_PKG_VERSION"));
-    println!("Platform: {} / {}", std::env::consts::OS, std::env::consts::ARCH);
+    println!(
+        "Platform: {} / {}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
     println!("Executable: {}", std::env::current_exe()?.display());
     println!("FFmpeg libraries loaded by the native runtime:");
     let expected = [63, 63, 61, 12, 7];
@@ -79,7 +85,11 @@ fn doctor(
         let runtime_major = packed >> 16;
         let runtime_minor = (packed >> 8) & 0xff;
         let runtime_micro = packed & 0xff;
-        let status = if runtime_major == major { "OK" } else { "INCOMPATIBLE" };
+        let status = if runtime_major == major {
+            "OK"
+        } else {
+            "INCOMPATIBLE"
+        };
         println!(
             "  {name:<12} {runtime_major}.{runtime_minor}.{runtime_micro} (expected ABI {major}) {status}"
         );
