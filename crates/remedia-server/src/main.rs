@@ -1,15 +1,14 @@
-mod discovery;
-mod environment;
+//! Lightweight Remedia command line. This binary must never depend on
+//! remedia-core, remedia-discord, or remedia-server's native runtime code.
+//! All FFmpeg dependencies live in the separate remedia-server-runtime process.
+mod discovery_client;
 
-use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
-use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use remedia_server::{ServerConfig, ServerHandle};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -28,7 +27,7 @@ struct Cli {
     /// Optional .env file. Missing files are ignored, malformed files are not.
     #[arg(long = "optional-env-file", value_name = "PATH", global = true)]
     optional_env_files: Vec<PathBuf>,
-    /// Generate a secure starter configuration without overwriting existing files.
+    /// Generate a safe starter configuration without overwriting existing files.
     #[arg(long, num_args = 0..=1, default_missing_value = "remedia.config.json", value_name = "PATH")]
     generate_config_file: Option<PathBuf>,
     /// List live Remedia servers owned by the current user.
@@ -43,13 +42,13 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Start the server (the default when no subcommand is supplied).
+    /// Start the FFmpeg-enabled server (default).
     Serve,
-    /// Validate the selected configuration and inspect local runtime requirements.
+    /// Check native FFmpeg libraries and validate configuration.
     Doctor,
-    /// List running Remedia instances for the current operating-system user.
+    /// List live Remedia instances for this operating-system user.
     List,
-    /// Install the latest published server release and compatible FFmpeg runtime.
+    /// Install the latest published server and compatible FFmpeg runtime.
     #[command(alias = "upgrade")]
     Update {
         /// Keep the current FFmpeg installation.
@@ -60,8 +59,7 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let cli = Cli::parse();
-    match run(cli).await {
+    match run(Cli::parse()).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("remedia-server: {error}");
@@ -82,64 +80,122 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             "--env-file and --optional-env-file are only valid with serve or doctor".into(),
         );
     }
-    if let Some(path) = cli.generate_config_file {
+    if let Some(path) = &cli.generate_config_file {
         if cli.command.is_some() || cli.list || cli.json {
             return Err(
                 "--generate-config-file cannot be combined with a command or --list/--json".into(),
             );
         }
-        return generate_config_file(&path);
+        return generate_config_file(path);
     }
     if cli.list || matches!(cli.command.as_ref(), Some(Commands::List)) {
         if cli.list && cli.command.is_some() {
             return Err("--list cannot be combined with a subcommand".into());
         }
-        return discovery::print_instances(&discovery::list().await?, cli.json);
+        return discovery_client::print_instances(&discovery_client::list().await?, cli.json);
     }
     if cli.json {
         return Err("--json requires --list or the list subcommand".into());
     }
-    match cli.command {
-        Some(Commands::Update { no_ffmpeg }) => update(no_ffmpeg),
-        Some(Commands::Doctor) => {
-            let values = environment::load_files(&cli.env_files, &cli.optional_env_files)?;
-            let path = default_config(cli.config)?;
-            doctor(&path, &values)
-        }
-        Some(Commands::Serve) | None => {
-            let values = environment::load_files(&cli.env_files, &cli.optional_env_files)?;
-            let path = default_config(cli.config)?;
-            let config = ServerConfig::from_file_with_env(&path, &values)?;
-            let server = Arc::new(ServerHandle::start(config).await?);
-            let instance = match discovery::register(Arc::clone(&server)).await {
-                Ok(instance) => Some(instance),
-                Err(error) => {
-                    eprintln!("remedia-server: local status discovery unavailable: {error}");
-                    None
-                }
-            };
-            println!(
-                "remedia-server listening on {} (WebSocket /v1/ws)",
-                server.local_addr()
-            );
-            let signal = shutdown_signal().await;
-            drop(instance);
-            let shutdown = server.shutdown().await;
-            signal?;
-            shutdown?;
-            Ok(())
-        }
+    match cli.command.as_ref() {
+        Some(Commands::Update { no_ffmpeg }) => update(*no_ffmpeg),
+        Some(Commands::Doctor) => launch_runtime(&cli, true),
+        Some(Commands::Serve) | None => launch_runtime(&cli, false),
         Some(Commands::List) => unreachable!("handled above"),
     }
 }
 
-fn default_config(path: Option<PathBuf>) -> Result<PathBuf, std::io::Error> {
-    Ok(path.unwrap_or(std::env::current_dir()?.join("remedia.config.json")))
+fn native_executable() -> io::Result<PathBuf> {
+    if let Some(override_path) = std::env::var_os("REMEDIA_SERVER_RUNTIME") {
+        let path = PathBuf::from(override_path);
+        if path.is_file() {
+            return Ok(path);
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "REMEDIA_SERVER_RUNTIME points to a missing file: {}",
+                path.display()
+            ),
+        ));
+    }
+    let executable = std::env::current_exe()?;
+    let parent = executable.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "cannot locate the CLI installation directory",
+        )
+    })?;
+    let base = format!("remedia-server-runtime{}", std::env::consts::EXE_SUFFIX);
+    let mut candidates = vec![parent.join(base)];
+    if let Some(name) = executable.file_name().and_then(|s| s.to_str())
+        && let Some(target) = name.strip_prefix("remedia-server-")
+    {
+        candidates.push(parent.join(format!("remedia-server-runtime-{target}")));
+    }
+    candidates.into_iter().find(|path| path.is_file()).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "native runtime binary is missing next to {}. Reinstall Remedia, or set REMEDIA_SERVER_RUNTIME",
+                executable.display()
+            ),
+        )
+    })
 }
 
-/// Generate a minimal configuration: loopback binding, no accessible media hosts
-/// or file roots, and an environment-sourced credential. The user must supply
-/// REMEDIA_RPC_PASSWORD before starting.
+fn launch_runtime(cli: &Cli, doctor: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = native_executable()?;
+    let mut command = Command::new(runtime);
+    if let Some(path) = &cli.config {
+        command.arg("--config").arg(path);
+    }
+    for path in &cli.env_files {
+        command.arg("--env-file").arg(path);
+    }
+    for path in &cli.optional_env_files {
+        command.arg("--optional-env-file").arg(path);
+    }
+    if doctor {
+        command.arg("--doctor");
+        println!("Remedia CLI {}", env!("CARGO_PKG_VERSION"));
+        println!(
+            "Platform: {} / {}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
+        let output = command.output().map_err(|error| {
+            format!("failed to start the native runtime: {error}. Install the required FFmpeg 9 shared libraries")
+        })?;
+        io::stdout().write_all(&output.stdout)?;
+        io::stderr().write_all(&output.stderr)?;
+        if output.status.success() {
+            return Ok(());
+        }
+        return Err(
+            "native FFmpeg runtime checks failed. Install FFmpeg 9 shared libraries (or reinstall with the Remedia installer) and retry"
+                .into(),
+        );
+    }
+    // On Unix, replacing our process ensures SIGTERM, signals, exit codes, and
+    // service-manager PID tracking belong to the real runtime, not a wrapper.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let error = command.exec();
+        Err(Box::new(error))
+    }
+    #[cfg(not(unix))]
+    {
+        let status = command.status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("native Remedia runtime exited with {status}. Verify FFmpeg 9 shared libraries with remedia-server doctor").into())
+        }
+    }
+}
+
 fn generate_config_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let config = serde_json::json!({
         "bind": {"host": "127.0.0.1", "port": 8787},
@@ -172,65 +228,7 @@ fn generate_config_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn doctor(
-    path: &Path,
-    variables: &HashMap<String, String>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Remedia server {}", env!("CARGO_PKG_VERSION"));
-    println!(
-        "Platform: {} / {}",
-        std::env::consts::OS,
-        std::env::consts::ARCH
-    );
-    println!("Executable: {}", std::env::current_exe()?.display());
-    println!("FFmpeg libraries loaded by the current executable:");
-    let expected = [63, 63, 61, 12, 7];
-    let mut abi_ok = true;
-    for ((name, packed), major) in remedia_core::ffmpeg_runtime_versions()
-        .into_iter()
-        .zip(expected)
-    {
-        let runtime_major = packed >> 16;
-        let runtime_minor = (packed >> 8) & 0xff;
-        let runtime_micro = packed & 0xff;
-        let status = if runtime_major == major {
-            "OK"
-        } else {
-            "INCOMPATIBLE"
-        };
-        println!(
-            "  {name:<12} {runtime_major}.{runtime_minor}.{runtime_micro}              (expected ABI {major}) {status}"
-        );
-        abi_ok &= runtime_major == major;
-    }
-    for key in ["FFMPEG_DIR", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"] {
-        if std::env::var_os(key).is_some() {
-            println!("{key}: set");
-        }
-    }
-    println!(
-        "Environment file variables available for config interpolation: {}",
-        variables.len()
-    );
-    if !abi_ok {
-        return Err("FFmpeg runtime ABI versions do not match the required FFmpeg 9 majors".into());
-    }
-    match ServerConfig::from_file_with_env(path, variables) {
-        Ok(_) => {
-            println!("Config: {} (valid)", path.display());
-            println!("Local discovery: ~/.remedia/run (authenticated loopback)");
-            Ok(())
-        }
-        Err(error) => {
-            eprintln!("Config: {} (invalid: {error})", path.display());
-            Err("doctor found configuration errors".into())
-        }
-    }
-}
-
 fn update(no_ffmpeg: bool) -> Result<(), Box<dyn std::error::Error>> {
-    // Use the installer embedded at build time. The installer verifies the
-    // published server archive SHA-256 and manages FFmpeg separately.
     let (source, extension) = if cfg!(windows) {
         (include_str!("../../../scripts/install.ps1"), "ps1")
     } else {
@@ -269,97 +267,40 @@ fn update(no_ffmpeg: bool) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn shutdown_signal() -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        let mut terminate = signal(SignalKind::terminate())?;
-        tokio::select! {
-            result = tokio::signal::ctrl_c() => result,
-            _ = terminate.recv() => Ok(()),
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        tokio::signal::ctrl_c().await
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn cli_supports_legacy_and_new_commands() {
-        let parsed = Cli::try_parse_from(["remedia-server", "--config", "test.json"]).unwrap();
-        assert_eq!(parsed.config, Some(PathBuf::from("test.json")));
-        assert!(parsed.command.is_none());
-        assert!(matches!(
-            Cli::try_parse_from(["remedia", "serve"]).unwrap().command,
-            Some(Commands::Serve)
-        ));
-        assert!(matches!(
-            Cli::try_parse_from(["remedia", "doctor"]).unwrap().command,
-            Some(Commands::Doctor)
-        ));
+    fn cli_operations_do_not_construct_a_native_runtime() {
+        assert!(Cli::try_parse_from(["remedia-server", "--help"]).is_err());
+        assert!(Cli::try_parse_from(["remedia-server", "--version"]).is_err());
         assert!(
-            Cli::try_parse_from(["remedia", "--list", "--json"])
+            Cli::try_parse_from(["remedia-server", "--list"])
                 .unwrap()
                 .list
         );
+        assert!(
+            Cli::try_parse_from(["remedia-server", "--generate-config-file"])
+                .unwrap()
+                .generate_config_file
+                .is_some()
+        );
         assert!(matches!(
-            Cli::try_parse_from(["remedia", "upgrade", "--no-ffmpeg"])
+            Cli::try_parse_from(["remedia-server", "doctor"])
+                .unwrap()
+                .command,
+            Some(Commands::Doctor)
+        ));
+    }
+
+    #[test]
+    fn upgrade_alias_remains_supported() {
+        assert!(matches!(
+            Cli::try_parse_from(["remedia-server", "upgrade", "--no-ffmpeg"])
                 .unwrap()
                 .command,
             Some(Commands::Update { no_ffmpeg: true })
         ));
-    }
-
-    #[test]
-    fn cli_accepts_optional_config_path_and_env_file_flags() {
-        let args = Cli::try_parse_from([
-            "remedia-server",
-            "--generate-config-file",
-            "--env-file",
-            ".env",
-            "--optional-env-file",
-            ".env.local",
-        ])
-        .unwrap();
-        assert_eq!(
-            args.generate_config_file,
-            Some(PathBuf::from("remedia.config.json"))
-        );
-        assert_eq!(args.env_files, vec![PathBuf::from(".env")]);
-        assert_eq!(args.optional_env_files, vec![PathBuf::from(".env.local")]);
-        let custom =
-            Cli::try_parse_from(["remedia", "--generate-config-file", "custom.json"]).unwrap();
-        assert_eq!(
-            custom.generate_config_file,
-            Some(PathBuf::from("custom.json"))
-        );
-    }
-
-    #[test]
-    fn generated_config_is_secure_and_refuses_to_overwrite() {
-        let path = std::env::temp_dir().join(format!(
-            "remedia-test-config-{}-{}.json",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
-        generate_config_file(&path).unwrap();
-        assert!(generate_config_file(&path).is_err());
-        let content: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(content["bind"]["host"], "127.0.0.1");
-        assert_eq!(
-            content["users"][0]["password"],
-            "env('REMEDIA_RPC_PASSWORD')"
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o077, 0);
-        }
-        fs::remove_file(path).unwrap();
     }
 }

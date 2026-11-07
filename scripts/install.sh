@@ -37,6 +37,7 @@ else
   tag="v${VERSION#v}"
 fi
 asset="remedia-server-$target.tar.gz"
+runtime_asset="remedia-server-runtime-$target"
 url="https://github.com/$REPO/releases/download/$tag/$asset"
 echo "Installing Remedia $tag for $target"
 curl -fL --retry 3 -o "$tmp/server.tar.gz" "$url"
@@ -51,13 +52,16 @@ else
 fi
 [ "$actual" = "$digest" ] || { echo "Release checksum mismatch" >&2; exit 1; }
 tar -tzf "$tmp/server.tar.gz" | while IFS= read -r item; do
-  case "$item" in "$asset"|LICENSE|THIRD_PARTY_NOTICES.md|THIRD_PARTY_LICENSES.txt) ;; *) echo "Unexpected archive entry $item" >&2; exit 1 ;; esac
+  case "$item" in "remedia-server-$target"|"remedia-server-runtime-$target"|LICENSE|THIRD_PARTY_NOTICES.md|THIRD_PARTY_LICENSES.txt) ;; *) echo "Unexpected archive entry $item" >&2; exit 1 ;; esac
 done
 mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/libexec" "$INSTALL_DIR/licenses"
 tar -xzf "$tmp/server.tar.gz" -C "$tmp"
 # Never truncate a currently running executable. Rename a fully written binary instead.
 staged="$INSTALL_DIR/libexec/.remedia-server-$.new"
+runtime_staged="$INSTALL_DIR/libexec/.remedia-server-runtime-$.new"
 install -m 755 "$tmp/remedia-server-$target" "$staged"
+install -m 755 "$tmp/$runtime_asset" "$runtime_staged"
+mv -f "$runtime_staged" "$INSTALL_DIR/libexec/remedia-server-runtime"
 mv -f "$staged" "$INSTALL_DIR/libexec/remedia-server"
 for item in LICENSE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.txt; do
   cp "$tmp/$item" "$INSTALL_DIR/licenses/$item"
