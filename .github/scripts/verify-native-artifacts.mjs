@@ -29,7 +29,9 @@ const runtimeBinary = join(
 );
 const nativeBinaries = [`${packageDirectory}/${addons[0]}`, runtimeBinary];
 const binaries = [serverBinary, ...nativeBinaries];
-console.log(`Testing native addon ${addons[0]}, CLI ${serverName}, and runtime ${basename(runtimeBinary)}`);
+console.log(
+  `Testing native addon ${addons[0]}, CLI ${serverName}, and runtime ${basename(runtimeBinary)}`,
+);
 const version = execFileSync(serverBinary, ['--version'], {
   encoding: 'utf8',
   env: { ...process.env, LD_LIBRARY_PATH: '', DYLD_LIBRARY_PATH: '' },
@@ -99,7 +101,9 @@ function rejectDynamicOpus(output, binary, pattern) {
 function rejectDependencies(output, names, binary) {
   for (const name of names) {
     if (output.toLowerCase().includes(name.toLowerCase())) {
-      throw new Error(`${binary} unexpectedly links to ${name}; the CLI must not require FFmpeg to start`);
+      throw new Error(
+        `${binary} unexpectedly links to ${name}; the CLI must not require FFmpeg to start`,
+      );
     }
   }
 }
