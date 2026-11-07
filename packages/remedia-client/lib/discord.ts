@@ -1390,7 +1390,10 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
 
     const onVoiceState = (event: VoiceLifecycleEventMap['voiceStateChanged'][0]): void => {
       const state = event.state;
-      if (this.#attempt && state === 'connected') return;
+      // During an in-flight join, the attempt owns the final state. A failed
+      // transport may be retried with fresh Gateway credentials, so do not
+      // publish a terminal state while recovery is still possible.
+      if (this.#attempt && (state === 'connected' || state === 'failed' || state === 'disconnected')) return;
       if (this.#connectionState === state) return;
       if (
         (state === 'failed' || state === 'disconnected') &&
@@ -1415,6 +1418,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     this.#backendUnsubscribers.push(() => backend.off(VoiceEvent.voiceStateChanged, onVoiceState));
 
     const onVoiceFailed = (event: VoiceLifecycleEventMap['voiceFailed'][0]): void => {
+      if (this.#attempt) return; // #failAttempt reports the final error after bounded retries.
       this.#emitVoiceFailure(event.error);
     };
     backend.on(VoiceEvent.voiceFailed, onVoiceFailed);
