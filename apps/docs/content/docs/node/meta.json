@@ -1,4 +1,4 @@
 {
   "title": "Node.js bindings",
-  "pages": ["bindings", "distribution"]
+  "pages": ["bindings", "ffmpeg-9", "distribution"]
 }

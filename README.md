@@ -36,10 +36,9 @@ npm install @remedia/client
 npm install @remedia/client @remedia/node
 ```
 
-Install **FFmpeg 7 shared libraries** separately on hosts running the native addon or standalone
+Install **FFmpeg 9 shared libraries** separately on hosts running the native addon or standalone
 server. They are not bundled. Remote-only clients do not need FFmpeg or the native addon.
-See the [distribution guide](apps/docs/content/docs/node/distribution.mdx) for supported targets
-and installation details.
+See [installing FFmpeg 9](apps/docs/content/docs/node/ffmpeg-9.mdx) and the [distribution guide](apps/docs/content/docs/node/distribution.mdx) for supported targets.
 
 ## Example
 

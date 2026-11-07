@@ -31,9 +31,9 @@ Additional npm platform packages are included by the current release packer:
 
 | Target                     | Verification configured in CI                                         |
 | -------------------------- | --------------------------------------------------------------------- |
-| Linux x64 and ARM64 musl   | Cross-build with target FFmpeg 7; no native runtime integration tests |
-| Linux ARMv7 hard-float GNU | Cross-build with target FFmpeg 7; no native runtime integration tests |
-| Windows x86 and ARM64 MSVC | Cross-build with target FFmpeg 7; no native runtime integration tests |
+| Linux x64 and ARM64 musl   | Cross-build with target FFmpeg 9; no native runtime integration tests |
+| Linux ARMv7 hard-float GNU | Cross-build with target FFmpeg 9; no native runtime integration tests |
+| Windows x86 and ARM64 MSVC | Cross-build with target FFmpeg 9; no native runtime integration tests |
 | Android ARM64 and ARMv7    | NDK 27.2 / API 24 cross-build; no native runtime integration tests    |
 | FreeBSD x64                | FreeBSD 15.1 VM build and native runtime integration tests            |
 
@@ -43,20 +43,20 @@ in the first table have standalone server release binaries. WASI is excluded.
 
 ## FFmpeg runtime libraries
 
-Remedia links dynamically to FFmpeg 7. Install compatible FFmpeg 7 shared libraries on the runtime
+Remedia links dynamically to FFmpeg 9. Install compatible FFmpeg 9 shared libraries on the runtime
 machine before loading @remedia/node. npm installs the Remedia addon but does not install FFmpeg.
 The addon expects these FFmpeg library ABI majors:
 
-- libavcodec 61
-- libavformat 61
-- libavutil 59
-- libavfilter 10
-- libswresample 5
+- libavcodec 63
+- libavformat 63
+- libavutil 61
+- libavfilter 12
+- libswresample 7
 
 Linux GNU and macOS releases are linked against the matching shared FFmpeg libraries. Windows
-requires the matching FFmpeg 7 DLLs and a compatible Microsoft Visual C++ v14 runtime. The Opus
+requires the matching FFmpeg 9 DLLs and a compatible Microsoft Visual C++ v14 runtime. The Opus
 encoder is built from bundled source and statically linked; a separate system Opus library is not
-required. See the [Node.js bindings guide](/docs/node/bindings) for local build prerequisites.
+required. See the [FFmpeg 9 installation guide](/docs/node/ffmpeg-9) for platform-specific setup and the [Node.js bindings guide](/docs/node/bindings) for local build prerequisites.
 
 The generated platform packages include os and cpu restrictions. Linux GNU and musl packages
 also declare their matching libc value. These fields let npm select an appropriate package and
@@ -82,23 +82,23 @@ Both packages require Node.js 22.18.0 or newer and use ESM. See
 
 ## Runtime discovery and troubleshooting
 
-Install a shared FFmpeg **7** build matching the process CPU and OS/libc, including its transitive
+Install a shared FFmpeg **9** build matching the process CPU and OS/libc, including its transitive
 shared dependencies. Having an `ffmpeg` executable on `PATH` alone is insufficient.
 
 - Linux: install the libraries into the loader's configured directories (and update `ldconfig` when
-  appropriate), or set `LD_LIBRARY_PATH=/path/to/ffmpeg7/lib` before starting Node or the server.
+  appropriate), or set `LD_LIBRARY_PATH=/path/to/ffmpeg9/lib` before starting Node or the server.
   FreeBSD also supports `LD_LIBRARY_PATH`, commonly with libraries under `/usr/local/lib`.
-- macOS: use `brew install ffmpeg@7`; before launch set
-  `DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib"`. Mach-O install names may refer to the
+- macOS: use `brew install ffmpeg`; before launch set
+  `DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg)/lib"`. Mach-O install names may refer to the
   Homebrew prefix used at build time. Inspect with `otool -L`; a different prefix may require a
   local source build. Protected launch contexts may strip `DYLD_*` variables.
-- Windows: add the directory containing `avcodec-61.dll`, `avformat-61.dll`, `avutil-59.dll`,
-  `avfilter-10.dll`, `swresample-5.dll` and their dependencies to `PATH` before launch. Install
+- Windows: add the directory containing `avcodec-63.dll`, `avformat-63.dll`, `avutil-61.dll`,
+  `avfilter-12.dll`, `swresample-7.dll` and their dependencies to `PATH` before launch. Install
   the Microsoft Visual C++ v14 Redistributable matching the process architecture.
 - Android: supply matching shared libraries in the application's native library search path;
   these packages have build-only verification and are not a tested Android deployment recipe.
 
-For `Cannot find native binding`, `ERR_DLOPEN_FAILED`, missing DLL, or missing shared-library
+For complete OS-specific installation examples, follow [installing FFmpeg 9](/docs/node/ffmpeg-9).\n\nFor `Cannot find native binding`, `ERR_DLOPEN_FAILED`, missing DLL, or missing shared-library
 errors, check that optional npm dependencies are enabled and that the selected `@remedia/node-*`
 package matches Node's architecture (`node -p process.arch`) and Linux libc. Reinstall with optional
 dependencies enabled if necessary. Inspect linked libraries with `ldd` on Linux/FreeBSD,

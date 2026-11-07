@@ -239,7 +239,7 @@ previous-callback getter, so Remedia cannot chain an arbitrary custom native cal
 FFmpeg worker-thread messages also cannot always be attributed to the Remedia operation that
 created them. These process-global logging limits are documented in the observability guide.
 
-Building `remedia-core` requires the FFmpeg 7 development libraries (libavformat, libavcodec,
+Building `remedia-core` requires the FFmpeg 9 development libraries (libavformat, libavcodec,
 libavutil, libavfilter, and libswresample). Cargo builds libopus from the `opus2` bundled source
 and statically links the Opus adapter into Remedia binaries, so a separate system libopus development
 package is not required. CI installs FFmpeg development/runtime libraries on each platform. No
