@@ -22,6 +22,40 @@ fn cli(home: &Path) -> Command {
 }
 
 #[test]
+fn cli_commands_remain_available_without_ffmpeg_loader_paths() {
+    let root = temp_root();
+    let config = root.join("starter.json");
+    let commands: Vec<Vec<&str>> = vec![
+        vec!["--version"],
+        vec!["--help"],
+        vec!["update", "--help"],
+        vec!["--list", "--json"],
+    ];
+    for args in commands {
+        let output = cli(&root)
+            .env_remove("LD_LIBRARY_PATH")
+            .env_remove("DYLD_LIBRARY_PATH")
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let output = cli(&root)
+        .env_remove("LD_LIBRARY_PATH")
+        .env_remove("DYLD_LIBRARY_PATH")
+        .args(["--generate-config-file", config.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(config.exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn generated_configuration_is_not_overwritten() {
     let root = temp_root();
     let path = root.join("config.json");
