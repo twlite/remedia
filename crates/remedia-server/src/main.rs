@@ -76,11 +76,15 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             None | Some(Commands::Serve | Commands::Doctor)
         );
     if !uses_config && (!cli.env_files.is_empty() || !cli.optional_env_files.is_empty()) {
-        return Err("--env-file and --optional-env-file are only valid with serve or doctor".into());
+        return Err(
+            "--env-file and --optional-env-file are only valid with serve or doctor".into(),
+        );
     }
     if let Some(path) = &cli.generate_config_file {
         if cli.command.is_some() || cli.list || cli.json {
-            return Err("--generate-config-file cannot be combined with a command or --list/--json".into());
+            return Err(
+                "--generate-config-file cannot be combined with a command or --list/--json".into(),
+            );
         }
         return generate_config_file(path);
     }
@@ -109,12 +113,18 @@ fn native_executable() -> io::Result<PathBuf> {
         }
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("REMEDIA_SERVER_RUNTIME points to a missing file: {}", path.display()),
+            format!(
+                "REMEDIA_SERVER_RUNTIME points to a missing file: {}",
+                path.display()
+            ),
         ));
     }
     let executable = std::env::current_exe()?;
     let parent = executable.parent().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::NotFound, "cannot locate the CLI installation directory")
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "cannot locate the CLI installation directory",
+        )
     })?;
     let base = format!("remedia-server-runtime{}", std::env::consts::EXE_SUFFIX);
     let mut candidates = vec![parent.join(base)];
@@ -149,7 +159,11 @@ fn launch_runtime(cli: &Cli, doctor: bool) -> Result<(), Box<dyn std::error::Err
     if doctor {
         command.arg("--doctor");
         println!("Remedia CLI {}", env!("CARGO_PKG_VERSION"));
-        println!("Platform: {} / {}", std::env::consts::OS, std::env::consts::ARCH);
+        println!(
+            "Platform: {} / {}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
         let output = command.output().map_err(|error| {
             format!("failed to start the native runtime: {error}. Install the required FFmpeg 9 shared libraries")
         })?;
@@ -207,7 +221,10 @@ fn generate_config_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     file.write_all(&data)?;
     file.sync_all()?;
     println!("Generated {}", path.display());
-    println!("Set REMEDIA_RPC_PASSWORD, then run: remedia-server --config {}", path.display());
+    println!(
+        "Set REMEDIA_RPC_PASSWORD, then run: remedia-server --config {}",
+        path.display()
+    );
     Ok(())
 }
 
@@ -258,13 +275,21 @@ mod tests {
     fn cli_operations_do_not_construct_a_native_runtime() {
         assert!(Cli::try_parse_from(["remedia-server", "--help"]).is_err());
         assert!(Cli::try_parse_from(["remedia-server", "--version"]).is_err());
-        assert!(Cli::try_parse_from(["remedia-server", "--list"]).unwrap().list);
-        assert!(Cli::try_parse_from(["remedia-server", "--generate-config-file"])
-            .unwrap()
-            .generate_config_file
-            .is_some());
+        assert!(
+            Cli::try_parse_from(["remedia-server", "--list"])
+                .unwrap()
+                .list
+        );
+        assert!(
+            Cli::try_parse_from(["remedia-server", "--generate-config-file"])
+                .unwrap()
+                .generate_config_file
+                .is_some()
+        );
         assert!(matches!(
-            Cli::try_parse_from(["remedia-server", "doctor"]).unwrap().command,
+            Cli::try_parse_from(["remedia-server", "doctor"])
+                .unwrap()
+                .command,
             Some(Commands::Doctor)
         ));
     }
