@@ -63,7 +63,7 @@ fn parse_value(raw: &str) -> Result<String, &'static str> {
         _ => {
             let mut end = input.len();
             for (offset, ch) in input.char_indices() {
-                if ch == '#' && (offset == 0 || input[..offset].ends_with(char::is_whitespace)) {
+                if ch == '#' && (offset == 0 || input[..offset].chars().next_back().is_some_and(char::is_whitespace)) {
                     end = offset;
                     break;
                 }
