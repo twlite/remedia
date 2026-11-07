@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::net::IpAddr;
@@ -98,6 +99,27 @@ impl ServerConfig {
     ///
     /// Relative media roots are resolved relative to the configuration file.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+        Self::from_file_with_lookup(path, |key| env::var(key).ok())
+    }
+
+    /// Load configuration using a map of values read from CLI environment files.
+    ///
+    /// Variables from the current process have precedence over file values.
+    /// This does not modify the process-wide environment or expose any new
+    /// interpolation syntax beyond env('KEY').
+    pub fn from_file_with_env(
+        path: impl AsRef<Path>,
+        file_values: &HashMap<String, String>,
+    ) -> Result<Self, ConfigError> {
+        Self::from_file_with_lookup(path, |key| {
+            env::var(key).ok().or_else(|| file_values.get(key).cloned())
+        })
+    }
+
+    fn from_file_with_lookup(
+        path: impl AsRef<Path>,
+        get_env: impl FnMut(&str) -> Option<String>,
+    ) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         let contents = fs::read_to_string(path).map_err(|source| ConfigError::Io {
             path: path.to_path_buf(),
@@ -107,7 +129,7 @@ impl ServerConfig {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
-        Self::parse_with(&contents, base, |key| env::var(key).ok())
+        Self::parse_with(&contents, base, get_env)
     }
 
     fn parse_with(
