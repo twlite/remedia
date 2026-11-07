@@ -49,7 +49,9 @@ try {
         Copy-Item $downloaded.FullName $mamba
       }
     }
-    & $mamba create --yes --prefix (Join-Path $InstallDir 'ffmpeg9') --override-channels -c conda-forge 'ffmpeg=9.0.2'
+    $prefix = Join-Path $InstallDir 'ffmpeg9'
+    $action = if (Test-Path (Join-Path $prefix 'conda-meta')) { 'install' } else { 'create' }
+    & $mamba $action --yes --prefix $prefix --override-channels -c conda-forge 'ffmpeg=9.0.2'
     if ($LASTEXITCODE -ne 0) { throw 'FFmpeg 9 provisioning failed.' }
     if (!(Test-Path (Join-Path $InstallDir 'ffmpeg9\Library\bin\avcodec-63.dll'))) { throw 'FFmpeg 9 DLLs were not installed.' }
   }
