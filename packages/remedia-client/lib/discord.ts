@@ -1393,7 +1393,11 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       // During an in-flight join, the attempt owns the final state. A failed
       // transport may be retried with fresh Gateway credentials, so do not
       // publish a terminal state while recovery is still possible.
-      if (this.#attempt && (state === 'connected' || state === 'failed' || state === 'disconnected')) return;
+      if (
+        this.#attempt &&
+        (state === 'connected' || state === 'failed' || state === 'disconnected')
+      )
+        return;
       if (this.#connectionState === state) return;
       if (
         (state === 'failed' || state === 'disconnected') &&
