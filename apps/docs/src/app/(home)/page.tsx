@@ -10,6 +10,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { HomeSearch } from '@/components/home-search';
+import { InstallCommand } from '@/components/install-command';
 import { version } from '../../../../../packages/remedia-node/package.json';
 import styles from './page.module.css';
 
@@ -140,6 +141,7 @@ export default function HomePage() {
               High performance, low overhead audio playback with a unified engine for both embedded
               and remote setups. Built in Rust, designed for discord-player and beyond.
             </p>
+            <InstallCommand />
             <div className={styles.buttons}>
               <Link href="/docs" className={styles.primaryButton}>
                 Get Started <ArrowRight size={19} aria-hidden="true" />

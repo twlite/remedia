@@ -579,7 +579,9 @@ mod monitor;
 use monitor::*;
 
 mod statistics;
-use statistics::*;
+pub(crate) use statistics::node_stats;
+#[cfg(test)]
+use statistics::{load_average_1m, resident_memory_bytes};
 
 mod params;
 pub(crate) use params::*;

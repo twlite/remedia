@@ -1,0 +1,61 @@
+.wrapper {
+  margin-top: 30px;
+  width: 100%;
+  max-width: 590px;
+}
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 9px;
+}
+.tabs button {
+  color: #9b9da4;
+  background: transparent;
+  padding: 7px 11px;
+  border-radius: 7px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tabs button[aria-selected='true'] {
+  background: #ffffff12;
+  color: #f4f4f5;
+}
+.tabs button:focus-visible,
+.command button:focus-visible {
+  outline: 2px solid #c28aff;
+  outline-offset: 2px;
+}
+.command {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #ffffff25;
+  border-radius: 10px;
+  background: #101213;
+  padding: 7px 8px 7px 13px;
+}
+.command code {
+  flex: 1;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: nowrap;
+  overflow-x: auto;
+  color: #e6e6e7;
+  scrollbar-width: thin;
+}
+.command button {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  color: #bfc0c4;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.command button:hover {
+  color: white;
+  background: #ffffff12;
+}

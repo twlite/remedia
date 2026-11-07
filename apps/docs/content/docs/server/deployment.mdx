@@ -10,7 +10,7 @@ description: Local operation, TLS termination, network restrictions, and indepen
 Standalone releases cover Linux x64/ARM64 glibc, macOS x64/ARM64, and Windows x64 MSVC.
 Download the target `.tar.gz` archive and keep its `LICENSE` and `THIRD_PARTY_NOTICES.md` plus the `THIRD_PARTY_LICENSES.txt` appendix with the
 executable. Raw binaries are also accompanied by those notices in the release assets.
-FFmpeg is not included: install FFmpeg 9 shared runtime libraries independently on the server host.
+The release archives do not bundle FFmpeg. The [one-command installer](/docs/server/installation) provisions FFmpeg 9 in an isolated directory, or you can install compatible shared libraries independently.
 See [runtime ABI versions and library discovery](/docs/node/distribution) and
 [licensing and media responsibility](/docs/licensing). The server needs no Node.js runtime.
 

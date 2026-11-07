@@ -81,6 +81,12 @@ impl ServerHandle {
         self.local_addr
     }
 
+    /// Snapshot the same live metrics returned by the authenticated `node.stats` RPC.
+    /// This is used by the local CLI discovery endpoint without exposing RPC credentials.
+    pub fn statistics(&self) -> serde_json::Value {
+        crate::rpc::node_stats(&self.inner)
+    }
+
     /// Request graceful shutdown, stop all players, disconnect voice transports, and flush OTLP.
     pub async fn shutdown(&self) -> Result<(), ServerError> {
         self.inner.shutdown.cancel();

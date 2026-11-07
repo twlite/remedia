@@ -38,3 +38,20 @@ pub use playback::{
     PlaybackSession, PlaybackState, PlaybackWaiter,
 };
 pub use source::{CancellationToken, InputSource};
+
+/// Report the runtime versions of the five FFmpeg libraries linked by Remedia.
+///
+/// Each returned version is FFmpeg's packed `(major << 16) | (minor << 8) | micro`
+/// value, not the executable version. Useful for diagnosing ABI mismatches.
+pub fn ffmpeg_runtime_versions() -> [(&'static str, u32); 5] {
+    // These are thread-safe, side-effect-free version functions in FFmpeg's C API.
+    unsafe {
+        [
+            ("avcodec", ffmpeg_next::ffi::avcodec_version()),
+            ("avformat", ffmpeg_next::ffi::avformat_version()),
+            ("avutil", ffmpeg_next::ffi::avutil_version()),
+            ("avfilter", ffmpeg_next::ffi::avfilter_version()),
+            ("swresample", ffmpeg_next::ffi::swresample_version()),
+        ]
+    }
+}

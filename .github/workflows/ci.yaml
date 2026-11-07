@@ -175,6 +175,8 @@ jobs:
         if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
         shell: micromamba-shell {0}
         run: node .github/scripts/verify-native-deps.mjs --build
+      - name: Validate POSIX installer syntax
+        run: sh -n scripts/install.sh
       - run: pnpm lint
       - run: pnpm typecheck
       - name: Check formatting
