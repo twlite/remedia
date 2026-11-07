@@ -1274,8 +1274,8 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
         attempt.requestSent = true;
         this.#tryStartRemoteConnection(attempt);
       })
-      .catch((error: unknown) => {
-        this.#failAttempt(attempt, asError(error), true);
+      .catch((sendError: unknown) => {
+        this.#failAttempt(attempt, asError(sendError), true);
       });
     return true;
   }
