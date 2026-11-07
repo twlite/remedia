@@ -186,6 +186,12 @@ jobs:
         run: |
           $rustHost = (rustc -vV | Select-String '^host: ').ToString().Substring(6)
           if ($rustHost -ne $env:RUST_TARGET) { throw "Expected $env:RUST_TARGET but found $rustHost" }
+      - name: Diagnose Cargo.lock resolution for FFmpeg 9
+        if: inputs.os == 'linux'
+        shell: micromamba-shell {0}
+        run: |
+          cargo update -p ffmpeg-next --precise 9.0.0
+          git diff -- Cargo.lock
       - name: Run Rust workspace tests in release profile
         if: inputs.os == 'linux'
         shell: micromamba-shell {0}
