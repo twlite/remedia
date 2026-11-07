@@ -184,7 +184,7 @@ jobs:
         if: failure() && steps.formatting.outcome == 'failure'
         run: |
           pnpm exec oxfmt .
-          git diff -- apps/docs/content/docs/node/ffmpeg-9.mdx .github/scripts/release.test.mjs
+          git diff -- .github/scripts/release.test.mjs
       - run: cargo fmt --all -- --check
         if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings

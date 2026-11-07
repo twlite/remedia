@@ -9,13 +9,13 @@ Remote-only `@remedia/client` installations do **not** need FFmpeg on the bot ho
 
 ## Required library versions
 
-| Library | ABI major | Linux / FreeBSD | macOS | Windows |
-| --- | --- | --- | --- | --- |
-| libavcodec | 63 | `libavcodec.so.63` | `libavcodec.63.dylib` | `avcodec-63.dll` |
-| libavformat | 63 | `libavformat.so.63` | `libavformat.63.dylib` | `avformat-63.dll` |
-| libavutil | 61 | `libavutil.so.61` | `libavutil.61.dylib` | `avutil-61.dll` |
-| libavfilter | 12 | `libavfilter.so.12` | `libavfilter.12.dylib` | `avfilter-12.dll` |
-| libswresample | 7 | `libswresample.so.7` | `libswresample.7.dylib` | `swresample-7.dll` |
+| Library       | ABI major | Linux / FreeBSD      | macOS                   | Windows            |
+| ------------- | --------- | -------------------- | ----------------------- | ------------------ |
+| libavcodec    | 63        | `libavcodec.so.63`   | `libavcodec.63.dylib`   | `avcodec-63.dll`   |
+| libavformat   | 63        | `libavformat.so.63`  | `libavformat.63.dylib`  | `avformat-63.dll`  |
+| libavutil     | 61        | `libavutil.so.61`    | `libavutil.61.dylib`    | `avutil-61.dll`    |
+| libavfilter   | 12        | `libavfilter.so.12`  | `libavfilter.12.dylib`  | `avfilter-12.dll`  |
+| libswresample | 7         | `libswresample.so.7` | `libswresample.7.dylib` | `swresample-7.dll` |
 
 These majors are confirmed against [FFmpeg 9.0.2](https://ffmpeg.org/download.html). FFmpeg 7 or 8 shared libraries **cannot** be substituted by renaming files or creating symlinks.
 
