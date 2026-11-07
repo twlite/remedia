@@ -77,7 +77,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         return generate_config_file(&path);
     }
-    if cli.list || matches!(cli.command, Some(Commands::List)) {
+    if cli.list || matches!(cli.command.as_ref(), Some(Commands::List)) {
         if cli.list && cli.command.is_some() {
             return Err("--list cannot be combined with a subcommand".into());
         }
