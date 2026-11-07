@@ -536,7 +536,7 @@ export type BeforePlayHook<Metadata = unknown> = (
 export interface DiscordConnectOptions {
   /** Optional signal that cancels Gateway negotiation and pending transport setup. */
   signal?: AbortSignal;
-  /** Maximum connection negotiation time in milliseconds; defaults to 45000. */
+  /** Maximum connection negotiation time in milliseconds; defaults to 100000. */
   timeoutMs?: number;
 }
 

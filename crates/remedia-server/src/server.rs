@@ -225,6 +225,10 @@ async fn handle_connection(
     ));
     let in_flight = Arc::new(Semaphore::new(inner.config.limits.max_in_flight_requests));
     let request_timeout = Duration::from_millis(inner.config.limits.request_timeout_ms);
+    // A voice join includes WebSocket, UDP and mandatory DAVE setup. Do not apply
+    // the ordinary RPC deadline to it, or the caller can leave the guild before
+    // Discord has completed its handshake.
+    let voice_connect_timeout = request_timeout.max(Duration::from_secs(75));
 
     loop {
         tokio::select! {
@@ -301,7 +305,12 @@ async fn handle_connection(
                             } else {
                                 execute.with_subscriber(tracing::Dispatch::none())
                             };
-                            let response = match tokio::time::timeout(request_timeout, execute).await {
+                            let deadline = if command_name == "voice.connect" {
+                                voice_connect_timeout
+                            } else {
+                                request_timeout
+                            };
+                            let response = match tokio::time::timeout(deadline, execute).await {
                                 Ok(Ok(result)) => RpcResponse::success(id.clone(), result),
                                 Ok(Err(error)) => RpcResponse::failure(id.clone(), error.code, error.message),
                                 Err(_) => RpcResponse::failure(id.clone(), "request_timeout", "request exceeded the configured timeout"),

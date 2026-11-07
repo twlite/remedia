@@ -5,7 +5,7 @@ import {
   PlaybackSessionEvents as PlaybackEvent,
   VoiceSessionEvents as VoiceEvent,
 } from './types.js';
-import { SessionLostError, asError } from './errors.js';
+import { RemediaRpcError, SessionLostError, asError } from './errors.js';
 import { FilterControls, validateVolume } from './filters.js';
 import { PlaybackHooks } from './hooks.js';
 import type { GuildBackend } from './adapters.js';
@@ -88,7 +88,8 @@ export interface DiscordSessionRuntime {
   commitMigration(guildId: string, fromNodeId: string, toNodeId: string): Promise<void>;
 }
 
-const DEFAULT_CONNECT_TIMEOUT_MS = 45_000;
+// Cover the dedicated 80-second remote voice RPC deadline plus Gateway dispatch latency.
+const DEFAULT_CONNECT_TIMEOUT_MS = 100_000;
 
 interface BufferedPlaybackEvent {
   event: keyof PlaybackLifecycleEventMap<unknown>;
@@ -467,7 +468,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
 
   /**
    * Join the requested voice destination and wait for Gateway credentials and transport readiness. Concurrent calls share the pending attempt.
-   * @param options - Optional cancellation signal and positive timeout in milliseconds; defaults to 45000.
+   * @param options - Optional cancellation signal and positive timeout in milliseconds; defaults to 100000.
    * @returns Resolves when connected; rejects on timeout, cancellation, session loss, or transport failure.
    */
   connect(options: DiscordConnectOptions = {}): Promise<void> {
@@ -1219,6 +1220,11 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     if (attempt.internal && !attempt.moving && error.name !== 'AbortError') {
       const transportGeneration = this.#nextTransportGeneration();
       void this.#backend?.failVoiceRecovery?.(transportGeneration).catch(() => undefined);
+    } else if (!attempt.internal && !attempt.moving && this.#backend?.nodeType === 'remote') {
+      // A voice.connect RPC may have timed out before the server finished. Fence
+      // that request before permitting a later join to install a stale transport.
+      const transportGeneration = this.#nextTransportGeneration();
+      void this.#backend.disconnect(transportGeneration).catch(() => undefined);
     }
     const shouldLeave = leaveGateway && this.#joinRequested;
     this.#joinRequested = false;
@@ -1229,9 +1235,14 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       );
   }
 
-  #retryGatewayCredentials(attempt: ConnectAttempt, _error: Error): boolean {
+  #retryGatewayCredentials(attempt: ConnectAttempt, error: Error): boolean {
+    const retryInitial =
+      !attempt.internal &&
+      this.#backend?.nodeType === 'remote' &&
+      error instanceof RemediaRpcError &&
+      (error.code === 'transport_failed' || error.code === 'request_timeout');
     if (
-      !attempt.internal ||
+      (!attempt.internal && !retryInitial) ||
       attempt.moving ||
       !this.#isCurrent(attempt) ||
       attempt.retryCount >= 2 ||
@@ -1242,7 +1253,15 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     attempt.retryCount += 1;
     attempt.requestSent = false;
     attempt.sequenceFloor = this.#runtime.gatewaySequence();
-    attempt.voiceState ??= this.#voiceSessionId ? { sessionId: this.#voiceSessionId } : undefined;
+    if (retryInitial) {
+      // A terminated first session must not be reused. Require new Gateway
+      // dispatches for both credentials rather than pairing a stale session ID
+      // with the replacement server token.
+      attempt.voiceState = undefined;
+      this.#voiceSessionId = undefined;
+    } else {
+      attempt.voiceState ??= this.#voiceSessionId ? { sessionId: this.#voiceSessionId } : undefined;
+    }
     attempt.voiceServer = undefined;
     attempt.credentialRevision += 1;
     this.#suspendRemoteVoice(attempt);
@@ -1255,8 +1274,8 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
         attempt.requestSent = true;
         this.#tryStartRemoteConnection(attempt);
       })
-      .catch((error: unknown) => {
-        this.#failAttempt(attempt, asError(error), true);
+      .catch((sendError: unknown) => {
+        this.#failAttempt(attempt, asError(sendError), true);
       });
     return true;
   }
@@ -1371,7 +1390,14 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
 
     const onVoiceState = (event: VoiceLifecycleEventMap['voiceStateChanged'][0]): void => {
       const state = event.state;
-      if (this.#attempt && state === 'connected') return;
+      // During an in-flight join, the attempt owns the final state. A failed
+      // transport may be retried with fresh Gateway credentials, so do not
+      // publish a terminal state while recovery is still possible.
+      if (
+        this.#attempt &&
+        (state === 'connected' || state === 'failed' || state === 'disconnected')
+      )
+        return;
       if (this.#connectionState === state) return;
       if (
         (state === 'failed' || state === 'disconnected') &&
@@ -1396,6 +1422,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     this.#backendUnsubscribers.push(() => backend.off(VoiceEvent.voiceStateChanged, onVoiceState));
 
     const onVoiceFailed = (event: VoiceLifecycleEventMap['voiceFailed'][0]): void => {
+      if (this.#attempt) return; // #failAttempt reports the final error after bounded retries.
       this.#emitVoiceFailure(event.error);
     };
     backend.on(VoiceEvent.voiceFailed, onVoiceFailed);
