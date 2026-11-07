@@ -153,14 +153,12 @@ impl PcmFilterGraph {
                     || frame.channel_layout() != ffmpeg::ChannelLayout::STEREO
                     || frame.rate() != OUTPUT_SAMPLE_RATE_HZ
                 {
-                    return Err(FilterGraphError::Processing(
-                        format!(
-                            "FFmpeg filter output has format {:?}, layout {:?}, and rate {} Hz instead of packed 48 kHz stereo f32 PCM",
-                            frame.format(),
-                            frame.channel_layout(),
-                            frame.rate(),
-                        ),
-                    ));
+                    return Err(FilterGraphError::Processing(format!(
+                        "FFmpeg filter output has format {:?}, layout {:?}, and rate {} Hz instead of packed 48 kHz stereo f32 PCM",
+                        frame.format(),
+                        frame.channel_layout(),
+                        frame.rate(),
+                    )));
                 }
                 let samples_per_channel = frame.samples();
                 let scalars = samples_per_channel.checked_mul(2).ok_or_else(|| {

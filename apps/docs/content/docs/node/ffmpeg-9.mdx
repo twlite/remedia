@@ -66,6 +66,8 @@ Add the `Library\bin` directory to the environment of the **actual process** lau
 
 FreeBSD x64 is tested in a FreeBSD VM against a pinned FFmpeg 9.0.2 source build. Other targets may lack FFmpeg 9 packages for their operating system or CPU. The repository cross-compiles FFmpeg at commit `946fcce07b6dcd0331c8cc609192aeff5e1924f8` for Linux musl, Linux ARMv7, and Android API 24 builds; these are **build-only** targets and do not constitute runtime compatibility guarantees.
 
+For 32-bit targets, the build workflow applies a version-checked correction to the `ffmpeg-sys-next 9.0.1` Vulkan bindgen shim's pointer-size assertion. It does not change the Vulkan structure or its target-specific layout. This temporary workaround is required until the upstream binding crate ships a corrected assertion.
+
 If your platform lacks prebuilt FFmpeg 9 shared libraries, build FFmpeg 9.0.2 from source with the needed shared components. Ensure the installed libraries, headers, `pkg-config` metadata, and runtime loader paths all describe the **same** build.
 
 ## Verify before running

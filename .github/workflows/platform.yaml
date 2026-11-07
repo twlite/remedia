@@ -575,6 +575,15 @@ jobs:
         if: inputs.os == 'linux' || inputs.os == 'android'
         shell: bash
         run: node .github/scripts/verify-native-deps.mjs --build
+      - name: Patch ffmpeg-sys-next 9.0.1 Vulkan bindgen shim for 32-bit targets
+        if: inputs.target == 'armv7-unknown-linux-gnueabihf' || inputs.target == 'armv7-linux-androideabi' || inputs.target == 'i686-pc-windows-msvc'
+        shell: bash
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: |
+          cargo fetch --locked --target "$RUST_TARGET"
+          cargo metadata --locked --offline --format-version=1 --filter-platform "$RUST_TARGET" > /dev/null
+          node .github/scripts/patch-ffmpeg-sys-vulkan.mjs
       - name: Build Linux N-API addon for distribution
         if: inputs.os == 'linux'
         working-directory: packages/remedia-node
@@ -636,7 +645,7 @@ jobs:
           # The FreeBSD 15 package repositories do not contain the ffmpeg9
           # package. Compile the same pinned FFmpeg 9.0.2 revision used by the
           # cross-platform jobs instead of installing an unrelated FFmpeg major.
-          ffmpeg_source="$HOME/remedia-ffmpeg-7"
+          ffmpeg_source="$HOME/remedia-ffmpeg-9"
           git init -q "$ffmpeg_source"
           git -C "$ffmpeg_source" remote add origin https://github.com/FFmpeg/FFmpeg.git
           git -C "$ffmpeg_source" fetch --quiet --depth=1 origin 946fcce07b6dcd0331c8cc609192aeff5e1924f8
