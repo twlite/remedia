@@ -37,6 +37,9 @@ const MAX_TERMINAL_EVENTS = 128;
 const RESUME_ATTEMPTS = 4;
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const HEARTBEAT_TIMEOUT_MS = 10_000;
+// Voice WebSocket, UDP discovery and mandatory DAVE negotiation may outlast ordinary RPCs.
+// Keep this below the server's voice.connect deadline (75 seconds).
+const VOICE_CONNECT_RPC_TIMEOUT_MS = 80_000;
 
 export const RemoteNodeEvent = {
   status: 'status',
@@ -348,7 +351,7 @@ export class RemoteNodeAdapter
       channelId,
       ...credentials,
       ...(transportGeneration === undefined ? {} : { transportGeneration }),
-    });
+    }, { timeoutMs: Math.max(this.#requestTimeoutMs, VOICE_CONNECT_RPC_TIMEOUT_MS) });
   }
 
   async suspendVoice(guildId: string, transportGeneration?: number): Promise<void> {
@@ -524,9 +527,13 @@ export class RemoteNodeAdapter
     }
   }
 
-  request<Result>(command: string, params: Record<string, unknown> = {}): Promise<Result> {
+  request<Result>(
+    command: string,
+    params: Record<string, unknown> = {},
+    options: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<Result> {
     this.#assertHealthy();
-    return this.#rpc!.request<Result>(command, params);
+    return this.#rpc!.request<Result>(command, params, options);
   }
 
   async #connect(): Promise<void> {
