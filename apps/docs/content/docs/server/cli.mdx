@@ -1,0 +1,101 @@
+---
+title: Server CLI
+description: Start, diagnose, configure, update, and discover standalone Remedia processes.
+---
+
+# Server CLI
+
+The standalone executable is called `remedia-server`. The one-command installers also provide a shorter `remedia` launcher. Both accept the same options.
+
+## Start a server
+
+```sh
+remedia-server
+remedia-server serve --config ./remedia.config.json
+remedia-server --config /etc/remedia/server.json
+```
+
+Running without a subcommand is equivalent to `serve`. The default configuration path is `./remedia.config.json`, relative to the process working directory. A configuration file is required, and its contents are validated before the WebSocket listener opens.
+
+## Generate a configuration file
+
+```sh
+remedia-server --generate-config-file
+remedia-server --generate-config-file ./server.json
+```
+
+The optional path defaults to `./remedia.config.json`. Generation refuses to overwrite an existing file. On Unix, the new file is created with mode `0600`.
+
+The generated starter configuration uses loopback binding (`127.0.0.1:8787`), denies media file and URL sources by default, and references a password through `env('REMEDIA_RPC_PASSWORD')`. Supply that secret before starting the server. This intentionally differs from the repository's example configuration, which uses a sample media root and URL host.
+
+## Load dotenv files
+
+```sh
+remedia-server serve \
+  --config ./remedia.config.json \
+  --env-file .env \
+  --optional-env-file .env.remedia
+```
+
+- `--env-file PATH` requires the file to exist, be readable, and contain valid dotenv assignments. Missing or malformed files are an error.
+- `--optional-env-file PATH` skips a missing file, but unreadable or malformed existing files still cause an error.
+- Both flags can be repeated. Required files are loaded first in argument order, then optional files in argument order. A later file entry overrides the same key in an earlier file.
+- The already-defined process environment overrides any values loaded from files.
+
+Supported input is `KEY=value`, optional `export KEY=value`, single/double-quoted strings, blank lines, and comments. Double quotes support `\\n`, `\\r`, `\\t`, `\\\\`, and `\\"`. File values are literal; no command execution, shell expansion, variable substitution, or `$KEY` interpolation occurs.
+
+For example:
+
+```dotenv
+REMEDIA_RPC_PASSWORD='some-long-random-password'
+REMEDIA_BIND_HOST=127.0.0.1
+```
+
+```json
+{
+  "bind": { "host": "env('REMEDIA_BIND_HOST')", "port": 8787 },
+  "users": [{ "username": "media-bot", "password": "env('REMEDIA_RPC_PASSWORD')" }]
+}
+```
+
+**Scope:** dotenv values are available to JSON `env('KEY')` references. Remedia does not mutate the process-global environment, so SDK or observability settings read directly from the process environment (including `REMEDIA_LOG` and `OTEL_*`) must be exported through your shell, container, or service manager.
+
+The environment files may contain credentials. Limit their filesystem permissions and do not commit them to source control.
+
+## Diagnose the server
+
+```sh
+remedia-server doctor --config ./remedia.config.json --env-file .env
+```
+
+The doctor prints the server version, OS and architecture, executable path, and the **actual loaded** FFmpeg library versions for avcodec, avformat, avutil, avfilter, and swresample. It compares their ABI majors with the FFmpeg 9 requirements (63, 63, 61, 12, 7). It also validates the selected JSON configuration with the loaded dotenv values.
+
+A failing ABI check or invalid configuration produces a non-zero exit status. Dynamic linker failures can still prevent the executable from starting at all; in that case, inspect installed libraries and loader search paths using your OS tools. Doctor does not test remote audio URLs, Discord credentials, or external network access.
+
+## List running servers
+
+```sh
+remedia-server --list
+remedia-server list
+remedia-server --list --json
+```
+
+The table shows PID, bound listener address (including the actual port), active and maximum player/connection counts, resident memory where available, and processing/transport health. `--json` returns the raw live `node.stats` snapshot for each reachable server, plus its PID and listen address.
+
+Each running process registers a private control endpoint on `127.0.0.1` and writes a secret-bearing discovery record under `~/.remedia/run`. Only the current operating-system user's records are scanned. Discovery requests are authenticated with a random token, have a short timeout, and return **status only**, never RPC credentials or media URLs. The control listener is unrelated to the user-facing WebSocket port and cannot operate or restart servers.
+
+A server removes its record on graceful shutdown. If it crashes, a stale record can remain, but `--list` ignores records that do not answer the authenticated live query. This is local process discovery, not a global LAN scanner or process manager.
+
+Resident memory currently uses Linux `/proc` data; macOS and Windows can report `n/a` until those platform metrics are implemented.
+
+## Upgrade
+
+```sh
+remedia-server update
+remedia-server upgrade
+remedia-server update --no-ffmpeg
+```
+
+`upgrade` is an alias of `update`. It runs the verified platform installer embedded in the binary and defaults to the latest stable GitHub release. Set `REMEDIA_VERSION` for an explicit release and `REMEDIA_INSTALL_DIR` for a custom install location.
+
+The installer does not restart running server processes or manage services. Restart your service manually when ready. See [installation](/docs/server/installation) for the supported targets, FFmpeg requirements, checksums, and path setup.
