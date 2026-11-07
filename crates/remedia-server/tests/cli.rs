@@ -25,9 +25,21 @@ fn cli(home: &Path) -> Command {
 fn generated_configuration_is_not_overwritten() {
     let root = temp_root();
     let path = root.join("config.json");
-    assert!(cli(&root).args(["--generate-config-file", path.to_str().unwrap()]).status().unwrap().success());
+    assert!(
+        cli(&root)
+            .args(["--generate-config-file", path.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
     let initial = fs::read(&path).unwrap();
-    assert!(!cli(&root).args(["--generate-config-file", path.to_str().unwrap()]).status().unwrap().success());
+    assert!(
+        !cli(&root)
+            .args(["--generate-config-file", path.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
     assert_eq!(fs::read(&path).unwrap(), initial);
     fs::remove_dir_all(root).unwrap();
 }
@@ -38,20 +50,44 @@ fn env_files_and_doctor_are_strict() {
     let config = root.join("config.json");
     let required = root.join(".env");
     let absent = root.join(".missing");
-    fs::write(&config, r#"{"users":[{"username":"bot","password":"env('REMEDIA_TEST_CLI_PASSWORD')"}]}"#).unwrap();
+    fs::write(
+        &config,
+        r#"{"users":[{"username":"bot","password":"env('REMEDIA_TEST_CLI_PASSWORD')"}]}"#,
+    )
+    .unwrap();
     fs::write(&required, "REMEDIA_TEST_CLI_PASSWORD='test-secret'\n").unwrap();
     let passing = cli(&root)
-        .args(["doctor", "--config", config.to_str().unwrap(), "--env-file", required.to_str().unwrap(), "--optional-env-file", absent.to_str().unwrap()])
+        .args([
+            "doctor",
+            "--config",
+            config.to_str().unwrap(),
+            "--env-file",
+            required.to_str().unwrap(),
+            "--optional-env-file",
+            absent.to_str().unwrap(),
+        ])
         .output()
         .unwrap();
-    assert!(passing.status.success(), "{}", String::from_utf8_lossy(&passing.stderr));
+    assert!(
+        passing.status.success(),
+        "{}",
+        String::from_utf8_lossy(&passing.stderr)
+    );
 
-    assert!(!cli(&root)
-        .args(["doctor", "--config", config.to_str().unwrap(), "--env-file", absent.to_str().unwrap()])
-        .output()
-        .unwrap()
-        .status
-        .success());
+    assert!(
+        !cli(&root)
+            .args([
+                "doctor",
+                "--config",
+                config.to_str().unwrap(),
+                "--env-file",
+                absent.to_str().unwrap()
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -63,7 +99,13 @@ fn list_reads_live_server_stats_without_rpc_credentials() {
     fs::write(&config, r#"{"bind":{"host":"127.0.0.1","port":0},"users":[{"username":"bot","password":"env('REMEDIA_TEST_CLI_PASSWORD')"}]}"#).unwrap();
     fs::write(&password, "REMEDIA_TEST_CLI_PASSWORD=test-secret\n").unwrap();
     let mut server = cli(&root)
-        .args(["serve", "--config", config.to_str().unwrap(), "--env-file", password.to_str().unwrap()])
+        .args([
+            "serve",
+            "--config",
+            config.to_str().unwrap(),
+            "--env-file",
+            password.to_str().unwrap(),
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -78,9 +120,9 @@ fn list_reads_live_server_stats_without_rpc_credentials() {
         let output = cli(&root).args(["--list", "--json"]).output().unwrap();
         if output.status.success() {
             if let Ok(rows) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
-                found = rows.as_array().and_then(|rows| {
-                    rows.iter().find(|row| row["pid"] == server.id()).cloned()
-                });
+                found = rows
+                    .as_array()
+                    .and_then(|rows| rows.iter().find(|row| row["pid"] == server.id()).cloned());
                 if found.is_some() {
                     break;
                 }
