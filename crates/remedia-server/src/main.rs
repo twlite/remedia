@@ -71,6 +71,12 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let uses_config = cli.generate_config_file.is_none()
+        && !cli.list
+        && matches!(cli.command.as_ref(), None | Some(Commands::Serve | Commands::Doctor));
+    if !uses_config && (!cli.env_files.is_empty() || !cli.optional_env_files.is_empty()) {
+        return Err("--env-file and --optional-env-file are only valid with serve or doctor".into());
+    }
     if let Some(path) = cli.generate_config_file {
         if cli.command.is_some() || cli.list || cli.json {
             return Err("--generate-config-file cannot be combined with a command or --list/--json".into());
