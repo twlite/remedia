@@ -1,9 +1,14 @@
 [package]
 name = "remedia-server"
+default-run = "remedia-server"
 version = "0.1.0"
 license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+
+[[bin]]
+name = "remedia-server-runtime"
+path = "src/runtime_main.rs"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
