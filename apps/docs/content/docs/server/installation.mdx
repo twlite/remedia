@@ -37,8 +37,6 @@ The archive contains two executables: `remedia-server`, a FFmpeg-independent adm
 
 You can run `remedia-server --help`, `--version`, `--generate-config-file`, `--list`, and `update` without FFmpeg libraries. Server playback still requires the FFmpeg 9 shared libraries.
 
-
-
 ## FFmpeg 9 runtime
 
 Remedia uses FFmpeg's shared libraries, not an `ffmpeg` executable subprocess. For these installers, the FFmpeg 9.0.2 libraries and their runtime dependencies are installed into `~/.remedia/ffmpeg9`, outside the system library directories. The launchers configure the corresponding runtime search paths for each process.
