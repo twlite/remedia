@@ -146,6 +146,9 @@
   padding-top: 82px;
   padding-bottom: 80px;
 }
+.heroCopy {
+  min-width: 0;
+}
 .badge {
   display: inline-flex;
   align-items: center;
@@ -480,7 +483,7 @@
     margin: 0 40px;
   }
   .hero {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 44px;
     padding-top: 60px;
     padding-bottom: 60px;

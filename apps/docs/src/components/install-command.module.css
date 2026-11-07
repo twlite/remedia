@@ -2,6 +2,7 @@
   margin-top: 30px;
   width: 100%;
   max-width: 590px;
+  min-width: 0;
 }
 .tabs {
   display: flex;
@@ -27,6 +28,8 @@
 }
 .command {
   min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -36,7 +39,9 @@
   padding: 7px 8px 7px 13px;
 }
 .command code {
-  flex: 1;
+  display: block;
+  flex: 1 1 0;
+  min-width: 0;
   font-size: 12px;
   line-height: 1.6;
   white-space: nowrap;
