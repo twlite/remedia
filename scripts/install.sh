@@ -71,7 +71,11 @@ if [ "$WITH_FFMPEG" -eq 1 ]; then
     install -m 755 "$tmp/bin/micromamba" "$INSTALL_DIR/bin/micromamba"
   fi
   if command -v micromamba >/dev/null 2>&1; then MAMBA="$(command -v micromamba)"; else MAMBA="$INSTALL_DIR/bin/micromamba"; fi
-  "$MAMBA" create --yes --prefix "$INSTALL_DIR/ffmpeg9" --override-channels -c conda-forge 'ffmpeg=9.0.2'
+  if [ -d "$INSTALL_DIR/ffmpeg9/conda-meta" ]; then
+    "$MAMBA" install --yes --prefix "$INSTALL_DIR/ffmpeg9" --override-channels -c conda-forge 'ffmpeg=9.0.2'
+  else
+    "$MAMBA" create --yes --prefix "$INSTALL_DIR/ffmpeg9" --override-channels -c conda-forge 'ffmpeg=9.0.2'
+  fi
   test -f "$INSTALL_DIR/ffmpeg9/lib/libavcodec.so.63" || test -f "$INSTALL_DIR/ffmpeg9/lib/libavcodec.63.dylib" || { echo "FFmpeg 9 runtime missing" >&2; exit 1; }
 fi
 
