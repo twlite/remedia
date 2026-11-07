@@ -22,6 +22,44 @@ fn cli(home: &Path) -> Command {
 }
 
 #[test]
+fn cli_commands_remain_available_without_ffmpeg_loader_paths() {
+    let root = temp_root();
+    let config = root.join("starter.json");
+    let commands: Vec<Vec<&str>> = vec![
+        vec!["--version"],
+        vec!["--help"],
+        vec!["update", "--help"],
+        vec!["--list", "--json"],
+    ];
+    for args in commands {
+        let output = cli(&root)
+            .env_remove("LD_LIBRARY_PATH")
+            .env_remove("DYLD_LIBRARY_PATH")
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let output = cli(&root)
+        .env_remove("LD_LIBRARY_PATH")
+        .env_remove("DYLD_LIBRARY_PATH")
+        .args(["--generate-config-file", config.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(config.exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn generated_configuration_is_not_overwritten() {
     let root = temp_root();
     let path = root.join("config.json");
@@ -121,15 +159,28 @@ fn list_reads_live_server_stats_without_rpc_credentials() {
         if output.status.success()
             && let Ok(rows) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
         {
-            found = rows
-                .as_array()
-                .and_then(|rows| rows.iter().find(|row| row["pid"] == server.id()).cloned());
+            // Unix exec replaces the CLI process. Windows spawns a separate
+            // runtime process, so its registered PID is different.
+            found = rows.as_array().and_then(|rows| {
+                rows.iter()
+                    .find(|row| row["stats"]["nodeId"].is_string())
+                    .cloned()
+            });
             if found.is_some() {
                 break;
             }
         }
         thread::sleep(Duration::from_millis(100));
     }
+    #[cfg(windows)]
+    {
+        // The Windows CLI waits for its child; killing only the CLI would
+        // leave the native runtime running after the test ends.
+        let _ = Command::new("taskkill")
+            .args(["/PID", &server.id().to_string(), "/T", "/F"])
+            .output();
+    }
+    #[cfg(not(windows))]
     let _ = server.kill();
     let _ = server.wait();
     let row = found.expect("expected live server discovery via loopback status endpoint");

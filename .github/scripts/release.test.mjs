@@ -284,6 +284,10 @@ test('matches release server artifacts to the target-triple filenames staged by 
         path.join(servers, 'remedia-server-' + target.triple + (target.extension ?? '')),
         'server',
       );
+      writeFileSync(
+        path.join(servers, 'remedia-server-runtime-' + target.triple + (target.extension ?? '')),
+        'runtime',
+      );
     }
   }
 
@@ -294,6 +298,9 @@ test('matches release server artifacts to the target-triple filenames staged by 
       const archive = path.join(servers, 'remedia-server-' + target.triple + '.tar.gz');
       const entries = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' });
       assert.ok(entries.includes('remedia-server-' + target.triple + (target.extension ?? '')));
+      assert.ok(
+        entries.includes('remedia-server-runtime-' + target.triple + (target.extension ?? '')),
+      );
       for (const file of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt']) {
         assert.deepEqual(
           execFileSync('tar', ['-xOf', archive, file]),
@@ -308,6 +315,17 @@ test('matches release server artifacts to the target-triple filenames staged by 
       /Required verified release artifact/,
     );
     writeFileSync(requiredServer, 'server');
+
+    const requiredRuntime = path.join(
+      servers,
+      'remedia-server-runtime-' + RELEASE_TARGETS[0].triple,
+    );
+    rmSync(requiredRuntime);
+    assert.throws(
+      () => verifyReleaseArtifacts(bindings, servers),
+      /Required verified release artifact/,
+    );
+    writeFileSync(requiredRuntime, 'runtime');
 
     const addonOnlyTarget = RELEASE_TARGETS.find((target) => target.server === false);
     assert.ok(addonOnlyTarget);

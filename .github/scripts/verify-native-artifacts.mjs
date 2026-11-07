@@ -1,5 +1,5 @@
 import { readdirSync } from 'node:fs';
-import { basename } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { ffmpegAbi } from './ffmpeg-abi.mjs';
 
@@ -20,8 +20,24 @@ if (addons.length !== 1) {
 const serverBinary = process.env.REMEDIA_SERVER_BINARY;
 if (!serverBinary)
   throw new Error('REMEDIA_SERVER_BINARY must point to the downloaded server artifact');
-const binaries = [`${packageDirectory}/${addons[0]}`, serverBinary];
-console.log(`Testing native addon ${addons[0]} and server ${basename(serverBinary)}`);
+const serverName = basename(serverBinary);
+if (!serverName.startsWith('remedia-server-'))
+  throw new Error(`Unexpected server artifact name: ${serverName}`);
+const runtimeBinary = join(
+  dirname(serverBinary),
+  'remedia-server-runtime-' + serverName.slice('remedia-server-'.length),
+);
+const nativeBinaries = [`${packageDirectory}/${addons[0]}`, runtimeBinary];
+const binaries = [serverBinary, ...nativeBinaries];
+console.log(
+  `Testing native addon ${addons[0]}, CLI ${serverName}, and runtime ${basename(runtimeBinary)}`,
+);
+const version = execFileSync(serverBinary, ['--version'], {
+  encoding: 'utf8',
+  env: { ...process.env, LD_LIBRARY_PATH: '', DYLD_LIBRARY_PATH: '' },
+});
+if (!version.includes('remedia-server'))
+  throw new Error('The standalone CLI did not respond without FFmpeg loader paths');
 
 if (process.platform === 'linux') {
   for (const binary of binaries) {
@@ -33,7 +49,8 @@ if (process.platform === 'linux') {
     if (!header.includes(process.arch === 'arm64' ? 'AArch64' : 'Advanced Micro Devices X86-64')) {
       throw new Error(`Unexpected ELF architecture for ${binary}`);
     }
-    requireDependencies(dependencies, requiredLinuxLibraries, binary);
+    if (binary === serverBinary) rejectDependencies(dependencies, requiredLinuxLibraries, binary);
+    else requireDependencies(dependencies, requiredLinuxLibraries, binary);
     const directDependencies = execFileSync('readelf', ['-d', binary], { encoding: 'utf8' });
     rejectDynamicOpus(directDependencies, binary, /libopus\.so(?:\.\d+)?/i);
   }
@@ -45,7 +62,8 @@ if (process.platform === 'linux') {
     if (!architecture.includes(process.arch === 'arm64' ? 'arm64' : 'x86_64')) {
       throw new Error(`Unexpected Mach-O architecture for ${binary}`);
     }
-    requireDependencies(dependencies, requiredMacLibraries, binary);
+    if (binary === serverBinary) rejectDependencies(dependencies, requiredMacLibraries, binary);
+    else requireDependencies(dependencies, requiredMacLibraries, binary);
     rejectDynamicOpus(dependencies, binary, /libopus(?:\.\d+)?\.dylib/i);
   }
 } else if (process.platform === 'win32') {
@@ -56,7 +74,8 @@ if (process.platform === 'linux') {
     if (!headers.toLowerCase().includes('machine (x64)')) {
       throw new Error(`Unexpected PE architecture for ${binary}`);
     }
-    requireDependencies(dependencies.toLowerCase(), requiredWindowsLibraries, binary);
+    if (binary === serverBinary) rejectDependencies(dependencies, requiredWindowsLibraries, binary);
+    else requireDependencies(dependencies, requiredWindowsLibraries, binary);
     rejectDynamicOpus(dependencies, binary, /opus\.dll/i);
   }
 } else {
@@ -76,5 +95,15 @@ function rejectDynamicOpus(output, binary, pattern) {
     throw new Error(
       `${binary} unexpectedly depends on dynamically linked libopus; the addon bundles it`,
     );
+  }
+}
+
+function rejectDependencies(output, names, binary) {
+  for (const name of names) {
+    if (output.toLowerCase().includes(name.toLowerCase())) {
+      throw new Error(
+        `${binary} unexpectedly links to ${name}; the CLI must not require FFmpeg to start`,
+      );
+    }
   }
 }

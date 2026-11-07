@@ -383,13 +383,18 @@ export function verifyReleaseArtifacts(bindingsDirectory, serversDirectory) {
       target.server === false
         ? undefined
         : join(serversDirectory, 'remedia-server-' + target.triple) + (target.extension ?? '');
-    for (const required of [addon, ...(server ? [server] : [])]) {
+    const serverRuntime =
+      target.server === false
+        ? undefined
+        : join(serversDirectory, 'remedia-server-runtime-' + target.triple) +
+          (target.extension ?? '');
+    for (const required of [addon, ...(server ? [server, serverRuntime] : [])]) {
       if (!existsSync(required))
         throw new Error('Required verified release artifact is missing: ' + required);
       if (readFileSync(required).byteLength === 0)
         throw new Error('Release artifact is empty: ' + required);
     }
-    artifacts.push({ ...target, addon, ...(server ? { server } : {}) });
+    artifacts.push({ ...target, addon, ...(server ? { server, serverRuntime } : {}) });
   }
   return artifacts;
 }
@@ -405,6 +410,7 @@ export function packServerArchives(serversDirectory, workspaceRoot = rootDir) {
   stageReleaseLicenses(serversDirectory, workspaceRoot);
   for (const target of RELEASE_TARGETS.filter((item) => item.server !== false)) {
     const binary = 'remedia-server-' + target.triple + (target.extension ?? '');
+    const runtime = 'remedia-server-runtime-' + target.triple + (target.extension ?? '');
     const archive = join(serversDirectory, 'remedia-server-' + target.triple + '.tar.gz');
     execFileSync('tar', [
       '-czf',
@@ -412,6 +418,7 @@ export function packServerArchives(serversDirectory, workspaceRoot = rootDir) {
       '-C',
       serversDirectory,
       binary,
+      runtime,
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
       'THIRD_PARTY_LICENSES.txt',
