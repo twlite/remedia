@@ -159,15 +159,28 @@ fn list_reads_live_server_stats_without_rpc_credentials() {
         if output.status.success()
             && let Ok(rows) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
         {
-            found = rows
-                .as_array()
-                .and_then(|rows| rows.iter().find(|row| row["pid"] == server.id()).cloned());
+            // Unix exec replaces the CLI process. Windows spawns a separate
+            // runtime process, so its registered PID is different.
+            found = rows.as_array().and_then(|rows| {
+                rows.iter()
+                    .find(|row| row["stats"]["nodeId"].is_string())
+                    .cloned()
+            });
             if found.is_some() {
                 break;
             }
         }
         thread::sleep(Duration::from_millis(100));
     }
+    #[cfg(windows)]
+    {
+        // The Windows CLI waits for its child; killing only the CLI would
+        // leave the native runtime running after the test ends.
+        let _ = Command::new("taskkill")
+            .args(["/PID", &server.id().to_string(), "/T", "/F"])
+            .output();
+    }
+    #[cfg(not(windows))]
     let _ = server.kill();
     let _ = server.wait();
     let row = found.expect("expected live server discovery via loopback status endpoint");
