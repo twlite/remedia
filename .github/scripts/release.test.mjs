@@ -298,7 +298,9 @@ test('matches release server artifacts to the target-triple filenames staged by 
       const archive = path.join(servers, 'remedia-server-' + target.triple + '.tar.gz');
       const entries = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' });
       assert.ok(entries.includes('remedia-server-' + target.triple + (target.extension ?? '')));
-      assert.ok(entries.includes('remedia-server-runtime-' + target.triple + (target.extension ?? '')));
+      assert.ok(
+        entries.includes('remedia-server-runtime-' + target.triple + (target.extension ?? '')),
+      );
       for (const file of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt']) {
         assert.deepEqual(
           execFileSync('tar', ['-xOf', archive, file]),
