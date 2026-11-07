@@ -1,0 +1,64 @@
+---
+title: Install remedia-server
+description: One-command installation, FFmpeg 9 runtime provisioning, upgrades, and platform support.
+---
+
+# Install remedia-server
+
+Install the standalone Rust WebSocket server from a published GitHub release. The installer checks the platform, verifies the release archive against its published SHA-256 digest, and provisions an isolated FFmpeg 9.0.2 runtime through conda-forge. Node.js and a Rust toolchain are not required.
+
+## Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.ps1 | iex
+```
+
+Windows x64 (MSVC) is the only supported standalone Windows target. The installer places command wrappers in `$HOME\.remedia\bin` and stores versioned executables separately, so a running server executable does not need to be overwritten. The PowerShell installer needs `tar` and access to GitHub, `micro.mamba.pm`, and conda-forge.
+
+## macOS and Linux
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.sh | sh
+```
+
+Supported standalone targets: macOS Intel / Apple Silicon and Linux glibc x64 / ARM64. The script requires `curl`, `tar`, and a SHA-256 tool (`sha256sum` or `shasum`). It places `remedia` and `remedia-server` launchers in `~/.remedia/bin`. On Linux, a glibc-compatible host is required. The install script does not support Alpine/musl or FreeBSD server binaries.
+
+After installation, add the installer directory to your user's `PATH` if it isn't already there. Then run:
+
+```sh
+remedia --version
+remedia --help
+remedia serve --config ./remedia.config.json
+```
+
+Without a subcommand, `remedia` starts the server using `./remedia.config.json`. See [configuration](/docs/server/configuration) to create the config and supply secrets. The installers do **not** start a system service or open network ports.
+
+## FFmpeg 9 runtime
+
+Remedia uses FFmpeg's shared libraries, not an `ffmpeg` executable subprocess. For these installers, the FFmpeg 9.0.2 libraries and their runtime dependencies are installed into `~/.remedia/ffmpeg9`, outside the system library directories. The launchers configure the corresponding runtime search paths for each process.
+
+The required ABI majors are `libavcodec 63`, `libavformat 63`, `libavutil 61`, `libavfilter 12`, and `libswresample 7`. The installer does not replace your system FFmpeg. Review [FFmpeg ABI requirements](/docs/node/ffmpeg-9) for details.
+
+To manage FFmpeg yourself, download and review the script before running it, then pass `--no-ffmpeg` (Unix) or `-NoFFmpeg` (PowerShell). The corresponding library loader paths must still be configured in the launching environment.
+
+## Update or upgrade
+
+```sh
+remedia update
+# Alias
+remedia upgrade
+```
+
+Both commands reinstall the latest **stable** published release using the installer embedded in your currently installed server. An update restarts neither the running process nor a service manager. Restart your server after updating. Active playback sessions do not survive the restart.
+
+If you manage FFmpeg independently, use `remedia update --no-ffmpeg`. `REMEDIA_INSTALL_DIR` and `REMEDIA_VERSION` can be supplied to the installers to select another install directory or release tag. Set `REMEDIA_VERSION` before running `remedia update` to select an explicit release.
+
+On Windows, use the `remedia.cmd` wrapper for updates. A directly launched versioned executable cannot change its own file, and a running instance will continue using its previous binary until restarted.
+
+## Security and troubleshooting
+
+The commands above execute a remote installation script. For production hosts, inspect the script first and pin the script to a trusted commit. Downloaded server archives are checked using GitHub's published SHA-256 asset digest; however, this is not an independent signature or protection against a compromised GitHub release.
+
+FFmpeg is downloaded from conda-forge using micromamba. Make sure your environment permits those downloads. Running the installer without `--no-ffmpeg` requires the external package index; it is not fully offline or reproducible without a separately pinned conda package lock.
+
+For failures, check the executable with `remedia --version`, inspect its shared dependencies with `ldd` (Linux) or `otool -L` (macOS), and confirm your configuration exists. See [server deployment](/docs/server/deployment) for TLS, routing, and service operation.
