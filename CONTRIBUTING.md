@@ -23,27 +23,27 @@ artifacts for all 13 targets, including the additional cross-build targets.
 
 | Target                  | CI level     | Native verification                                                                            |
 | ----------------------- | ------------ | ---------------------------------------------------------------------------------------------- |
-| Linux x86_64 GNU        | Required     | Native FFmpeg 7 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
-| Linux ARM64 GNU         | Required     | Native FFmpeg 7 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
-| macOS x86_64            | Required     | Native FFmpeg 7 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
-| macOS ARM64             | Required     | Native FFmpeg 7 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
-| Windows x86_64 MSVC     | Required     | Native FFmpeg 7 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
-| Linux x86_64 musl       | Experimental | Build-only; pinned FFmpeg 7.1.1 cross-build with Zig; runtime compatibility is unverified      |
-| Linux ARM64 musl        | Experimental | Build-only; pinned FFmpeg 7.1.1 cross-build with Zig; runtime compatibility is unverified      |
-| Linux ARMv7 GNU         | Experimental | Build-only; pinned FFmpeg 7.1.1 uses the hard-float GNU cross toolchain and sysroot            |
-| Windows x86 MSVC        | Experimental | Build-only; target-specific FFmpeg 7.1.1 x86 libraries use pinned vcpkg                        |
-| Windows ARM64 MSVC      | Experimental | Build-only cross-compile; target-specific FFmpeg 7.1.1 ARM64 libraries use pinned vcpkg        |
-| Android ARM64 and ARMv7 | Experimental | Build-only; pinned NDK 27.2, API 24 linkers, and target-built FFmpeg 7.1.1                     |
-| FreeBSD x86_64          | Experimental | FreeBSD 15.1 VM builds FFmpeg 7 and runs native build and runtime tests                        |
+| Linux x86_64 GNU        | Required     | Native FFmpeg 9 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
+| Linux ARM64 GNU         | Required     | Native FFmpeg 9 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
+| macOS x86_64            | Required     | Native FFmpeg 9 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
+| macOS ARM64             | Required     | Native FFmpeg 9 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
+| Windows x86_64 MSVC     | Required     | Native FFmpeg 9 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
+| Linux x86_64 musl       | Experimental | Build-only; pinned FFmpeg 9.0.2 cross-build with Zig; runtime compatibility is unverified      |
+| Linux ARM64 musl        | Experimental | Build-only; pinned FFmpeg 9.0.2 cross-build with Zig; runtime compatibility is unverified      |
+| Linux ARMv7 GNU         | Experimental | Build-only; pinned FFmpeg 9.0.2 uses the hard-float GNU cross toolchain and sysroot            |
+| Windows x86 MSVC        | Experimental | Build-only; target-specific FFmpeg 9.0.2 x86 libraries use pinned vcpkg                        |
+| Windows ARM64 MSVC      | Experimental | Build-only cross-compile; target-specific FFmpeg 9.0.2 ARM64 libraries use pinned vcpkg        |
+| Android ARM64 and ARMv7 | Experimental | Build-only; pinned NDK 27.2, API 24 linkers, and target-built FFmpeg 9.0.2                     |
+| FreeBSD x86_64          | Experimental | FreeBSD 15.1 VM builds FFmpeg 9 and runs native build and runtime tests                        |
 
 All 13 N-API targets are included in npm release packaging. Standalone server binaries cover only
 the five primary targets. WASI is not in the workflow. Build-only coverage does not establish native
 runtime compatibility.
 
-Remedia targets the FFmpeg 7 ABI and dynamically links FFmpeg. Its Opus adapter builds libopus from
+Remedia targets the FFmpeg 9 ABI and dynamically links FFmpeg. Its Opus adapter builds libopus from
 the locked bundled source and statically links it into native binaries. FFmpeg executables are used
 only for dependency/version checks; Remedia does not spawn them for playback. The CI dependency
-specifications are in `.github/native-deps/` and pin FFmpeg 7.1.1 and pkg-config 0.29.2 for Linux
+specifications are in `.github/native-deps/` and pin FFmpeg 9.0.2 and pkg-config 0.29.2 for Linux
 and Windows. The Linux and Android cross-build recipe is in
 `.github/scripts/build-ffmpeg-cross.sh`; Windows x86 and ARM64 use the pinned target triplets in
 `.github/native-deps/windows-cross/vcpkg.json`. Experimental targets are not runtime-verified except
@@ -53,12 +53,12 @@ libraries.
 
 ### macOS
 
-Install Xcode Command Line Tools, versioned FFmpeg 7, and LLVM 19.1.7 for the
+Install Xcode Command Line Tools, versioned FFmpeg 9, and LLVM 19.1.7 for the
 repository's bindgen version:
 
 ```sh
-brew install ffmpeg@7 pkg-config llvm@19
-export FFMPEG_DIR="$(brew --prefix ffmpeg@7)"
+brew install ffmpeg pkg-config llvm@19
+export FFMPEG_DIR="$(brew --prefix ffmpeg)"
 export PKG_CONFIG_PATH="$FFMPEG_DIR/lib/pkgconfig"
 export LIBCLANG_PATH="$(brew --prefix llvm@19)/lib"
 export DYLD_LIBRARY_PATH="$FFMPEG_DIR/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
@@ -75,8 +75,8 @@ Install Clang/libclang, then create the pinned dynamic FFmpeg environment used b
 
 ```sh
 sudo apt-get install clang libclang-dev
-micromamba create --name remedia-ffmpeg7 --file .github/native-deps/ffmpeg7.yml
-micromamba activate remedia-ffmpeg7
+micromamba create --name remedia-ffmpeg9 --file .github/native-deps/ffmpeg9.yml
+micromamba activate remedia-ffmpeg9
 export FFMPEG_DIR="$CONDA_PREFIX"
 export PKG_CONFIG_PATH="$CONDA_PREFIX/lib/pkgconfig"
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -91,8 +91,8 @@ Install Visual Studio 2022 Build Tools with the MSVC C++ workload, Rust's MSVC t
 micromamba. Use the pinned x64 development packages:
 
 ```powershell
-micromamba create --name remedia-ffmpeg7 --file .github/native-deps/ffmpeg7-windows.yml
-micromamba activate remedia-ffmpeg7
+micromamba create --name remedia-ffmpeg9 --file .github/native-deps/ffmpeg9-windows.yml
+micromamba activate remedia-ffmpeg9
 $env:FFMPEG_DIR = Join-Path $env:CONDA_PREFIX 'Library'
 $env:PKG_CONFIG_PATH = Join-Path $env:FFMPEG_DIR 'lib\pkgconfig'
 $env:LIBCLANG_PATH = Join-Path $env:CONDA_PREFIX 'Library\bin'
@@ -174,12 +174,12 @@ against a real local server; it uses `REMEDIA_SERVER_BINARY` when provided and o
 built addon and server executable, so a missing environment variable cannot silently skip either
 test.
 
-Compiling `@remedia/node` from source requires the pinned Rust toolchain, target-compatible FFmpeg 7
+Compiling `@remedia/node` from source requires the pinned Rust toolchain, target-compatible FFmpeg 9
 development libraries, and libclang. The bundled Opus source is built and statically linked by
 Cargo. Installing a prebuilt platform addon from the
 published package does not need those build tools and does not install FFmpeg during package
 installation. The published N-API package does not bundle FFmpeg or compile native code during
-npm/pnpm installation. Consumers must install FFmpeg 7 shared runtime libraries for a supported
+npm/pnpm installation. Consumers must install FFmpeg 9 shared runtime libraries for a supported
 target; see the [Node.js distribution guide](apps/docs/content/docs/node/distribution.mdx).
 
 ## CI change selection

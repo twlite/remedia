@@ -785,6 +785,16 @@ fn request_path(stream: &TcpStream) -> String {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut request = String::new();
     reader.read_line(&mut request).unwrap();
+    // Consume the complete request before replying. Closing a TCP socket with
+    // unread request headers can send RST instead of FIN, truncating the
+    // chunked response as seen by FFmpeg 9's HTTP demuxer.
+    loop {
+        let mut header = String::new();
+        let bytes = reader.read_line(&mut header).unwrap();
+        if bytes == 0 || header == "\r\n" || header == "\n" {
+            break;
+        }
+    }
     request
         .split_whitespace()
         .nth(1)

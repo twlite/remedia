@@ -34,9 +34,9 @@ Requires Node.js **22.18.0 or newer** (ESM).
 npm install @remedia/node
 ```
 
-Install FFmpeg 7 shared libraries separately before importing the package. npm does not install
-FFmpeg or compile the addon. Required ABI majors are avcodec 61, avformat 61, avutil 59,
-avfilter 10, and swresample 5. libopus is statically included; FFmpeg is dynamically linked.
+Install FFmpeg 9 shared libraries separately before importing the package. npm does not install
+FFmpeg or compile the addon. Required ABI majors are avcodec 63, avformat 63, avutil 61,
+avfilter 12, and swresample 7. libopus is statically included; FFmpeg is dynamically linked.
 
 Native runtime CI covers Linux x64/ARM64 glibc, macOS x64/ARM64, Windows x64 MSVC, and
 FreeBSD x64. Additional build-only packages cover Linux x64/ARM64 musl, Linux ARMv7 hard-float GNU,

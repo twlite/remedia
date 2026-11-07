@@ -101,6 +101,10 @@ pub(crate) fn open(
     if is_network {
         let timeout_micros = timeout.as_micros().min(i64::MAX as u128).to_string();
         options.set("rw_timeout", &timeout_micros);
+        // FFmpeg 9's default HTTP reader may report EIO after the terminating
+        // chunk of an unknown-length response. Persistent-request mode keeps
+        // the chunk-end state available to subsequent reads, which then see EOF.
+        options.set("multiple_requests", "1");
     }
 
     // Allocate the format context before installing the custom AVIO pointer.
