@@ -22,7 +22,9 @@ struct InstanceRecord {
 fn registry_dir() -> io::Result<PathBuf> {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME/USERPROFILE is unavailable"))?;
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "HOME/USERPROFILE is unavailable")
+        })?;
     Ok(PathBuf::from(home).join(".remedia").join("run"))
 }
 
@@ -47,7 +49,8 @@ fn private_registry_directory(path: &Path) -> io::Result<()> {
 }
 
 async fn read_instance(record: InstanceRecord) -> Option<Value> {
-    if !record.control.ip().is_loopback() || !record.control.is_ipv4() || record.secret.len() != 32 {
+    if !record.control.ip().is_loopback() || !record.control.is_ipv4() || record.secret.len() != 32
+    {
         return None;
     }
     let future = async {
@@ -63,7 +66,10 @@ async fn read_instance(record: InstanceRecord) -> Option<Value> {
         }
         Some(response)
     };
-    timeout(Duration::from_millis(700), future).await.ok().flatten()
+    timeout(Duration::from_millis(700), future)
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Discover living server instances for the current OS user without loading FFmpeg.
@@ -96,7 +102,10 @@ pub async fn list() -> io::Result<Vec<Value>> {
     Ok(results)
 }
 
-pub fn print_instances(instances: &[Value], json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn print_instances(
+    instances: &[Value],
+    json_output: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     if json_output {
         println!("{}", serde_json::to_string_pretty(instances)?);
         return Ok(());
