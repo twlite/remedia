@@ -3,11 +3,11 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 const expectedMajors = new Map([
-  ['libavcodec', '61'],
-  ['libavformat', '61'],
-  ['libavutil', '59'],
-  ['libavfilter', '10'],
-  ['libswresample', '5'],
+  ['libavcodec', '63'],
+  ['libavformat', '63'],
+  ['libavutil', '61'],
+  ['libavfilter', '12'],
+  ['libswresample', '7'],
 ]);
 
 const mode = process.argv[2] ?? '--build';
@@ -25,7 +25,7 @@ for (const [library, expectedMajor] of expectedMajors) {
   const libdir = pkgConfig('--variable=libdir', library);
   console.log(`${library}: ${version} (${libdir})`);
   if (version.split('.')[0] !== expectedMajor) {
-    throw new Error(`${library} must have FFmpeg 7 ABI major ${expectedMajor}; found ${version}`);
+    throw new Error(`${library} must have FFmpeg 9 ABI major ${expectedMajor}; found ${version}`);
   }
 
   if (mode === '--build') {

@@ -53,32 +53,32 @@ jobs:
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@v2.9.3
         with:
-          shared-key: ${{ inputs.target }}-ffmpeg7-bundled-opus
-          key: release-no-incremental-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'crates/remedia-core/Cargo.toml', 'packages/remedia-node/Cargo.toml', '.github/native-deps/ffmpeg7.yml', '.github/native-deps/ffmpeg7-windows.yml') }}
+          shared-key: ${{ inputs.target }}-ffmpeg9-bundled-opus
+          key: release-no-incremental-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'crates/remedia-core/Cargo.toml', 'packages/remedia-node/Cargo.toml', '.github/native-deps/ffmpeg9.yml', '.github/native-deps/ffmpeg9-windows.yml') }}
       - name: Install Linux build tools
         if: inputs.os == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends clang libclang-dev
-      - name: Install Linux FFmpeg 7
+      - name: Install Linux FFmpeg 9
         if: inputs.os == 'linux'
         uses: mamba-org/setup-micromamba@v3
         with:
-          environment-file: .github/native-deps/ffmpeg7.yml
-          environment-name: remedia-ffmpeg7
+          environment-file: .github/native-deps/ffmpeg9.yml
+          environment-name: remedia-ffmpeg9
           init-shell: bash
           cache-environment: true
-          cache-environment-key: ffmpeg7-${{ inputs.target }}-${{ hashFiles('.github/native-deps/ffmpeg7.yml') }}
+          cache-environment-key: ffmpeg9-${{ inputs.target }}-${{ hashFiles('.github/native-deps/ffmpeg9.yml') }}
           cache-downloads: true
-      - name: Install Windows FFmpeg 7 and libclang
+      - name: Install Windows FFmpeg 9 and libclang
         if: inputs.os == 'windows'
         uses: mamba-org/setup-micromamba@v3
         with:
-          environment-file: .github/native-deps/ffmpeg7-windows.yml
-          environment-name: remedia-ffmpeg7
+          environment-file: .github/native-deps/ffmpeg9-windows.yml
+          environment-name: remedia-ffmpeg9
           init-shell: powershell
           cache-environment: true
-          cache-environment-key: ffmpeg7-${{ inputs.target }}-${{ hashFiles('.github/native-deps/ffmpeg7-windows.yml') }}
+          cache-environment-key: ffmpeg9-${{ inputs.target }}-${{ hashFiles('.github/native-deps/ffmpeg9-windows.yml') }}
           cache-downloads: true
       - name: Set up the MSVC environment
         if: inputs.os == 'windows'
@@ -93,9 +93,9 @@ jobs:
           "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$msvcLinker" >> $env:GITHUB_ENV
           "PATH=$linkerDirectory;$env:PATH" >> $env:GITHUB_ENV
           Write-Host "Using MSVC linker: $msvcLinker"
-      - name: Install macOS FFmpeg 7
+      - name: Install macOS FFmpeg 9
         if: inputs.os == 'macos'
-        run: brew install ffmpeg@7 pkg-config llvm@19
+        run: brew install ffmpeg pkg-config llvm@19
       - name: Configure Linux native library paths
         if: inputs.os == 'linux'
         shell: micromamba-shell {0}
@@ -133,7 +133,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ffmpeg_prefix="$(brew --prefix ffmpeg@7)"
+          ffmpeg_prefix="$(brew --prefix ffmpeg)"
           llvm_prefix="$(brew --prefix llvm@19)"
           echo "FFMPEG_DIR=$ffmpeg_prefix" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_PATH=$ffmpeg_prefix/lib/pkgconfig" >> "$GITHUB_ENV"
@@ -149,14 +149,14 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - name: Verify FFmpeg 7 native dependencies (Linux)
+      - name: Verify FFmpeg 9 native dependencies (Linux)
         if: inputs.os == 'linux'
         shell: micromamba-shell {0}
         run: node .github/scripts/verify-native-deps.mjs --build
-      - name: Verify FFmpeg 7 native dependencies (macOS)
+      - name: Verify FFmpeg 9 native dependencies (macOS)
         if: inputs.os == 'macos'
         run: node .github/scripts/verify-native-deps.mjs --build
-      - name: Verify FFmpeg 7 native dependencies (Windows)
+      - name: Verify FFmpeg 9 native dependencies (Windows)
         if: inputs.os == 'windows'
         shell: pwsh
         run: node .github/scripts/verify-native-deps.mjs --build
@@ -278,32 +278,32 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.release_version }}
         run: node .github/scripts/release.mjs sync
-      - name: Install Linux FFmpeg 7 runtime libraries
+      - name: Install Linux FFmpeg 9 runtime libraries
         if: inputs.os == 'linux'
         uses: mamba-org/setup-micromamba@v3
         with:
-          environment-file: .github/native-deps/ffmpeg7.yml
-          environment-name: remedia-ffmpeg7
+          environment-file: .github/native-deps/ffmpeg9.yml
+          environment-name: remedia-ffmpeg9
           init-shell: bash
           cache-environment: true
-          cache-environment-key: ffmpeg7-${{ inputs.target }}-${{ hashFiles('.github/native-deps/ffmpeg7.yml') }}
+          cache-environment-key: ffmpeg9-${{ inputs.target }}-${{ hashFiles('.github/native-deps/ffmpeg9.yml') }}
           cache-downloads: true
-      - name: Install Windows FFmpeg 7 runtime libraries
+      - name: Install Windows FFmpeg 9 runtime libraries
         if: inputs.os == 'windows'
         uses: mamba-org/setup-micromamba@v3
         with:
-          environment-file: .github/native-deps/ffmpeg7-windows-runtime.yml
-          environment-name: remedia-ffmpeg7
+          environment-file: .github/native-deps/ffmpeg9-windows-runtime.yml
+          environment-name: remedia-ffmpeg9
           init-shell: powershell
           cache-environment: true
-          cache-environment-key: ffmpeg7-runtime-${{ inputs.target }}-${{ hashFiles('.github/native-deps/ffmpeg7-windows-runtime.yml') }}
+          cache-environment-key: ffmpeg9-runtime-${{ inputs.target }}-${{ hashFiles('.github/native-deps/ffmpeg9-windows-runtime.yml') }}
           cache-downloads: true
       - name: Set up the MSVC environment
         if: inputs.os == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
-      - name: Install macOS FFmpeg 7 runtime libraries
+      - name: Install macOS FFmpeg 9 runtime libraries
         if: inputs.os == 'macos'
-        run: brew install ffmpeg@7 pkg-config
+        run: brew install ffmpeg pkg-config
       - uses: pnpm/action-setup@v6.1.0
         with:
           version: 12.16.1
@@ -340,7 +340,7 @@ jobs:
         if: inputs.os == 'macos'
         shell: bash
         run: |
-          ffmpeg_prefix="$(brew --prefix ffmpeg@7)"
+          ffmpeg_prefix="$(brew --prefix ffmpeg)"
           echo "FFMPEG_DIR=$ffmpeg_prefix" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_PATH=$ffmpeg_prefix/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "DYLD_LIBRARY_PATH=$ffmpeg_prefix/lib:${DYLD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
@@ -352,14 +352,14 @@ jobs:
           RUST_TARGET: ${{ inputs.target }}
           SERVER_SUFFIX: ${{ inputs.server_suffix }}
         run: chmod +x "$RUNNER_TEMP/remedia-server/remedia-server-$RUST_TARGET$SERVER_SUFFIX"
-      - name: Verify installed FFmpeg 7 dependencies (Linux)
+      - name: Verify installed FFmpeg 9 dependencies (Linux)
         if: inputs.os == 'linux'
         shell: micromamba-shell {0}
         run: node .github/scripts/verify-native-deps.mjs --runtime
-      - name: Verify installed FFmpeg 7 dependencies (macOS)
+      - name: Verify installed FFmpeg 9 dependencies (macOS)
         if: inputs.os == 'macos'
         run: node .github/scripts/verify-native-deps.mjs --runtime
-      - name: Verify installed FFmpeg 7 dependencies (Windows)
+      - name: Verify installed FFmpeg 9 dependencies (Windows)
         if: inputs.os == 'windows'
         shell: pwsh
         run: node .github/scripts/verify-native-deps.mjs --runtime
@@ -472,13 +472,13 @@ jobs:
           cache-environment: true
           cache-environment-key: remedia-clang-${{ inputs.target }}-${{ hashFiles('.github/native-deps/clang-windows.yml') }}
           cache-downloads: true
-      - name: Cache target-specific vcpkg FFmpeg 7 libraries (Windows)
+      - name: Cache target-specific vcpkg FFmpeg 9 libraries (Windows)
         if: inputs.os == 'windows'
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/remedia-vcpkg-installed
-          key: vcpkg-ffmpeg7-afa249f-${{ inputs.target }}-${{ hashFiles('.github/native-deps/windows-cross/vcpkg.json') }}
-      - name: Install pinned vcpkg and target-specific FFmpeg 7 (Windows)
+          key: vcpkg-ffmpeg9-14439b1-${{ inputs.target }}-${{ hashFiles('.github/native-deps/windows-cross/vcpkg.json') }}
+      - name: Install pinned vcpkg and target-specific FFmpeg 9 (Windows)
         if: inputs.os == 'windows'
         shell: pwsh
         env:
@@ -489,7 +489,7 @@ jobs:
           # unavailable in a depth=1 checkout even when the baseline commit exists.
           git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
           if ($LASTEXITCODE -ne 0) { throw 'vcpkg full clone failed' }
-          git -C $vcpkgRoot checkout --detach afa249f12f52ed8a3b919f195495ba8b330288d1
+          git -C $vcpkgRoot checkout --detach 14439b1e7cdaac4c6f466fee3deede319fcece8f
           if ($LASTEXITCODE -ne 0) { throw 'vcpkg pinned checkout failed' }
           & (Join-Path $vcpkgRoot 'bootstrap-vcpkg.bat') -disableMetrics
           if ($LASTEXITCODE -ne 0) { throw 'vcpkg bootstrap failed' }
@@ -559,19 +559,19 @@ jobs:
       - name: Install workspace dependencies for the target build probe
         if: inputs.os != 'freebsd'
         run: pnpm install --frozen-lockfile
-      - name: Cache target-specific FFmpeg 7 libraries (Linux and Android)
+      - name: Cache target-specific FFmpeg 9 libraries (Linux and Android)
         if: inputs.os == 'linux' || inputs.os == 'android'
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/remedia-ffmpeg-${{ inputs.target }}
-          key: ffmpeg7-cross-${{ inputs.target }}-${{ hashFiles('.github/scripts/build-ffmpeg-cross.sh') }}-db69d06
-      - name: Build target-specific FFmpeg 7 libraries (Linux and Android)
+          key: ffmpeg9-cross-${{ inputs.target }}-${{ hashFiles('.github/scripts/build-ffmpeg-cross.sh') }}-946fcce
+      - name: Build target-specific FFmpeg 9 libraries (Linux and Android)
         if: inputs.os == 'linux' || inputs.os == 'android'
         shell: bash
         env:
           RUST_TARGET: ${{ inputs.target }}
         run: bash .github/scripts/build-ffmpeg-cross.sh
-      - name: Verify target FFmpeg 7 development libraries (Linux and Android)
+      - name: Verify target FFmpeg 9 development libraries (Linux and Android)
         if: inputs.os == 'linux' || inputs.os == 'android'
         shell: bash
         run: node .github/scripts/verify-native-deps.mjs --build
@@ -593,7 +593,7 @@ jobs:
         env:
           RUST_TARGET: ${{ inputs.target }}
         run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target "$RUST_TARGET"
-      - name: Verify target FFmpeg 7 development libraries (Windows)
+      - name: Verify target FFmpeg 9 development libraries (Windows)
         if: inputs.os == 'windows'
         shell: pwsh
         run: node .github/scripts/verify-native-deps.mjs --build
@@ -633,13 +633,13 @@ jobs:
           set -euo pipefail
           sudo pkg update -f
           sudo pkg install -y curl git node24 npm-node24 cmake pkgconf llvm19 gmake nasm
-          # The FreeBSD 15 package repositories do not contain the ffmpeg7
-          # package. Compile the same pinned FFmpeg 7.1.1 revision used by the
+          # The FreeBSD 15 package repositories do not contain the ffmpeg9
+          # package. Compile the same pinned FFmpeg 9.0.2 revision used by the
           # cross-platform jobs instead of installing an unrelated FFmpeg major.
           ffmpeg_source="$HOME/remedia-ffmpeg-7"
           git init -q "$ffmpeg_source"
           git -C "$ffmpeg_source" remote add origin https://github.com/FFmpeg/FFmpeg.git
-          git -C "$ffmpeg_source" fetch --quiet --depth=1 origin db69d06eeeab4f46da15030a80d539efb4503ca8
+          git -C "$ffmpeg_source" fetch --quiet --depth=1 origin 946fcce07b6dcd0331c8cc609192aeff5e1924f8
           git -C "$ffmpeg_source" checkout --quiet --detach FETCH_HEAD
           (
             cd "$ffmpeg_source"
@@ -650,9 +650,9 @@ jobs:
           # FreeBSD places upstream pkg-config files under lib/pkgconfig;
           # initialize the search path before verifying the new installation.
           export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/libdata/pkgconfig
-          test "$(pkg-config --modversion libavcodec | cut -d. -f1)" = 61
-          test "$(pkg-config --modversion libavformat | cut -d. -f1)" = 61
-          test "$(pkg-config --modversion libavfilter | cut -d. -f1)" = 10
+          test "$(pkg-config --modversion libavcodec | cut -d. -f1)" = 63
+          test "$(pkg-config --modversion libavformat | cut -d. -f1)" = 63
+          test "$(pkg-config --modversion libavfilter | cut -d. -f1)" = 12
           curl https://sh.rustup.rs -sSf --output rustup.sh
           sh rustup.sh -y --profile minimal --default-toolchain 1.99.1
           source "$HOME/.cargo/env"

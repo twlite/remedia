@@ -5,11 +5,11 @@ target="${RUST_TARGET:?RUST_TARGET must name the Rust compilation target}"
 prefix="${FFMPEG_DIR:-${RUNNER_TEMP:?RUNNER_TEMP must be set}/remedia-ffmpeg-${target}}"
 source_dir="${RUNNER_TEMP:?RUNNER_TEMP must be set}/remedia-ffmpeg-source-${target}"
 tools_dir="${RUNNER_TEMP:?RUNNER_TEMP must be set}/remedia-target-tools-${target}"
-ffmpeg_commit='db69d06eeeab4f46da15030a80d539efb4503ca8'
+ffmpeg_commit='946fcce07b6dcd0331c8cc609192aeff5e1924f8'
 marker="$prefix/.remedia-ffmpeg-build"
 
 if [[ -f "$marker" ]] && [[ "$(cat "$marker")" == "$ffmpeg_commit:$target" ]]; then
-  echo "Using cached FFmpeg 7.1.1 target libraries at $prefix"
+  echo "Using cached FFmpeg 9.0.2 target libraries at $prefix"
 else
   rm -rf "$prefix" "$source_dir"
   mkdir -p "$prefix" "$tools_dir"
@@ -196,18 +196,18 @@ export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig"
 export PKG_CONFIG_ALLOW_CROSS=1
 
 declare -A expected_majors=(
-  [libavcodec]=61
-  [libavformat]=61
-  [libavutil]=59
-  [libavfilter]=10
-  [libswresample]=5
+  [libavcodec]=63
+  [libavformat]=63
+  [libavutil]=61
+  [libavfilter]=12
+  [libswresample]=7
 )
 for library in "${!expected_majors[@]}"; do
   version="$(pkg-config --modversion "$library")"
   major="${version%%.*}"
   echo "$library $version from $PKG_CONFIG_LIBDIR"
   if [[ "$major" != "${expected_majors[$library]}" ]]; then
-    echo "$library must use FFmpeg 7 ABI ${expected_majors[$library]}, found $version" >&2
+    echo "$library must use FFmpeg 9 ABI ${expected_majors[$library]}, found $version" >&2
     exit 1
   fi
 done

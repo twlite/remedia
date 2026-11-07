@@ -133,11 +133,11 @@ jobs:
       - uses: mamba-org/setup-micromamba@v3
         if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
         with:
-          environment-file: .github/native-deps/ffmpeg7.yml
-          environment-name: remedia-ffmpeg7
+          environment-file: .github/native-deps/ffmpeg9.yml
+          environment-name: remedia-ffmpeg9
           init-shell: bash
           cache-environment: true
-          cache-environment-key: checks-ffmpeg7-${{ hashFiles('.github/native-deps/ffmpeg7.yml') }}
+          cache-environment-key: checks-ffmpeg9-${{ hashFiles('.github/native-deps/ffmpeg9.yml') }}
           cache-downloads: true
       - name: Select the repository Rust toolchain
         if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
@@ -171,7 +171,7 @@ jobs:
           libclang_path="$(find /usr/lib/llvm-* -name libclang.so -print -quit)"
           if [ -z "$libclang_path" ]; then echo "libclang.so not found under /usr/lib/llvm-*" >&2; exit 1; fi
           echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
-      - name: Verify FFmpeg 7 build dependencies
+      - name: Verify FFmpeg 9 build dependencies
         if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
         shell: micromamba-shell {0}
         run: node .github/scripts/verify-native-deps.mjs --build

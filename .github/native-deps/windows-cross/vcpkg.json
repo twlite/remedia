@@ -1,7 +1,7 @@
 {
   "name": "remedia-ffmpeg-cross",
   "version-string": "0.1.0",
-  "builtin-baseline": "afa249f12f52ed8a3b919f195495ba8b330288d1",
+  "builtin-baseline": "14439b1e7cdaac4c6f466fee3deede319fcece8f",
   "dependencies": [
     {
       "name": "ffmpeg",
@@ -12,7 +12,7 @@
   "overrides": [
     {
       "name": "ffmpeg",
-      "version": "7.1.1",
+      "version": "9.0.2",
       "port-version": 6
     }
   ]
