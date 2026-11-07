@@ -210,3 +210,22 @@ bounded byte-stream reads. Errors use `DecoderError`, including `InputTimeout`, 
 invalid media and `NoAudioStream`. All core input kinds are supported. Stream inputs are
 non-seekable and disposable; probing may consume some or all bytes. No source is retained for playback.
 FFmpeg may inspect packets while discovering formats, but Remedia does not run a PCM decoding loop.
+
+
+## Linked FFmpeg runtime versions
+
+`remedia_core::ffmpeg_runtime_versions()` returns an array of five
+`(&'static str, u32)` pairs for avcodec, avformat, avutil, avfilter, and
+swresample. Each `u32` is the runtime library's packed version number:
+`major << 16 | minor << 8 | micro`. The call is read-only, does not
+initialize playback, and does not require a media source.
+
+```rust
+for (library, version) in remedia_core::ffmpeg_runtime_versions() {
+    println!("{library}: ABI major {}", version >> 16);
+}
+```
+
+`remedia-server doctor` uses this to check the active FFmpeg 9 ABI majors.
+A missing linked library may prevent the executable from starting, before
+this function can run. See [Install FFmpeg 9](/docs/node/ffmpeg-9).
