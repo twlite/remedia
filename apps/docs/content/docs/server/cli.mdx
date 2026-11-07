@@ -5,6 +5,30 @@ description: Start, diagnose, configure, update, and discover standalone Remedia
 
 # Server CLI
 
+## FFmpeg-independent commands
+
+The standalone release contains two executables in the same directory:
+
+- `remedia-server` is a lightweight CLI that does **not** link FFmpeg.
+- `remedia-server-runtime` owns playback, WebSocket serving, and native FFmpeg 9 libraries.
+
+These commands work without the FFmpeg shared libraries installed:
+
+```sh
+remedia-server --help
+remedia-server --version
+remedia-server --generate-config-file
+remedia-server --list
+remedia-server update
+```
+
+The CLI starts the native runtime only for `serve` (including bare `remedia-server`) and `doctor`. On Unix, `serve` replaces the CLI process with the runtime so systemd, signals, and exit codes refer to the real server. On Windows, the CLI launches and waits for the runtime process.
+
+`doctor` can run when FFmpeg is missing: the CLI starts and reports the native loader failure with installation guidance, rather than preventing all commands from starting. It still exits nonzero when the required runtime libraries are unavailable.
+
+Both binaries are packaged in the release archive, and the installers put them side by side. Copying only `remedia-server` is sufficient for administrative commands, but `serve` requires the accompanying runtime binary. `REMEDIA_SERVER_RUNTIME` can override the native executable path for custom deployments.
+
+
 The standalone executable is called `remedia-server`. The one-command installers also provide a shorter `remedia` launcher. Both accept the same options.
 
 ## Start a server
