@@ -51,20 +51,15 @@ impl PcmFilterGraph {
         graph
             .add(&source, "in", &source_args)
             .map_err(|error| FilterGraphError::Invalid(error.to_string()))?;
+        // FFmpeg 9 uses array-valued abuffersink options. ffmpeg-next's
+        // set_sample_format/set_sample_rate helpers still use older option
+        // names and ignore errors, so configure the sink explicitly.
+        let sink_args = format!(
+            "sample_formats=flt:samplerates={OUTPUT_SAMPLE_RATE_HZ}:channel_layouts=stereo"
+        );
         graph
-            .add(&sink, "out", "")
+            .add(&sink, "out", &sink_args)
             .map_err(|error| FilterGraphError::Invalid(error.to_string()))?;
-
-        {
-            let mut output = graph.get("out").ok_or_else(|| {
-                FilterGraphError::Invalid("FFmpeg output endpoint is missing".into())
-            })?;
-            output.set_sample_format(ffmpeg::format::Sample::F32(
-                ffmpeg::format::sample::Type::Packed,
-            ));
-            output.set_channel_layout(ffmpeg::ChannelLayout::STEREO);
-            output.set_sample_rate(OUTPUT_SAMPLE_RATE_HZ);
-        }
 
         graph
             .output("in", 0)
@@ -159,7 +154,12 @@ impl PcmFilterGraph {
                     || frame.rate() != OUTPUT_SAMPLE_RATE_HZ
                 {
                     return Err(FilterGraphError::Processing(
-                        "FFmpeg filter output did not preserve packed 48 kHz stereo f32 PCM".into(),
+                        format!(
+                            "FFmpeg filter output has format {:?}, layout {:?}, and rate {} Hz instead of packed 48 kHz stereo f32 PCM",
+                            frame.format(),
+                            frame.channel_layout(),
+                            frame.rate(),
+                        ),
                     ));
                 }
                 let samples_per_channel = frame.samples();
