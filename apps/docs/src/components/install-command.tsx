@@ -13,22 +13,42 @@ const commands: Record<Platform, string> = {
 export function InstallCommand() {
   const [platform, setPlatform] = useState<Platform>('unix');
   const [copied, setCopied] = useState(false);
+
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (/Windows/i.test(navigator.userAgent)) setPlatform('windows');
   }, []);
+
   const select = (next: Platform) => {
     setPlatform(next);
     setCopied(false);
   };
+
   return (
     <div className={styles.wrapper} aria-label="Install remedia-server">
       <div className={styles.tabs} role="tablist" aria-label="Operating system">
-        <button type="button" role="tab" aria-selected={platform === 'windows'} onClick={() => select('windows')}>Windows</button>
-        <button type="button" role="tab" aria-selected={platform === 'unix'} onClick={() => select('unix')}>macOS &amp; Linux</button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={platform === 'windows'}
+          onClick={() => select('windows')}
+        >
+          Windows
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={platform === 'unix'}
+          onClick={() => select('unix')}
+        >
+          macOS &amp; Linux
+        </button>
       </div>
       <div className={styles.command}>
         <code>{commands[platform]}</code>
-        <button type="button" aria-label="Copy installation command"
+        <button
+          type="button"
+          aria-label="Copy installation command"
           onClick={async () => {
             try {
               await navigator.clipboard.writeText(commands[platform]);
@@ -36,7 +56,8 @@ export function InstallCommand() {
             } catch {
               setCopied(false);
             }
-          }}>
+          }}
+        >
           {copied ? <Check size={17} aria-hidden="true" /> : <Copy size={17} aria-hidden="true" />}
         </button>
       </div>
