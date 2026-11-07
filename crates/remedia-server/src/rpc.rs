@@ -580,7 +580,6 @@ use monitor::*;
 
 mod statistics;
 pub(crate) use statistics::node_stats;
-use statistics::{load_average_1m, resident_memory_bytes};
 
 mod params;
 pub(crate) use params::*;
