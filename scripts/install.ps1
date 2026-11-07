@@ -34,7 +34,8 @@ try {
   $licenseDir = Join-Path $InstallDir 'licenses'
   @($binDir, $libexec, $licenseDir) | ForEach-Object { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
   $serverExe = Join-Path $tmp 'remedia-server-x86_64-pc-windows-msvc.exe'
-  if (!(Test-Path $serverExe)) { throw 'Server binary not present in release archive.' }
+  $runtimeExe = Join-Path $tmp 'remedia-server-runtime-x86_64-pc-windows-msvc.exe'
+  if (!(Test-Path $serverExe) -or !(Test-Path $runtimeExe)) { throw 'CLI or runtime binary not present in release archive.' }
 
   if (-not $NoFFmpeg) {
     $mamba = (Get-Command micromamba -ErrorAction SilentlyContinue).Source
@@ -62,6 +63,7 @@ try {
   $versionDir = Join-Path $libexec $release.tag_name
   New-Item -ItemType Directory -Path $versionDir -Force | Out-Null
   Copy-Item $serverExe (Join-Path $versionDir 'remedia-server.exe') -Force
+  Copy-Item $runtimeExe (Join-Path $versionDir 'remedia-server-runtime.exe') -Force
   foreach ($name in @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt')) {
     Copy-Item (Join-Path $tmp $name) (Join-Path $licenseDir $name) -Force
   }
