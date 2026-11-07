@@ -39,7 +39,6 @@ pub use playback::{
 };
 pub use source::{CancellationToken, InputSource};
 
-
 /// Report the runtime versions of the five FFmpeg libraries linked by Remedia.
 ///
 /// Each returned version is FFmpeg's packed `(major << 16) | (minor << 8) | micro`
