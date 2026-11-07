@@ -3,7 +3,6 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { ffmpegAbi as expectedMajors } from './ffmpeg-abi.mjs';
 
-
 const mode = process.argv[2] ?? '--build';
 if (mode !== '--build' && mode !== '--runtime') {
   throw new Error('Usage: verify-native-deps.mjs [--build|--runtime]');

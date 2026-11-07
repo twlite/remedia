@@ -33,11 +33,7 @@ if (process.platform === 'linux') {
     if (!header.includes(process.arch === 'arm64' ? 'AArch64' : 'Advanced Micro Devices X86-64')) {
       throw new Error(`Unexpected ELF architecture for ${binary}`);
     }
-    requireDependencies(
-      dependencies,
-      requiredLinuxLibraries,
-      binary,
-    );
+    requireDependencies(dependencies, requiredLinuxLibraries, binary);
     const directDependencies = execFileSync('readelf', ['-d', binary], { encoding: 'utf8' });
     rejectDynamicOpus(directDependencies, binary, /libopus\.so(?:\.\d+)?/i);
   }
@@ -49,11 +45,7 @@ if (process.platform === 'linux') {
     if (!architecture.includes(process.arch === 'arm64' ? 'arm64' : 'x86_64')) {
       throw new Error(`Unexpected Mach-O architecture for ${binary}`);
     }
-    requireDependencies(
-      dependencies,
-      requiredMacLibraries,
-      binary,
-    );
+    requireDependencies(dependencies, requiredMacLibraries, binary);
     rejectDynamicOpus(dependencies, binary, /libopus(?:\.\d+)?\.dylib/i);
   }
 } else if (process.platform === 'win32') {
@@ -64,11 +56,7 @@ if (process.platform === 'linux') {
     if (!headers.toLowerCase().includes('machine (x64)')) {
       throw new Error(`Unexpected PE architecture for ${binary}`);
     }
-    requireDependencies(
-      dependencies.toLowerCase(),
-      requiredWindowsLibraries,
-      binary,
-    );
+    requireDependencies(dependencies.toLowerCase(), requiredWindowsLibraries, binary);
     rejectDynamicOpus(dependencies, binary, /opus\.dll/i);
   }
 } else {
