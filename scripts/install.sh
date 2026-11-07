@@ -55,7 +55,10 @@ tar -tzf "$tmp/server.tar.gz" | while IFS= read -r item; do
 done
 mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/libexec" "$INSTALL_DIR/licenses"
 tar -xzf "$tmp/server.tar.gz" -C "$tmp"
-install -m 755 "$tmp/remedia-server-$target" "$INSTALL_DIR/libexec/remedia-server"
+# Never truncate a currently running executable. Rename a fully written binary instead.
+staged="$INSTALL_DIR/libexec/.remedia-server-$.new"
+install -m 755 "$tmp/remedia-server-$target" "$staged"
+mv -f "$staged" "$INSTALL_DIR/libexec/remedia-server"
 for item in LICENSE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.txt; do
   cp "$tmp/$item" "$INSTALL_DIR/licenses/$item"
 done
