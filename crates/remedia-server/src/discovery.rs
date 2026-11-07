@@ -41,21 +41,29 @@ impl Drop for Registration {
 fn registry_dir() -> io::Result<PathBuf> {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME/USERPROFILE is unavailable"))?;
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "HOME/USERPROFILE is unavailable")
+        })?;
     Ok(PathBuf::from(home).join(".remedia").join("run"))
 }
 
 fn private_registry_directory(path: &Path) -> io::Result<()> {
     fs::create_dir_all(path)?;
     if fs::symlink_metadata(path)?.file_type().is_symlink() {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "runtime directory is a symlink"));
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "runtime directory is a symlink",
+        ));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
         if fs::metadata(path)?.permissions().mode() & 0o077 != 0 {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "runtime directory must be private"));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "runtime directory must be private",
+            ));
         }
     }
     Ok(())
@@ -101,7 +109,11 @@ pub async fn register(server: Arc<ServerHandle>) -> io::Result<Registration> {
             let secret = record.secret.clone();
             tokio::spawn(async move {
                 let _permit = permit;
-                let _ = timeout(Duration::from_secs(2), serve_status(stream, &secret, &server)).await;
+                let _ = timeout(
+                    Duration::from_secs(2),
+                    serve_status(stream, &secret, &server),
+                )
+                .await;
             });
         }
     });
@@ -116,19 +128,25 @@ async fn serve_status(
     let mut supplied = vec![0; secret.len()];
     stream.read_exact(&mut supplied).await?;
     if !bool::from(supplied.as_slice().ct_eq(secret.as_bytes())) {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "invalid status token"));
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "invalid status token",
+        ));
     }
     let response = json!({
         "pid": std::process::id(),
         "address": server.local_addr(),
         "stats": server.statistics(),
     });
-    stream.write_all(&serde_json::to_vec(&response).map_err(io::Error::other)?).await?;
+    stream
+        .write_all(&serde_json::to_vec(&response).map_err(io::Error::other)?)
+        .await?;
     stream.shutdown().await
 }
 
 async fn read_instance(record: InstanceRecord) -> Option<Value> {
-    if !record.control.ip().is_loopback() || !record.control.is_ipv4() || record.secret.len() != 32 {
+    if !record.control.ip().is_loopback() || !record.control.is_ipv4() || record.secret.len() != 32
+    {
         return None;
     }
     let future = async {
@@ -144,7 +162,10 @@ async fn read_instance(record: InstanceRecord) -> Option<Value> {
         }
         Some(response)
     };
-    timeout(Duration::from_millis(700), future).await.ok().flatten()
+    timeout(Duration::from_millis(700), future)
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Return live same-user instances, excluding stale registry files.
@@ -160,9 +181,15 @@ pub async fn list() -> io::Result<Vec<Value>> {
         if !entry.file_type()?.is_file() || entry.path().extension().is_none_or(|s| s != "json") {
             continue;
         }
-        let Ok(bytes) = fs::read(entry.path()) else { continue };
-        if bytes.len() > 4096 { continue; }
-        let Ok(record) = serde_json::from_slice::<InstanceRecord>(&bytes) else { continue };
+        let Ok(bytes) = fs::read(entry.path()) else {
+            continue;
+        };
+        if bytes.len() > 4096 {
+            continue;
+        }
+        let Ok(record) = serde_json::from_slice::<InstanceRecord>(&bytes) else {
+            continue;
+        };
         if let Some(snapshot) = read_instance(record).await {
             results.push(snapshot);
         }
@@ -171,7 +198,10 @@ pub async fn list() -> io::Result<Vec<Value>> {
     Ok(results)
 }
 
-pub fn print_instances(instances: &[Value], json_output: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn print_instances(
+    instances: &[Value],
+    json_output: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     if json_output {
         println!("{}", serde_json::to_string_pretty(instances)?);
         return Ok(());
@@ -180,7 +210,10 @@ pub fn print_instances(instances: &[Value], json_output: bool) -> Result<(), Box
         println!("No running Remedia servers found for this user.");
         return Ok(());
     }
-    println!("{:<9} {:<23} {:>8} {:>12} {:>11}  HEALTH", "PID", "LISTEN", "PLAYERS", "CONNECTIONS", "RSS (MiB)");
+    println!(
+        "{:<9} {:<23} {:>8} {:>12} {:>11}  HEALTH",
+        "PID", "LISTEN", "PLAYERS", "CONNECTIONS", "RSS (MiB)"
+    );
     for instance in instances {
         let stats = &instance["stats"];
         let pid = instance["pid"].as_u64().unwrap_or(0);
@@ -189,9 +222,18 @@ pub fn print_instances(instances: &[Value], json_output: bool) -> Result<(), Box
         let max_players = stats["players"]["maximum"].as_u64().unwrap_or(0);
         let connections = stats["connections"]["active"].as_u64().unwrap_or(0);
         let max_connections = stats["connections"]["maximum"].as_u64().unwrap_or(0);
-        let rss = stats["memory"]["residentBytes"].as_u64().map(|b| format!("{:.1}", b as f64 / 1_048_576.0)).unwrap_or_else(|| "n/a".into());
-        let health = format!("{}/{}", stats["processingHealth"].as_str().unwrap_or("?"), stats["transportHealth"].as_str().unwrap_or("?"));
-        println!("{pid:<9} {addr:<23} {players:>3}/{max_players:<4} {connections:>5}/{max_connections:<6} {rss:>11}  {health}");
+        let rss = stats["memory"]["residentBytes"]
+            .as_u64()
+            .map(|b| format!("{:.1}", b as f64 / 1_048_576.0))
+            .unwrap_or_else(|| "n/a".into());
+        let health = format!(
+            "{}/{}",
+            stats["processingHealth"].as_str().unwrap_or("?"),
+            stats["transportHealth"].as_str().unwrap_or("?")
+        );
+        println!(
+            "{pid:<9} {addr:<23} {players:>3}/{max_players:<4} {connections:>5}/{max_connections:<6} {rss:>11}  {health}"
+        );
     }
     Ok(())
 }
@@ -201,7 +243,11 @@ mod tests {
     use super::*;
     #[test]
     fn status_files_are_private_and_do_not_overwrite_existing_files() {
-        let dir = std::env::temp_dir().join(format!("remedia-instance-test-{}-{}", std::process::id(), random::<u64>()));
+        let dir = std::env::temp_dir().join(format!(
+            "remedia-instance-test-{}-{}",
+            std::process::id(),
+            random::<u64>()
+        ));
         private_registry_directory(&dir).unwrap();
         let record = InstanceRecord {
             pid: 1,
