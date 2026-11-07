@@ -5,6 +5,14 @@ over WebSocket and owns server-side client sessions, guild players, native playb
 Discord voice transports. It uses `remedia-core`, `remedia-discord`, and
 `remedia-observability` directly; it does not use N-API or an FFmpeg subprocess.
 
+The standalone executable now uses a `clap` CLI. Run `remedia-server
+--generate-config-file` to create a safe, default-deny starter configuration,
+`remedia-server doctor` to validate the configuration and loaded FFmpeg
+library versions, and `remedia-server --list` to inspect local instances.
+`remedia-server update` / `upgrade` runs the bundled platform installer.
+Required and optional dotenv files are supported through `--env-file` and
+`--optional-env-file`. See the [CLI reference](../../apps/docs/content/docs/server/cli.mdx).
+
 The server starts only with `remedia.config.json` in the current working directory, or with an
 explicit `--config <path>` argument. See [`remedia.config.example.json`](remedia.config.example.json)
 for the complete schema. If the file is missing or a configured media root cannot be resolved, the
