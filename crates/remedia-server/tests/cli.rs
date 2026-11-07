@@ -1,0 +1,99 @@
+//! Black-box CLI smoke tests. No real Discord credentials or media sources.
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+fn temp_root() -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "remedia-cli-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    fs::create_dir_all(&path).unwrap();
+    path
+}
+
+fn cli(home: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_remedia-server"));
+    command.env("HOME", home).env("USERPROFILE", home);
+    command
+}
+
+#[test]
+fn generated_configuration_is_not_overwritten() {
+    let root = temp_root();
+    let path = root.join("config.json");
+    assert!(cli(&root).args(["--generate-config-file", path.to_str().unwrap()]).status().unwrap().success());
+    let initial = fs::read(&path).unwrap();
+    assert!(!cli(&root).args(["--generate-config-file", path.to_str().unwrap()]).status().unwrap().success());
+    assert_eq!(fs::read(&path).unwrap(), initial);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn env_files_and_doctor_are_strict() {
+    let root = temp_root();
+    let config = root.join("config.json");
+    let required = root.join(".env");
+    let absent = root.join(".missing");
+    fs::write(&config, r#"{"users":[{"username":"bot","password":"env('REMEDIA_TEST_CLI_PASSWORD')"}]}"#).unwrap();
+    fs::write(&required, "REMEDIA_TEST_CLI_PASSWORD='test-secret'\n").unwrap();
+    let passing = cli(&root)
+        .args(["doctor", "--config", config.to_str().unwrap(), "--env-file", required.to_str().unwrap(), "--optional-env-file", absent.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(passing.status.success(), "{}", String::from_utf8_lossy(&passing.stderr));
+
+    assert!(!cli(&root)
+        .args(["doctor", "--config", config.to_str().unwrap(), "--env-file", absent.to_str().unwrap()])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn list_reads_live_server_stats_without_rpc_credentials() {
+    let root = temp_root();
+    let config = root.join("config.json");
+    let password = root.join(".env");
+    fs::write(&config, r#"{"bind":{"host":"127.0.0.1","port":0},"users":[{"username":"bot","password":"env('REMEDIA_TEST_CLI_PASSWORD')"}]}"#).unwrap();
+    fs::write(&password, "REMEDIA_TEST_CLI_PASSWORD=test-secret\n").unwrap();
+    let mut server = cli(&root)
+        .args(["serve", "--config", config.to_str().unwrap(), "--env-file", password.to_str().unwrap()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(12);
+    let mut found = None;
+    while Instant::now() < deadline {
+        if let Some(status) = server.try_wait().unwrap() {
+            panic!("server exited unexpectedly: {status}");
+        }
+        let output = cli(&root).args(["--list", "--json"]).output().unwrap();
+        if output.status.success() {
+            if let Ok(rows) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+                found = rows.as_array().and_then(|rows| {
+                    rows.iter().find(|row| row["pid"] == server.id()).cloned()
+                });
+                if found.is_some() {
+                    break;
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    let _ = server.kill();
+    let _ = server.wait();
+    let row = found.expect("expected live server discovery via loopback status endpoint");
+    assert_eq!(row["stats"]["players"]["active"], 0);
+    assert_eq!(row["stats"]["connections"]["active"], 0);
+    assert!(row["address"].as_str().unwrap().contains(':'));
+    assert!(row["stats"]["nodeId"].is_string());
+    fs::remove_dir_all(root).unwrap();
+}
