@@ -157,15 +157,31 @@ fn doctor(
     println!("Remedia server {}", env!("CARGO_PKG_VERSION"));
     println!("Platform: {} / {}", std::env::consts::OS, std::env::consts::ARCH);
     println!("Executable: {}", std::env::current_exe()?.display());
-    println!("FFmpeg: native libraries loaded by the executable; required ABI majors:");
-    println!("  avcodec 63, avformat 63, avutil 61, avfilter 12, swresample 7");
-    println!("  A successful launch confirms the OS loader resolved the linked libraries.");
+    println!("FFmpeg libraries loaded by the current executable:");
+    let expected = [63, 63, 61, 12, 7];
+    let mut abi_ok = true;
+    for ((name, packed), major) in remedia_core::ffmpeg_runtime_versions()
+        .into_iter()
+        .zip(expected)
+    {
+        let runtime_major = packed >> 16;
+        let runtime_minor = (packed >> 8) & 0xff;
+        let runtime_micro = packed & 0xff;
+        let status = if runtime_major == major { "OK" } else { "INCOMPATIBLE" };
+        println!(
+            "  {name:<12} {runtime_major}.{runtime_minor}.{runtime_micro}              (expected ABI {major}) {status}"
+        );
+        abi_ok &= runtime_major == major;
+    }
     for key in ["FFMPEG_DIR", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"] {
         if std::env::var_os(key).is_some() {
             println!("{key}: set");
         }
     }
     println!("Environment file variables available for config interpolation: {}", variables.len());
+    if !abi_ok {
+        return Err("FFmpeg runtime ABI versions do not match the required FFmpeg 9 majors".into());
+    }
     match ServerConfig::from_file_with_env(path, variables) {
         Ok(_) => {
             println!("Config: {} (valid)", path.display());
