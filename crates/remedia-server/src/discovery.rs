@@ -70,7 +70,7 @@ fn write_registration(path: &Path, record: &InstanceRecord) -> io::Result<()> {
         options.mode(0o600);
     }
     let mut file = options.open(path)?;
-    file.write_all(&serde_json::to_vec(record)?)?;
+    file.write_all(&serde_json::to_vec(record).map_err(io::Error::other)?)?;
     file.sync_all()
 }
 
@@ -123,7 +123,7 @@ async fn serve_status(
         "address": server.local_addr(),
         "stats": server.statistics(),
     });
-    stream.write_all(&serde_json::to_vec(&response)?).await?;
+    stream.write_all(&serde_json::to_vec(&response).map_err(io::Error::other)?).await?;
     stream.shutdown().await
 }
 
