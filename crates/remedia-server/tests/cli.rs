@@ -118,14 +118,14 @@ fn list_reads_live_server_stats_without_rpc_credentials() {
             panic!("server exited unexpectedly: {status}");
         }
         let output = cli(&root).args(["--list", "--json"]).output().unwrap();
-        if output.status.success() {
-            if let Ok(rows) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
-                found = rows
-                    .as_array()
-                    .and_then(|rows| rows.iter().find(|row| row["pid"] == server.id()).cloned());
-                if found.is_some() {
-                    break;
-                }
+        if output.status.success()
+            && let Ok(rows) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        {
+            found = rows
+                .as_array()
+                .and_then(|rows| rows.iter().find(|row| row["pid"] == server.id()).cloned());
+            if found.is_some() {
+                break;
             }
         }
         thread::sleep(Duration::from_millis(100));
