@@ -72,7 +72,7 @@ remedia update
 remedia upgrade
 ```
 
-Both commands reinstall the latest **stable** published release using the installer embedded in your currently installed server. An update restarts neither the running process nor a service manager. Restart your server after updating. Active playback sessions do not survive the restart.
+Both commands reinstall the latest stable release, or the newest published prerelease if no stable release exists, using the installer embedded in your currently installed server. An update restarts neither the running process nor a service manager. Restart your server after updating. Active playback sessions do not survive the restart.
 
 If you manage FFmpeg independently, use `remedia update --no-ffmpeg`. `REMEDIA_INSTALL_DIR` and `REMEDIA_VERSION` can be supplied to the installers to select another install directory or release tag. Set `REMEDIA_VERSION` before running `remedia update` to select an explicit release.
 

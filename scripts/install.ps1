@@ -11,7 +11,15 @@ if (-not [Environment]::Is64BitOperatingSystem -or [Runtime.InteropServices.Runt
 $repo = 'twlite/remedia'
 $headers = @{ 'User-Agent' = 'remedia-installer'; 'Accept' = 'application/vnd.github+json' }
 if ($Version -eq 'latest') {
-  $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers $headers
+  # GitHub's latest endpoint excludes prereleases. Fall back only when no stable release exists.
+  try {
+    $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers $headers
+  } catch {
+    if ([int]$_.Exception.Response.StatusCode -ne 404) { throw }
+    $releases = @(Invoke-RestMethod "https://api.github.com/repos/$repo/releases?per_page=100" -Headers $headers)
+    $release = $releases | Where-Object { -not $_.draft -and $_.prerelease } | Select-Object -First 1
+    if (-not $release) { throw 'No published Remedia release found.' }
+  }
 } else {
   if ($Version -notmatch '^v?\d+\.\d+\.\d+(-[a-zA-Z0-9.-]+)?$') { throw 'Invalid version.' }
   $tag = 'v' + $Version.TrimStart('v')

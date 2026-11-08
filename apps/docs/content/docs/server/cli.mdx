@@ -119,6 +119,6 @@ remedia-server upgrade
 remedia-server update --no-ffmpeg
 ```
 
-`upgrade` is an alias of `update`. It runs the verified platform installer embedded in the binary and defaults to the latest stable GitHub release. Set `REMEDIA_VERSION` for an explicit release and `REMEDIA_INSTALL_DIR` for a custom install location.
+`upgrade` is an alias of `update`. It runs the verified platform installer embedded in the binary and defaults to the latest stable GitHub release, or the newest published prerelease if no stable release exists. Set `REMEDIA_VERSION` for an explicit release and `REMEDIA_INSTALL_DIR` for a custom install location.
 
 The installer does not restart running server processes or manage services. Restart your service manually when ready. See [installation](/docs/server/installation) for the supported targets, FFmpeg requirements, checksums, and path setup.

@@ -27,8 +27,15 @@ esac
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 if [ "$VERSION" = latest ]; then
+  # GitHub's latest endpoint excludes prereleases. Fall back only on HTTP 404.
   release="https://api.github.com/repos/$REPO/releases/latest"
-  tag="$(curl -fsSL --retry 3 "$release" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)"
+  status="$(curl -sSL --retry 3 -o "$tmp/release.json" -w '%{http_code}' "$release")"
+  case "$status" in
+    200) ;;
+    404) curl -fsSL --retry 3 "https://api.github.com/repos/$REPO/releases?per_page=100" -o "$tmp/release.json" ;;
+    *) echo "GitHub release lookup failed (HTTP $status)" >&2; exit 1 ;;
+  esac
+  tag="$(grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' "$tmp/release.json" | head -n 1 | cut -d '"' -f 4)"
   [ -n "$tag" ] || { echo "Cannot resolve latest release" >&2; exit 1; }
 else
   case "$VERSION" in
