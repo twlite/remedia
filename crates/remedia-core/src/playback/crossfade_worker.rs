@@ -45,42 +45,59 @@ impl ActiveSource {
         }
     }
 
-    fn read(&mut self, wanted: usize, cancellation: &CancellationToken)
-        -> Result<Option<Vec<f32>>, PlaybackError>
-    {
-        if wanted == 0 { return Ok(None); }
+    fn read(
+        &mut self,
+        wanted: usize,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<Vec<f32>>, PlaybackError> {
+        if wanted == 0 {
+            return Ok(None);
+        }
         let samples = match &mut self.input {
-            ActiveInput::Direct { decoder, pcm, ended } => {
+            ActiveInput::Direct {
+                decoder,
+                pcm,
+                ended,
+            } => {
                 while pcm.len() < wanted * 2 && !*ended && !cancellation.is_cancelled() {
                     match decoder.next_frame()? {
                         Some(frame) => pcm.extend(frame.samples),
                         None => *ended = true,
                     }
                 }
-                if pcm.is_empty() { return Ok(None); }
+                if pcm.is_empty() {
+                    return Ok(None);
+                }
                 pcm.drain(..(wanted * 2).min(pcm.len())).collect()
             }
-            ActiveInput::Prepared(stage) =>
+            ActiveInput::Prepared(stage) => {
                 match stage.buffer.read_for_playback(wanted, cancellation) {
                     Some(frame) => frame,
                     None if cancellation.is_cancelled() => return Err(PlaybackError::Cancelled),
                     None if stage.snapshot().state == StageState::Failed => {
                         return Err(PlaybackError::UnsupportedSeeking(
-                            "prepared source failed while decoding".into()
+                            "prepared source failed while decoding".into(),
                         ));
                     }
                     None => return Ok(None),
-                },
+                }
+            }
         };
         self.consumed += (samples.len() / 2) as u64;
         Ok(Some(samples))
     }
 
-    fn seek(&mut self, position: Duration, cancellation: &CancellationToken)
-        -> Result<(), PlaybackError>
-    {
+    fn seek(
+        &mut self,
+        position: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<(), PlaybackError> {
         match &mut self.input {
-            ActiveInput::Direct { decoder, pcm, ended } => {
+            ActiveInput::Direct {
+                decoder,
+                pcm,
+                ended,
+            } => {
                 decoder.seek(position)?;
                 pcm.clear();
                 *ended = false;
@@ -92,10 +109,13 @@ impl ActiveSource {
                         "prepared byte stream cannot rewind".into(),
                     ));
                 }
-                let mut decoder = AudioDecoder::open_with_options(source, DecoderOptions {
-                    cancellation: cancellation.clone(),
-                    ..DecoderOptions::default()
-                })?;
+                let mut decoder = AudioDecoder::open_with_options(
+                    source,
+                    DecoderOptions {
+                        cancellation: cancellation.clone(),
+                        ..DecoderOptions::default()
+                    },
+                )?;
                 decoder.seek(position)?;
                 stage.cancel_and_join();
                 self.input = ActiveInput::Direct {
@@ -144,8 +164,14 @@ pub(super) fn worker_entry(
     let panic_ready = ready.clone();
     let result = catch_unwind(AssertUnwindSafe(|| {
         worker_loop(
-            Arc::clone(&shared), generation, source, Arc::clone(&output),
-            cancellation.clone(), ready, &stage_slot, config,
+            Arc::clone(&shared),
+            generation,
+            source,
+            Arc::clone(&output),
+            cancellation.clone(),
+            ready,
+            &stage_slot,
+            config,
         );
     }));
     if result.is_err() {
@@ -166,10 +192,13 @@ fn worker_loop(
     stage_slot: &Mutex<Option<Arc<PreparedStage>>>,
     config: CrossfadeConfig,
 ) {
-    let opened = AudioDecoder::open_with_options(source, DecoderOptions {
-        cancellation: cancellation.clone(),
-        ..DecoderOptions::default()
-    });
+    let opened = AudioDecoder::open_with_options(
+        source,
+        DecoderOptions {
+            cancellation: cancellation.clone(),
+            ..DecoderOptions::default()
+        },
+    );
     let decoder = match opened {
         Ok(decoder) => decoder,
         Err(error) => {
@@ -204,8 +233,8 @@ fn worker_loop(
     let metrics = shared.observability.metrics();
     metrics.playback_started();
     let _guard = ActivePlaybackGuard { metrics };
-    let fade_samples = CrossfadeWindow::from_millis(config.duration_ms)
-        .expect("validated crossfade settings");
+    let fade_samples =
+        CrossfadeWindow::from_millis(config.duration_ms).expect("validated crossfade settings");
     let mut transition: Option<Transition> = None;
     let mut preparation_requested = false;
 
@@ -214,20 +243,30 @@ fn worker_loop(
             return;
         }
         if let Err(error) = handle_commands(
-            &shared, generation, &output, &cancellation, &mut current,
-            &mut processor, &mut transition, stage_slot, &mut preparation_requested
+            &shared,
+            generation,
+            &output,
+            &cancellation,
+            &mut current,
+            &mut processor,
+            &mut transition,
+            stage_slot,
+            &mut preparation_requested,
         ) {
-            if is_stopped(&shared, generation) { return; }
+            if is_stopped(&shared, generation) {
+                return;
+            }
             fail_session(&shared, generation, error, &cancellation, &output);
             return;
         }
-        if is_stopped(&shared, generation) { return; }
+        if is_stopped(&shared, generation) {
+            return;
+        }
 
         let source_generation = lock(&shared.data).source_generation;
         if let Some(duration) = current.duration_samples {
             let remaining = duration.saturating_sub(current.consumed);
-            let trigger = fade_samples.samples() as u64 +
-                u64::from(config.prepare_before_ms) * 48;
+            let trigger = fade_samples.samples() as u64 + u64::from(config.prepare_before_ms) * 48;
             if !preparation_requested && remaining <= trigger {
                 preparation_requested = true;
                 shared.publish(CrossfadeEvent::PrepareRequested {
@@ -251,7 +290,9 @@ fn worker_loop(
                             })
                     }) {
                         staged.take()
-                    } else { None }
+                    } else {
+                        None
+                    }
                 };
                 if let Some(next) = ready_stage {
                     let snapshot = next.snapshot();
@@ -283,7 +324,8 @@ fn worker_loop(
             }
         }
 
-        let wanted = transition.as_ref()
+        let wanted = transition
+            .as_ref()
             .map(|t| FRAME_SAMPLES.min(t.fading.remaining_samples()))
             .unwrap_or(FRAME_SAMPLES);
         let mut pcm = match current.read(wanted, &cancellation) {
@@ -299,8 +341,11 @@ fn worker_loop(
         let mut source_position = current.consumed;
         if let Some(active) = transition.as_mut() {
             let count = pcm.len() / 2;
-            let Some(mut incoming) = active.next.buffer.read_for_playback(count, &cancellation) else {
-                if is_stopped(&shared, generation) { return; }
+            let Some(mut incoming) = active.next.buffer.read_for_playback(count, &cancellation)
+            else {
+                if is_stopped(&shared, generation) {
+                    return;
+                }
                 // The staged provider failed during overlap. Preserve the
                 // outgoing source rather than sending a fade to silence.
                 active.next.cancel_and_join();
@@ -323,16 +368,21 @@ fn worker_loop(
             start_sample: processor.next_sample(),
         };
         if let Err(error) = processor.write_frame(
-            frame, Some(source_position.saturating_sub(count as u64)), true, gain,
-            |frame, source| deliver_processed_frame(
-                &shared, generation, &output, &cancellation, frame, source
-            ),
+            frame,
+            Some(source_position.saturating_sub(count as u64)),
+            true,
+            gain,
+            |frame, source| {
+                deliver_processed_frame(&shared, generation, &output, &cancellation, frame, source)
+            },
         ) {
             let error = match error {
                 ProcessError::Output(error) => PlaybackError::Output(error),
                 ProcessError::Filter(error) => PlaybackError::FilterGraph(Arc::new(error)),
             };
-            if is_stopped(&shared, generation) { return; }
+            if is_stopped(&shared, generation) {
+                return;
+            }
             fail_session(&shared, generation, error, &cancellation, &output);
             return;
         }
@@ -342,24 +392,28 @@ fn worker_loop(
             let outgoing_generation = finished.previous_generation;
             let incoming_generation = finished.incoming_generation;
             let identity = finished.identity.clone();
-            current = ActiveSource::prepared(
-                finished.next, finished.incoming_consumed, &finished.info
-            );
+            current =
+                ActiveSource::prepared(finished.next, finished.incoming_consumed, &finished.info);
             preparation_requested = false;
             shared.publish(CrossfadeEvent::TransitionCompleted {
-                outgoing_generation, incoming_generation, identity,
+                outgoing_generation,
+                incoming_generation,
+                identity,
             });
         }
     }
 
     // Finish is called once, after the final (non-promoted) source reaches EOF.
     let gain = lock(&shared.data).volume;
-    let finish = processor.finish(gain, |frame, source| {
-        deliver_processed_frame(&shared, generation, &output, &cancellation, frame, source)
-    }).map_err(|error| match error {
-        ProcessError::Output(error) => PlaybackError::Output(error),
-        ProcessError::Filter(error) => PlaybackError::FilterGraph(Arc::new(error)),
-    }).and_then(|()| output.finish(&cancellation).map_err(PlaybackError::from));
+    let finish = processor
+        .finish(gain, |frame, source| {
+            deliver_processed_frame(&shared, generation, &output, &cancellation, frame, source)
+        })
+        .map_err(|error| match error {
+            ProcessError::Output(error) => PlaybackError::Output(error),
+            ProcessError::Filter(error) => PlaybackError::FilterGraph(Arc::new(error)),
+        })
+        .and_then(|()| output.finish(&cancellation).map_err(PlaybackError::from));
 
     match finish {
         Ok(()) => {
@@ -408,7 +462,9 @@ fn handle_commands(
             }
             let result = current.seek(request.position, cancellation).and_then(|()| {
                 let sample = samples_from_duration(request.position);
-                processor.reset(sample).map_err(|e| PlaybackError::FilterGraph(Arc::new(e)))?;
+                processor
+                    .reset(sample)
+                    .map_err(|e| PlaybackError::FilterGraph(Arc::new(e)))?;
                 output.flush_samples(sample, cancellation)?;
                 let mut state = lock(&shared.data);
                 state.submitted_sample = sample;
@@ -421,8 +477,11 @@ fn handle_commands(
                 Ok(())
             });
             let _ = request.response.send(result.clone());
-            if matches!(&result, Err(PlaybackError::UnsupportedSeeking(_)) |
-                Err(PlaybackError::SeekOutOfRange { .. })) {
+            if matches!(
+                &result,
+                Err(PlaybackError::UnsupportedSeeking(_))
+                    | Err(PlaybackError::SeekOutOfRange { .. })
+            ) {
                 continue;
             }
             result?;
@@ -430,9 +489,12 @@ fn handle_commands(
         }
         if let Some(update) = data.pending_filter_graph.take() {
             drop(data);
-            let result = output.filter_transition(processor.next_sample(), cancellation)
+            let result = output
+                .filter_transition(processor.next_sample(), cancellation)
                 .map_err(PlaybackError::from);
-            if result.is_ok() { processor.replace(update.graph); }
+            if result.is_ok() {
+                processor.replace(update.graph);
+            }
             let _ = update.response.send(result.clone());
             result?;
             continue;

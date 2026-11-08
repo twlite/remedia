@@ -36,8 +36,9 @@ pub use output::{
     EncodedOpusOutput, MediaOutput, NullOutput, NullOutputStats, NullOutputStatsHandle, OutputError,
 };
 pub use playback::{
-    MediaPosition, MediaPositionAccuracy, PlaybackError, PlaybackPosition, PlaybackProcessingMode,
-    CrossfadeConfig, CrossfadeEvent, PlaybackSession, PlaybackState, PlaybackWaiter, StageIdentity, StageSnapshot, StageState,
+    CrossfadeConfig, CrossfadeEvent, MediaPosition, MediaPositionAccuracy, PlaybackError,
+    PlaybackPosition, PlaybackProcessingMode, PlaybackSession, PlaybackState, PlaybackWaiter,
+    StageIdentity, StageSnapshot, StageState,
 };
 pub use source::{CancellationToken, InputSource};
 

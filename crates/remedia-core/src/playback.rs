@@ -229,8 +229,8 @@ enum WorkerAction {
 #[cfg(test)]
 mod tests;
 
-mod session;
 mod crossfade_worker;
+mod session;
 mod staging;
 use staging::PreparedStage;
 pub use staging::{StageIdentity, StageSnapshot, StageState};
@@ -249,14 +249,20 @@ impl CrossfadeConfig {
         {
             return None;
         }
-        Some(Self { duration_ms, prepare_before_ms })
+        Some(Self {
+            duration_ms,
+            prepare_before_ms,
+        })
     }
 }
 
 /// Events only emitted for explicitly enabled staged playback.
 #[derive(Clone, Debug)]
 pub enum CrossfadeEvent {
-    PrepareRequested { generation: u64, remaining_ms: u64 },
+    PrepareRequested {
+        generation: u64,
+        remaining_ms: u64,
+    },
     TransitionStarted {
         outgoing_generation: u64,
         incoming_generation: u64,
@@ -274,7 +280,6 @@ impl SessionShared {
         lock(&self.events).push_back(event);
     }
 }
-
 
 mod worker;
 use worker::*;
