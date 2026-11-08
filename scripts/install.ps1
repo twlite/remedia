@@ -17,6 +17,34 @@ function Write-InstallStatus {
   Write-Host "[remedia] $Message"
 }
 
+function Test-InstallPathEntry {
+  param([string]$PathList, [string]$Directory)
+  foreach ($entry in ($PathList -split ';')) {
+    $expanded = [Environment]::ExpandEnvironmentVariables($entry.Trim().Trim('"'))
+    $normalized = $expanded.TrimEnd([char[]]@('\', '/'))
+    if ([string]::Equals($normalized, $Directory, [StringComparison]::OrdinalIgnoreCase)) {
+      return $true
+    }
+  }
+  return $false
+}
+
+function Add-RemediaToPath {
+  param([string]$Directory)
+  $fullDirectory = [IO.Path]::GetFullPath($Directory).TrimEnd([char[]]@('\', '/'))
+  $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+  if (-not (Test-InstallPathEntry -PathList $userPath -Directory $fullDirectory)) {
+    $separator = if ([string]::IsNullOrEmpty($userPath) -or $userPath.EndsWith(';')) { '' } else { ';' }
+    [Environment]::SetEnvironmentVariable('Path', "$userPath$separator$fullDirectory", 'User')
+    Write-InstallStatus "Added $fullDirectory to the user PATH."
+  } else {
+    Write-InstallStatus 'Remedia is already in the user PATH.'
+  }
+  if (-not (Test-InstallPathEntry -PathList $env:Path -Directory $fullDirectory)) {
+    $env:Path = "$fullDirectory;$env:Path"
+  }
+}
+
 function Show-DownloadLine {
   param([string]$Message, [ref]$PreviousWidth)
   $width = [Math]::Max($PreviousWidth.Value, $Message.Length)
@@ -279,8 +307,9 @@ exit /b %ERRORLEVEL%
 '@
   Set-Content -LiteralPath (Join-Path $binDir 'remedia.cmd') -Value $wrapper -Encoding Ascii
   Set-Content -LiteralPath (Join-Path $binDir 'remedia-server.cmd') -Value $wrapper -Encoding Ascii
+  Add-RemediaToPath -Directory $binDir
   Write-Host "Installed Remedia $($release.tag_name) to $InstallDir"
-  Write-Host "Add $binDir to PATH, then run: remedia --version"
+  Write-Host 'Run: remedia --version'
 } finally {
   Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
