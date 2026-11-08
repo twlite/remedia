@@ -1914,9 +1914,7 @@ function delay(ms: number): Promise<void> {
 }
 
 /** Fail closed on malformed or absent capability metadata from older servers. */
-function parseNodeCapabilities(
-  input: unknown,
-): import('./types.js').NodeCapabilities {
+function parseNodeCapabilities(input: unknown): import('./types.js').NodeCapabilities {
   const fallback: import('./types.js').CrossfadeCapability = {
     configured: false,
     available: false,
@@ -1928,12 +1926,20 @@ function parseNodeCapabilities(
   const fade = input.crossfade;
   const configured = fade.configured === true;
   const available = fade.available === true && configured;
-  const durationMs = typeof fade.durationMs === 'number' &&
-    Number.isSafeInteger(fade.durationMs) && fade.durationMs >= 1000 && fade.durationMs <= 30000
-    ? fade.durationMs : fallback.durationMs;
-  const prepareBeforeMs = typeof fade.prepareBeforeMs === 'number' &&
-    Number.isSafeInteger(fade.prepareBeforeMs) && fade.prepareBeforeMs >= 5000 && fade.prepareBeforeMs <= 120000
-    ? fade.prepareBeforeMs : fallback.prepareBeforeMs;
+  const durationMs =
+    typeof fade.durationMs === 'number' &&
+    Number.isSafeInteger(fade.durationMs) &&
+    fade.durationMs >= 1000 &&
+    fade.durationMs <= 30000
+      ? fade.durationMs
+      : fallback.durationMs;
+  const prepareBeforeMs =
+    typeof fade.prepareBeforeMs === 'number' &&
+    Number.isSafeInteger(fade.prepareBeforeMs) &&
+    fade.prepareBeforeMs >= 5000 &&
+    fade.prepareBeforeMs <= 120000
+      ? fade.prepareBeforeMs
+      : fallback.prepareBeforeMs;
   return {
     crossfade: {
       configured,

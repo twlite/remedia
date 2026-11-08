@@ -1,77 +1,19 @@
-# Crossfade protocol and implementation plan
+# Crossfade protocol
 
-Crossfade is **not yet available for playback**. The server's `audio.crossfade.enabled`
-setting is a permission flag, not proof that the native dual-source engine is ready.
-`node.info.capabilities.crossfade.available` must remain `false` until the full
-native implementation and both transport adapters have passed integration tests.
-Clients must check `available === true` before requesting crossfade.
+Crossfade is not yet available for playback. The server's `audio.crossfade.enabled` option is a permission flag, not proof that the dual-source mixer is operational. Clients must check `node.info.capabilities.crossfade.available` before enabling this feature.
 
-## Configuration and negotiation
+## Configuration
 
-Server configuration:
+Crossfading is disabled by default. A configured server may advertise its preferred duration and preparation lead, but it must report `available: false` until the native mixer, source promotion, and embedded/remote protocol are implemented and tested.
 
-```json
-{
-  "audio": {
-    "crossfade": {
-      "enabled": true,
-      "durationMs": 5000,
-      "prepareBeforeMs": 30000,
-      "curve": "equalPower"
-    }
-  }
-}
-```
+## Staging and promotion
 
-The feature defaults to disabled. Valid duration: 1-30 seconds. Preparation
-lead: 5-120 seconds *before the transition*, not before the current song ends.
+The intended staging identity contains the current playback generation, a unique queue-entry ID, a queue revision, and a source revision. Repeated requests for the same identity must not open the source again. A newer request invalidates the previous stage. The PCM buffer is bounded to two seconds and preparation is cancelled on seek or stop.
 
-On remote nodes, `node.info` includes the configured and available flags
-and validated defaults. Both server permission and session opt-in must be true
-before enabling any decoder staging. Embedded nodes must use the owning
-client's session configuration as the policy source, without remote server
-configuration. The `@remedia/client` node snapshot exposes capability data;
-clients should treat absent or malformed data as unsupported.
+Remedia will send a preparation request before the transition. The client may ignore it, or resolve the next source through its plugin system and submit a stage. Remedia must never choose the next queue entry itself. During crossfade, two decoders feed a single normalized 48 kHz stereo mixer and a single Opus encoder. The incoming source starts its new generation before the outgoing source finishes.
 
-## Intended protocol (not implemented yet)
+Once promotion is supported, the outgoing completion event will include a continuation reference to the promoted generation and queue-entry ID. Clients must reconcile that event without sending a duplicate play command. A missing or expired stage falls back to existing single-source playback.
 
-1. `guild.create` takes optional `crossfade` session options. Reject
-   explicitly requested crossfade when the server capability is unavailable.
-2. The native playback engine emits a generation-bound `prepare_requested`
-   event before the transition. Ignore missing acknowledgments.
-3. The client resolves the queue entry and invokes `stageNext` with
-   `expectedGeneration`, unique `entryId`, `queueRevision`, and
-   `sourceRevision`. Same identity/revision is idempotent. A newer revision
-   invalidates an older stage before opening its replacement.
-4. The engine opens a second decoder and prebuffers a bounded amount of PCM.
-   Audio is mixed at 48 kHz interleaved stereo using an equal-power envelope.
-   The two decoders share one output and one Discord voice transport.
-5. When entering a mixed region, switch Opus passthrough into PCM mode.
-   When the transition ends, promote the second decoder without closing
-   the underlying output, then emit generation-aware lifecycle events.
-6. `playbackCompleted` for the outgoing generation carries optional
-   `continuation: { type: 'promoted', generation, entryId, transitionId }`.
-   The incoming generation also emits `playbackStarted`, so clients do not
-   call `play()` again.
-7. Stop/seek invalidates the prepared source; pause preserves both decoder
-   positions; resume rechecks source expiry. Live/unknown-duration input
-   cannot schedule an automatic end-based crossfade.
-8. Reconnect snapshots must include both active and staged identities, with
-   generation correlation and deduplication of late events.
+## Release gate
 
-## Required tests before availability can become true
-
-- Disabled sessions behave identically to the current single-source engine.
-- Mixed frames have correct sample continuity, envelope shape, and bounded
-  headroom for unrelated and correlated inputs.
-- No duplicate output, source resolution, start/completion events, or queue
-  promotion during overlapping generations.
-- Opus passthrough transitions and filtergraph, volume, pause/resume, seeks,
-  stops, and source failures preserve playback correctness.
-- Concurrent stage replacement, cancellation, and slow source opening cannot
-  promote a stale entry.
-- Two bots in one guild maintain independent staging.
-- Embedded and remote adapters observe the same lifecycle behavior.
-- Missed WebSocket events, reconnect/resume, and server restart reconcile
-  without replaying an already-promoted source.
-- Expiring URLs and long SABR preparation fall back without stalling output.
+Crossfade availability must remain false until the real-time mixer preserves sample continuity, source identity, and event ordering across remote and embedded sessions. Seek, pause, stop, source replacement, Opus passthrough, filters, reconnect, and expiring sources require integration tests.
