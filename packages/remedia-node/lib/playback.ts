@@ -283,7 +283,8 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
       if (controller.signal.aborted) throw abortError(controller.signal.reason);
       nativeAttempted = true;
       const info = toStreamInfo(await this.#native.play(this.#playbackId, nativeSource));
-      const generation = numericGeneration(this.#native.playbackGeneration(this.#playbackId));
+      const workerGeneration = numericGeneration(this.#native.playbackGeneration(this.#playbackId));
+      const generation = numericGeneration(this.#native.playbackSourceGeneration(this.#playbackId));
       this.#latestGeneration = generation;
       this.#metadata.set(generation, options.customMetadata);
       this.#boundMetadata(generation);
@@ -294,7 +295,8 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
         info,
       });
       this.#starting = false;
-      void this.#observeGeneration(generation, input);
+      if (this.#crossfadeEnabled) this.#startCrossfadePoll();
+      void this.#observeGeneration(workerGeneration, input);
       return info;
     } catch (error) {
       if (input && this.#input === input) await this.#releaseInput();
@@ -377,7 +379,7 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
   async stop(): Promise<void> {
     this.#assertActive();
     const previousState = this.state;
-    const generation = numericGeneration(this.#native.playbackGeneration(this.#playbackId));
+    const generation = this.#latestGeneration;
     try {
       await this.#native.stop(this.#playbackId);
       if (isPlaybackActive(previousState) && this.state === 'stopped') {
@@ -417,6 +419,9 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     } finally {
       await this.#releaseInput();
       this.#disposed = true;
+      this.#stopCrossfadePoll();
+      await this.#stageInput?.cancel();
+      await this.#outgoingInput?.cancel();
       this.hooks.clear();
       this.#metadata.clear();
       this.emit(PlaybackEvent.sessionDisposed, {
@@ -472,8 +477,9 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
         String(generation),
       )) as PlaybackState;
       if (state === 'completed' || state === 'failed' || state === 'stopped') {
+        this.#drainCrossfadeEvents();
         const error = state === 'failed' ? new Error(this.error ?? 'playback failed') : undefined;
-        this.#emitTerminal(state, generation, error);
+        this.#emitTerminal(state, this.#latestGeneration, error);
       }
     } catch (error) {
       if (!this.#disposed) {
@@ -487,15 +493,17 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
         } catch {
           state = undefined;
         }
-        if (state === 'failed') this.#emitTerminal('failed', generation, asError(error));
+        if (state === 'failed') this.#emitTerminal('failed', this.#latestGeneration, asError(error));
       }
     } finally {
-      this.#metadata.delete(generation);
-      this.#startedGenerations.delete(generation);
-      if (this.#latestGeneration === generation) {
-        this.#clearAbortBinding(this.#playController);
-      }
-      await this.#releaseInput(input, generation);
+      this.#stopCrossfadePoll();
+      this.#clearAbortBinding(this.#playController);
+      await this.#outgoingInput?.cancel();
+      this.#outgoingInput = undefined;
+      await this.#stageInput?.cancel();
+      this.#stageInput = undefined;
+      await this.#releaseInput();
+      if (input !== this.#input) await input?.cancel();
     }
   }
 
@@ -504,6 +512,7 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     generation: number,
     error?: unknown,
     reason?: string,
+    continuation?: { type: 'promoted'; generation: number; entryId: string },
   ): void {
     if (
       (state !== 'failed' && !this.#startedGenerations.has(generation)) ||
@@ -518,7 +527,10 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     }
     const base = this.#eventContext(generation);
     if (state === 'completed') {
-      this.emit(PlaybackEvent.playbackCompleted, { ...base, state, position: this.position });
+      this.emit(PlaybackEvent.playbackCompleted, {
+        ...base, state, position: this.position,
+        ...(continuation ? { continuation } : {}),
+      });
     } else if (state === 'stopped') {
       this.emit(
         PlaybackEvent.playbackStopped,
