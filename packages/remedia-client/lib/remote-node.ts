@@ -61,6 +61,11 @@ const RemoteProtocolEvents = {
   playerSeeked: 'player.seeked',
   playerFilterChanged: 'player.filter_changed',
   playerVolumeChanged: 'player.volume_changed',
+  playerPrepareRequested: 'player.prepare_requested',
+  playerStageReady: 'player.stage_ready',
+  playerStageFailed: 'player.stage_failed',
+  playerStageInvalidated: 'player.stage_invalidated',
+  playerTransitionCancelled: 'player.transition_cancelled',
 } as const;
 
 interface RemoteNodeEvents {
@@ -837,7 +842,10 @@ export class RemoteNodeAdapter
       const state = event.event.slice('player.'.length) as 'completed' | 'failed' | 'stopped';
       this.#recordTerminal({ guildId, generation, state });
       this.#backends.get(guildId)?.applyTerminalEvent(event.event, generation, event.data);
-    } else if (event.event === RemoteProtocolEvents.playerStarted) {
+    } else if (
+      event.event === RemoteProtocolEvents.playerStarted &&
+      !isRecord(event.data.transition)
+    ) {
       for (const waiter of this.#waiters) {
         if (waiter.guildId === guildId && waiter.generation < generation) {
           this.#finishWaiter(waiter, { generation: waiter.generation, state: 'stopped' });
@@ -1356,7 +1364,15 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     generation: number,
     data: Readonly<Record<string, unknown>>,
   ): void {
-    if (generation < this.#snapshot.generation) return;
+    if (generation < this.#snapshot.generation) {
+      // A promoted track has already started when the outgoing generation
+      // finishes. Forward its completion without replacing the active snapshot.
+      if (event === 'player.completed' && isRecord(data.continuation) &&
+          data.continuation.type === 'promoted') {
+        this.#emitTerminal('completed', generation, 'playing', data, false);
+      }
+      return;
+    }
     const state = event.slice('player.'.length) as 'completed' | 'failed' | 'stopped';
     const code = typeof data.code === 'string' ? data.code : 'playback_failed';
     const previousState = this.#snapshot.state;
@@ -1400,7 +1416,10 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     if (
       eventGeneration !== undefined &&
       eventGeneration !== this.#snapshot.generation &&
-      !isNewStart
+      !isNewStart &&
+      !(event.event === RemoteProtocolEvents.playerCompleted &&
+        isRecord(event.data.continuation) &&
+        event.data.continuation.type === 'promoted')
     ) {
       return;
     }
@@ -1436,6 +1455,15 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
             generation,
             state: 'playing',
             info: toStreamInfo(source, this.#node.id),
+            ...(isRecord(event.data.transition) &&
+              event.data.transition.type === 'crossfade' &&
+              typeof event.data.transition.entryId === 'string' &&
+              Number.isSafeInteger(event.data.transition.outgoingGeneration)
+                ? { transition: {
+                  type: 'crossfade' as const,
+                  entryId: event.data.transition.entryId,
+                  outgoingGeneration: event.data.transition.outgoingGeneration as number,
+                } } : {}),
           });
         }
       }
@@ -1467,6 +1495,44 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
                 : this.#snapshot.lastError,
         };
         this.#emitTerminal(state, generation, previousState, event.data, false);
+      }
+    } else if (event.event === RemoteProtocolEvents.playerPrepareRequested) {
+      const remainingMs = asNonnegativeInteger(event.data.remainingMs);
+      if (remainingMs !== undefined) {
+        this.emit(PlaybackEvent.prepareRequested, {
+          ...this.#playbackIdentity(event.data),
+          remainingMs,
+          transitionInMs: asNonnegativeInteger(event.data.transitionInMs) ?? remainingMs,
+        });
+      }
+    } else if (
+      event.event === RemoteProtocolEvents.playerStageReady ||
+      event.event === RemoteProtocolEvents.playerStageFailed ||
+      event.event === RemoteProtocolEvents.playerStageInvalidated
+    ) {
+      const entryId = event.data.entryId;
+      const queueRevision = asNonnegativeInteger(event.data.queueRevision);
+      const sourceRevision = asNonnegativeInteger(event.data.sourceRevision);
+      if (typeof entryId === 'string' && queueRevision !== undefined && sourceRevision !== undefined) {
+        const identity = { ...this.#playbackIdentity(event.data), entryId, queueRevision, sourceRevision };
+        if (event.event === RemoteProtocolEvents.playerStageReady)
+          this.emit(PlaybackEvent.stageReady, identity);
+        else if (event.event === RemoteProtocolEvents.playerStageFailed)
+          this.emit(PlaybackEvent.stageFailed, {
+            ...identity,
+            reason: typeof event.data.reason === 'string' ? event.data.reason : 'staging failed',
+          });
+        else this.emit(PlaybackEvent.stageInvalidated, identity);
+      }
+    } else if (event.event === RemoteProtocolEvents.playerTransitionCancelled) {
+      const failedGeneration = asNonnegativeInteger(event.data.failedGeneration);
+      const entryId = event.data.entryId;
+      if (failedGeneration !== undefined && typeof entryId === 'string') {
+        this.emit(PlaybackEvent.transitionCancelled, {
+          ...this.#playbackIdentity(event.data),
+          failedGeneration,
+          entryId,
+        });
       }
     } else if (event.event === RemoteProtocolEvents.playerPaused) {
       const previousState = this.#snapshot.state;
@@ -1558,6 +1624,15 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
         ...base,
         state,
         position: this.#snapshot.position,
+        ...(isRecord(data.continuation) &&
+          data.continuation.type === 'promoted' &&
+          typeof data.continuation.entryId === 'string' &&
+          Number.isSafeInteger(data.continuation.generation)
+            ? { continuation: {
+              type: 'promoted' as const,
+              entryId: data.continuation.entryId,
+              generation: data.continuation.generation as number,
+            } } : {}),
       });
     } else if (state === 'stopped') {
       this.emit(PlaybackEvent.playbackStopped, {
