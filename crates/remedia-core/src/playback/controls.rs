@@ -299,7 +299,6 @@ impl PlaybackSession {
     /// harmless. `Completed` and `Failed` remain terminal so their outcome and
     /// error remain observable.
     pub fn stop(&self) -> Result<(), PlaybackError> {
-        self.clear_staged_source();
         let (
             needs_cleanup,
             active,
@@ -346,6 +345,10 @@ impl PlaybackSession {
                 pending_filter,
             )
         };
+
+        // After the state is marked Stopping, no concurrent stage request can
+        // become eligible. Clear the stage outside the playback-state lock.
+        self.clear_staged_source();
 
         if let Some(request) = pending_seek {
             let _ = request.response.send(Err(PlaybackError::Cancelled));

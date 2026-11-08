@@ -129,14 +129,25 @@ impl PlaybackSession {
             if let Some(old) = slot.as_ref() {
                 if old.identity == identity { return Ok(old.snapshot()); }
                 if old.identity.expected_generation == identity.expected_generation
-                    && identity.queue_revision < old.identity.queue_revision
+                    && (identity.queue_revision < old.identity.queue_revision
+                        || (identity.queue_revision == old.identity.queue_revision
+                            && identity.entry_id == old.identity.entry_id
+                            && identity.source_revision < old.identity.source_revision))
                 {
                     return Err(PlaybackError::Cancelled);
                 }
                 old.cancellation.cancel();
                 old.buffer.cancel();
             }
-            let next = PreparedStage::start(source, identity)?;
+            let next = match PreparedStage::start(source, identity) {
+                Ok(next) => next,
+                Err(error) => {
+                    let old = slot.take();
+                    drop(slot);
+                    if let Some(old) = old { old.cancel_and_join(); }
+                    return Err(error);
+                }
+            };
             (slot.replace(Arc::clone(&next)), next)
         };
         if let Some(old) = old { old.cancel_and_join(); }
