@@ -20,6 +20,37 @@ download_file() {
     curl -fsSL --retry 3 -o "$destination" "$url"
   fi
 }
+
+configure_shell_path() {
+  path_dir="$INSTALL_DIR/bin"
+  case "${SHELL:-}" in
+    */bash|bash) profile_path="$HOME/.bashrc" ;;
+    */zsh|zsh) profile_path="$HOME/.zshrc" ;;
+    *) profile_path="$HOME/.profile" ;;
+  esac
+
+  # Single-quote the install directory for safe inclusion in shell startup files.
+  escaped_dir="$(printf '%s' "$path_dir" | sed "s/'/'\\\\''/g")"
+  shell_dir="'$escaped_dir'"
+  marker="# Remedia installer PATH: $shell_dir"
+  if [ ! -f "$profile_path" ] || ! grep -Fqx "$marker" "$profile_path"; then
+    {
+      printf '\n%s\n' "$marker"
+      printf '%s\n' 'case ":$PATH:" in'
+      printf '  *:%s:*) ;;\n' "$shell_dir"
+      printf '  *) export PATH=%s:"$PATH" ;;\n' "$shell_dir"
+      printf '%s\n' 'esac'
+    } >> "$profile_path"
+    log "Added $path_dir to PATH in $profile_path."
+  else
+    log "Remedia PATH entry already exists in $profile_path."
+  fi
+  # A piped installer cannot modify its parent shell.
+  case ":$PATH:" in
+    *:"$path_dir":*) ;;
+    *) PATH="$path_dir:$PATH"; export PATH ;;
+  esac
+}
 for arg in "$@"; do
   case "$arg" in
     --no-ffmpeg) WITH_FFMPEG=0 ;;
@@ -134,5 +165,6 @@ exec "$root/libexec/remedia-server" "$@"
 EOF
 chmod +x "$INSTALL_DIR/bin/remedia"
 cp "$INSTALL_DIR/bin/remedia" "$INSTALL_DIR/bin/remedia-server"
+configure_shell_path
 log "Installed: $INSTALL_DIR/bin/remedia"
-log "Add $INSTALL_DIR/bin to PATH, then run: remedia --version"
+log "Open a new terminal to use: remedia --version"
