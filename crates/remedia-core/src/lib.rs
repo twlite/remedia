@@ -4,6 +4,7 @@
 //! libraries and yields normalized interleaved PCM incrementally.
 
 mod byte_stream;
+mod crossfade;
 mod decoder;
 mod error;
 mod ffmpeg_logging;
@@ -23,6 +24,7 @@ pub(crate) fn with_dispatch<T>(handle: &ObservabilityHandle, callback: impl FnOn
     }
 }
 
+pub use crossfade::{CrossfadeWindow, MixError, PcmCrossfade};
 pub use byte_stream::{ByteStreamError, ByteStreamWriter};
 pub use decoder::{
     AudioDecoder, AudioStreamInfo, DecoderOptions, PcmFormat, PcmFrame, ProbeOptions, probe,
