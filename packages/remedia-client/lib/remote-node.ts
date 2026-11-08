@@ -187,7 +187,7 @@ export class RemoteNodeAdapter
       nodeId: this.#serverNodeId,
       version: this.#version,
       protocolVersion: this.#protocolVersion,
-      capabilities: this.#capabilities,
+      ...(this.#capabilities ? { capabilities: this.#capabilities } : {}),
       statistics: this.#statistics,
       capacity: this.#capacityOverride ?? this.#statistics?.playersMaximum ?? 0,
       assignedGuilds: [...this.#guilds],
