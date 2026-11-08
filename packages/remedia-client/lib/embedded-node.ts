@@ -33,6 +33,9 @@ interface EmbeddedPlayback extends EventEmitterType {
     clear(): Promise<void>;
   };
   play(source: MediaSource, options?: PlayOptions<unknown>): Promise<AudioStreamInfo>;
+  stageNext(source: MediaSource, options: import('./types.js').StageNextOptions<unknown>): Promise<import('./types.js').StageSnapshot>;
+  clearStage(): Promise<void>;
+  readonly stagedSource: import('./types.js').StageSnapshot | null;
   pause(): Promise<void>;
   resume(): Promise<void>;
   seek(positionMs: number): Promise<void>;
@@ -124,8 +127,8 @@ export class EmbeddedNodeAdapter implements NodeAdapter {
       protocolVersion: null,
       capabilities: {
         crossfade: {
-          configured: false,
-          available: false,
+          configured: true,
+          available: true,
           durationMs: 5000,
           prepareBeforeMs: 30000,
           curve: 'equalPower',
@@ -184,11 +187,6 @@ export class EmbeddedNodeAdapter implements NodeAdapter {
       throw new Error(`embedded node ${this.id} is unavailable`);
     if (this.#sessions.has(options.guildId))
       throw new Error(`guild ${options.guildId} is already assigned to node ${this.id}`);
-    if (options.crossfade) {
-      throw new Error(
-        'crossfade was requested for an embedded session, but the native staged-source engine is not available',
-      );
-    }
     const session = this.#engine.createDiscordSession(options);
     this.#sessions.set(options.guildId, session);
     return new EmbeddedGuildBackend(this, session, () => {
@@ -320,6 +318,24 @@ class EmbeddedGuildBackend extends RemediaEventEmitter<GuildBackendEvents> imple
     return { info, generation: this.#generation };
   }
 
+  stageNext(
+    source: MediaSource,
+    options: import('./types.js').StageNextOptions<unknown>,
+  ): Promise<import('./types.js').StageSnapshot> {
+    this.#assertOpen();
+    return this.#session.stageNext(source, options);
+  }
+
+  clearStage(): Promise<void> {
+    this.#assertOpen();
+    return this.#session.clearStage();
+  }
+
+  async stagedSource(): Promise<import('./types.js').StageSnapshot | null> {
+    this.#assertOpen();
+    return this.#session.stagedSource;
+  }
+
   pause(): Promise<void> {
     this.#assertOpen();
     return this.#session.pause();
@@ -404,6 +420,11 @@ class EmbeddedGuildBackend extends RemediaEventEmitter<GuildBackendEvents> imple
     subscribe(PlaybackEvent.playbackPaused);
     subscribe(PlaybackEvent.playbackResumed);
     subscribe(PlaybackEvent.playbackSeeked);
+    subscribe(PlaybackEvent.prepareRequested);
+    subscribe(PlaybackEvent.stageReady);
+    subscribe(PlaybackEvent.stageFailed);
+    subscribe(PlaybackEvent.stageInvalidated);
+    subscribe(PlaybackEvent.transitionCancelled);
     subscribe(PlaybackEvent.filterChanged);
     subscribe(PlaybackEvent.volumeChanged);
     subscribe(VoiceEvent.voiceStateChanged);
