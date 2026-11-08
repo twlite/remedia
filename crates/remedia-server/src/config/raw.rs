@@ -31,6 +31,29 @@ pub(super) struct RawBind {
 #[serde(default, deny_unknown_fields)]
 pub(super) struct RawAudio {
     pub(super) opus: RawOpus,
+    pub(super) crossfade: RawCrossfade,
+}
+
+/// Server-side permission and defaults. This does not enable the playback
+/// pipeline until the native staged-source engine is available.
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub(super) struct RawCrossfade {
+    pub(super) enabled: bool,
+    pub(super) duration_ms: u32,
+    pub(super) prepare_before_ms: u32,
+    pub(super) curve: String,
+}
+
+impl Default for RawCrossfade {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            duration_ms: 5_000,
+            prepare_before_ms: 30_000,
+            curve: "equalPower".into(),
+        }
+    }
 }
 
 #[derive(Deserialize)]

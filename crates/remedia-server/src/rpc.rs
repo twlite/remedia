@@ -36,6 +36,15 @@ pub(crate) async fn execute(
                 "nodeId": server.node_id,
                 "version": env!("CARGO_PKG_VERSION"),
                 "protocolVersion": crate::protocol::PROTOCOL_VERSION,
+                "capabilities": {
+                    "crossfade": {
+                        "configured": server.config.crossfade.enabled,
+                        "available": false,
+                        "durationMs": server.config.crossfade.duration_ms,
+                        "prepareBeforeMs": server.config.crossfade.prepare_before_ms,
+                        "curve": "equalPower",
+                    }
+                }
             }))
         }
         "node.protocol_version" => {

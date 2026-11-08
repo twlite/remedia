@@ -210,6 +210,21 @@ export interface NodeStatistics {
   memory: Readonly<Record<string, number | null>>;
 }
 
+/** Advertised crossfade policy. An enabled server setting is not sufficient:
+ * available becomes true only after the native mixer and promotion protocol work.
+ */
+export interface CrossfadeCapability {
+  configured: boolean;
+  available: boolean;
+  durationMs: number;
+  prepareBeforeMs: number;
+  curve: 'equalPower';
+}
+
+export interface NodeCapabilities {
+  crossfade: CrossfadeCapability;
+}
+
 /** Read-only client view of a node, its health, capacity, and assigned guilds. */
 export interface NodeSnapshot {
   /** Application-configured node identifier, unique within the client node pool. */
@@ -224,6 +239,8 @@ export interface NodeSnapshot {
   version: string | null;
   /** Negotiated RPC protocol version, or null for an uninitialized or embedded node. */
   protocolVersion: number | null;
+  /** Capabilities advertised by the backend; absent for older servers. */
+  capabilities?: NodeCapabilities;
   /** Latest node statistics, or null before a report is available. */
   statistics: NodeStatistics | null;
   /** Maximum simultaneous guild assignments considered by client-side node selection. */

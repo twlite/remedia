@@ -77,6 +77,7 @@ interface NodeInfo {
   nodeId: string;
   version: string;
   protocolVersion: number;
+  capabilities?: import('./types.js').NodeCapabilities;
 }
 
 interface NodeStatsResult {
@@ -133,6 +134,7 @@ export class RemoteNodeAdapter
   #serverNodeId: string | null = null;
   #version: string | null = null;
   #protocolVersion: number | null = null;
+  #capabilities: import('./types.js').NodeCapabilities | undefined;
   #statistics: NodeStatistics | null = null;
   #lastError: string | null = null;
   #socket: WebSocket | undefined;
@@ -185,6 +187,7 @@ export class RemoteNodeAdapter
       nodeId: this.#serverNodeId,
       version: this.#version,
       protocolVersion: this.#protocolVersion,
+      capabilities: this.#capabilities,
       statistics: this.#statistics,
       capacity: this.#capacityOverride ?? this.#statistics?.playersMaximum ?? 0,
       assignedGuilds: [...this.#guilds],
@@ -585,6 +588,7 @@ export class RemoteNodeAdapter
       if (this.#closed) return;
       this.#verifyNodeInfo(info);
       this.#protocolVersion = info.protocolVersion;
+      this.#capabilities = parseNodeCapabilities(info.capabilities);
       this.#serverNodeId = info.nodeId;
       this.#version = info.version;
 
@@ -1896,4 +1900,36 @@ function asNonnegativeInteger(value: unknown): number | undefined {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Fail closed on malformed or absent capability metadata from older servers. */
+function parseNodeCapabilities(
+  input: unknown,
+): import('./types.js').NodeCapabilities {
+  const fallback: import('./types.js').CrossfadeCapability = {
+    configured: false,
+    available: false,
+    durationMs: 5000,
+    prepareBeforeMs: 30000,
+    curve: 'equalPower',
+  };
+  if (!isRecord(input) || !isRecord(input.crossfade)) return { crossfade: fallback };
+  const fade = input.crossfade;
+  const configured = fade.configured === true;
+  const available = fade.available === true && configured;
+  const durationMs = typeof fade.durationMs === 'number' &&
+    Number.isSafeInteger(fade.durationMs) && fade.durationMs >= 1000 && fade.durationMs <= 30000
+    ? fade.durationMs : fallback.durationMs;
+  const prepareBeforeMs = typeof fade.prepareBeforeMs === 'number' &&
+    Number.isSafeInteger(fade.prepareBeforeMs) && fade.prepareBeforeMs >= 5000 && fade.prepareBeforeMs <= 120000
+    ? fade.prepareBeforeMs : fallback.prepareBeforeMs;
+  return {
+    crossfade: {
+      configured,
+      available: available && fade.curve === 'equalPower',
+      durationMs,
+      prepareBeforeMs,
+      curve: 'equalPower',
+    },
+  };
 }

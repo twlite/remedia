@@ -122,6 +122,15 @@ export class EmbeddedNodeAdapter implements NodeAdapter {
       nodeId: this.id,
       version: null,
       protocolVersion: null,
+      capabilities: {
+        crossfade: {
+          configured: false,
+          available: false,
+          durationMs: 5000,
+          prepareBeforeMs: 30000,
+          curve: 'equalPower',
+        },
+      },
       statistics,
       capacity: this.#capacity,
       assignedGuilds: [...this.#sessions.keys()],
