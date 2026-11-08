@@ -263,6 +263,14 @@ pub enum CrossfadeEvent {
         generation: u64,
         remaining_ms: u64,
     },
+    StageReady { identity: StageIdentity },
+    StageFailed { identity: StageIdentity, reason: String },
+    StageInvalidated { identity: StageIdentity },
+    TransitionCancelled {
+        outgoing_generation: u64,
+        incoming_generation: u64,
+        identity: StageIdentity,
+    },
     TransitionStarted {
         outgoing_generation: u64,
         incoming_generation: u64,

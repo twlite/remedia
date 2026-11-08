@@ -30,6 +30,7 @@ pub(super) struct PreparedStage {
     pub(super) identity: StageIdentity,
     pub(super) buffer: Arc<StagedPcmBuffer>,
     pub(super) source: InputSource,
+    shared: Arc<SessionShared>,
     cancellation: CancellationToken,
     info: Mutex<Option<AudioStreamInfo>>,
     error: Mutex<Option<String>>,
@@ -37,10 +38,11 @@ pub(super) struct PreparedStage {
 }
 
 impl PreparedStage {
-    fn start(source: InputSource, identity: StageIdentity) -> Result<Arc<Self>, PlaybackError> {
+    fn start(source: InputSource, identity: StageIdentity, shared: Arc<SessionShared>) -> Result<Arc<Self>, PlaybackError> {
         let stage = Arc::new(Self {
             identity,
             source: source.clone(),
+            shared,
             buffer: Arc::new(StagedPcmBuffer::with_capacity_ms(2_000).expect("valid buffer")),
             cancellation: CancellationToken::new(),
             info: Mutex::new(None),
@@ -57,6 +59,7 @@ impl PreparedStage {
     }
 
     fn run(&self, source: InputSource) {
+        let mut ready_sent = false;
         let result = (|| -> Result<(), PlaybackError> {
             let mut decoder = AudioDecoder::open_with_options(
                 source,
@@ -72,9 +75,20 @@ impl PreparedStage {
                         if self.buffer.push(&frame.samples).is_err() {
                             return Ok(());
                         }
+                        if !ready_sent && self.buffer.buffered_samples() >= 48_000 {
+                            ready_sent = true;
+                            self.shared.publish(CrossfadeEvent::StageReady {
+                                identity: self.identity.clone(),
+                            });
+                        }
                     }
                     None => {
                         self.buffer.finish();
+                        if !ready_sent && self.buffer.buffered_samples() > 0 {
+                            self.shared.publish(CrossfadeEvent::StageReady {
+                                identity: self.identity.clone(),
+                            });
+                        }
                         return Ok(());
                     }
                 }
@@ -83,6 +97,10 @@ impl PreparedStage {
         })();
         if let Err(error) = result {
             if !self.cancellation.is_cancelled() {
+                self.shared.publish(CrossfadeEvent::StageFailed {
+                    identity: self.identity.clone(),
+                    reason: error.to_string(),
+                });
                 *lock(&self.error) = Some(error.to_string());
             }
             self.buffer.cancel();
@@ -165,7 +183,7 @@ impl PlaybackSession {
                 old.cancellation.cancel();
                 old.buffer.cancel();
             }
-            let next = match PreparedStage::start(source, identity) {
+            let next = match PreparedStage::start(source, identity, Arc::clone(&self.shared)) {
                 Ok(next) => next,
                 Err(error) => {
                     let old = slot.take();
@@ -179,6 +197,9 @@ impl PlaybackSession {
             (slot.replace(Arc::clone(&next)), next)
         };
         if let Some(old) = old {
+            self.shared.publish(CrossfadeEvent::StageInvalidated {
+                identity: old.identity.clone(),
+            });
             old.cancel_and_join();
         }
         Ok(next.snapshot())
@@ -199,6 +220,9 @@ impl PlaybackSession {
             slot.take()
         };
         if let Some(old) = old {
+            self.shared.publish(CrossfadeEvent::StageInvalidated {
+                identity: old.identity.clone(),
+            });
             old.cancel_and_join();
         }
     }
