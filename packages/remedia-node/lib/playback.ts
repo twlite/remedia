@@ -507,6 +507,106 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     }
   }
 
+  #startCrossfadePoll(): void {
+    if (this.#crossfadeTimer) return;
+    this.#crossfadeTimer = setInterval(() => this.#drainCrossfadeEvents(), 25);
+    this.#crossfadeTimer.unref?.();
+  }
+
+  #stopCrossfadePoll(): void {
+    if (this.#crossfadeTimer) clearInterval(this.#crossfadeTimer);
+    this.#crossfadeTimer = undefined;
+  }
+
+  #drainCrossfadeEvents(): void {
+    if (!this.#crossfadeEnabled || this.#disposed) return;
+    let events: NativeCrossfadeEvent[];
+    try { events = this.#native.playbackTakeCrossfadeEvents(this.#playbackId); }
+    catch { return; }
+    for (const event of events) {
+      const generation = numericGeneration(event.generation);
+      const stage = event.entryId === undefined ? null : {
+        entryId: event.entryId,
+        queueRevision: numericGeneration(event.queueRevision ?? '0'),
+        sourceRevision: numericGeneration(event.sourceRevision ?? '0'),
+      };
+      switch (event.kind) {
+        case 'prepare_requested': {
+          const remainingMs = event.remainingMs ?? 0;
+          this.emit(PlaybackEvent.prepareRequested, {
+            ...this.#eventContext(generation),
+            remainingMs,
+            transitionInMs: Math.max(0, remainingMs - this.#fadeDurationMs),
+          });
+          break;
+        }
+        case 'stage_ready':
+          if (stage) this.emit(PlaybackEvent.stageReady, {
+            ...this.#eventContext(generation), ...stage,
+          });
+          break;
+        case 'stage_failed':
+          if (stage) this.emit(PlaybackEvent.stageFailed, {
+            ...this.#eventContext(generation), ...stage,
+            reason: event.reason ?? 'staged source failed',
+          });
+          break;
+        case 'stage_invalidated':
+          if (stage) {
+            this.emit(PlaybackEvent.stageInvalidated, {
+              ...this.#eventContext(generation), ...stage,
+            });
+            if (this.#stageEntryId === stage.entryId) {
+              void this.#stageInput?.cancel();
+              this.#stageInput = undefined;
+              this.#stageEntryId = undefined;
+            }
+          }
+          break;
+        case 'transition_started': {
+          if (!stage || !event.info) break;
+          const previous = numericGeneration(event.previousGeneration ?? '0');
+          this.#metadata.set(generation, this.#stageMetadata);
+          this.#boundMetadata(generation);
+          this.#startedGenerations.add(generation);
+          this.#latestGeneration = generation;
+          this.#outgoingInput = this.#input;
+          this.#input = this.#stageInput;
+          this.#stageInput = undefined;
+          this.#stageEntryId = undefined;
+          this.emit(PlaybackEvent.playbackStarted, {
+            ...this.#eventContext(generation), state: 'playing', info: toStreamInfo(event.info),
+            transition: { type: 'crossfade', outgoingGeneration: previous, entryId: stage.entryId },
+          });
+          break;
+        }
+        case 'transition_completed': {
+          if (!stage) break;
+          const promoted = numericGeneration(event.previousGeneration ?? '0');
+          this.#emitTerminal('completed', generation, undefined, undefined, {
+            type: 'promoted', generation: promoted, entryId: stage.entryId,
+          });
+          void this.#outgoingInput?.cancel();
+          this.#outgoingInput = undefined;
+          break;
+        }
+        case 'transition_cancelled': {
+          if (!stage) break;
+          const failedGeneration = numericGeneration(event.previousGeneration ?? '0');
+          const abandoned = this.#input;
+          this.#input = this.#outgoingInput;
+          this.#outgoingInput = undefined;
+          void abandoned?.cancel();
+          this.#latestGeneration = generation;
+          this.emit(PlaybackEvent.transitionCancelled, {
+            ...this.#eventContext(generation), failedGeneration, entryId: stage.entryId,
+          });
+          break;
+        }
+      }
+    }
+  }
+
   #emitTerminal(
     state: 'completed' | 'stopped' | 'failed',
     generation: number,
