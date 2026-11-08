@@ -144,13 +144,25 @@ pub(crate) async fn execute(
                             "crossfade is disabled by the server configuration",
                         ));
                     }
-                    // Do not silently accept a feature that has not been wired
-                    // into the real-time playback engine. This must stay closed
-                    // until stage/promote/mix are implemented across both modes.
-                    return Err(RpcError::new(
-                        "feature_unavailable",
-                        "crossfade playback is not available in this Remedia build",
-                    ));
+                    if crossfade.curve.as_deref().is_some_and(|curve| curve != "equalPower") {
+                        return Err(RpcError::new("invalid_request", "unsupported crossfade curve"));
+                    }
+                    let config = remedia_core::CrossfadeConfig::new(
+                        crossfade.duration_ms.unwrap_or(server.config.crossfade.duration_ms),
+                        crossfade.prepare_before_ms.unwrap_or(server.config.crossfade.prepare_before_ms),
+                    ).ok_or_else(|| RpcError::new(
+                        "invalid_request", "invalid crossfade duration or preparation lead",
+                    ))?;
+                    // The session is constructed below; install this configuration
+                    // before playback is permitted to start.
+                    let session = require_client(&connection)?;
+                    let guild = server
+                        .create_guild(&session, params.guild_id)
+                        .map_err(state_error)?;
+                    guild.playback.configure_crossfade(Some(config)).map_err(playback_error)?;
+                    let snapshot = guild.snapshot();
+                    session.emit("guild.created", snapshot.clone());
+                    return Ok(snapshot);
                 }
                 if crossfade.duration_ms.is_some()
                     || crossfade.prepare_before_ms.is_some()
@@ -346,6 +358,8 @@ pub(crate) async fn execute(
             );
             Ok(playback_start_json(info, generation))
         }
+        "player.stage.next" | "player.stage.clear" | "player.stage.state"
+        | "player.prepare.ack" => crossfade::execute(server, connection, request).await,
         "player.pause"
         | "player.resume"
         | "player.stop"
@@ -608,6 +622,7 @@ impl Drop for PlayCancelOnDrop {
 mod tests;
 
 mod player_control;
+mod crossfade;
 use player_control::*;
 
 mod monitor;

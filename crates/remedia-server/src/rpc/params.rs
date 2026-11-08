@@ -75,6 +75,24 @@ pub(crate) enum PlaySource {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(super) struct StageNextParams {
+    pub(super) guild_id: String,
+    pub(super) source: PlaySource,
+    pub(super) expected_generation: u64,
+    pub(super) entry_id: String,
+    pub(super) queue_revision: u64,
+    pub(super) source_revision: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(super) struct PrepareAckParams {
+    pub(super) guild_id: String,
+    pub(super) expected_generation: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(super) struct SeekParams {
     pub(super) guild_id: String,
     pub(super) position_ms: u64,

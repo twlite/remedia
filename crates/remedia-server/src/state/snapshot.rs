@@ -34,7 +34,27 @@ pub(crate) fn playback_snapshot(playback: &PlaybackSession, generation: u64) -> 
             "metadata": info.metadata,
         })
     });
+    let stage = playback.staged_source().map(|stage| serde_json::json!({
+        "entryId": stage.identity.entry_id,
+        "expectedGeneration": generation,
+        "queueRevision": stage.identity.queue_revision,
+        "sourceRevision": stage.identity.source_revision,
+        "state": match stage.state {
+            remedia_core::StageState::Preparing => "preparing",
+            remedia_core::StageState::Ready => "ready",
+            remedia_core::StageState::Failed => "failed",
+        },
+        "bufferedMs": stage.buffered_samples as u64 / 48,
+    }));
+    let crossfade = playback.crossfade_config().map(|config| serde_json::json!({
+        "enabled": true,
+        "durationMs": config.duration_ms,
+        "prepareBeforeMs": config.prepare_before_ms,
+        "curve": "equalPower",
+    }));
     serde_json::json!({
+        "crossfade": crossfade,
+        "staged": stage,
         "state": playback_state_name(playback.state()),
         "generation": generation,
         "processingMode": processing_mode,
