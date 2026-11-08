@@ -18,7 +18,7 @@ Windows x64 (MSVC) is the only supported standalone Windows target. The installe
 If the GitHub release archive returns an HTTP 504 in PowerShell, the installer also tries GitHub's release-asset API. If both download routes fail but the release downloads in your browser, download the **Windows x64 `.tar.gz` archive** from [GitHub Releases](https://github.com/twlite/remedia/releases), not the standalone `.exe`, and run:
 
 ```powershell
-$env:REMEDIA_ARCHIVE_PATH = "$HOME\\Downloads\\remedia-server-x86_64-pc-windows-msvc.tar.gz"
+$env:REMEDIA_ARCHIVE_PATH = "$HOME\Downloads\remedia-server-x86_64-pc-windows-msvc.tar.gz"
 irm https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.ps1 | iex
 Remove-Item Env:REMEDIA_ARCHIVE_PATH
 ```
