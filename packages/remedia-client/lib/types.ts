@@ -225,6 +225,16 @@ export interface NodeCapabilities {
   crossfade: CrossfadeCapability;
 }
 
+/** Opt-in request for staged-source crossfading on an individual guild session. */
+export interface SessionCrossfadeOptions {
+  enabled: true;
+  /** Duration of overlapping audio, 1000-30000 milliseconds. */
+  durationMs?: number;
+  /** Lead time before the overlap starts, 5000-120000 milliseconds. */
+  prepareBeforeMs?: number;
+  curve?: 'equalPower';
+}
+
 /** Read-only client view of a node, its health, capacity, and assigned guilds. */
 export interface NodeSnapshot {
   /** Application-configured node identifier, unique within the client node pool. */
@@ -340,6 +350,8 @@ export interface DiscordSessionOptions {
   volume?: number;
   /** Trusted raw FFmpeg audio filtergraph; defaults to null. Native syntax validation occurs during backend configuration before playback. */
   filterGraph?: string | null;
+  /** Optional staged-source crossfade request, disabled when omitted. */
+  crossfade?: SessionCrossfadeOptions | false;
   /** Discord guild snowflake as a decimal string; unique within the owning client. */
   guildId: string;
   /** Discord voice channel snowflake as a decimal string; the requested mutable destination. */

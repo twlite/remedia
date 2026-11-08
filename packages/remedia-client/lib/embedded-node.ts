@@ -184,6 +184,11 @@ export class EmbeddedNodeAdapter implements NodeAdapter {
       throw new Error(`embedded node ${this.id} is unavailable`);
     if (this.#sessions.has(options.guildId))
       throw new Error(`guild ${options.guildId} is already assigned to node ${this.id}`);
+    if (options.crossfade) {
+      throw new Error(
+        'crossfade was requested for an embedded session, but the native staged-source engine is not available',
+      );
+    }
     const session = this.#engine.createDiscordSession(options);
     this.#sessions.set(options.guildId, session);
     return new EmbeddedGuildBackend(this, session, () => {

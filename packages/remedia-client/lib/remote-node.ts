@@ -270,7 +270,10 @@ export class RemoteNodeAdapter
     this.#setStatus('closed', null);
   }
 
-  async createGuild(guildId: string): Promise<GuildSnapshot> {
+  async createGuild(
+    guildId: string,
+    crossfade?: import('./types.js').SessionCrossfadeOptions | false,
+  ): Promise<GuildSnapshot> {
     this.#assertHealthy();
     if (this.#lostGuilds.has(guildId)) {
       throw new SessionLostError(
@@ -282,7 +285,10 @@ export class RemoteNodeAdapter
     if (this.#guilds.has(guildId)) return this.getGuild(guildId);
     this.#clearTerminalForGuild(guildId);
     const result = parseGuildSnapshot(
-      await this.request<unknown>('guild.create', { guildId }),
+      await this.request<unknown>('guild.create', {
+        guildId,
+        ...(crossfade ? { crossfade } : {}),
+      }),
       this.id,
     );
     this.#guilds.add(guildId);
@@ -1086,7 +1092,12 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     if (!this.#guildCreated) {
       const configuredFilter = this.#snapshot.filterGraph;
       const configuredVolume = this.#snapshot.volume;
-      const guild = await this.#node.createGuild(this.#options.guildId);
+      if (this.#options.crossfade && !this.#node.snapshot.capabilities?.crossfade.available) {
+        throw new Error(
+          `node ${this.#node.id} does not support crossfading; disable the option or use a capable node`,
+        );
+      }
+      const guild = await this.#node.createGuild(this.#options.guildId, this.#options.crossfade);
       this.#guildCreated = true;
       this.#sessionId = guild.guildSessionId;
       this.#snapshot = parsePlaybackSnapshot(guild.playback, this.#node.id);

@@ -134,8 +134,34 @@ pub(crate) async fn execute(
             Ok(json!({ "closed": true, "sessionId": id }))
         }
         "guild.create" => {
-            let params: GuildParams = decode_params(request.params)?;
+            let params: GuildCreateParams = decode_params(request.params)?;
             validate_snowflake(&params.guild_id, "guildId")?;
+            if let Some(crossfade) = &params.crossfade {
+                if crossfade.enabled {
+                    if !server.config.crossfade.enabled {
+                        return Err(RpcError::new(
+                            "feature_disabled",
+                            "crossfade is disabled by the server configuration",
+                        ));
+                    }
+                    // Do not silently accept a feature that has not been wired
+                    // into the real-time playback engine. This must stay closed
+                    // until stage/promote/mix are implemented across both modes.
+                    return Err(RpcError::new(
+                        "feature_unavailable",
+                        "crossfade playback is not available in this Remedia build",
+                    ));
+                }
+                if crossfade.duration_ms.is_some()
+                    || crossfade.prepare_before_ms.is_some()
+                    || crossfade.curve.is_some()
+                {
+                    return Err(RpcError::new(
+                        "invalid_request",
+                        "crossfade options require enabled: true",
+                    ));
+                }
+            }
             let session = require_client(&connection)?;
             let guild = server
                 .create_guild(&session, params.guild_id)
