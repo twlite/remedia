@@ -11,6 +11,7 @@ const REMEDIA_BLURPLE = 0x5865f2;
 const REMEDIA_RED = 0xed4245;
 
 const COMMAND_TITLES: Readonly<Record<string, string>> = {
+  crossfade: 'Crossfade smoke test',
   disconnect: 'Voice disconnected',
   filter: 'Audio filter',
   loop: 'Loop mode',

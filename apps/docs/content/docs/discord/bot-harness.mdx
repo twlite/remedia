@@ -175,3 +175,65 @@ The replacement may cause a short audible gap while Discord renegotiates the
 voice transport and DAVE state. The source decoder and playback generation
 should continue. Logs include guild, playback, sender, and transport generations
 plus recovery outcomes; they must not include voice tokens or session IDs.
+
+## Manual crossfade smoke test
+
+Register the updated commands with `pnpm --filter discord-app deploy`, start the
+bot, join a voice channel, and run:
+
+```text
+/crossfade first:https://example.com/song-a.mp3 second:https://example.com/song-b.mp3
+```
+
+Supply two real, authorized direct HTTP(S) media URLs. Use a finite first track
+longer than 35 seconds and a second track longer than 5 seconds. The session uses
+`crossfade: { enabled: true, durationMs: 5000, prepareBeforeMs: 30000, curve: 'equalPower' }`.
+Preparation begins about 35 seconds before the first source ends; URL staging is
+triggered by Remedia's clock, with no JavaScript transition timer.
+
+The test requires a **new guild session**. Run `/disconnect` before starting it if
+the bot already owns any session, including an idle session after `/stop`. The
+command refuses to interrupt or replace unrelated playback. Its session remains
+reserved for the test afterward: use `/disconnect` before another `/crossfade`
+or ordinary `/play` queue. Looping is disabled during the two-track operation.
+
+Both modes use the same `@remedia/client` API. In remote mode, explicitly enable
+`audio.crossfade.enabled` in the server's `remedia.config.json`, restart the server,
+and reconnect the bot so it discovers the current capability. The manager selects
+a healthy node advertising available crossfade capacity and reports its ID. A
+server that disables or does not advertise crossfade produces an actionable error
+before a voice join. Embedded nodes receive the options directly at session
+creation and need no server configuration.
+
+1. Confirm **Crossfade session enabled** identifies the intended node and 5000 ms
+   overlap. **Now playing** identifies the first source generation.
+2. Confirm **Preparation requested** includes remaining time (about 35000 ms) and
+   transition lead (about 30000 ms), followed by **Second source staging started**
+   and **Stage ready**. These show the unique queue-entry ID, expected generation,
+   queue revision, and source revision. Duplicate preparation events are ignored.
+3. Near the end of the first source, listen for five seconds of overlapping audio.
+   **Transition started** identifies the outgoing and incoming generations and
+   entry ID. `/nowplaying` must now show the second track, and `/queue list` must
+   no longer list it as upcoming.
+4. Confirm **Second source promoted** reports the first source's completion with
+   `continuation: type=promoted`, the incoming generation, and entry ID. The bot
+   must not issue another `play()` for that source. Let the second source finish;
+   expect one final **Track ended**, with no replay or extra queue advancement.
+5. Repeat with `/seek` during preparation: expect **Stage invalidated**, a new
+   source generation, and a fresh engine preparation request if the new position
+   reaches its threshold. Try `/pause` and `/resume`; the stage should be retained
+   while transition timing is frozen. Try `/stop`, `/skip`, and `/disconnect` in
+   separate runs during preparation and overlap to verify cancellation.
+
+Missing, ignored, failed or late preparation does not stall the first source.
+Without promotion, the existing normal completion path starts the queued second
+URL and reports that fallback explicitly; this is **not** a successful crossfade.
+A transition cancelled by Remedia restores the outgoing track before normal
+completion fallback. `/skip` cancels preparation/overlap, stops the current
+source, and starts any remaining queued track normally; `/stop` clears both items.
+Lifecycle errors show their reason with media URLs and credentials redacted.
+
+Automated command and manager tests use mocks in both modes, including duplicate
+and stale events, continuation reconciliation, cancellation, and ordinary queues.
+This procedure must still be performed manually against real Discord voice;
+passing automated tests does not establish audible overlap or live transport behavior.
