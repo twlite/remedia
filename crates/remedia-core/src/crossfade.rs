@@ -257,7 +257,7 @@ impl StagedPcmBuffer {
 
     pub fn is_finished(&self) -> bool {
         let state = self.lock();
-        state.finished && state.pcm.is_empty()
+        state.finished
     }
 
     /// Mark a clean source EOF. Existing buffered frames remain readable.
@@ -340,6 +340,23 @@ mod tests {
         assert_eq!(fade.mix(&mut second, &incoming), Ok(30_000));
         assert!(fade.complete());
         assert!((second[second.len() - 1] - 0.5).abs() < 0.0001);
+    }
+
+    #[test]
+    fn midpoint_preserves_equal_power_for_uncorrelated_sources() {
+        let mut fade = PcmCrossfade::new(CrossfadeWindow::from_millis(1_000).unwrap());
+        let mut outgoing = vec![0.0; 96_000];
+        let mut incoming = vec![0.0; 96_000];
+        for pair in outgoing.as_chunks_mut::<2>().0 {
+            pair[0] = 0.5;
+        }
+        for pair in incoming.as_chunks_mut::<2>().0 {
+            pair[1] = 0.5;
+        }
+        fade.mix(&mut outgoing, &incoming).unwrap();
+        for pair in outgoing.as_chunks::<2>().0 {
+            assert!((pair[0] * pair[0] + pair[1] * pair[1] - 0.25).abs() < 0.00001);
+        }
     }
 
     #[test]

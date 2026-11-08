@@ -566,3 +566,35 @@ Readable input uses the existing bounded native queue. It may be partially or fu
 On every completion path Remedia cancels the queue, detaches its listeners and releases input
 handles. It never destroys the caller-owned Readable. It does not rewind, cache, clone or preserve
 sources. A stalled input times out; non-seekable formats that require unavailable data may fail.
+
+## Staged crossfade playback
+
+Crossfade is opt-in. Configure an idle embedded playback session before `play()`:
+
+```ts
+const playback = remedia.createPlaybackSession();
+playback.configureCrossfade({ enabled: true, durationMs: 5000, prepareBeforeMs: 30000 });
+playback.on('prepareRequested', async ({ generation }) => {
+  // Resolve a fresh source here, close to the transition, using your own queue.
+  await playback.stageNext(
+    { file: './next.wav' },
+    {
+      expectedGeneration: generation,
+      entryId: 'queue-entry-2',
+      queueRevision: 1,
+      sourceRevision: 0,
+    },
+  );
+});
+await playback.play({ file: './current.wav' });
+```
+
+Discord sessions accept the same settings in their creation option `crossfade`.
+`stageNext()` accepts the same file, URL, buffer and Readable inputs as embedded
+`play()`. The staged input is owned until replacement, cancellation, promotion or
+failure; promotion reuses its decoder and never calls `play()` again. Use
+`clearStage()` to cancel and `stagedSource` to inspect preparation. A source revision
+must increase when refreshing an expiring URL; optional `expiresAtMs` is an absolute
+Unix timestamp in milliseconds that prevents promotion after expiry.
+
+See [crossfade playback](/docs/core/playback#crossfade-playback) for lifecycle and timing.

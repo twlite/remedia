@@ -102,6 +102,9 @@ pub enum PlaybackError {
     FilterGraph(#[source] Arc<FilterGraphError>),
     #[error("master volume must be a finite gain between 0.0 and 2.0, received {0}")]
     InvalidVolume(f32),
+    /// Crossfade durations must satisfy the same bounds as `CrossfadeConfig::new`.
+    #[error("invalid crossfade duration or preparation lead")]
+    InvalidCrossfadeConfiguration,
 }
 
 impl From<DecoderError> for PlaybackError {
@@ -183,6 +186,8 @@ struct SessionData {
     state: PlaybackState,
     generation: u64,
     source_generation: u64,
+    source_serial: u64,
+    latest_stage: Option<StageIdentity>,
     playback_id: u64,
     processing_mode: Option<PlaybackProcessingMode>,
     passthrough_available: bool,
@@ -259,13 +264,25 @@ impl CrossfadeConfig {
 /// Events only emitted for explicitly enabled staged playback.
 #[derive(Clone, Debug)]
 pub enum CrossfadeEvent {
+    TimelineChanged {
+        previous_generation: u64,
+        generation: u64,
+        position_ms: u64,
+    },
     PrepareRequested {
         generation: u64,
         remaining_ms: u64,
     },
-    StageReady { identity: StageIdentity },
-    StageFailed { identity: StageIdentity, reason: String },
-    StageInvalidated { identity: StageIdentity },
+    StageReady {
+        identity: StageIdentity,
+    },
+    StageFailed {
+        identity: StageIdentity,
+        reason: String,
+    },
+    StageInvalidated {
+        identity: StageIdentity,
+    },
     TransitionCancelled {
         outgoing_generation: u64,
         incoming_generation: u64,

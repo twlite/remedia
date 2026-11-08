@@ -23,6 +23,8 @@ impl PlaybackSession {
                     state: PlaybackState::Idle,
                     generation: 0,
                     source_generation: 0,
+                    source_serial: 0,
+                    latest_stage: None,
                     playback_id: 0,
                     processing_mode: None,
                     passthrough_available: false,
@@ -124,7 +126,9 @@ impl PlaybackSession {
             }
 
             data.generation = data.generation.wrapping_add(1);
-            data.source_generation = data.source_generation.wrapping_add(1);
+            data.source_serial = data.source_serial.wrapping_add(1);
+            data.source_generation = data.source_serial;
+            data.latest_stage = None;
             let generation = data.generation;
             let playback_id = next_correlation_id();
             data.playback_id = playback_id;
@@ -288,6 +292,11 @@ impl PlaybackSession {
                 operation: "configure crossfade",
                 state: data.state,
             });
+        }
+        if config.is_some_and(|config| {
+            CrossfadeConfig::new(config.duration_ms, config.prepare_before_ms).is_none()
+        }) {
+            return Err(PlaybackError::InvalidCrossfadeConfiguration);
         }
         *lock(&self.crossfade) = config;
         Ok(())

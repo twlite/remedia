@@ -10,6 +10,7 @@ import {
   type PlayOptions,
   type PlaybackSessionEventMap,
   type SessionLifecycleEvents,
+  type CrossfadeOptions,
   type StageNextOptions,
   type StageSnapshot,
 } from './lifecycle.js';
@@ -43,7 +44,8 @@ export interface DiscordSessionOptions {
   volume?: number;
   /** Trusted raw FFmpeg audio filtergraph; defaults to null. Native syntax validation occurs during backend configuration before playback. */
   filterGraph?: string | null;
-  crossfade?: { enabled: true; durationMs?: number; prepareBeforeMs?: number } | false;
+  /** Explicit PCM crossfade opt-in; disabled by default. */
+  crossfade?: CrossfadeOptions | false;
 }
 
 /** Cancellation and timeout controls for obtaining credentials and establishing a voice transport. */
@@ -415,15 +417,26 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
    * Pause the current playback without replacing its decoder or source generation.
    * @returns Resolves when the backend accepts the pause request.
    */
-  async stageNext(source: MediaSource, options: StageNextOptions<Metadata>): Promise<StageSnapshot> {
+  /**
+   * Prepare one upcoming source without restarting playback or its output.
+   * @param source - Fresh media input; Readables and buffers require embedded execution.
+   * @param options - Queue occurrence, revision fencing, expiry and locally retained metadata.
+   * @returns Preparation snapshot; rejects disabled sessions, stale identities or invalid inputs.
+   */
+  async stageNext(
+    source: MediaSource,
+    options: StageNextOptions<Metadata>,
+  ): Promise<StageSnapshot> {
     await this.#configurationWork;
     return this.#requireExistingPlayback().stageNext(source, options);
   }
 
+  /** Cancel the queued stage and release its input. @returns Resolves after cancellation. */
   clearStage(): Promise<void> {
     return this.#requireExistingPlayback().clearStage();
   }
 
+  /** Current preparation snapshot, or null when no stage is pending. */
   get stagedSource(): StageSnapshot | null {
     return this.#playback?.stagedSource ?? null;
   }

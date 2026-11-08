@@ -10,7 +10,7 @@ const FRAME_SAMPLES: usize = 960;
 /// promoted without opening another network stream or restarting the encoder.
 enum ActiveInput {
     Direct {
-        decoder: AudioDecoder,
+        decoder: Box<AudioDecoder>,
         pcm: VecDeque<f32>,
         ended: bool,
     },
@@ -28,7 +28,7 @@ impl ActiveSource {
         let duration_samples = decoder.info().duration.map(samples_from_duration);
         Self {
             input: ActiveInput::Direct {
-                decoder,
+                decoder: Box::new(decoder),
                 pcm: VecDeque::new(),
                 ended: false,
             },
@@ -119,7 +119,7 @@ impl ActiveSource {
                 decoder.seek(position)?;
                 stage.cancel_and_join();
                 self.input = ActiveInput::Direct {
-                    decoder,
+                    decoder: Box::new(decoder),
                     pcm: VecDeque::new(),
                     ended: false,
                 };
@@ -147,6 +147,25 @@ struct Transition {
     incoming_generation: u64,
     incoming_consumed: u64,
     outgoing_info: AudioStreamInfo,
+    transferred: bool,
+}
+
+impl Drop for Transition {
+    fn drop(&mut self) {
+        if !self.transferred {
+            self.next.cancel_and_join();
+        }
+    }
+}
+
+struct StageCleanup<'a>(&'a Mutex<Option<Arc<PreparedStage>>>);
+impl Drop for StageCleanup<'_> {
+    fn drop(&mut self) {
+        let stage = lock(self.0).take();
+        if let Some(stage) = stage {
+            stage.cancel_and_join();
+        }
+    }
 }
 
 /// A dedicated PCM-only worker is selected only when crossfade was configured
@@ -193,6 +212,7 @@ fn worker_loop(
     stage_slot: &Mutex<Option<Arc<PreparedStage>>>,
     config: CrossfadeConfig,
 ) {
+    let _stage_cleanup = StageCleanup(stage_slot);
     let opened = AudioDecoder::open_with_options(
         source,
         DecoderOptions {
@@ -239,6 +259,7 @@ fn worker_loop(
         CrossfadeWindow::from_millis(config.duration_ms).expect("validated crossfade settings");
     let mut transition: Option<Transition> = None;
     let mut preparation_requested = false;
+    let mut fade_decided = false;
 
     loop {
         if cancellation.is_cancelled() || is_stopped(&shared, generation) {
@@ -265,6 +286,9 @@ fn worker_loop(
             return;
         }
 
+        if !preparation_requested {
+            fade_decided = false;
+        }
         let source_generation = lock(&shared.data).source_generation;
         if let Some(duration) = current.duration_samples {
             let remaining = duration.saturating_sub(current.consumed);
@@ -279,7 +303,8 @@ fn worker_loop(
 
             // Only a sufficiently buffered, generation-matched source may be
             // promoted. An ignored request takes the original EOF path.
-            if transition.is_none() && remaining <= fade_samples.samples() as u64 {
+            if !fade_decided && transition.is_none() && remaining <= fade_samples.samples() as u64 {
+                fade_decided = true;
                 let ready_stage = {
                     let mut staged = lock(stage_slot);
                     if staged.as_ref().is_some_and(|stage| {
@@ -299,7 +324,11 @@ fn worker_loop(
                 if let Some(next) = ready_stage {
                     let snapshot = next.snapshot();
                     if let Some(info) = snapshot.info {
-                        let incoming_generation = source_generation.saturating_add(1);
+                        let incoming_generation = {
+                            let mut data = lock(&shared.data);
+                            data.source_serial = data.source_serial.saturating_add(1);
+                            data.source_serial
+                        };
                         shared.publish(CrossfadeEvent::TransitionStarted {
                             outgoing_generation: source_generation,
                             incoming_generation,
@@ -321,16 +350,27 @@ fn worker_loop(
                             incoming_generation,
                             incoming_consumed: 0,
                             outgoing_info: outgoing_info.clone(),
+                            transferred: false,
                         });
                     }
                 }
             }
         }
 
+        // Split the outgoing frame at the exact sample where the fade starts.
+        let until_fade = current
+            .duration_samples
+            .map(|duration| {
+                duration
+                    .saturating_sub(fade_samples.samples() as u64)
+                    .saturating_sub(current.consumed) as usize
+            })
+            .filter(|remaining| *remaining > 0)
+            .unwrap_or(FRAME_SAMPLES);
         let wanted = transition
             .as_ref()
             .map(|t| FRAME_SAMPLES.min(t.fading.remaining_samples()))
-            .unwrap_or(FRAME_SAMPLES);
+            .unwrap_or(FRAME_SAMPLES.min(until_fade));
         let mut pcm = match current.read(wanted, &cancellation) {
             Ok(Some(data)) => data,
             Ok(None) if transition.is_none() => break,
@@ -345,14 +385,16 @@ fn worker_loop(
         let mut transition_failed = false;
         if let Some(active) = transition.as_mut() {
             let count = pcm.len() / 2;
-            let incoming = active.next.buffer.read_for_playback(count, &cancellation);
+            let incoming = active.next.buffer.try_pop_exact(count);
             if let Some(incoming) = incoming.filter(|frame| frame.len() == pcm.len()) {
                 if let Err(error) = active.fading.mix(&mut pcm, &incoming) {
                     tracing::error!(?error, "crossfade mixer rejected an overlapping frame");
                     fail_session(
-                        &shared, generation,
+                        &shared,
+                        generation,
                         PlaybackError::Output(OutputError::new("crossfade mixer rejected a frame")),
-                        &cancellation, &output
+                        &cancellation,
+                        &output,
                     );
                     return;
                 }
@@ -363,7 +405,9 @@ fn worker_loop(
             }
         }
         if transition_failed {
-            if is_stopped(&shared, generation) { return; }
+            if is_stopped(&shared, generation) {
+                return;
+            }
             let failed = transition.take().expect("active transition exists");
             failed.next.cancel_and_join();
             {
@@ -375,7 +419,7 @@ fn worker_loop(
             shared.publish(CrossfadeEvent::TransitionCancelled {
                 outgoing_generation: failed.previous_generation,
                 incoming_generation: failed.incoming_generation,
-                identity: failed.identity,
+                identity: failed.identity.clone(),
             });
             preparation_requested = true;
         }
@@ -407,13 +451,17 @@ fn worker_loop(
         }
 
         if transition.as_ref().is_some_and(|t| t.fading.complete()) {
-            let finished = transition.take().expect("checked transition");
+            let mut finished = transition.take().expect("checked transition");
+            finished.transferred = true;
             let outgoing_generation = finished.previous_generation;
             let incoming_generation = finished.incoming_generation;
             let identity = finished.identity.clone();
-            current =
-                ActiveSource::prepared(finished.next, finished.incoming_consumed, &finished.info);
-            outgoing_info = finished.info;
+            current = ActiveSource::prepared(
+                Arc::clone(&finished.next),
+                finished.incoming_consumed,
+                &finished.info,
+            );
+            outgoing_info = finished.info.clone();
             preparation_requested = false;
             shared.publish(CrossfadeEvent::TransitionCompleted {
                 outgoing_generation,
@@ -485,7 +533,7 @@ fn handle_commands(
                 shared.publish(CrossfadeEvent::TransitionCancelled {
                     outgoing_generation: fade.previous_generation,
                     incoming_generation: fade.incoming_generation,
-                    identity: fade.identity,
+                    identity: fade.identity.clone(),
                 });
             }
             if let Some(stage) = lock(stage_slot).take() {
@@ -508,6 +556,17 @@ fn handle_commands(
                     accuracy: MediaPositionAccuracy::Estimated,
                 });
                 *preparation_requested = false;
+                let previous_generation = state.source_generation;
+                state.source_serial = state.source_serial.saturating_add(1);
+                state.source_generation = state.source_serial;
+                state.latest_stage = None;
+                let generation = state.source_generation;
+                drop(state);
+                shared.publish(CrossfadeEvent::TimelineChanged {
+                    previous_generation,
+                    generation,
+                    position_ms: request.position.as_millis() as u64,
+                });
                 Ok(())
             });
             let _ = request.response.send(result.clone());

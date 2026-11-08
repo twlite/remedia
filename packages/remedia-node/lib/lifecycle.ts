@@ -61,39 +61,79 @@ export type RemediaEvents = (typeof RemediaEvents)[keyof typeof RemediaEvents];
  * @typeParam Metadata - Application-owned metadata attached to playback generations.
  */
 
+/** Session opt-in for continuous PCM crossfade playback. */
+export interface CrossfadeOptions {
+  /** Explicit enablement; omitted sessions retain ordinary playback. */
+  enabled: true;
+  /** Overlap duration in milliseconds, 1000–30000; defaults to 5000. */
+  durationMs?: number;
+  /** Lead before overlap in milliseconds, 5000–120000; defaults to 30000. */
+  prepareBeforeMs?: number;
+  /** Equal-power curve; the only supported curve. */
+  curve?: 'equalPower';
+}
+
 /** Identify a particular queued occurrence. Revisions prevent stale stage
  * responses from replacing newer queue decisions.
  */
 export interface StageNextOptions<Metadata = unknown> {
+  /** Stable ID of this queued occurrence, including repeated tracks. */
   entryId: string;
+  /** Monotonically increasing queue decision revision; non-negative safe integer. */
   queueRevision: number;
+  /** Revision of the resolved source for this entry; defaults to zero. */
   sourceRevision?: number;
+  /** Absolute Unix time in milliseconds after which a prepared source must not be promoted. */
+  expiresAtMs?: number;
+  /** Current source generation to fence delayed preparation results; defaults to the active generation. */
   expectedGeneration?: number;
+  /** Application-owned metadata retained locally and attached to incoming lifecycle events. */
   customMetadata?: Metadata;
 }
+/** Crossfade playback identity, state, or capability metadata. */
 export interface StageSnapshot {
+  /** Current source generation to fence delayed preparation results; defaults to the active generation. */
   expectedGeneration: number;
+  /** Stable ID of this queued occurrence, including repeated tracks. */
   entryId: string;
+  /** Monotonically increasing queue decision revision; non-negative safe integer. */
   queueRevision: number;
+  /** Revision of the resolved source for this entry; defaults to zero. */
   sourceRevision: number;
+  /** Current preparation state; failed sources cannot be promoted. */
   state: 'preparing' | 'ready' | 'failed';
+  /** Decoded PCM currently buffered, in milliseconds; bounded to two seconds. */
   bufferedMs: number;
+  /** Selected stream metadata, or null until the decoder opens. */
   info: AudioStreamInfo | null;
+  /** Preparation failure message, or null. */
   error: string | null;
 }
+/** Crossfade playback identity, state, or capability metadata. */
 export interface CrossfadeContinuation {
+  /** Discriminator identifying this lifecycle transition. */
   type: 'promoted';
+  /** Source generation identifying the promoted playback. */
   generation: number;
+  /** Stable ID of this queued occurrence, including repeated tracks. */
   entryId: string;
 }
+/** Crossfade playback identity, state, or capability metadata. */
 export interface CrossfadeTransition {
+  /** Discriminator identifying this lifecycle transition. */
   type: 'crossfade';
+  /** Source generation that remains audible during the fade. */
   outgoingGeneration: number;
+  /** Stable ID of this queued occurrence, including repeated tracks. */
   entryId: string;
 }
+/** Crossfade playback identity, state, or capability metadata. */
 export interface CrossfadeStageEvent extends PlaybackEventIdentity {
+  /** Stable ID of this queued occurrence, including repeated tracks. */
   entryId: string;
+  /** Monotonically increasing queue decision revision; non-negative safe integer. */
   queueRevision: number;
+  /** Revision of the resolved source for this entry; defaults to zero. */
   sourceRevision: number;
 }
 

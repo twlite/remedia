@@ -25,6 +25,12 @@ export type {
   VoiceConnectionState,
 } from './types.js';
 export type {
+  CrossfadeOptions,
+  CrossfadeContinuation,
+  CrossfadeTransition,
+  CrossfadeStageEvent,
+  StageNextOptions,
+  StageSnapshot,
   BeforePlayContext,
   BeforePlayHook,
   BeforePlayResult,

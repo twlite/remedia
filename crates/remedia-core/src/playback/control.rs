@@ -240,6 +240,7 @@ pub(super) fn playback_error_kind(error: &PlaybackError) -> &'static str {
         PlaybackError::SeekOutOfRange { .. } => "seek_out_of_range",
         PlaybackError::FilterGraph(_) => "filter_graph",
         PlaybackError::InvalidVolume(_) => "invalid_volume",
+        PlaybackError::InvalidCrossfadeConfiguration => "invalid_crossfade_configuration",
     }
 }
 
