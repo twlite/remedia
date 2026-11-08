@@ -1,6 +1,6 @@
 import { RemediaEventEmitter } from './events.js';
 import { NativeRemedia } from '../native.js';
-import type { NativeMediaSource } from '../native.js';
+import type { NativeMediaSource, NativeCrossfadeEvent, NativeStageSnapshot } from '../native.js';
 import {
   createReadableInput,
   toNativeSource,
@@ -13,6 +13,8 @@ import {
   PlaybackSessionEvents as PlaybackEvent,
   type PlayOptions,
   type PlaybackSessionEventMap,
+  type StageNextOptions,
+  type StageSnapshot,
 } from './lifecycle.js';
 import {
   toStreamInfo,
@@ -47,6 +49,13 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
   #abortListener: (() => void) | undefined;
   #latestGeneration = 0;
   #guildId: string | undefined;
+  #crossfadeEnabled = false;
+  #fadeDurationMs = 5000;
+  #crossfadeTimer: ReturnType<typeof setInterval> | undefined;
+  #stageInput: ReadableInputHandle | undefined;
+  #stageEntryId: string | undefined;
+  #stageMetadata: Metadata | undefined;
+  #outgoingInput: ReadableInputHandle | undefined;
 
   /**
    * Construct this wrapper with its owning services. Use the owning engine or client factory for application code.
@@ -86,6 +95,87 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
   /** @internal Latest native source generation observed by this wrapper. */
   get currentGeneration(): number {
     return this.#latestGeneration;
+  }
+
+  /** Enable continuous PCM playback before starting a source. */
+  configureCrossfade(options: { enabled: true; durationMs?: number; prepareBeforeMs?: number } | false): void {
+    this.#assertActive();
+    if (options) {
+      const durationMs = options.durationMs ?? 5000;
+      this.#native.playbackConfigureCrossfade(
+        this.#playbackId, true, durationMs, options.prepareBeforeMs ?? 30000,
+      );
+      this.#fadeDurationMs = durationMs;
+      this.#crossfadeEnabled = true;
+    } else {
+      this.#native.playbackConfigureCrossfade(this.#playbackId, false, 0, 0);
+      this.#crossfadeEnabled = false;
+    }
+  }
+
+  get stagedSource(): StageSnapshot | null {
+    const stage = this.#native.playbackStagedSource(this.#playbackId);
+    return stage ? this.#normalizeStage(stage) : null;
+  }
+
+  async clearStage(): Promise<void> {
+    await this.#native.playbackClearStage(this.#playbackId);
+    await this.#stageInput?.cancel();
+    this.#stageInput = undefined;
+    this.#stageEntryId = undefined;
+  }
+
+  async stageNext(source: MediaSource, options: StageNextOptions<Metadata>): Promise<StageSnapshot> {
+    this.#assertActive();
+    if (!this.#crossfadeEnabled) throw new Error('crossfade is disabled for this session');
+    if (!options.entryId?.trim()) throw new TypeError('entryId is required');
+    if (!Number.isSafeInteger(options.queueRevision) || options.queueRevision < 0) {
+      throw new RangeError('queueRevision must be a non-negative safe integer');
+    }
+    const sourceRevision = options.sourceRevision ?? 0;
+    if (!Number.isSafeInteger(sourceRevision) || sourceRevision < 0) {
+      throw new RangeError('sourceRevision must be a non-negative safe integer');
+    }
+    const expectedGeneration = options.expectedGeneration ??
+      numericGeneration(this.#native.playbackSourceGeneration(this.#playbackId));
+    const existing = this.stagedSource;
+    if (existing && existing.expectedGeneration === expectedGeneration &&
+        existing.entryId === options.entryId &&
+        existing.queueRevision === options.queueRevision &&
+        existing.sourceRevision === sourceRevision) return existing;
+
+    let input: ReadableInputHandle | undefined;
+    const nativeSource = 'stream' in source
+      ? (input = createReadableInput(this.#native, source.stream)).source
+      : toNativeSource(source);
+    try {
+      const result = await this.#native.playbackStageNext(
+        this.#playbackId, nativeSource, String(expectedGeneration),
+        options.entryId, String(options.queueRevision), String(sourceRevision),
+      );
+      const previous = this.#stageInput;
+      this.#stageInput = input;
+      this.#stageEntryId = options.entryId;
+      this.#stageMetadata = options.customMetadata;
+      if (previous !== input) await previous?.cancel();
+      return this.#normalizeStage(result);
+    } catch (error) {
+      await input?.cancel();
+      throw error;
+    }
+  }
+
+  #normalizeStage(stage: NativeStageSnapshot): StageSnapshot {
+    return {
+      expectedGeneration: numericGeneration(stage.expectedGeneration),
+      entryId: stage.entryId,
+      queueRevision: numericGeneration(stage.queueRevision),
+      sourceRevision: numericGeneration(stage.sourceRevision),
+      state: stage.state as StageSnapshot['state'],
+      bufferedMs: stage.bufferedMs,
+      info: stage.info ? toStreamInfo(stage.info) : null,
+      error: stage.error ?? null,
+    };
   }
 
   /** Current playback lifecycle state. */
