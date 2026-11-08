@@ -137,6 +137,17 @@ impl PlaybackSession {
         }
         let (old, next) = {
             let mut slot = lock(&self.stage);
+            // Stop first marks the playback state as Stopping and then clears
+            // the stage. Recheck under the staging lock so a concurrent
+            // stage request cannot publish a decoder after stop clears it.
+            {
+                let data = lock(&self.shared.data);
+                if !matches!(data.state, PlaybackState::Playing | PlaybackState::Paused)
+                    || data.generation != identity.expected_generation
+                {
+                    return Err(PlaybackError::Cancelled);
+                }
+            }
             if let Some(old) = slot.as_ref() {
                 if old.identity == identity {
                     return Ok(old.snapshot());

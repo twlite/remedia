@@ -78,7 +78,7 @@ impl PcmCrossfade {
     /// returns the number of stereo samples mixed. A caller must split frames
     /// at the fade boundary before invoking this method.
     pub fn mix(&mut self, outgoing: &mut [f32], incoming: &[f32]) -> Result<usize, MixError> {
-        if outgoing.len() != incoming.len() || outgoing.len() % 2 != 0 {
+        if outgoing.len() != incoming.len() || !outgoing.len().is_multiple_of(2) {
             return Err(MixError::FrameMismatch);
         }
         let samples = outgoing.len() / 2;
@@ -168,7 +168,7 @@ impl StagedPcmBuffer {
     /// Submit interleaved stereo frames, blocking only the source decoder
     /// worker on backpressure. Calling cancel releases blocked producers.
     pub fn push(&self, frame: &[f32]) -> Result<(), StageBufferError> {
-        if frame.len() % 2 != 0 {
+        if !frame.len().is_multiple_of(2) {
             return Err(StageBufferError::InvalidFrame);
         }
         let mut remaining = frame;
