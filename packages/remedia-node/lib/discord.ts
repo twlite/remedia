@@ -1296,17 +1296,41 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
         guildId: this.guildId,
       });
     });
-    for (const name of [
-      PlaybackEvent.prepareRequested,
-      PlaybackEvent.stageReady,
-      PlaybackEvent.stageFailed,
-      PlaybackEvent.stageInvalidated,
-      PlaybackEvent.transitionCancelled,
-    ] as const) {
-      forward(name, (event) => {
-        this.emit(name, { ...event, sessionId: this.sessionId, guildId: this.guildId });
+    forward(PlaybackEvent.prepareRequested, (event) => {
+      this.emit(PlaybackEvent.prepareRequested, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
       });
-    }
+    });
+    forward(PlaybackEvent.stageReady, (event) => {
+      this.emit(PlaybackEvent.stageReady, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+      });
+    });
+    forward(PlaybackEvent.stageFailed, (event) => {
+      this.emit(PlaybackEvent.stageFailed, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+      });
+    });
+    forward(PlaybackEvent.stageInvalidated, (event) => {
+      this.emit(PlaybackEvent.stageInvalidated, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+      });
+    });
+    forward(PlaybackEvent.transitionCancelled, (event) => {
+      this.emit(PlaybackEvent.transitionCancelled, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+      });
+    });
     this.#playbackSubscriptions = {
       playback,
       detach: () => {
