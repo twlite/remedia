@@ -27,8 +27,9 @@ pub struct StageSnapshot {
 }
 
 pub(super) struct PreparedStage {
-    identity: StageIdentity,
-    buffer: Arc<StagedPcmBuffer>,
+    pub(super) identity: StageIdentity,
+    pub(super) buffer: Arc<StagedPcmBuffer>,
+    pub(super) source: InputSource,
     cancellation: CancellationToken,
     info: Mutex<Option<AudioStreamInfo>>,
     error: Mutex<Option<String>>,
@@ -39,6 +40,7 @@ impl PreparedStage {
     fn start(source: InputSource, identity: StageIdentity) -> Result<Arc<Self>, PlaybackError> {
         let stage = Arc::new(Self {
             identity,
+            source: source.clone(),
             buffer: Arc::new(StagedPcmBuffer::with_capacity_ms(2_000).expect("valid buffer")),
             cancellation: CancellationToken::new(),
             info: Mutex::new(None),
@@ -87,7 +89,7 @@ impl PreparedStage {
         }
     }
 
-    fn snapshot(&self) -> StageSnapshot {
+    pub(super) fn snapshot(&self) -> StageSnapshot {
         let info = lock(&self.info).clone();
         let error = lock(&self.error).clone();
         let buffered_samples = self.buffer.buffered_samples();
@@ -108,7 +110,7 @@ impl PreparedStage {
         }
     }
 
-    fn cancel_and_join(&self) {
+    pub(super) fn cancel_and_join(&self) {
         self.cancellation.cancel();
         self.buffer.cancel();
         if let Some(worker) = lock(&self.worker).take() {
