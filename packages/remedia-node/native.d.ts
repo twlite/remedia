@@ -68,6 +68,13 @@ export declare class NativeRemedia {
   createPlaybackSession(): string
   /** Start decoding into the null output or the associated Discord Opus sender. */
   play(playbackId: string, source: NativeMediaSource): Promise<NativeStreamInfo>
+  /** Enable or disable the continuous PCM transition worker while idle. */
+  playbackConfigureCrossfade(playbackId: string, enabled: boolean, durationMs: number, prepareBeforeMs: number): void
+  playbackStageNext(playbackId: string, source: NativeMediaSource, expectedGeneration: string, entryId: string, queueRevision: string, sourceRevision: string): Promise<NativeStageSnapshot>
+  playbackStagedSource(playbackId: string): NativeStageSnapshot | null
+  playbackClearStage(playbackId: string): Promise<void>
+  playbackTakeCrossfadeEvents(playbackId: string): NativeCrossfadeEvent[]
+  playbackSourceGeneration(playbackId: string): string
   /** Request playback pause at the current output frame boundary. */
   pause(playbackId: string): Promise<void>
   /** Resume a paused playback session. */
@@ -177,4 +184,27 @@ export interface NativeVoiceOptions {
 export interface NativeVoiceSessionIds {
   voiceId: string
   playbackId: string
+}
+
+export interface NativeStageSnapshot {
+  expectedGeneration: string
+  entryId: string
+  queueRevision: string
+  sourceRevision: string
+  state: string
+  bufferedMs: number
+  info?: NativeStreamInfo
+  error?: string
+}
+
+export interface NativeCrossfadeEvent {
+  kind: string
+  generation: string
+  previousGeneration?: string
+  entryId?: string
+  queueRevision?: string
+  sourceRevision?: string
+  remainingMs?: number
+  reason?: string
+  info?: NativeStreamInfo
 }
