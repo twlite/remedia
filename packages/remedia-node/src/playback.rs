@@ -3,13 +3,17 @@ use std::sync::Arc;
 use napi::bindgen_prelude::Status;
 use napi_derive::napi;
 use remedia_core::{
-    MediaPositionAccuracy, NullOutput, OpusEncoderOutput, PlaybackError, PlaybackSession,
+    CrossfadeConfig, CrossfadeEvent, MediaPositionAccuracy, NullOutput, OpusEncoderOutput,
+    PlaybackError, PlaybackSession, StageIdentity, StageSnapshot, StageState,
 };
 use remedia_discord::ConnectionState;
 
 use crate::native::NativeRemedia;
 use crate::runtime::{PlaybackEntry, lock, run_blocking};
-use crate::types::{NativeMediaSource, NativePlaybackPosition, NativeStreamInfo};
+use crate::types::{
+    NativeCrossfadeEvent, NativeMediaSource, NativePlaybackPosition, NativeStageSnapshot,
+    NativeStreamInfo,
+};
 use crate::util::{
     duration_from_millis, duration_millis, napi_error, native_stream_info, parse_source,
     playback_error, playback_state_name,
@@ -93,6 +97,146 @@ impl NativeRemedia {
         result
             .map(native_stream_info)
             .map_err(|error| playback_error("could not start playback", error))
+    }
+
+    /// Configure the optional continuous PCM transition worker before playback.
+    #[napi]
+    pub fn playback_configure_crossfade(
+        &self,
+        playback_id: String,
+        enabled: bool,
+        duration_ms: u32,
+        prepare_before_ms: u32,
+    ) -> napi::Result<()> {
+        self.inner.ensure_open()?;
+        let session = self.inner.playback(&playback_id)?.session;
+        let config = if enabled {
+            Some(
+                CrossfadeConfig::new(duration_ms, prepare_before_ms).ok_or_else(|| {
+                    napi_error(
+                        Status::InvalidArg,
+                        "invalid crossfade duration or preparation lead",
+                    )
+                })?,
+            )
+        } else {
+            None
+        };
+        session
+            .configure_crossfade(config)
+            .map_err(|error| playback_error("could not configure crossfade", error))
+    }
+
+    /// Open an independent decoder and stage a queue occurrence without
+    /// interrupting current playback.
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn playback_stage_next(
+        &self,
+        playback_id: String,
+        source: NativeMediaSource,
+        expected_generation: String,
+        entry_id: String,
+        queue_revision: String,
+        source_revision: String,
+        expires_at_ms: Option<String>,
+    ) -> napi::Result<NativeStageSnapshot> {
+        self.inner.ensure_open()?;
+        let entry = self.inner.playback(&playback_id)?;
+        let media = if source.kind == "stream" {
+            let stream_id = source.value.as_deref().ok_or_else(|| {
+                napi_error(
+                    Status::InvalidArg,
+                    "stream source needs a native stream handle",
+                )
+            })?;
+            self.inner.byte_stream(stream_id)?.source
+        } else {
+            parse_source(source)?
+        };
+        let generation = expected_generation.parse::<u64>().map_err(|_| {
+            napi_error(
+                Status::InvalidArg,
+                "expectedGeneration must be a decimal string",
+            )
+        })?;
+        let revision = queue_revision.parse::<u64>().map_err(|_| {
+            napi_error(Status::InvalidArg, "queueRevision must be a decimal string")
+        })?;
+        let source_revision = source_revision.parse::<u64>().map_err(|_| {
+            napi_error(
+                Status::InvalidArg,
+                "sourceRevision must be a decimal string",
+            )
+        })?;
+        let session = Arc::clone(&entry.session);
+        let expiration = expires_at_ms
+            .map(|value| {
+                value
+                    .parse::<u64>()
+                    .map_err(|_| napi_error(Status::InvalidArg, "invalid expiresAtMs"))
+            })
+            .transpose()?;
+        let snapshot = run_blocking(move || {
+            session.stage_next_with_expiration(
+                media,
+                StageIdentity {
+                    expected_generation: generation,
+                    entry_id,
+                    queue_revision: revision,
+                    source_revision,
+                },
+                expiration,
+            )
+        })
+        .await?
+        .map_err(|error| playback_error("could not stage source", error))?;
+        Ok(native_stage_snapshot(snapshot))
+    }
+
+    /// Return the current stage without opening a new decoder.
+    #[napi]
+    pub fn playback_staged_source(
+        &self,
+        playback_id: String,
+    ) -> napi::Result<Option<NativeStageSnapshot>> {
+        self.inner.ensure_open()?;
+        let session = self.inner.playback(&playback_id)?.session;
+        Ok(session.staged_source().map(native_stage_snapshot))
+    }
+
+    #[napi]
+    pub async fn playback_clear_stage(&self, playback_id: String) -> napi::Result<()> {
+        let entry = self.inner.playback(&playback_id)?;
+        let session = Arc::clone(&entry.session);
+        run_blocking(move || session.clear_staged_source()).await?;
+        Ok(())
+    }
+
+    /// Drain native transition events; embedded wrappers forward these to JS
+    /// using the same event names and generation semantics as remote mode.
+    #[napi]
+    pub fn playback_take_crossfade_events(
+        &self,
+        playback_id: String,
+    ) -> napi::Result<Vec<NativeCrossfadeEvent>> {
+        self.inner.ensure_open()?;
+        let session = self.inner.playback(&playback_id)?.session;
+        Ok(session
+            .take_crossfade_events()
+            .into_iter()
+            .map(native_crossfade_event)
+            .collect())
+    }
+
+    #[napi]
+    pub fn playback_source_generation(&self, playback_id: String) -> napi::Result<String> {
+        Ok(self
+            .inner
+            .playback(&playback_id)?
+            .session
+            .source_generation()
+            .to_string())
     }
 
     /// Request playback pause at the current output frame boundary.
@@ -281,4 +425,111 @@ impl NativeRemedia {
         lock(&self.inner.playbacks).remove(&playback_id);
         stop_result.map_err(|error| playback_error("could not dispose playback session", error))
     }
+}
+
+fn native_stage_snapshot(value: StageSnapshot) -> NativeStageSnapshot {
+    NativeStageSnapshot {
+        expected_generation: value.identity.expected_generation.to_string(),
+        entry_id: value.identity.entry_id,
+        queue_revision: value.identity.queue_revision.to_string(),
+        source_revision: value.identity.source_revision.to_string(),
+        state: match value.state {
+            StageState::Preparing => "preparing",
+            StageState::Ready => "ready",
+            StageState::Failed => "failed",
+        }
+        .to_owned(),
+        buffered_ms: (value.buffered_samples as f64) / 48.0,
+        info: value.info.map(native_stream_info),
+        error: value.error,
+    }
+}
+
+fn native_crossfade_event(event: CrossfadeEvent) -> NativeCrossfadeEvent {
+    let mut value = NativeCrossfadeEvent {
+        kind: String::new(),
+        generation: String::new(),
+        previous_generation: None,
+        entry_id: None,
+        queue_revision: None,
+        source_revision: None,
+        remaining_ms: None,
+        reason: None,
+        info: None,
+    };
+    match event {
+        CrossfadeEvent::TimelineChanged {
+            previous_generation,
+            generation,
+            position_ms,
+        } => {
+            value.kind = "timeline_changed".into();
+            value.generation = generation.to_string();
+            value.previous_generation = Some(previous_generation.to_string());
+            value.remaining_ms = Some(position_ms as f64);
+        }
+        CrossfadeEvent::PrepareRequested {
+            generation,
+            remaining_ms,
+        } => {
+            value.kind = "prepare_requested".into();
+            value.generation = generation.to_string();
+            value.remaining_ms = Some(remaining_ms as f64);
+        }
+        CrossfadeEvent::StageReady { identity } => {
+            value.kind = "stage_ready".into();
+            value.generation = identity.expected_generation.to_string();
+            fill_crossfade_identity(&mut value, identity);
+        }
+        CrossfadeEvent::StageFailed { identity, reason } => {
+            value.kind = "stage_failed".into();
+            value.generation = identity.expected_generation.to_string();
+            value.reason = Some(reason);
+            fill_crossfade_identity(&mut value, identity);
+        }
+        CrossfadeEvent::StageInvalidated { identity } => {
+            value.kind = "stage_invalidated".into();
+            value.generation = identity.expected_generation.to_string();
+            fill_crossfade_identity(&mut value, identity);
+        }
+        CrossfadeEvent::TransitionStarted {
+            outgoing_generation,
+            incoming_generation,
+            identity,
+            info,
+        } => {
+            value.kind = "transition_started".into();
+            value.generation = incoming_generation.to_string();
+            value.previous_generation = Some(outgoing_generation.to_string());
+            value.info = Some(native_stream_info(info));
+            fill_crossfade_identity(&mut value, identity);
+        }
+        CrossfadeEvent::TransitionCompleted {
+            outgoing_generation,
+            incoming_generation,
+            identity,
+        } => {
+            value.kind = "transition_completed".into();
+            value.generation = outgoing_generation.to_string();
+            value.previous_generation = Some(incoming_generation.to_string());
+            fill_crossfade_identity(&mut value, identity);
+        }
+        CrossfadeEvent::TransitionCancelled {
+            outgoing_generation,
+            incoming_generation,
+            identity,
+        } => {
+            value.kind = "transition_cancelled".into();
+            value.generation = outgoing_generation.to_string();
+            value.previous_generation = Some(incoming_generation.to_string());
+            fill_crossfade_identity(&mut value, identity);
+        }
+    }
+    value
+}
+
+fn fill_crossfade_identity(event: &mut NativeCrossfadeEvent, identity: StageIdentity) {
+    event.entry_id = Some(identity.entry_id);
+    event.queue_revision = Some(identity.queue_revision.to_string());
+    event.source_revision = Some(identity.source_revision.to_string());
 }

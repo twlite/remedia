@@ -65,3 +65,30 @@ pub struct NativeDiagnosticEvent {
     pub voice_connection_id: Option<String>,
     pub fields: HashMap<String, NativeDiagnosticField>,
 }
+
+/// A bounded native stage with an application-owned queue occurrence identity.
+#[napi(object)]
+pub struct NativeStageSnapshot {
+    pub expected_generation: String,
+    pub entry_id: String,
+    pub queue_revision: String,
+    pub source_revision: String,
+    pub state: String,
+    pub buffered_ms: f64,
+    pub info: Option<NativeStreamInfo>,
+    pub error: Option<String>,
+}
+
+/// One ordered event emitted by the native staged-source worker.
+#[napi(object)]
+pub struct NativeCrossfadeEvent {
+    pub kind: String,
+    pub generation: String,
+    pub previous_generation: Option<String>,
+    pub entry_id: Option<String>,
+    pub queue_revision: Option<String>,
+    pub source_revision: Option<String>,
+    pub remaining_ms: Option<f64>,
+    pub reason: Option<String>,
+    pub info: Option<NativeStreamInfo>,
+}

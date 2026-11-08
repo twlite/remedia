@@ -33,6 +33,12 @@ interface EmbeddedPlayback extends EventEmitterType {
     clear(): Promise<void>;
   };
   play(source: MediaSource, options?: PlayOptions<unknown>): Promise<AudioStreamInfo>;
+  stageNext(
+    source: MediaSource,
+    options: import('./types.js').StageNextOptions<unknown>,
+  ): Promise<import('./types.js').StageSnapshot>;
+  clearStage(): Promise<void>;
+  readonly stagedSource: import('./types.js').StageSnapshot | null;
   pause(): Promise<void>;
   resume(): Promise<void>;
   seek(positionMs: number): Promise<void>;
@@ -122,6 +128,15 @@ export class EmbeddedNodeAdapter implements NodeAdapter {
       nodeId: this.id,
       version: null,
       protocolVersion: null,
+      capabilities: {
+        crossfade: {
+          configured: true,
+          available: true,
+          durationMs: 5000,
+          prepareBeforeMs: 30000,
+          curve: 'equalPower',
+        },
+      },
       statistics,
       capacity: this.#capacity,
       assignedGuilds: [...this.#sessions.keys()],
@@ -255,6 +270,7 @@ class EmbeddedGuildBackend extends RemediaEventEmitter<GuildBackendEvents> imple
       durationMs: this.durationMs,
       filterGraph: this.filterGraph,
       volume: this.volume,
+      staged: this.#session.stagedSource,
       lastError: this.error ? { code: 'playback_failed', message: this.error } : null,
     };
   }
@@ -304,6 +320,24 @@ class EmbeddedGuildBackend extends RemediaEventEmitter<GuildBackendEvents> imple
       generation: this.#generation,
     };
     return { info, generation: this.#generation };
+  }
+
+  stageNext(
+    source: MediaSource,
+    options: import('./types.js').StageNextOptions<unknown>,
+  ): Promise<import('./types.js').StageSnapshot> {
+    this.#assertOpen();
+    return this.#session.stageNext(source, options);
+  }
+
+  clearStage(): Promise<void> {
+    this.#assertOpen();
+    return this.#session.clearStage();
+  }
+
+  async stagedSource(): Promise<import('./types.js').StageSnapshot | null> {
+    this.#assertOpen();
+    return this.#session.stagedSource;
   }
 
   pause(): Promise<void> {
@@ -369,7 +403,10 @@ class EmbeddedGuildBackend extends RemediaEventEmitter<GuildBackendEvents> imple
     const add = (name: keyof GuildBackendEvents, payload: Record<string, unknown>): void => {
       const generation =
         typeof payload.generation === 'number' ? payload.generation : this.#generation;
-      this.#generation = Math.max(this.#generation, generation);
+      this.#generation =
+        name === PlaybackEvent.transitionCancelled
+          ? generation
+          : Math.max(this.#generation, generation);
       const normalized = {
         ...payload,
         sessionId: this.#session.sessionId,
@@ -390,6 +427,11 @@ class EmbeddedGuildBackend extends RemediaEventEmitter<GuildBackendEvents> imple
     subscribe(PlaybackEvent.playbackPaused);
     subscribe(PlaybackEvent.playbackResumed);
     subscribe(PlaybackEvent.playbackSeeked);
+    subscribe(PlaybackEvent.prepareRequested);
+    subscribe(PlaybackEvent.stageReady);
+    subscribe(PlaybackEvent.stageFailed);
+    subscribe(PlaybackEvent.stageInvalidated);
+    subscribe(PlaybackEvent.transitionCancelled);
     subscribe(PlaybackEvent.filterChanged);
     subscribe(PlaybackEvent.volumeChanged);
     subscribe(VoiceEvent.voiceStateChanged);

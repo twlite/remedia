@@ -1,6 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import { EmbedBuilder, type SendableChannels } from 'discord.js';
 import type {
   AudioStreamInfo,
+  DiscordSessionOptions,
+  PlaybackLifecycleEventMap,
   DiscordSession,
   PlaybackState,
   RemediaClient,
@@ -66,6 +69,22 @@ interface TrackLifecycleMetadata {
   track: Track;
 }
 
+type PlaybackEvents = PlaybackLifecycleEventMap<TrackLifecycleMetadata>;
+
+interface CrossfadeTest {
+  first: Track;
+  second: Track;
+  entryId: string;
+  firstGeneration: number | undefined;
+  secondGeneration: number | undefined;
+  attempted: Set<number>;
+  notifications: Set<string>;
+  revision: number;
+  stage: { generation: number; sourceRevision: number } | undefined;
+  allowPreparation: boolean;
+  firstEnded: boolean;
+}
+
 interface GuildPlayer {
   session: DiscordSession<TrackLifecycleMetadata>;
   queue: Track[];
@@ -79,9 +98,11 @@ interface GuildPlayer {
   volumePercent: number;
   loopMode: LoopMode;
   lifecycleUnsubscribers: Array<() => void>;
+  crossfadeSession: boolean;
+  crossfadeTest: CrossfadeTest | undefined;
 }
 
-/** Application-owned queueing for the manual Discord harness. The native API remains single-source. */
+/** Application-owned queueing and explicit crossfade smoke tests for the Discord harness. */
 export class DiscordPlaybackManager {
   readonly #remedia: RemediaClient;
   readonly #players = new Map<string, GuildPlayer>();
@@ -101,6 +122,9 @@ export class DiscordPlaybackManager {
   ): Promise<{ started: boolean; queuePosition: number; track: TrackSnapshot }> {
     this.#assertOpen();
     const player = this.#getOrCreatePlayer(guildId, channelId, botUserId, textChannel);
+    if (player.crossfadeSession) {
+      throw new Error('This session is reserved for /crossfade. Use /disconnect before /play.');
+    }
     return this.#serialize(player, async () => {
       if (player.session.connectionState !== 'connected') {
         try {
@@ -129,6 +153,86 @@ export class DiscordPlaybackManager {
         queuePosition: index,
         track: toTrackSnapshot(track),
       };
+    });
+  }
+
+  /**
+   * Start a two-source smoke test in a new, explicitly opted-in session.
+   * @param guildId - Invoking guild identity.
+   * @param channelId - Invoking user's voice channel.
+   * @param botUserId - Bot user identity used by the Gateway adapter.
+   * @param first - First direct media URL and requester.
+   * @param second - Upcoming direct media URL and requester.
+   * @param textChannel - Destination for generation-correlated test diagnostics.
+   * @returns Selected node identifier after connecting and starting the first source.
+   * @throws If a guild session already exists or no healthy capable node is available.
+   */
+  async crossfade(
+    guildId: string,
+    channelId: string,
+    botUserId: string,
+    first: TrackRequest,
+    second: TrackRequest,
+    textChannel: SendableChannels,
+  ): Promise<string> {
+    this.#assertOpen();
+    if (this.#players.has(guildId)) {
+      throw new Error(
+        '/crossfade requires a new voice session. Use /disconnect first; existing playback was left running.',
+      );
+    }
+    const node = this.#remedia.nodes.find(
+      (candidate) =>
+        candidate.status === 'healthy' &&
+        candidate.capabilities?.crossfade.available &&
+        candidate.assignedGuilds.length < candidate.capacity,
+    );
+    if (!node) {
+      throw new Error(
+        'No healthy Remedia node advertises available crossfade capacity. For remote mode, enable audio.crossfade.enabled in remedia.config.json and reconnect the bot; older servers may not support crossfade.',
+      );
+    }
+    const player = this.#getOrCreatePlayer(guildId, channelId, botUserId, textChannel, {
+      nodeId: node.id,
+      crossfade: { enabled: true, durationMs: 5000, prepareBeforeMs: 30000, curve: 'equalPower' },
+    });
+    const firstTrack: Track = { ...first };
+    const secondTrack: Track = { ...second };
+    player.crossfadeTest = {
+      first: firstTrack,
+      second: secondTrack,
+      entryId: randomUUID(),
+      firstGeneration: undefined,
+      secondGeneration: undefined,
+      attempted: new Set(),
+      notifications: new Set(),
+      revision: 0,
+      stage: undefined,
+      allowPreparation: true,
+      firstEnded: false,
+    };
+    player.queue.push(firstTrack, secondTrack);
+    return this.#serialize(player, async () => {
+      try {
+        await player.session.connect();
+        this.#crossfadeMessage(
+          player,
+          'Crossfade session enabled',
+          `Node: ${node.id} (${node.type}). Fade: 5000 ms; preparation lead: 30000 ms; equalPower. Entry: ${player.crossfadeTest!.entryId}.`,
+        );
+        await this.#startNext(player);
+        return node.id;
+      } catch (error) {
+        const failure = crossfadeError(error);
+        try {
+          await this.#removePlayer(player);
+        } catch (cleanup) {
+          throw new Error(`${failure}. Session cleanup also failed: ${crossfadeError(cleanup)}`, {
+            cause: cleanup,
+          });
+        }
+        throw new Error(failure, { cause: error });
+      }
     });
   }
 
@@ -184,6 +288,9 @@ export class DiscordPlaybackManager {
           position.playedMs === null || position.mediaPositionAccuracy === 'estimated',
       };
       await player.session.seek(positionMs);
+      // Seeking during overlap can restore the outgoing source. Report the
+      // source the engine retained rather than the abandoned incoming source.
+      if (player.current) context.current = toTrackSnapshot(player.current);
       return context;
     });
   }
@@ -199,6 +306,7 @@ export class DiscordPlaybackManager {
     const player = this.#getPlayer(guildId, channelId);
     return this.#serialize(player, async () => {
       const current = player.current ? toTrackSnapshot(player.current) : null;
+      player.crossfadeTest = undefined;
       player.generation += 1;
       player.current = undefined;
       player.queue.length = 0;
@@ -216,6 +324,7 @@ export class DiscordPlaybackManager {
     const player = this.#getPlayer(guildId, channelId);
     return this.#serialize(player, async () => {
       if (!player.current) throw new Error('There is no current track to skip.');
+      player.crossfadeTest = undefined;
       player.generation += 1;
       const skipped = player.current;
       player.current = undefined;
@@ -235,6 +344,10 @@ export class DiscordPlaybackManager {
     return this.#serialize(player, () => {
       const removed = player.queue.length;
       player.queue.length = 0;
+      if (player.crossfadeTest) {
+        player.crossfadeTest.allowPreparation = false;
+        return player.session.clearStage().then(() => removed);
+      }
       return Promise.resolve(removed);
     });
   }
@@ -343,6 +456,8 @@ export class DiscordPlaybackManager {
     channelId: string,
     mode: LoopMode,
   ): Promise<{ previousMode: LoopMode }> {
+    if (this.#players.get(guildId)?.crossfadeTest)
+      throw new Error('Looping is disabled during the two-track crossfade test.');
     if (!LOOP_MODES.includes(mode)) throw new RangeError(`Unknown loop mode: ${mode}`);
     const player = this.#getPlayer(guildId, channelId);
     return this.#serialize(player, async () => {
@@ -388,6 +503,7 @@ export class DiscordPlaybackManager {
     channelId: string,
     botUserId: string,
     textChannel: SendableChannels | undefined,
+    options: Pick<DiscordSessionOptions, 'nodeId' | 'crossfade'> = {},
   ): GuildPlayer {
     const existing = this.#players.get(guildId);
     if (existing) {
@@ -402,6 +518,7 @@ export class DiscordPlaybackManager {
         guildId,
         channelId,
         userId: botUserId,
+        ...options,
       }),
       queue: [],
       current: undefined,
@@ -413,9 +530,12 @@ export class DiscordPlaybackManager {
       volumePercent: 100,
       loopMode: 'off',
       lifecycleUnsubscribers: [],
+      crossfadeSession: Boolean(options.crossfade),
+      crossfadeTest: undefined,
     };
     this.#players.set(guildId, player);
     this.#bindLifecycleEvents(player);
+    if (player.crossfadeSession) this.#bindCrossfadeEvents(player);
     return player;
   }
 
@@ -453,9 +573,10 @@ export class DiscordPlaybackManager {
         };
         track.info = await player.session.play({ url: track.url }, { customMetadata: metadata });
         if (player.generation !== generation) return;
-        void this.#watchCompletion(player, generation).catch((error: unknown) => {
-          console.error('Could not advance the Remedia queue:', asError(error).message);
-        });
+        if (!player.crossfadeTest)
+          void this.#watchCompletion(player, generation).catch((error: unknown) => {
+            console.error('Could not advance the Remedia queue:', asError(error).message);
+          });
         return;
       } catch (error) {
         if (player.generation !== generation) return;
@@ -529,6 +650,7 @@ export class DiscordPlaybackManager {
   }
 
   async #removePlayer(player: GuildPlayer): Promise<void> {
+    player.crossfadeTest = undefined;
     player.generation += 1;
     player.current = undefined;
     player.queue.length = 0;
@@ -542,12 +664,8 @@ export class DiscordPlaybackManager {
   }
 
   #bindLifecycleEvents(player: GuildPlayer): void {
-    const onPlaybackStarted = (event: {
-      generation: number;
-      state: 'playing';
-      info: AudioStreamInfo;
-      customMetadata?: TrackLifecycleMetadata;
-    }): void => {
+    const onPlaybackStarted = (event: PlaybackEvents['playbackStarted'][0]): void => {
+      if (this.#crossfadeStarted(player, event)) return;
       const metadata = event.customMetadata;
       if (!metadata || !this.#isCurrentLifecycle(player, metadata)) return;
       const track = metadata.track;
@@ -560,7 +678,8 @@ export class DiscordPlaybackManager {
         0x57f287,
       );
     };
-    const onPlaybackCompleted = (event: { customMetadata?: TrackLifecycleMetadata }): void => {
+    const onPlaybackCompleted = (event: PlaybackEvents['playbackCompleted'][0]): void => {
+      if (this.#crossfadeEnded(player, event)) return;
       const metadata = event.customMetadata;
       if (!metadata || !this.#isCurrentLifecycle(player, metadata)) return;
       this.#sendLifecycleMessage(
@@ -587,6 +706,7 @@ export class DiscordPlaybackManager {
       error: Error;
       customMetadata?: TrackLifecycleMetadata;
     }): void => {
+      if (this.#crossfadeEnded(player, event)) return;
       const metadata = event.customMetadata;
       if (!metadata || !this.#isCurrentLifecycle(player, metadata)) return;
       this.#notifyTrackFailure(player, metadata, event.error);
@@ -700,6 +820,278 @@ export class DiscordPlaybackManager {
       () => player.session.off(PlaybackSessionEvents.volumeChanged, onVolumeChanged),
       () => player.session.off(VoiceSessionEvents.voiceStateChanged, onVoiceStateChanged),
       () => player.session.off(VoiceSessionEvents.voiceFailed, onVoiceFailed),
+    );
+  }
+
+  #crossfadeMessage(player: GuildPlayer, title: string, description: string, key?: string): void {
+    const test = player.crossfadeTest;
+    if (!test || this.#closed || this.#players.get(player.session.guildId) !== player) return;
+    if (key && test.notifications.has(key)) return;
+    if (key) test.notifications.add(key);
+    this.#sendLifecycleMessage(player, undefined, title, description, 0x5865f2);
+  }
+
+  #crossfadeStarted(player: GuildPlayer, event: PlaybackEvents['playbackStarted'][0]): boolean {
+    const test = player.crossfadeTest;
+    if (!test) return false;
+    const track = event.customMetadata?.track;
+    if (track === test.first) {
+      if (test.firstGeneration !== undefined) return true;
+      test.firstGeneration = event.generation;
+      track.info = event.info;
+      this.#crossfadeMessage(
+        player,
+        'Now playing',
+        `First source started. Generation ${event.generation}; duration ${event.info.durationMs ?? 'unknown'} ms.`,
+        `start:${event.generation}`,
+      );
+      if (event.info.durationMs === null)
+        this.#crossfadeMessage(
+          player,
+          'Preparation unavailable',
+          'The first source has unknown duration. No end-based preparation can be scheduled; normal completion will play the second URL.',
+        );
+      return true;
+    }
+    if (track !== test.second) return false;
+    const transition = event.transition;
+    if (
+      transition &&
+      (transition.entryId !== test.entryId ||
+        transition.outgoingGeneration !== test.firstGeneration ||
+        event.generation <= transition.outgoingGeneration)
+    )
+      return true;
+    if (!transition && !test.firstEnded) return true;
+    if (test.secondGeneration === event.generation) return true;
+    test.secondGeneration = event.generation;
+    track.info = event.info;
+    player.current = track;
+    player.queue = player.queue.filter((queued) => queued !== track);
+    this.#crossfadeMessage(
+      player,
+      transition ? 'Transition started' : 'Now playing',
+      transition
+        ? `Second source is audible. Generation ${event.generation}, outgoing ${transition.outgoingGeneration}; entry ${test.entryId}; overlap 5000 ms. No second play() call was issued.`
+        : `Second source started normally after completion without promotion. Generation ${event.generation}; entry ${test.entryId}.`,
+      `start:${event.generation}`,
+    );
+    return true;
+  }
+
+  #crossfadeEnded(
+    player: GuildPlayer,
+    event: {
+      generation: number;
+      customMetadata?: TrackLifecycleMetadata;
+      continuation?: PlaybackEvents['playbackCompleted'][0]['continuation'];
+      error?: Error;
+    },
+  ): boolean {
+    const test = player.crossfadeTest;
+    if (!test) return false;
+    const track = event.customMetadata?.track;
+    if (track !== test.first && track !== test.second) return false;
+    if (test.notifications.has(`end:${event.generation}`)) return true;
+    if (
+      track === test.first &&
+      test.firstGeneration !== undefined &&
+      event.generation !== test.firstGeneration
+    )
+      return true;
+    if (track === test.second && event.generation !== test.secondGeneration) return true;
+    test.notifications.add(`end:${event.generation}`);
+    const reason = event.error ? ` Failure: ${crossfadeError(event.error)}.` : '';
+    if (event.error) {
+      this.#failedNotifications.add(track);
+      player.lastError = crossfadeError(event.error);
+    }
+    if (track === test.first) {
+      test.firstEnded = true;
+      test.allowPreparation = false;
+      const continuation = event.continuation;
+      if (continuation) {
+        if (
+          continuation.entryId !== test.entryId ||
+          continuation.generation <= event.generation ||
+          (test.secondGeneration !== undefined && continuation.generation !== test.secondGeneration)
+        ) {
+          player.lastError =
+            'Unexpected crossfade continuation identity; no replacement play() was issued.';
+          this.#crossfadeMessage(player, 'Crossfade reconciliation failed', player.lastError);
+          return true;
+        }
+        test.secondGeneration = continuation.generation;
+        player.current = test.second;
+        player.queue = player.queue.filter((queued) => queued !== test.second);
+        this.#crossfadeMessage(
+          player,
+          'Second source promoted',
+          `First source completed: generation ${event.generation}. Continuation: type=promoted, generation=${continuation.generation}, entryId=${continuation.entryId}. Remedia owns playback; no second play() call was issued.`,
+          `promotion:${continuation.generation}`,
+        );
+        return true;
+      }
+      this.#crossfadeMessage(
+        player,
+        'Track ended',
+        `First source generation ${event.generation} ended without promotion.${reason} The second queued URL will use normal playback.`,
+        `first-end:${event.generation}`,
+      );
+    } else {
+      this.#crossfadeMessage(
+        player,
+        event.error ? 'Playback failed' : 'Track ended',
+        `Second source generation ${event.generation} finished.${reason} Crossfade test ended; entry ${test.entryId}.`,
+        `final:${event.generation}`,
+      );
+    }
+    void this.#serialize(player, async () => {
+      if (player.crossfadeTest !== test || player.current !== track) return;
+      await player.session.clearStage();
+      player.current = undefined;
+      if (track === test.second || player.queue.length === 0) {
+        player.crossfadeTest = undefined;
+        player.generation += 1;
+      }
+      await this.#startNext(player);
+    }).catch((error) => {
+      if (player.crossfadeTest !== test) return;
+      player.lastError = crossfadeError(error);
+      this.#crossfadeMessage(player, 'Crossfade test failed', player.lastError);
+    });
+    return true;
+  }
+
+  #bindCrossfadeEvents(player: GuildPlayer): void {
+    const session = player.session;
+    const prepare = (event: PlaybackEvents['prepareRequested'][0]): void => {
+      const test = player.crossfadeTest;
+      if (
+        !test ||
+        !test.allowPreparation ||
+        test.firstEnded ||
+        player.current !== test.first ||
+        event.generation !== test.firstGeneration ||
+        event.customMetadata?.track !== test.first ||
+        test.attempted.has(event.generation) ||
+        !player.queue.includes(test.second)
+      )
+        return;
+      test.attempted.add(event.generation);
+      const sourceRevision = ++test.revision;
+      test.stage = { generation: event.generation, sourceRevision };
+      this.#crossfadeMessage(
+        player,
+        'Preparation requested',
+        `Generation ${event.generation}: remaining ${event.remainingMs} ms; transition in ${event.transitionInMs} ms. Entry ${test.entryId}.`,
+      );
+      this.#crossfadeMessage(
+        player,
+        'Second source staging started',
+        `Entry ${test.entryId}; expected generation ${event.generation}; queue revision 1; source revision ${sourceRevision}.`,
+      );
+      // Do not hold the command queue while a staging RPC is in flight. Stop,
+      // seek and disconnect remain available; native generation fencing rejects
+      // a request whose timeline was invalidated before it reaches the engine.
+      void session
+        .stageNext(
+          { url: test.second.url },
+          {
+            expectedGeneration: event.generation,
+            entryId: test.entryId,
+            queueRevision: 1,
+            sourceRevision,
+            customMetadata: {
+              ...player.queueMetadata,
+              queueGeneration: player.generation,
+              track: test.second,
+            },
+          },
+        )
+        .catch((error) => {
+          if (
+            player.crossfadeTest !== test ||
+            test.stage?.generation !== event.generation ||
+            !test.allowPreparation
+          )
+            return;
+          this.#crossfadeMessage(
+            player,
+            'Stage failed',
+            `Generation ${event.generation}; entry ${test.entryId}. ${crossfadeError(error)}. Outgoing playback continues.`,
+            `stageFailed:${event.generation}:${sourceRevision}`,
+          );
+        });
+    };
+    const stage =
+      (kind: 'stageReady' | 'stageFailed' | 'stageInvalidated') =>
+      (event: PlaybackEvents['stageReady'][0] & { reason?: string }): void => {
+        const test = player.crossfadeTest;
+        if (
+          !test ||
+          event.entryId !== test.entryId ||
+          event.queueRevision !== 1 ||
+          event.generation !== test.stage?.generation ||
+          event.sourceRevision !== test.stage.sourceRevision
+        )
+          return;
+        this.#crossfadeMessage(
+          player,
+          {
+            stageReady: 'Stage ready',
+            stageFailed: 'Stage failed',
+            stageInvalidated: 'Stage invalidated',
+          }[kind],
+          `Generation ${event.generation}; entry ${event.entryId}; queue revision ${event.queueRevision}; source revision ${event.sourceRevision}.${event.reason ? ` ${crossfadeError(event.reason)}` : ''}`,
+          `${kind}:${event.generation}:${event.sourceRevision}`,
+        );
+      };
+    const seek = (event: PlaybackEvents['playbackSeeked'][0]): void => {
+      const test = player.crossfadeTest;
+      if (!test) return;
+      if (event.customMetadata?.track === test.first && player.current === test.first) {
+        test.firstGeneration = event.generation;
+        test.stage = undefined;
+      } else if (event.customMetadata?.track === test.second && player.current === test.second) {
+        test.secondGeneration = event.generation;
+      }
+    };
+    const cancelled = (event: PlaybackEvents['transitionCancelled'][0]): void => {
+      const test = player.crossfadeTest;
+      if (
+        !test ||
+        event.entryId !== test.entryId ||
+        event.failedGeneration !== test.secondGeneration
+      )
+        return;
+      player.current = test.first;
+      if (!player.queue.includes(test.second)) player.queue.unshift(test.second);
+      test.secondGeneration = undefined;
+      test.firstGeneration = event.generation;
+      this.#crossfadeMessage(
+        player,
+        'Transition cancelled',
+        `Incoming generation ${event.failedGeneration} abandoned. Outgoing generation ${event.generation} continues; entry ${test.entryId}.`,
+        `cancel:${event.failedGeneration}`,
+      );
+    };
+    const ready = stage('stageReady');
+    const failed = stage('stageFailed');
+    const invalidated = stage('stageInvalidated');
+    session.on(PlaybackSessionEvents.prepareRequested, prepare);
+    session.on(PlaybackSessionEvents.stageReady, ready);
+    session.on(PlaybackSessionEvents.stageFailed, failed);
+    session.on(PlaybackSessionEvents.stageInvalidated, invalidated);
+    session.on(PlaybackSessionEvents.playbackSeeked, seek);
+    session.on(PlaybackSessionEvents.transitionCancelled, cancelled);
+    player.lifecycleUnsubscribers.push(
+      () => session.off(PlaybackSessionEvents.prepareRequested, prepare),
+      () => session.off(PlaybackSessionEvents.stageReady, ready),
+      () => session.off(PlaybackSessionEvents.stageFailed, failed),
+      () => session.off(PlaybackSessionEvents.stageInvalidated, invalidated),
+      () => session.off(PlaybackSessionEvents.playbackSeeked, seek),
+      () => session.off(PlaybackSessionEvents.transitionCancelled, cancelled),
     );
   }
 
@@ -857,4 +1249,10 @@ function sanitizeLifecycleText(value: string, limit: number): string {
     .replace(/@(everyone|here)/gi, '@\u200b$1')
     .trim();
   return clean.length > limit ? `${clean.slice(0, limit - 1)}…` : clean;
+}
+
+function crossfadeError(error: unknown): string {
+  return safeLifecycleError(
+    asError(error).message.replace(/https?:\/\/[^\s<>"']+/gi, '[media URL]'),
+  );
 }

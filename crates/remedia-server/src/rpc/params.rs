@@ -17,6 +17,28 @@ pub(super) struct GuildParams {
     pub(super) guild_id: String,
 }
 
+/// Per-guild crossfade request. An explicit opt-in is permitted only when
+/// the server policy allows it AND native staged-source playback is available.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(super) struct GuildCreateParams {
+    pub(super) guild_id: String,
+    #[serde(default)]
+    pub(super) crossfade: Option<SessionCrossfadeOptions>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(super) struct SessionCrossfadeOptions {
+    pub(super) enabled: bool,
+    #[serde(default)]
+    pub(super) duration_ms: Option<u32>,
+    #[serde(default)]
+    pub(super) prepare_before_ms: Option<u32>,
+    #[serde(default)]
+    pub(super) curve: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(super) struct VoiceConnectParams {
@@ -49,6 +71,25 @@ pub(super) struct PlayParams {
 pub(crate) enum PlaySource {
     File { path: String },
     Url { url: String },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(super) struct StageNextParams {
+    pub(super) guild_id: String,
+    pub(super) source: PlaySource,
+    pub(super) expected_generation: u64,
+    pub(super) entry_id: String,
+    pub(super) queue_revision: u64,
+    pub(super) source_revision: u64,
+    pub(super) expires_at_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(super) struct PrepareAckParams {
+    pub(super) guild_id: String,
+    pub(super) expected_generation: u64,
 }
 
 #[derive(Deserialize)]

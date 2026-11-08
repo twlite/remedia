@@ -118,7 +118,9 @@ pub(super) async fn execute_player_control(
             .await
             .map_err(|_| RpcError::new("playback_failed", "playback worker failed"))?
             .map_err(playback_error)?;
-            if previous_position_ms != Some(u128::from(params.position_ms)) {
+            if guild.playback.crossfade_config().is_none()
+                && previous_position_ms != Some(u128::from(params.position_ms))
+            {
                 session.emit(
                     "player.seeked",
                     json!({

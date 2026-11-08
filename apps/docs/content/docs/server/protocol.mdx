@@ -215,3 +215,28 @@ To cancel an outstanding probe on the same connection, send `media.probe.cancel`
 Socket disconnect, request timeout and cancellation interrupt the native operation. Blocking workers
 retain their capacity permit until native cleanup finishes. FFmpeg discovery can consume source
 bytes and estimate durations; it does not establish future playback availability.
+
+## Staged playback RPC
+
+`node.info.capabilities.crossfade` reports policy, availability, defaults and the
+`equalPower` curve. `guild.create` accepts optional
+`crossfade: { enabled: true, durationMs: 5000, prepareBeforeMs: 30000, curve: 'equalPower' }`.
+Server policy must allow it; omitted session options preserve ordinary playback.
+
+`player.stage.next` accepts `guildId`, a normal file/URL `source`,
+`expectedGeneration`, `entryId`, `queueRevision`, `sourceRevision`, and optional
+`expiresAtMs` (absolute Unix milliseconds). It returns a stage snapshot with
+identity, `state`, `bufferedMs`, `source` metadata and nullable `error`.
+`player.stage.state` returns the current snapshot or null. `player.stage.clear`
+cancels the pending stage. `player.prepare.ack` accepts `guildId` and
+`expectedGeneration`, returning `acknowledged` and the current `generation`;
+acknowledgment is optional and never delays outgoing playback.
+
+Notifications are `player.prepare_requested`, `player.stage_ready`,
+`player.stage_failed`, `player.stage_invalidated`, and `player.transition_cancelled`.
+Preparation includes `remainingMs` and `transitionInMs`; stage events carry queue
+and source revisions. Incoming `player.started` includes
+`transition: { type: 'crossfade', outgoingGeneration, entryId }`. Outgoing
+`player.completed` includes `continuation: { type: 'promoted', generation, entryId }`
+after the fade. The final source completes normally. Clients must reconcile the
+promotion without sending a second `player.play`.

@@ -4,6 +4,7 @@
 //! libraries and yields normalized interleaved PCM incrementally.
 
 mod byte_stream;
+mod crossfade;
 mod decoder;
 mod error;
 mod ffmpeg_logging;
@@ -24,6 +25,7 @@ pub(crate) fn with_dispatch<T>(handle: &ObservabilityHandle, callback: impl FnOn
 }
 
 pub use byte_stream::{ByteStreamError, ByteStreamWriter};
+pub use crossfade::{CrossfadeWindow, MixError, PcmCrossfade, StageBufferError, StagedPcmBuffer};
 pub use decoder::{
     AudioDecoder, AudioStreamInfo, DecoderOptions, PcmFormat, PcmFrame, ProbeOptions, probe,
 };
@@ -34,8 +36,9 @@ pub use output::{
     EncodedOpusOutput, MediaOutput, NullOutput, NullOutputStats, NullOutputStatsHandle, OutputError,
 };
 pub use playback::{
-    MediaPosition, MediaPositionAccuracy, PlaybackError, PlaybackPosition, PlaybackProcessingMode,
-    PlaybackSession, PlaybackState, PlaybackWaiter,
+    CrossfadeConfig, CrossfadeEvent, MediaPosition, MediaPositionAccuracy, PlaybackError,
+    PlaybackPosition, PlaybackProcessingMode, PlaybackSession, PlaybackState, PlaybackWaiter,
+    StageIdentity, StageSnapshot, StageState,
 };
 pub use source::{CancellationToken, InputSource};
 

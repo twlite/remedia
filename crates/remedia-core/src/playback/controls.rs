@@ -117,12 +117,16 @@ impl PlaybackSession {
             );
         });
 
-        response_rx.recv().unwrap_or_else(|_| {
+        let outcome = response_rx.recv().unwrap_or_else(|_| {
             Err(lock(&self.shared.data)
                 .last_error
                 .clone()
                 .unwrap_or(PlaybackError::WorkerPanicked))
-        })
+        });
+        if outcome.is_ok() {
+            self.clear_staged_source();
+        }
+        outcome
     }
 
     /// Validate and configure a trusted FFmpeg audio filtergraph.
@@ -343,6 +347,10 @@ impl PlaybackSession {
                 pending_filter,
             )
         };
+
+        // After the state is marked Stopping, no concurrent stage request can
+        // become eligible. Clear the stage outside the playback-state lock.
+        self.clear_staged_source();
 
         if let Some(request) = pending_seek {
             let _ = request.response.send(Err(PlaybackError::Cancelled));

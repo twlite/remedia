@@ -21,6 +21,8 @@ import type {
   PlaybackState,
   PlaybackLifecycleEventMap,
   PlayOptions,
+  StageNextOptions,
+  StageSnapshot,
   VoiceConnectionState,
   VoiceLifecycleEventMap,
 } from './types.js';
@@ -129,6 +131,15 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   /** Ordered, awaited local pre-play hooks; listeners are separate from hooks. */
   readonly hooks = new PlaybackHooks<Metadata>();
   readonly #metadataByGeneration = new Map<number, Metadata | undefined>();
+  readonly #stageMetadata = new Map<
+    string,
+    {
+      generation: number;
+      queueRevision: number;
+      sourceRevision: number;
+      metadata: Metadata | undefined;
+    }
+  >();
   readonly #startedGenerations = new Set<number>();
   readonly #terminalGenerations = new Set<number>();
   readonly #earlyPlaybackEvents = new Map<number, BufferedPlaybackEvent[]>();
@@ -594,6 +605,49 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
    * Pause the current playback without replacing its decoder or source generation.
    * @returns Resolves when the backend accepts the pause request.
    */
+  /** Prepare the next queue entry without interrupting the active source. */
+  /**
+   * Prepare one upcoming source without restarting playback or its output.
+   * @param source - Fresh media input; Readables and buffers require embedded execution.
+   * @param options - Queue occurrence, revision fencing, expiry and locally retained metadata.
+   * @returns Preparation snapshot; rejects disabled sessions, stale identities or invalid inputs.
+   */
+  async stageNext(
+    source: MediaSource,
+    options: StageNextOptions<Metadata>,
+  ): Promise<StageSnapshot> {
+    this.#assertOpen();
+    const backend = this.#requireExistingBackend();
+    const previous = this.#stageMetadata.get(options.entryId);
+    const record = {
+      generation: options.expectedGeneration ?? this.snapshot.generation,
+      queueRevision: options.queueRevision,
+      sourceRevision: options.sourceRevision ?? 0,
+      metadata: options.customMetadata,
+    };
+    this.#stageMetadata.set(options.entryId, record);
+    try {
+      return await backend.stageNext(source, options);
+    } catch (error) {
+      if (this.#stageMetadata.get(options.entryId) === record) {
+        if (previous) this.#stageMetadata.set(options.entryId, previous);
+        else this.#stageMetadata.delete(options.entryId);
+      }
+      throw error;
+    }
+  }
+
+  /** Cancel the queued stage and release its input. @returns Resolves after cancellation. */
+  clearStage(): Promise<void> {
+    this.#stageMetadata.clear();
+    return this.#requireExistingBackend().clearStage();
+  }
+
+  /** Inspect preparation without reopening the source. @returns Current stage, or null. */
+  stagedSource(): Promise<StageSnapshot | null> {
+    return this.#requireExistingBackend().stagedSource();
+  }
+
   pause(): Promise<void> {
     return this.#requireExistingBackend().pause();
   }
@@ -1385,6 +1439,11 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     bindPlayback(PlaybackEvent.playbackPaused);
     bindPlayback(PlaybackEvent.playbackResumed);
     bindPlayback(PlaybackEvent.playbackSeeked);
+    bindPlayback(PlaybackEvent.prepareRequested);
+    bindPlayback(PlaybackEvent.stageReady);
+    bindPlayback(PlaybackEvent.stageFailed);
+    bindPlayback(PlaybackEvent.stageInvalidated);
+    bindPlayback(PlaybackEvent.transitionCancelled);
     bindPlayback(PlaybackEvent.filterChanged);
     bindPlayback(PlaybackEvent.volumeChanged);
 
@@ -1468,7 +1527,42 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       return;
     }
 
-    if (event === PlaybackEvent.playbackStarted) this.#startedGenerations.add(generation);
+    if (event === PlaybackEvent.playbackStarted) {
+      const transition = payload.transition;
+      if (transition && typeof transition === 'object' && !Array.isArray(transition)) {
+        const entryId = (transition as { entryId?: unknown }).entryId;
+        if (typeof entryId === 'string') {
+          this.#metadataByGeneration.set(generation, this.#stageMetadata.get(entryId)?.metadata);
+          this.#stageMetadata.delete(entryId);
+        }
+        this.#playbackGeneration = Math.max(this.#playbackGeneration, generation);
+      }
+      this.#startedGenerations.add(generation);
+    }
+    if (event === PlaybackEvent.playbackSeeked && generation > this.#playbackGeneration) {
+      this.#metadataByGeneration.set(
+        generation,
+        this.#metadataByGeneration.get(this.#playbackGeneration),
+      );
+      this.#playbackGeneration = generation;
+      this.#startedGenerations.add(generation);
+    }
+    if (event === PlaybackEvent.transitionCancelled) {
+      this.#playbackGeneration = generation;
+    }
+    if (
+      (event === PlaybackEvent.stageInvalidated || event === PlaybackEvent.stageFailed) &&
+      typeof payload.entryId === 'string'
+    ) {
+      const staged = this.#stageMetadata.get(payload.entryId);
+      if (
+        staged?.generation === generation &&
+        staged.queueRevision === payload.queueRevision &&
+        staged.sourceRevision === payload.sourceRevision
+      ) {
+        this.#stageMetadata.delete(payload.entryId);
+      }
+    }
     if (terminal) {
       this.#clearPlayAbortBindingForGeneration(generation);
       this.#terminalGenerations.add(generation);

@@ -10,6 +10,9 @@ import {
   type PlayOptions,
   type PlaybackSessionEventMap,
   type SessionLifecycleEvents,
+  type CrossfadeOptions,
+  type StageNextOptions,
+  type StageSnapshot,
 } from './lifecycle.js';
 import { PlaybackSession } from './playback.js';
 import { FilterControls, validateVolume } from './filters.js';
@@ -41,6 +44,8 @@ export interface DiscordSessionOptions {
   volume?: number;
   /** Trusted raw FFmpeg audio filtergraph; defaults to null. Native syntax validation occurs during backend configuration before playback. */
   filterGraph?: string | null;
+  /** Explicit PCM crossfade opt-in; disabled by default. */
+  crossfade?: CrossfadeOptions | false;
 }
 
 /** Cancellation and timeout controls for obtaining credentials and establishing a voice transport. */
@@ -128,6 +133,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   #disposed = false;
   #filterGraph: string | null = null;
   #volume = 1;
+  #crossfade: DiscordSessionOptions['crossfade'];
   #configurationWork: Promise<void> = Promise.resolve();
   #nativeStateTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -149,6 +155,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     this.#channelId = validateSnowflake('channelId', options.channelId);
     this.userId = validateSnowflake('userId', options.userId);
     validateVolume(options.volume ?? 1);
+    this.#crossfade = options.crossfade;
     if (
       options.filterGraph !== undefined &&
       options.filterGraph !== null &&
@@ -410,6 +417,30 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
    * Pause the current playback without replacing its decoder or source generation.
    * @returns Resolves when the backend accepts the pause request.
    */
+  /**
+   * Prepare one upcoming source without restarting playback or its output.
+   * @param source - Fresh media input; Readables and buffers require embedded execution.
+   * @param options - Queue occurrence, revision fencing, expiry and locally retained metadata.
+   * @returns Preparation snapshot; rejects disabled sessions, stale identities or invalid inputs.
+   */
+  async stageNext(
+    source: MediaSource,
+    options: StageNextOptions<Metadata>,
+  ): Promise<StageSnapshot> {
+    await this.#configurationWork;
+    return this.#requireExistingPlayback().stageNext(source, options);
+  }
+
+  /** Cancel the queued stage and release its input. @returns Resolves after cancellation. */
+  clearStage(): Promise<void> {
+    return this.#requireExistingPlayback().clearStage();
+  }
+
+  /** Current preparation snapshot, or null when no stage is pending. */
+  get stagedSource(): StageSnapshot | null {
+    return this.#playback?.stagedSource ?? null;
+  }
+
   pause(): Promise<void> {
     return this.#requireExistingPlayback().pause();
   }
@@ -823,6 +854,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
         );
         playback = createdPlayback;
         this.#playback = createdPlayback;
+        if (this.#crossfade) createdPlayback.configureCrossfade(this.#crossfade);
         await this.#serializeConfiguration(async () => {
           if (this.#playback !== createdPlayback) return;
           if (this.#filterGraph !== null) await createdPlayback.filters.set(this.#filterGraph);
@@ -1272,6 +1304,41 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     });
     forward(PlaybackEvent.volumeChanged, (event) => {
       this.emit(PlaybackEvent.volumeChanged, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+      });
+    });
+    forward(PlaybackEvent.prepareRequested, (event) => {
+      this.emit(PlaybackEvent.prepareRequested, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+      });
+    });
+    forward(PlaybackEvent.stageReady, (event) => {
+      this.emit(PlaybackEvent.stageReady, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+      });
+    });
+    forward(PlaybackEvent.stageFailed, (event) => {
+      this.emit(PlaybackEvent.stageFailed, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+      });
+    });
+    forward(PlaybackEvent.stageInvalidated, (event) => {
+      this.emit(PlaybackEvent.stageInvalidated, {
+        ...event,
+        sessionId: this.sessionId,
+        guildId: this.guildId,
+      });
+    });
+    forward(PlaybackEvent.transitionCancelled, (event) => {
+      this.emit(PlaybackEvent.transitionCancelled, {
         ...event,
         sessionId: this.sessionId,
         guildId: this.guildId,

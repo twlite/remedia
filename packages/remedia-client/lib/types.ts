@@ -16,6 +16,11 @@ export const PlaybackSessionEvents = {
   playbackResumed: 'playbackResumed',
   /** Emitted after seeking to a source timeline position. */
   playbackSeeked: 'playbackSeeked',
+  prepareRequested: 'prepareRequested',
+  stageReady: 'stageReady',
+  stageFailed: 'stageFailed',
+  stageInvalidated: 'stageInvalidated',
+  transitionCancelled: 'transitionCancelled',
   /** Emitted when the configured session filtergraph changes. */
   filterChanged: 'filterChanged',
   /** Emitted when the configured session linear gain changes. */
@@ -141,6 +146,14 @@ export interface PlaybackSnapshot {
   /** Session master linear gain from 0 through 2, independent of filtergraph processing; defaults to 1. */
   volume: number;
   /** Most recent structured playback failure, or null when none is recorded. */
+  /** Optional crossfade policy and staged state reported by capable nodes. */
+  crossfade?: {
+    enabled: true;
+    durationMs: number;
+    prepareBeforeMs: number;
+    curve: 'equalPower';
+  } | null;
+  staged?: StageSnapshot | null;
   lastError: {
     /** Machine-readable error code supplied by the remote server. */
     code: string;
@@ -210,6 +223,40 @@ export interface NodeStatistics {
   memory: Readonly<Record<string, number | null>>;
 }
 
+/** Advertised crossfade policy. An enabled server setting is not sufficient:
+ * available becomes true only after the native mixer and promotion protocol work.
+ */
+export interface CrossfadeCapability {
+  /** Whether node policy permits clients to request crossfade. */
+  configured: boolean;
+  /** Whether this node implements crossfade and policy enables it. */
+  available: boolean;
+  /** Overlap duration in milliseconds; defaults to 5000. */
+  durationMs: number;
+  /** Preparation lead before overlap begins, in milliseconds; defaults to 30000. */
+  prepareBeforeMs: number;
+  /** Equal-power mixing curve; the only supported curve. */
+  curve: 'equalPower';
+}
+
+/** Crossfade playback identity, state, or capability metadata. */
+export interface NodeCapabilities {
+  /** Crossfade policy and implementation capability. */
+  crossfade: CrossfadeCapability;
+}
+
+/** Opt-in request for staged-source crossfading on an individual guild session. */
+export interface SessionCrossfadeOptions {
+  /** Explicit session opt-in; omitted sessions retain ordinary playback. */
+  enabled: true;
+  /** Duration of overlapping audio, 1000-30000 milliseconds. */
+  durationMs?: number;
+  /** Lead time before the overlap starts, 5000-120000 milliseconds. */
+  prepareBeforeMs?: number;
+  /** Equal-power mixing curve; the only supported curve. */
+  curve?: 'equalPower';
+}
+
 /** Read-only client view of a node, its health, capacity, and assigned guilds. */
 export interface NodeSnapshot {
   /** Application-configured node identifier, unique within the client node pool. */
@@ -224,6 +271,8 @@ export interface NodeSnapshot {
   version: string | null;
   /** Negotiated RPC protocol version, or null for an uninitialized or embedded node. */
   protocolVersion: number | null;
+  /** Capabilities advertised by the backend; absent for older servers. */
+  capabilities?: NodeCapabilities;
   /** Latest node statistics, or null before a report is available. */
   statistics: NodeStatistics | null;
   /** Maximum simultaneous guild assignments considered by client-side node selection. */
@@ -323,6 +372,8 @@ export interface DiscordSessionOptions {
   volume?: number;
   /** Trusted raw FFmpeg audio filtergraph; defaults to null. Native syntax validation occurs during backend configuration before playback. */
   filterGraph?: string | null;
+  /** Optional staged-source crossfade request, disabled when omitted. */
+  crossfade?: SessionCrossfadeOptions | false;
   /** Discord guild snowflake as a decimal string; unique within the owning client. */
   guildId: string;
   /** Discord voice channel snowflake as a decimal string; the requested mutable destination. */
@@ -350,6 +401,71 @@ export interface PlayOptions<Metadata = unknown> {
  * Correlation fields identifying the session and source generation that produced a playback event.
  * @typeParam Metadata - Application-owned metadata attached to playback generations.
  */
+
+/** Identify a particular queued occurrence. Revisions prevent stale stage
+ * responses from replacing newer queue decisions.
+ */
+export interface StageNextOptions<Metadata = unknown> {
+  /** Stable ID of this queued occurrence, including repeated tracks. */
+  entryId: string;
+  /** Monotonically increasing queue decision revision; non-negative safe integer. */
+  queueRevision: number;
+  /** Revision of the resolved source for this entry; defaults to zero. */
+  sourceRevision?: number;
+  /** Absolute Unix time in milliseconds after which a prepared source must not be promoted. */
+  expiresAtMs?: number;
+  /** Current source generation to fence delayed preparation results; defaults to the active generation. */
+  expectedGeneration?: number;
+  /** Application-owned metadata retained locally and attached to incoming lifecycle events. */
+  customMetadata?: Metadata;
+}
+/** Crossfade playback identity, state, or capability metadata. */
+export interface StageSnapshot {
+  /** Current source generation to fence delayed preparation results; defaults to the active generation. */
+  expectedGeneration: number;
+  /** Stable ID of this queued occurrence, including repeated tracks. */
+  entryId: string;
+  /** Monotonically increasing queue decision revision; non-negative safe integer. */
+  queueRevision: number;
+  /** Revision of the resolved source for this entry; defaults to zero. */
+  sourceRevision: number;
+  /** Current preparation state; failed sources cannot be promoted. */
+  state: 'preparing' | 'ready' | 'failed';
+  /** Decoded PCM currently buffered, in milliseconds; bounded to two seconds. */
+  bufferedMs: number;
+  /** Selected stream metadata, or null until the decoder opens. */
+  info: AudioStreamInfo | null;
+  /** Preparation failure message, or null. */
+  error: string | null;
+}
+/** Crossfade playback identity, state, or capability metadata. */
+export interface CrossfadeContinuation {
+  /** Discriminator identifying this lifecycle transition. */
+  type: 'promoted';
+  /** Source generation identifying the promoted playback. */
+  generation: number;
+  /** Stable ID of this queued occurrence, including repeated tracks. */
+  entryId: string;
+}
+/** Crossfade playback identity, state, or capability metadata. */
+export interface CrossfadeTransition {
+  /** Discriminator identifying this lifecycle transition. */
+  type: 'crossfade';
+  /** Source generation that remains audible during the fade. */
+  outgoingGeneration: number;
+  /** Stable ID of this queued occurrence, including repeated tracks. */
+  entryId: string;
+}
+/** Crossfade playback identity, state, or capability metadata. */
+export interface CrossfadeStageEvent extends PlaybackEventIdentity {
+  /** Stable ID of this queued occurrence, including repeated tracks. */
+  entryId: string;
+  /** Monotonically increasing queue decision revision; non-negative safe integer. */
+  queueRevision: number;
+  /** Revision of the resolved source for this entry; defaults to zero. */
+  sourceRevision: number;
+}
+
 export interface PlaybackEventIdentity<Metadata = unknown> {
   /** Opaque Remedia session identity used to correlate events; distinct from the Discord bot user ID. */
   sessionId: string;
@@ -377,6 +493,7 @@ export type PlaybackLifecycleEventMap<Metadata = unknown> = {
       state: 'playing';
       /** Metadata for the audio stream that started playback. */
       info: AudioStreamInfo;
+      transition?: CrossfadeTransition;
     },
   ];
   /** Emitted when a source generation reaches natural end-of-stream. */
@@ -386,6 +503,7 @@ export type PlaybackLifecycleEventMap<Metadata = unknown> = {
       state: 'completed';
       /** Latest source and output timeline measurements in milliseconds. */
       position: PlaybackPosition;
+      continuation?: CrossfadeContinuation;
     },
   ];
   /** Emitted when a source generation is explicitly stopped or cancelled. */
@@ -407,6 +525,15 @@ export type PlaybackLifecycleEventMap<Metadata = unknown> = {
     },
   ];
   /** Emitted when playback is paused without replacing its source generation. */
+  [PlaybackSessionEvents.prepareRequested]: [
+    PlaybackEventIdentity<Metadata> & { remainingMs: number; transitionInMs: number },
+  ];
+  [PlaybackSessionEvents.stageReady]: [CrossfadeStageEvent];
+  [PlaybackSessionEvents.stageFailed]: [CrossfadeStageEvent & { reason: string }];
+  [PlaybackSessionEvents.stageInvalidated]: [CrossfadeStageEvent];
+  [PlaybackSessionEvents.transitionCancelled]: [
+    PlaybackEventIdentity<Metadata> & { failedGeneration: number; entryId: string },
+  ];
   [PlaybackSessionEvents.playbackPaused]: [
     PlaybackEventIdentity<Metadata> & {
       /** Playback or transport lifecycle state before this transition. */

@@ -21,6 +21,9 @@ fn defaults_bind_to_loopback_and_load_limits() {
     assert_eq!(config.limits.max_message_bytes, 65_536);
     assert_eq!(config.users[0].password, "secret");
     assert_eq!(config.opus, remedia_core::OpusEncoderConfig::default());
+    assert!(!config.crossfade.enabled);
+    assert_eq!(config.crossfade.duration_ms, 5_000);
+    assert_eq!(config.crossfade.prepare_before_ms, 30_000);
 }
 
 #[test]
@@ -227,4 +230,35 @@ fn rejects_malformed_allowed_host_patterns() {
     assert!(!valid_host_pattern("https://media.example.com"));
     assert!(!valid_host_pattern("-media.example.com"));
     assert!(!valid_host_pattern("media.*.example.com"));
+}
+
+#[test]
+fn crossfade_configuration_requires_explicit_opt_in_and_valid_bounds() {
+    let json = JSON.replace(
+        "\"users\":",
+        "\"audio\":{\"crossfade\":{\"enabled\":true,\"durationMs\":8000,\"prepareBeforeMs\":45000}},\"users\":",
+    );
+    let config = ServerConfig::parse_with(&json, Path::new("."), |_| Some("secret".into()))
+        .expect("valid crossfade settings");
+    assert!(config.crossfade.enabled);
+    assert_eq!(config.crossfade.duration_ms, 8_000);
+    assert_eq!(config.crossfade.prepare_before_ms, 45_000);
+
+    for crossfade in [
+        r#"{"durationMs":0}"#,
+        r#"{"durationMs":30001}"#,
+        r#"{"prepareBeforeMs":100}"#,
+        r#"{"prepareBeforeMs":120001}"#,
+        r#"{"curve":"linear"}"#,
+        r#"{"unknown":true}"#,
+    ] {
+        let json = JSON.replace(
+            "\"users\":",
+            &format!("\"audio\":{{\"crossfade\":{crossfade}}},\"users\":"),
+        );
+        assert!(
+            ServerConfig::parse_with(&json, Path::new("."), |_| Some("secret".into())).is_err(),
+            "must reject crossfade: {crossfade}"
+        );
+    }
 }

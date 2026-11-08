@@ -22,6 +22,9 @@ impl PlaybackSession {
                 data: Mutex::new(SessionData {
                     state: PlaybackState::Idle,
                     generation: 0,
+                    source_generation: 0,
+                    source_serial: 0,
+                    latest_stage: None,
                     playback_id: 0,
                     processing_mode: None,
                     passthrough_available: false,
@@ -44,10 +47,13 @@ impl PlaybackSession {
                 }),
                 changed: Condvar::new(),
                 observability,
+                events: Mutex::new(VecDeque::new()),
             }),
             worker: Mutex::new(None),
             start_lock: Mutex::new(()),
             filter_update_lock: Mutex::new(()),
+            stage: Arc::new(Mutex::new(None)),
+            crossfade: Mutex::new(None),
         }
     }
 
@@ -92,6 +98,7 @@ impl PlaybackSession {
             }
         }
         self.reap_previous_worker()?;
+        self.clear_staged_source();
         if cancellation.is_cancelled() {
             return Err(PlaybackError::Cancelled);
         }
@@ -119,6 +126,9 @@ impl PlaybackSession {
             }
 
             data.generation = data.generation.wrapping_add(1);
+            data.source_serial = data.source_serial.wrapping_add(1);
+            data.source_generation = data.source_serial;
+            data.latest_stage = None;
             let generation = data.generation;
             let playback_id = next_correlation_id();
             data.playback_id = playback_id;
@@ -142,6 +152,8 @@ impl PlaybackSession {
             let worker_output = Arc::clone(&output);
             let worker_cancellation = cancellation.clone();
             let worker_observability = self.shared.observability.clone();
+            let worker_crossfade = *lock(&self.crossfade);
+            let worker_stage = Arc::clone(&self.stage);
             let thread_result = thread::Builder::new()
                 .name(format!("remedia-playback-{generation}"))
                 .spawn(move || {
@@ -156,14 +168,27 @@ impl PlaybackSession {
                         );
                         let _entered = span.enter();
                         let span_shared = Arc::clone(&shared);
-                        worker_entry(
-                            shared,
-                            generation,
-                            source,
-                            worker_output,
-                            worker_cancellation,
-                            ready_tx,
-                        );
+                        if let Some(config) = worker_crossfade {
+                            crossfade_worker::worker_entry(
+                                shared,
+                                generation,
+                                source,
+                                worker_output,
+                                worker_cancellation,
+                                ready_tx,
+                                worker_stage,
+                                config,
+                            );
+                        } else {
+                            worker_entry(
+                                shared,
+                                generation,
+                                source,
+                                worker_output,
+                                worker_cancellation,
+                                ready_tx,
+                            );
+                        }
                         let data = lock(&span_shared.data);
                         if data.generation == generation {
                             match data.state {
@@ -253,6 +278,42 @@ impl PlaybackSession {
                 .clone()
                 .unwrap_or(PlaybackError::WorkerPanicked)),
         }
+    }
+
+    /// Enable staged playback while this session is idle.
+    /// With None, the original single-source worker is preserved.
+    pub fn configure_crossfade(
+        &self,
+        config: Option<CrossfadeConfig>,
+    ) -> Result<(), PlaybackError> {
+        let data = lock(&self.shared.data);
+        if is_active(data.state) {
+            return Err(PlaybackError::InvalidState {
+                operation: "configure crossfade",
+                state: data.state,
+            });
+        }
+        if config.is_some_and(|config| {
+            CrossfadeConfig::new(config.duration_ms, config.prepare_before_ms).is_none()
+        }) {
+            return Err(PlaybackError::InvalidCrossfadeConfiguration);
+        }
+        *lock(&self.crossfade) = config;
+        Ok(())
+    }
+
+    pub fn crossfade_config(&self) -> Option<CrossfadeConfig> {
+        *lock(&self.crossfade)
+    }
+
+    /// The logical source generation, including staged source promotion.
+    pub fn source_generation(&self) -> u64 {
+        lock(&self.shared.data).source_generation
+    }
+
+    /// Consume the ordered crossfade events, without affecting normal playback.
+    pub fn take_crossfade_events(&self) -> Vec<CrossfadeEvent> {
+        lock(&self.shared.events).drain(..).collect()
     }
 
     /// Return the current typed lifecycle state.

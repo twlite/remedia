@@ -36,6 +36,15 @@ pub(crate) async fn execute(
                 "nodeId": server.node_id,
                 "version": env!("CARGO_PKG_VERSION"),
                 "protocolVersion": crate::protocol::PROTOCOL_VERSION,
+                "capabilities": {
+                    "crossfade": {
+                        "configured": server.config.crossfade.enabled,
+                        "available": server.config.crossfade.enabled,
+                        "durationMs": server.config.crossfade.duration_ms,
+                        "prepareBeforeMs": server.config.crossfade.prepare_before_ms,
+                        "curve": "equalPower",
+                    }
+                }
             }))
         }
         "node.protocol_version" => {
@@ -125,8 +134,64 @@ pub(crate) async fn execute(
             Ok(json!({ "closed": true, "sessionId": id }))
         }
         "guild.create" => {
-            let params: GuildParams = decode_params(request.params)?;
+            let params: GuildCreateParams = decode_params(request.params)?;
             validate_snowflake(&params.guild_id, "guildId")?;
+            if let Some(crossfade) = &params.crossfade {
+                if crossfade.enabled {
+                    if !server.config.crossfade.enabled {
+                        return Err(RpcError::new(
+                            "feature_disabled",
+                            "crossfade is disabled by the server configuration",
+                        ));
+                    }
+                    if crossfade
+                        .curve
+                        .as_deref()
+                        .is_some_and(|curve| curve != "equalPower")
+                    {
+                        return Err(RpcError::new(
+                            "invalid_request",
+                            "unsupported crossfade curve",
+                        ));
+                    }
+                    let config = remedia_core::CrossfadeConfig::new(
+                        crossfade
+                            .duration_ms
+                            .unwrap_or(server.config.crossfade.duration_ms),
+                        crossfade
+                            .prepare_before_ms
+                            .unwrap_or(server.config.crossfade.prepare_before_ms),
+                    )
+                    .ok_or_else(|| {
+                        RpcError::new(
+                            "invalid_request",
+                            "invalid crossfade duration or preparation lead",
+                        )
+                    })?;
+                    // The session is constructed below; install this configuration
+                    // before playback is permitted to start.
+                    let session = require_client(&connection)?;
+                    let guild = server
+                        .create_guild(&session, params.guild_id)
+                        .map_err(state_error)?;
+                    guild
+                        .playback
+                        .configure_crossfade(Some(config))
+                        .map_err(playback_error)?;
+                    let snapshot = guild.snapshot();
+                    session.emit("guild.created", snapshot.clone());
+                    return Ok(snapshot);
+                }
+                if crossfade.duration_ms.is_some()
+                    || crossfade.prepare_before_ms.is_some()
+                    || crossfade.curve.is_some()
+                {
+                    return Err(RpcError::new(
+                        "invalid_request",
+                        "crossfade options require enabled: true",
+                    ));
+                }
+            }
             let session = require_client(&connection)?;
             let guild = server
                 .create_guild(&session, params.guild_id)
@@ -311,6 +376,8 @@ pub(crate) async fn execute(
             );
             Ok(playback_start_json(info, generation))
         }
+        "player.stage.next" | "player.stage.clear" | "player.stage.state"
+        | "player.prepare.ack" => crossfade::execute(server, connection, request).await,
         "player.pause"
         | "player.resume"
         | "player.stop"
@@ -572,6 +639,7 @@ impl Drop for PlayCancelOnDrop {
 #[cfg(test)]
 mod tests;
 
+mod crossfade;
 mod player_control;
 use player_control::*;
 

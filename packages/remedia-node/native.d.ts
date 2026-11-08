@@ -68,6 +68,22 @@ export declare class NativeRemedia {
   createPlaybackSession(): string
   /** Start decoding into the null output or the associated Discord Opus sender. */
   play(playbackId: string, source: NativeMediaSource): Promise<NativeStreamInfo>
+  /** Configure the optional continuous PCM transition worker before playback. */
+  playbackConfigureCrossfade(playbackId: string, enabled: boolean, durationMs: number, prepareBeforeMs: number): void
+  /**
+   * Open an independent decoder and stage a queue occurrence without
+   * interrupting current playback.
+   */
+  playbackStageNext(playbackId: string, source: NativeMediaSource, expectedGeneration: string, entryId: string, queueRevision: string, sourceRevision: string, expiresAtMs?: string | undefined | null): Promise<NativeStageSnapshot>
+  /** Return the current stage without opening a new decoder. */
+  playbackStagedSource(playbackId: string): NativeStageSnapshot | null
+  playbackClearStage(playbackId: string): Promise<void>
+  /**
+   * Drain native transition events; embedded wrappers forward these to JS
+   * using the same event names and generation semantics as remote mode.
+   */
+  playbackTakeCrossfadeEvents(playbackId: string): Array<NativeCrossfadeEvent>
+  playbackSourceGeneration(playbackId: string): string
   /** Request playback pause at the current output frame boundary. */
   pause(playbackId: string): Promise<void>
   /** Resume a paused playback session. */
@@ -122,6 +138,19 @@ export declare class NativeRemedia {
   probe(id: string, source: NativeMediaSource, timeoutMs: number): Promise<NativeStreamInfo>
 }
 
+/** One ordered event emitted by the native staged-source worker. */
+export interface NativeCrossfadeEvent {
+  kind: string
+  generation: string
+  previousGeneration?: string
+  entryId?: string
+  queueRevision?: string
+  sourceRevision?: string
+  remainingMs?: number
+  reason?: string
+  info?: NativeStreamInfo
+}
+
 export interface NativeDiagnosticEvent {
   timestamp: number
   severity: string
@@ -152,6 +181,18 @@ export interface NativePlaybackPosition {
   mediaPositionAccuracy?: string
   submittedMs: number
   playedMs?: number
+}
+
+/** A bounded native stage with an application-owned queue occurrence identity. */
+export interface NativeStageSnapshot {
+  expectedGeneration: string
+  entryId: string
+  queueRevision: string
+  sourceRevision: string
+  state: string
+  bufferedMs: number
+  info?: NativeStreamInfo
+  error?: string
 }
 
 export interface NativeStreamInfo {

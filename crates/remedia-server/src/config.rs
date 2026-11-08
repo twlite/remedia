@@ -29,7 +29,16 @@ pub struct ServerConfig {
     pub(crate) limits: Limits,
     pub(crate) media: MediaAccess,
     pub(crate) opus: OpusEncoderConfig,
+    pub(crate) crossfade: CrossfadeConfig,
     pub(crate) observability_console: bool,
+}
+
+/// Validated crossfade policy. Native playback readiness is negotiated separately.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CrossfadeConfig {
+    pub(crate) enabled: bool,
+    pub(crate) duration_ms: u32,
+    pub(crate) prepare_before_ms: u32,
 }
 
 #[derive(Clone)]
@@ -144,6 +153,27 @@ impl ServerConfig {
             vbr: raw.audio.opus.vbr,
         };
         opus.validate().map_err(ConfigError::Audio)?;
+        let fade = &raw.audio.crossfade;
+        if !(1_000..=30_000).contains(&fade.duration_ms) {
+            return Err(ConfigError::Invalid(
+                "audio.crossfade.durationMs must be between 1000 and 30000",
+            ));
+        }
+        if !(5_000..=120_000).contains(&fade.prepare_before_ms) {
+            return Err(ConfigError::Invalid(
+                "audio.crossfade.prepareBeforeMs must be between 5000 and 120000",
+            ));
+        }
+        if fade.curve != "equalPower" {
+            return Err(ConfigError::Invalid(
+                "audio.crossfade.curve must be equalPower",
+            ));
+        }
+        let crossfade = CrossfadeConfig {
+            enabled: fade.enabled,
+            duration_ms: fade.duration_ms,
+            prepare_before_ms: fade.prepare_before_ms,
+        };
         let bind_host = resolve_env("bind.host", raw.bind.host, &mut get_env)?;
         if bind_host.trim().is_empty() {
             return Err(ConfigError::Invalid("bind.host must not be empty"));
@@ -304,6 +334,7 @@ impl ServerConfig {
             },
             observability_console: raw.observability.console,
             opus,
+            crossfade,
         })
     }
 

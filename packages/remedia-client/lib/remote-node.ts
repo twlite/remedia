@@ -61,6 +61,11 @@ const RemoteProtocolEvents = {
   playerSeeked: 'player.seeked',
   playerFilterChanged: 'player.filter_changed',
   playerVolumeChanged: 'player.volume_changed',
+  playerPrepareRequested: 'player.prepare_requested',
+  playerStageReady: 'player.stage_ready',
+  playerStageFailed: 'player.stage_failed',
+  playerStageInvalidated: 'player.stage_invalidated',
+  playerTransitionCancelled: 'player.transition_cancelled',
 } as const;
 
 interface RemoteNodeEvents {
@@ -77,6 +82,7 @@ interface NodeInfo {
   nodeId: string;
   version: string;
   protocolVersion: number;
+  capabilities?: import('./types.js').NodeCapabilities;
 }
 
 interface NodeStatsResult {
@@ -133,6 +139,7 @@ export class RemoteNodeAdapter
   #serverNodeId: string | null = null;
   #version: string | null = null;
   #protocolVersion: number | null = null;
+  #capabilities: import('./types.js').NodeCapabilities | undefined;
   #statistics: NodeStatistics | null = null;
   #lastError: string | null = null;
   #socket: WebSocket | undefined;
@@ -185,6 +192,7 @@ export class RemoteNodeAdapter
       nodeId: this.#serverNodeId,
       version: this.#version,
       protocolVersion: this.#protocolVersion,
+      ...(this.#capabilities ? { capabilities: this.#capabilities } : {}),
       statistics: this.#statistics,
       capacity: this.#capacityOverride ?? this.#statistics?.playersMaximum ?? 0,
       assignedGuilds: [...this.#guilds],
@@ -267,7 +275,10 @@ export class RemoteNodeAdapter
     this.#setStatus('closed', null);
   }
 
-  async createGuild(guildId: string): Promise<GuildSnapshot> {
+  async createGuild(
+    guildId: string,
+    crossfade?: import('./types.js').SessionCrossfadeOptions | false,
+  ): Promise<GuildSnapshot> {
     this.#assertHealthy();
     if (this.#lostGuilds.has(guildId)) {
       throw new SessionLostError(
@@ -279,7 +290,10 @@ export class RemoteNodeAdapter
     if (this.#guilds.has(guildId)) return this.getGuild(guildId);
     this.#clearTerminalForGuild(guildId);
     const result = parseGuildSnapshot(
-      await this.request<unknown>('guild.create', { guildId }),
+      await this.request<unknown>('guild.create', {
+        guildId,
+        ...(crossfade ? { crossfade } : {}),
+      }),
       this.id,
     );
     this.#guilds.add(guildId);
@@ -585,6 +599,7 @@ export class RemoteNodeAdapter
       if (this.#closed) return;
       this.#verifyNodeInfo(info);
       this.#protocolVersion = info.protocolVersion;
+      this.#capabilities = parseNodeCapabilities(info.capabilities);
       this.#serverNodeId = info.nodeId;
       this.#version = info.version;
 
@@ -827,7 +842,10 @@ export class RemoteNodeAdapter
       const state = event.event.slice('player.'.length) as 'completed' | 'failed' | 'stopped';
       this.#recordTerminal({ guildId, generation, state });
       this.#backends.get(guildId)?.applyTerminalEvent(event.event, generation, event.data);
-    } else if (event.event === RemoteProtocolEvents.playerStarted) {
+    } else if (
+      event.event === RemoteProtocolEvents.playerStarted &&
+      !isRecord(event.data.transition)
+    ) {
       for (const waiter of this.#waiters) {
         if (waiter.guildId === guildId && waiter.generation < generation) {
           this.#finishWaiter(waiter, { generation: waiter.generation, state: 'stopped' });
@@ -999,6 +1017,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
   readonly #lifecycleListener: (event: ServerLifecycleEvent) => void;
   readonly #statusListener: (event: { snapshot: NodeSnapshot; error: Error | null }) => void;
   #snapshot = emptyPlaybackSnapshot();
+  #outgoingSnapshot: PlaybackSnapshot | undefined;
   #connectionState: VoiceConnectionState = 'disconnected';
   #connectionError: string | null = null;
   #guildCreated = false;
@@ -1082,7 +1101,12 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     if (!this.#guildCreated) {
       const configuredFilter = this.#snapshot.filterGraph;
       const configuredVolume = this.#snapshot.volume;
-      const guild = await this.#node.createGuild(this.#options.guildId);
+      if (this.#options.crossfade && !this.#node.snapshot.capabilities?.crossfade.available) {
+        throw new Error(
+          `node ${this.#node.id} does not support crossfading; disable the option or use a capable node`,
+        );
+      }
+      const guild = await this.#node.createGuild(this.#options.guildId, this.#options.crossfade);
       this.#guildCreated = true;
       this.#sessionId = guild.guildSessionId;
       this.#snapshot = parsePlaybackSnapshot(guild.playback, this.#node.id);
@@ -1229,6 +1253,47 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     return result;
   }
 
+  async stageNext(
+    source: MediaSource,
+    options: import('./types.js').StageNextOptions<unknown>,
+  ): Promise<import('./types.js').StageSnapshot> {
+    this.#assertGuildReady();
+    if (!this.#node.snapshot.capabilities?.crossfade.available || !this.#options.crossfade)
+      throw new Error('crossfading is not enabled for this remote session');
+    if ('buffer' in source || 'stream' in source) {
+      throw new UnsupportedMediaSourceError(
+        'remote staged sources must be an accessible file or URL',
+      );
+    }
+    if (!options.entryId.trim() || !Number.isSafeInteger(options.queueRevision))
+      throw new TypeError('invalid stage identity');
+    const generation = options.expectedGeneration ?? this.#snapshot.generation;
+    const remoteSource =
+      'url' in source
+        ? { type: 'url' as const, url: source.url }
+        : { type: 'file' as const, path: source.file };
+    const data = await this.#node.control(this.#options.guildId, 'player.stage.next', {
+      source: remoteSource,
+      expectedGeneration: generation,
+      entryId: options.entryId,
+      queueRevision: options.queueRevision,
+      sourceRevision: options.sourceRevision ?? 0,
+      ...(options.expiresAtMs === undefined ? {} : { expiresAtMs: options.expiresAtMs }),
+    });
+    return parseStageSnapshot(data, this.#node.id);
+  }
+
+  async clearStage(): Promise<void> {
+    this.#assertGuildReady();
+    await this.#node.control(this.#options.guildId, 'player.stage.clear');
+  }
+
+  async stagedSource(): Promise<import('./types.js').StageSnapshot | null> {
+    this.#assertGuildReady();
+    const value = await this.#node.control(this.#options.guildId, 'player.stage.state');
+    return value === null ? null : parseStageSnapshot(value, this.#node.id);
+  }
+
   async pause(): Promise<void> {
     this.#assertGuildReady();
     await this.#node.control(this.#options.guildId, 'player.pause');
@@ -1301,7 +1366,18 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     generation: number,
     data: Readonly<Record<string, unknown>>,
   ): void {
-    if (generation < this.#snapshot.generation) return;
+    if (generation < this.#snapshot.generation) {
+      // A promoted track has already started when the outgoing generation
+      // finishes. Forward its completion without replacing the active snapshot.
+      if (
+        event === 'player.completed' &&
+        isRecord(data.continuation) &&
+        data.continuation.type === 'promoted'
+      ) {
+        this.#emitTerminal('completed', generation, 'playing', data, false);
+      }
+      return;
+    }
     const state = event.slice('player.'.length) as 'completed' | 'failed' | 'stopped';
     const code = typeof data.code === 'string' ? data.code : 'playback_failed';
     const previousState = this.#snapshot.state;
@@ -1345,7 +1421,20 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     if (
       eventGeneration !== undefined &&
       eventGeneration !== this.#snapshot.generation &&
-      !isNewStart
+      !isNewStart &&
+      !(
+        event.event === RemoteProtocolEvents.playerSeeked &&
+        event.data.previousGeneration === this.#snapshot.generation
+      ) &&
+      !(
+        event.event === RemoteProtocolEvents.playerTransitionCancelled &&
+        event.data.failedGeneration === this.#snapshot.generation
+      ) &&
+      !(
+        event.event === RemoteProtocolEvents.playerCompleted &&
+        isRecord(event.data.continuation) &&
+        event.data.continuation.type === 'promoted'
+      )
     ) {
       return;
     }
@@ -1363,6 +1452,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
       const generation = asNonnegativeInteger(event.data.generation);
       if (generation !== undefined && generation >= this.#snapshot.generation) {
         const source = isRecord(event.data.source) ? event.data.source : undefined;
+        if (isRecord(event.data.transition)) this.#outgoingSnapshot = this.#snapshot;
         this.#snapshot = {
           ...this.#snapshot,
           generation,
@@ -1381,6 +1471,18 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
             generation,
             state: 'playing',
             info: toStreamInfo(source, this.#node.id),
+            ...(isRecord(event.data.transition) &&
+            event.data.transition.type === 'crossfade' &&
+            typeof event.data.transition.entryId === 'string' &&
+            Number.isSafeInteger(event.data.transition.outgoingGeneration)
+              ? {
+                  transition: {
+                    type: 'crossfade' as const,
+                    entryId: event.data.transition.entryId,
+                    outgoingGeneration: event.data.transition.outgoingGeneration as number,
+                  },
+                }
+              : {}),
           });
         }
       }
@@ -1413,6 +1515,55 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
         };
         this.#emitTerminal(state, generation, previousState, event.data, false);
       }
+    } else if (event.event === RemoteProtocolEvents.playerPrepareRequested) {
+      const remainingMs = asNonnegativeInteger(event.data.remainingMs);
+      if (remainingMs !== undefined) {
+        this.emit(PlaybackEvent.prepareRequested, {
+          ...this.#playbackIdentity(event.data),
+          remainingMs,
+          transitionInMs: asNonnegativeInteger(event.data.transitionInMs) ?? remainingMs,
+        });
+      }
+    } else if (
+      event.event === RemoteProtocolEvents.playerStageReady ||
+      event.event === RemoteProtocolEvents.playerStageFailed ||
+      event.event === RemoteProtocolEvents.playerStageInvalidated
+    ) {
+      const entryId = event.data.entryId;
+      const queueRevision = asNonnegativeInteger(event.data.queueRevision);
+      const sourceRevision = asNonnegativeInteger(event.data.sourceRevision);
+      if (
+        typeof entryId === 'string' &&
+        queueRevision !== undefined &&
+        sourceRevision !== undefined
+      ) {
+        const identity = {
+          ...this.#playbackIdentity(event.data),
+          entryId,
+          queueRevision,
+          sourceRevision,
+        };
+        if (event.event === RemoteProtocolEvents.playerStageReady)
+          this.emit(PlaybackEvent.stageReady, identity);
+        else if (event.event === RemoteProtocolEvents.playerStageFailed)
+          this.emit(PlaybackEvent.stageFailed, {
+            ...identity,
+            reason: typeof event.data.reason === 'string' ? event.data.reason : 'staging failed',
+          });
+        else this.emit(PlaybackEvent.stageInvalidated, identity);
+      }
+    } else if (event.event === RemoteProtocolEvents.playerTransitionCancelled) {
+      const failedGeneration = asNonnegativeInteger(event.data.failedGeneration);
+      const entryId = event.data.entryId;
+      if (failedGeneration !== undefined && typeof entryId === 'string' && this.#outgoingSnapshot) {
+        this.#snapshot = this.#outgoingSnapshot;
+        this.#outgoingSnapshot = undefined;
+        this.emit(PlaybackEvent.transitionCancelled, {
+          ...this.#playbackIdentity(event.data),
+          failedGeneration,
+          entryId,
+        });
+      }
     } else if (event.event === RemoteProtocolEvents.playerPaused) {
       const previousState = this.#snapshot.state;
       this.#snapshot = { ...this.#snapshot, state: 'paused' };
@@ -1434,6 +1585,13 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
         });
       }
     } else if (event.event === RemoteProtocolEvents.playerSeeked) {
+      if (
+        eventGeneration !== undefined &&
+        event.data.previousGeneration === this.#snapshot.generation
+      ) {
+        this.#snapshot = { ...this.#snapshot, generation: eventGeneration };
+        this.#startedGenerations.add(eventGeneration);
+      }
       const positionMs = asNonnegativeInteger(event.data.positionMs);
       if (positionMs !== undefined) {
         this.emit(PlaybackEvent.playbackSeeked, {
@@ -1503,6 +1661,18 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
         ...base,
         state,
         position: this.#snapshot.position,
+        ...(isRecord(data.continuation) &&
+        data.continuation.type === 'promoted' &&
+        typeof data.continuation.entryId === 'string' &&
+        Number.isSafeInteger(data.continuation.generation)
+          ? {
+              continuation: {
+                type: 'promoted' as const,
+                entryId: data.continuation.entryId,
+                generation: data.continuation.generation as number,
+              },
+            }
+          : {}),
       });
     } else if (state === 'stopped') {
       this.emit(PlaybackEvent.playbackStopped, {
@@ -1743,6 +1913,20 @@ function parsePlaybackSnapshot(value: Record<string, unknown>, nodeId: string): 
     },
     durationMs: nullableNumber(value.durationMs),
     source: isRecord(value.source) ? toStreamInfo(value.source, nodeId) : null,
+    ...(isRecord(value.crossfade) &&
+    value.crossfade.enabled === true &&
+    Number.isSafeInteger(value.crossfade.durationMs) &&
+    Number.isSafeInteger(value.crossfade.prepareBeforeMs)
+      ? {
+          crossfade: {
+            enabled: true as const,
+            durationMs: value.crossfade.durationMs as number,
+            prepareBeforeMs: value.crossfade.prepareBeforeMs as number,
+            curve: 'equalPower' as const,
+          },
+        }
+      : { crossfade: null }),
+    staged: isRecord(value.staged) ? parseStageSnapshot(value.staged, nodeId) : null,
     filterGraph: nullableString(value.filterGraph),
     volume: typeof value.volume === 'number' ? value.volume : 1,
     lastError:
@@ -1896,4 +2080,64 @@ function asNonnegativeInteger(value: unknown): number | undefined {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Fail closed on malformed or absent capability metadata from older servers. */
+function parseNodeCapabilities(input: unknown): import('./types.js').NodeCapabilities {
+  const fallback: import('./types.js').CrossfadeCapability = {
+    configured: false,
+    available: false,
+    durationMs: 5000,
+    prepareBeforeMs: 30000,
+    curve: 'equalPower',
+  };
+  if (!isRecord(input) || !isRecord(input.crossfade)) return { crossfade: fallback };
+  const fade = input.crossfade;
+  const configured = fade.configured === true;
+  const available = fade.available === true && configured;
+  const durationMs =
+    typeof fade.durationMs === 'number' &&
+    Number.isSafeInteger(fade.durationMs) &&
+    fade.durationMs >= 1000 &&
+    fade.durationMs <= 30000
+      ? fade.durationMs
+      : fallback.durationMs;
+  const prepareBeforeMs =
+    typeof fade.prepareBeforeMs === 'number' &&
+    Number.isSafeInteger(fade.prepareBeforeMs) &&
+    fade.prepareBeforeMs >= 5000 &&
+    fade.prepareBeforeMs <= 120000
+      ? fade.prepareBeforeMs
+      : fallback.prepareBeforeMs;
+  return {
+    crossfade: {
+      configured,
+      available: available && fade.curve === 'equalPower',
+      durationMs,
+      prepareBeforeMs,
+      curve: 'equalPower',
+    },
+  };
+}
+
+function parseStageSnapshot(input: unknown, nodeId: string): import('./types.js').StageSnapshot {
+  if (
+    !isRecord(input) ||
+    typeof input.entryId !== 'string' ||
+    !Number.isSafeInteger(input.expectedGeneration) ||
+    !Number.isSafeInteger(input.queueRevision) ||
+    !Number.isSafeInteger(input.sourceRevision) ||
+    (input.state !== 'preparing' && input.state !== 'ready' && input.state !== 'failed')
+  )
+    throw new ProtocolError(nodeId, 'server returned an invalid staged-source snapshot');
+  return {
+    entryId: input.entryId,
+    expectedGeneration: input.expectedGeneration as number,
+    queueRevision: input.queueRevision as number,
+    sourceRevision: input.sourceRevision as number,
+    state: input.state,
+    bufferedMs: typeof input.bufferedMs === 'number' ? input.bufferedMs : 0,
+    info: isRecord(input.source) ? toStreamInfo(input.source, nodeId) : null,
+    error: typeof input.error === 'string' ? input.error : null,
+  };
 }

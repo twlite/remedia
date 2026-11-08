@@ -6,6 +6,232 @@ pub(super) fn spawn_playback_monitor(
     generation: u64,
     core_generation: u64,
 ) {
+    // Crossfade sessions keep one output worker alive across source promotions.
+    // Poll its ordered native event queue instead of waiting for the first
+    // source generation to terminate. The legacy waiter remains below.
+    if guild.playback.crossfade_config().is_some() {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(25));
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            let mut logical_to_rpc = std::collections::HashMap::new();
+            logical_to_rpc.insert(guild.playback.source_generation(), generation);
+            let mut active_rpc = generation;
+            loop {
+                interval.tick().await;
+                if guild.closed.load(Ordering::Acquire)
+                    || guild.playback.completion_generation() != core_generation
+                {
+                    return;
+                }
+                let Some(session) = session.upgrade() else {
+                    return;
+                };
+                for event in guild.playback.take_crossfade_events() {
+                    match event {
+                        remedia_core::CrossfadeEvent::TimelineChanged {
+                            previous_generation,
+                            generation: logical,
+                            position_ms,
+                        } => {
+                            let previous = logical_to_rpc
+                                .get(&previous_generation)
+                                .copied()
+                                .unwrap_or(active_rpc);
+                            let next = guild.source_generation.fetch_add(1, Ordering::AcqRel) + 1;
+                            logical_to_rpc.insert(logical, next);
+                            active_rpc = next;
+                            session.emit(
+                                "player.seeked",
+                                json!({
+                                    "guildId": guild.guild_id, "generation": next,
+                                    "previousGeneration": previous, "positionMs": position_ms,
+                                }),
+                            );
+                        }
+                        remedia_core::CrossfadeEvent::PrepareRequested {
+                            generation: source_generation,
+                            remaining_ms,
+                        } => {
+                            let rpc_gen = logical_to_rpc
+                                .get(&source_generation)
+                                .copied()
+                                .unwrap_or(active_rpc);
+                            let fade_ms = guild
+                                .playback
+                                .crossfade_config()
+                                .map(|config| config.duration_ms)
+                                .unwrap_or(0);
+                            session.emit("player.prepare_requested", json!({
+                                "guildId": guild.guild_id,
+                                "generation": rpc_gen,
+                                "remainingMs": remaining_ms,
+                                "transitionInMs": remaining_ms.saturating_sub(u64::from(fade_ms)),
+                            }));
+                        }
+                        remedia_core::CrossfadeEvent::StageReady { identity } => {
+                            session.emit(
+                                "player.stage_ready",
+                                json!({
+                                    "guildId": guild.guild_id,
+                                    "generation": logical_to_rpc.get(&identity.expected_generation).copied().unwrap_or(active_rpc),
+                                    "entryId": identity.entry_id,
+                                    "queueRevision": identity.queue_revision,
+                                    "sourceRevision": identity.source_revision,
+                                }),
+                            );
+                        }
+                        remedia_core::CrossfadeEvent::StageFailed { identity, reason } => {
+                            session.emit(
+                                "player.stage_failed",
+                                json!({
+                                    "guildId": guild.guild_id,
+                                    "generation": logical_to_rpc.get(&identity.expected_generation).copied().unwrap_or(active_rpc),
+                                    "entryId": identity.entry_id,
+                                    "queueRevision": identity.queue_revision,
+                                    "sourceRevision": identity.source_revision,
+                                    "reason": reason,
+                                }),
+                            );
+                        }
+                        remedia_core::CrossfadeEvent::StageInvalidated { identity } => {
+                            session.emit(
+                                "player.stage_invalidated",
+                                json!({
+                                    "guildId": guild.guild_id,
+                                    "generation": logical_to_rpc.get(&identity.expected_generation).copied().unwrap_or(active_rpc),
+                                    "entryId": identity.entry_id,
+                                    "queueRevision": identity.queue_revision,
+                                    "sourceRevision": identity.source_revision,
+                                }),
+                            );
+                        }
+                        remedia_core::CrossfadeEvent::TransitionStarted {
+                            outgoing_generation,
+                            incoming_generation,
+                            identity,
+                            info,
+                        } => {
+                            let previous = logical_to_rpc
+                                .get(&outgoing_generation)
+                                .copied()
+                                .unwrap_or(active_rpc);
+                            let next = guild.source_generation.fetch_add(1, Ordering::AcqRel) + 1;
+                            logical_to_rpc.insert(incoming_generation, next);
+                            active_rpc = next;
+                            session.emit(
+                                "player.started",
+                                json!({
+                                    "guildId": guild.guild_id,
+                                    "generation": next,
+                                    "source": stream_info_json(info),
+                                    "transition": {
+                                        "type": "crossfade",
+                                        "outgoingGeneration": previous,
+                                        "entryId": identity.entry_id,
+                                    },
+                                }),
+                            );
+                        }
+                        remedia_core::CrossfadeEvent::TransitionCompleted {
+                            outgoing_generation,
+                            incoming_generation,
+                            identity,
+                        } => {
+                            let previous = logical_to_rpc
+                                .get(&outgoing_generation)
+                                .copied()
+                                .unwrap_or(generation);
+                            let next = logical_to_rpc
+                                .get(&incoming_generation)
+                                .copied()
+                                .unwrap_or(active_rpc);
+                            if guild.claim_terminal_event(previous) {
+                                session.emit(
+                                    "player.completed",
+                                    json!({
+                                        "guildId": guild.guild_id,
+                                        "generation": previous,
+                                        "state": "completed",
+                                        "continuation": {
+                                            "type": "promoted",
+                                            "generation": next,
+                                            "entryId": identity.entry_id,
+                                        },
+                                    }),
+                                );
+                            }
+                        }
+                        remedia_core::CrossfadeEvent::TransitionCancelled {
+                            outgoing_generation,
+                            incoming_generation,
+                            identity,
+                        } => {
+                            let outgoing = logical_to_rpc
+                                .get(&outgoing_generation)
+                                .copied()
+                                .unwrap_or(generation);
+                            let failed = logical_to_rpc
+                                .get(&incoming_generation)
+                                .copied()
+                                .unwrap_or(active_rpc);
+                            let resumed = outgoing;
+                            active_rpc = resumed;
+                            session.emit(
+                                "player.transition_cancelled",
+                                json!({
+                                    "guildId": guild.guild_id,
+                                    "generation": resumed,
+                                    "outgoingGeneration": outgoing,
+                                    "failedGeneration": failed,
+                                    "entryId": identity.entry_id,
+                                }),
+                            );
+                        }
+                    }
+                }
+                let state = guild.playback.state();
+                if matches!(
+                    state,
+                    PlaybackState::Completed | PlaybackState::Failed | PlaybackState::Stopped
+                ) {
+                    if guild.claim_terminal_event(active_rpc) {
+                        match state {
+                            PlaybackState::Completed => session.emit(
+                                "player.completed",
+                                json!({
+                                    "guildId": guild.guild_id,
+                                    "generation": active_rpc,
+                                    "state": "completed",
+                                }),
+                            ),
+                            PlaybackState::Failed => session.emit(
+                                "player.failed",
+                                json!({
+                                    "guildId": guild.guild_id,
+                                    "generation": active_rpc,
+                                    "state": "failed",
+                                    "code": "playback_failed",
+                                }),
+                            ),
+                            PlaybackState::Stopped => session.emit(
+                                "player.stopped",
+                                json!({
+                                    "guildId": guild.guild_id,
+                                    "generation": active_rpc,
+                                    "state": "stopped",
+                                    "reason": "stopped",
+                                }),
+                            ),
+                            _ => {}
+                        }
+                    }
+                    lock(&guild.play_cancellation).take();
+                    return;
+                }
+            }
+        });
+        return;
+    }
     let waiter = guild.playback.completion_for_generation(core_generation);
     tokio::spawn(async move {
         let state = tokio::task::spawn_blocking(move || waiter.wait()).await;
