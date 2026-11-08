@@ -21,6 +21,8 @@ import type {
   PlaybackState,
   PlaybackLifecycleEventMap,
   PlayOptions,
+  StageNextOptions,
+  StageSnapshot,
   VoiceConnectionState,
   VoiceLifecycleEventMap,
 } from './types.js';
@@ -129,6 +131,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   /** Ordered, awaited local pre-play hooks; listeners are separate from hooks. */
   readonly hooks = new PlaybackHooks<Metadata>();
   readonly #metadataByGeneration = new Map<number, Metadata | undefined>();
+  readonly #stageMetadata = new Map<string, Metadata | undefined>();
   readonly #startedGenerations = new Set<number>();
   readonly #terminalGenerations = new Set<number>();
   readonly #earlyPlaybackEvents = new Map<number, BufferedPlaybackEvent[]>();
@@ -594,6 +597,24 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
    * Pause the current playback without replacing its decoder or source generation.
    * @returns Resolves when the backend accepts the pause request.
    */
+  /** Prepare the next queue entry without interrupting the active source. */
+  async stageNext(source: MediaSource, options: StageNextOptions<Metadata>): Promise<StageSnapshot> {
+    this.#assertOpen();
+    const backend = this.#requireExistingBackend();
+    const result = await backend.stageNext(source, options);
+    this.#stageMetadata.set(result.entryId, options.customMetadata);
+    return result;
+  }
+
+  clearStage(): Promise<void> {
+    this.#stageMetadata.clear();
+    return this.#requireExistingBackend().clearStage();
+  }
+
+  stagedSource(): Promise<StageSnapshot | null> {
+    return this.#requireExistingBackend().stagedSource();
+  }
+
   pause(): Promise<void> {
     return this.#requireExistingBackend().pause();
   }
@@ -1385,6 +1406,11 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     bindPlayback(PlaybackEvent.playbackPaused);
     bindPlayback(PlaybackEvent.playbackResumed);
     bindPlayback(PlaybackEvent.playbackSeeked);
+    bindPlayback(PlaybackEvent.prepareRequested);
+    bindPlayback(PlaybackEvent.stageReady);
+    bindPlayback(PlaybackEvent.stageFailed);
+    bindPlayback(PlaybackEvent.stageInvalidated);
+    bindPlayback(PlaybackEvent.transitionCancelled);
     bindPlayback(PlaybackEvent.filterChanged);
     bindPlayback(PlaybackEvent.volumeChanged);
 
@@ -1468,7 +1494,21 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
       return;
     }
 
-    if (event === PlaybackEvent.playbackStarted) this.#startedGenerations.add(generation);
+    if (event === PlaybackEvent.playbackStarted) {
+      const transition = payload.transition;
+      if (transition && typeof transition === 'object' && !Array.isArray(transition)) {
+        const entryId = (transition as { entryId?: unknown }).entryId;
+        if (typeof entryId === 'string') {
+          this.#metadataByGeneration.set(generation, this.#stageMetadata.get(entryId));
+          this.#stageMetadata.delete(entryId);
+        }
+        this.#playbackGeneration = Math.max(this.#playbackGeneration, generation);
+      }
+      this.#startedGenerations.add(generation);
+    }
+    if (event === PlaybackEvent.stageInvalidated && typeof payload.entryId === 'string') {
+      this.#stageMetadata.delete(payload.entryId);
+    }
     if (terminal) {
       this.#clearPlayAbortBindingForGeneration(generation);
       this.#terminalGenerations.add(generation);
