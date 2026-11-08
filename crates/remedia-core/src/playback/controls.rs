@@ -123,7 +123,9 @@ impl PlaybackSession {
                 .clone()
                 .unwrap_or(PlaybackError::WorkerPanicked))
         });
-        if outcome.is_ok() { self.clear_staged_source(); }
+        if outcome.is_ok() {
+            self.clear_staged_source();
+        }
         outcome
     }
 

@@ -104,8 +104,11 @@ impl PcmCrossfade {
                 // Equal-power crossfades can exceed full scale with correlated
                 // sources, so bound the output rather than forwarding invalid
                 // samples into the Opus encoder.
-                outgoing[offset + channel] =
-                    if sample.is_finite() { sample.clamp(-1.0, 1.0) } else { 0.0 };
+                outgoing[offset + channel] = if sample.is_finite() {
+                    sample.clamp(-1.0, 1.0)
+                } else {
+                    0.0
+                };
             }
         }
         self.cursor += samples;
@@ -146,10 +149,9 @@ impl StagedPcmBuffer {
         if !(100..=10_000).contains(&capacity_ms) {
             return None;
         }
-        let capacity_scalars = usize::try_from(
-            u64::from(capacity_ms) * u64::from(OUTPUT_SAMPLE_RATE_HZ) * 2 / 1_000,
-        )
-        .ok()?;
+        let capacity_scalars =
+            usize::try_from(u64::from(capacity_ms) * u64::from(OUTPUT_SAMPLE_RATE_HZ) * 2 / 1_000)
+                .ok()?;
         Some(Self {
             capacity_scalars,
             state: Mutex::new(StagedPcmState::default()),
@@ -158,7 +160,9 @@ impl StagedPcmBuffer {
     }
 
     fn lock(&self) -> MutexGuard<'_, StagedPcmState> {
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Submit interleaved stereo frames, blocking only the source decoder
@@ -170,10 +174,7 @@ impl StagedPcmBuffer {
         let mut remaining = frame;
         while !remaining.is_empty() {
             let mut state = self.lock();
-            while state.pcm.len() == self.capacity_scalars
-                && !state.cancelled
-                && !state.finished
-            {
+            while state.pcm.len() == self.capacity_scalars && !state.cancelled && !state.finished {
                 state = self
                     .writable
                     .wait(state)
@@ -305,7 +306,10 @@ mod tests {
     fn rejects_invalid_chunks_without_advancing() {
         let mut fade = PcmCrossfade::new(CrossfadeWindow::from_millis(1_000).unwrap());
         assert_eq!(fade.mix(&mut [1.0], &[1.0]), Err(MixError::FrameMismatch));
-        assert_eq!(fade.mix(&mut [1.0, 1.0], &[1.0]), Err(MixError::FrameMismatch));
+        assert_eq!(
+            fade.mix(&mut [1.0, 1.0], &[1.0]),
+            Err(MixError::FrameMismatch)
+        );
         assert_eq!(fade.consumed_samples(), 0);
         let mut too_long = vec![0.0; 2 * 48_001];
         assert_eq!(
@@ -321,6 +325,10 @@ mod tests {
         let mut outgoing = vec![1.0; 2 * 48_000];
         let incoming = vec![1.0; 2 * 48_000];
         fade.mix(&mut outgoing, &incoming).unwrap();
-        assert!(outgoing.iter().all(|sample| sample.is_finite() && sample.abs() <= 1.0));
+        assert!(
+            outgoing
+                .iter()
+                .all(|sample| sample.is_finite() && sample.abs() <= 1.0)
+        );
     }
 }

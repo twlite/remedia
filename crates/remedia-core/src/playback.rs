@@ -227,8 +227,8 @@ mod tests;
 
 mod session;
 mod staging;
-pub use staging::{StageIdentity, StageSnapshot, StageState};
 use staging::PreparedStage;
+pub use staging::{StageIdentity, StageSnapshot, StageState};
 
 mod worker;
 use worker::*;

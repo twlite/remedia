@@ -11,7 +11,11 @@ pub struct StageIdentity {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StageState { Preparing, Ready, Failed }
+pub enum StageState {
+    Preparing,
+    Ready,
+    Failed,
+}
 
 #[derive(Clone, Debug)]
 pub struct StageSnapshot {
@@ -52,10 +56,13 @@ impl PreparedStage {
 
     fn run(&self, source: InputSource) {
         let result = (|| -> Result<(), PlaybackError> {
-            let mut decoder = AudioDecoder::open_with_options(source, DecoderOptions {
-                cancellation: self.cancellation.clone(),
-                ..DecoderOptions::default()
-            })?;
+            let mut decoder = AudioDecoder::open_with_options(
+                source,
+                DecoderOptions {
+                    cancellation: self.cancellation.clone(),
+                    ..DecoderOptions::default()
+                },
+            )?;
             *lock(&self.info) = Some(decoder.info().clone());
             while !self.cancellation.is_cancelled() {
                 match decoder.next_frame()? {
@@ -84,13 +91,17 @@ impl PreparedStage {
         let info = lock(&self.info).clone();
         let error = lock(&self.error).clone();
         let buffered_samples = self.buffer.buffered_samples();
-        let ready = info.is_some() && (buffered_samples >= 48_000
-            || (self.buffer.is_finished() && buffered_samples > 0));
+        let ready = info.is_some()
+            && (buffered_samples >= 48_000 || (self.buffer.is_finished() && buffered_samples > 0));
         StageSnapshot {
             identity: self.identity.clone(),
-            state: if error.is_some() { StageState::Failed }
-                else if ready { StageState::Ready }
-                else { StageState::Preparing },
+            state: if error.is_some() {
+                StageState::Failed
+            } else if ready {
+                StageState::Ready
+            } else {
+                StageState::Preparing
+            },
             info,
             buffered_samples,
             error,
@@ -127,7 +138,9 @@ impl PlaybackSession {
         let (old, next) = {
             let mut slot = lock(&self.stage);
             if let Some(old) = slot.as_ref() {
-                if old.identity == identity { return Ok(old.snapshot()); }
+                if old.identity == identity {
+                    return Ok(old.snapshot());
+                }
                 if old.identity.expected_generation == identity.expected_generation
                     && (identity.queue_revision < old.identity.queue_revision
                         || (identity.queue_revision == old.identity.queue_revision
@@ -144,13 +157,17 @@ impl PlaybackSession {
                 Err(error) => {
                     let old = slot.take();
                     drop(slot);
-                    if let Some(old) = old { old.cancel_and_join(); }
+                    if let Some(old) = old {
+                        old.cancel_and_join();
+                    }
                     return Err(error);
                 }
             };
             (slot.replace(Arc::clone(&next)), next)
         };
-        if let Some(old) = old { old.cancel_and_join(); }
+        if let Some(old) = old {
+            old.cancel_and_join();
+        }
         Ok(next.snapshot())
     }
 
@@ -168,7 +185,9 @@ impl PlaybackSession {
             }
             slot.take()
         };
-        if let Some(old) = old { old.cancel_and_join(); }
+        if let Some(old) = old {
+            old.cancel_and_join();
+        }
     }
 }
 
@@ -180,8 +199,10 @@ mod tests {
     fn inactive_sessions_cannot_stage() {
         let session = PlaybackSession::new();
         let identity = StageIdentity {
-            expected_generation: 1, entry_id: "song-a".to_owned(),
-            queue_revision: 1, source_revision: 1,
+            expected_generation: 1,
+            entry_id: "song-a".to_owned(),
+            queue_revision: 1,
+            source_revision: 1,
         };
         assert!(matches!(
             session.stage_next(InputSource::file("missing.wav"), identity),
