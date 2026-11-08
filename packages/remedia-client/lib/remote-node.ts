@@ -1244,6 +1244,46 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     return result;
   }
 
+  async stageNext(
+    source: MediaSource,
+    options: import('./types.js').StageNextOptions<unknown>,
+  ): Promise<import('./types.js').StageSnapshot> {
+    this.#assertGuildReady();
+    if (!this.#node.snapshot.capabilities?.crossfade.available || !this.#options.crossfade)
+      throw new Error('crossfading is not enabled for this remote session');
+    if ('buffer' in source || 'stream' in source) {
+      throw new UnsupportedMediaSourceError(
+        'remote staged sources must be an accessible file or URL',
+      );
+    }
+    if (!options.entryId.trim() || !Number.isSafeInteger(options.queueRevision))
+      throw new TypeError('invalid stage identity');
+    const generation = options.expectedGeneration ?? this.#snapshot.generation;
+    const remoteSource =
+      'url' in source
+        ? { type: 'url' as const, url: source.url }
+        : { type: 'file' as const, path: source.file };
+    const data = await this.#node.control(this.#options.guildId, 'player.stage.next', {
+      source: remoteSource,
+      expectedGeneration: generation,
+      entryId: options.entryId,
+      queueRevision: options.queueRevision,
+      sourceRevision: options.sourceRevision ?? 0,
+    });
+    return parseStageSnapshot(data, this.#node.id);
+  }
+
+  async clearStage(): Promise<void> {
+    this.#assertGuildReady();
+    await this.#node.control(this.#options.guildId, 'player.stage.clear');
+  }
+
+  async stagedSource(): Promise<import('./types.js').StageSnapshot | null> {
+    this.#assertGuildReady();
+    const value = await this.#node.control(this.#options.guildId, 'player.stage.state');
+    return value === null ? null : parseStageSnapshot(value, this.#node.id);
+  }
+
   async pause(): Promise<void> {
     this.#assertGuildReady();
     await this.#node.control(this.#options.guildId, 'player.pause');
@@ -1948,5 +1988,26 @@ function parseNodeCapabilities(input: unknown): import('./types.js').NodeCapabil
       prepareBeforeMs,
       curve: 'equalPower',
     },
+  };
+}
+
+function parseStageSnapshot(input: unknown, nodeId: string): import('./types.js').StageSnapshot {
+  if (
+    !isRecord(input) ||
+    typeof input.entryId !== 'string' ||
+    !Number.isSafeInteger(input.expectedGeneration) ||
+    !Number.isSafeInteger(input.queueRevision) ||
+    !Number.isSafeInteger(input.sourceRevision) ||
+    (input.state !== 'preparing' && input.state !== 'ready' && input.state !== 'failed')
+  ) throw new ProtocolError(nodeId, 'server returned an invalid staged-source snapshot');
+  return {
+    entryId: input.entryId,
+    expectedGeneration: input.expectedGeneration as number,
+    queueRevision: input.queueRevision as number,
+    sourceRevision: input.sourceRevision as number,
+    state: input.state,
+    bufferedMs: typeof input.bufferedMs === 'number' ? input.bufferedMs : 0,
+    info: isRecord(input.source) ? toStreamInfo(input.source, nodeId) : null,
+    error: typeof input.error === 'string' ? input.error : null,
   };
 }
