@@ -126,6 +126,7 @@ pub struct StagedPcmBuffer {
     capacity_scalars: usize,
     state: Mutex<StagedPcmState>,
     writable: Condvar,
+    readable: Condvar,
 }
 
 #[derive(Default)]
@@ -156,6 +157,7 @@ impl StagedPcmBuffer {
             capacity_scalars,
             state: Mutex::new(StagedPcmState::default()),
             writable: Condvar::new(),
+            readable: Condvar::new(),
         })
     }
 
@@ -191,6 +193,7 @@ impl StagedPcmBuffer {
             let count = remaining.len().min(space);
             state.pcm.extend(remaining[..count].iter().copied());
             remaining = &remaining[count..];
+            self.readable.notify_all();
         }
         Ok(())
     }
@@ -213,6 +216,41 @@ impl StagedPcmBuffer {
         Some(popped)
     }
 
+    /// Wait for the requested number of stereo samples, returning a shorter
+    /// final frame at clean EOF. Cancellation is checked during every wait.
+    /// A failed or replaced stage wakes the consumer with None.
+    pub fn read_for_playback(
+        &self,
+        samples_per_channel: usize,
+        cancellation: &crate::CancellationToken,
+    ) -> Option<Vec<f32>> {
+        let scalars = samples_per_channel.checked_mul(2)?;
+        if scalars == 0 || scalars > self.capacity_scalars {
+            return None;
+        }
+        let mut state = self.lock();
+        while state.pcm.len() < scalars
+            && !state.finished
+            && !state.cancelled
+            && !cancellation.is_cancelled()
+        {
+            let (next, _) = self
+                .readable
+                .wait_timeout(state, std::time::Duration::from_millis(50))
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next;
+        }
+        if state.cancelled || cancellation.is_cancelled() || state.pcm.is_empty() {
+            return None;
+        }
+        let count = scalars.min(state.pcm.len());
+        let count = count - count % 2;
+        let result = state.pcm.drain(..count).collect();
+        drop(state);
+        self.writable.notify_all();
+        Some(result)
+    }
+
     pub fn buffered_samples(&self) -> usize {
         self.lock().pcm.len() / 2
     }
@@ -226,6 +264,7 @@ impl StagedPcmBuffer {
     pub fn finish(&self) {
         self.lock().finished = true;
         self.writable.notify_all();
+        self.readable.notify_all();
     }
 
     /// Invalidate the stage, discarding all buffered samples and waking its
@@ -236,6 +275,7 @@ impl StagedPcmBuffer {
         state.pcm.clear();
         drop(state);
         self.writable.notify_all();
+        self.readable.notify_all();
     }
 }
 

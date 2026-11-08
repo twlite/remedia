@@ -129,7 +129,7 @@ impl PlaybackSession {
         {
             let data = lock(&self.shared.data);
             if !matches!(data.state, PlaybackState::Playing | PlaybackState::Paused)
-                || data.generation != identity.expected_generation
+                || data.source_generation != identity.expected_generation
                 || identity.entry_id.trim().is_empty()
             {
                 return Err(PlaybackError::Cancelled);

@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, SyncSender};
@@ -159,7 +160,8 @@ pub struct PlaybackSession {
     worker: Mutex<Option<JoinHandle<()>>>,
     start_lock: Mutex<()>,
     filter_update_lock: Mutex<()>,
-    stage: Mutex<Option<Arc<PreparedStage>>>,
+    stage: Arc<Mutex<Option<Arc<PreparedStage>>>>,
+    crossfade: Mutex<Option<CrossfadeConfig>>,
 }
 
 /// A completion wait bound to the playback generation active when it was
@@ -174,11 +176,13 @@ struct SessionShared {
     data: Mutex<SessionData>,
     changed: Condvar,
     observability: ObservabilityHandle,
+    events: Mutex<VecDeque<CrossfadeEvent>>,
 }
 
 struct SessionData {
     state: PlaybackState,
     generation: u64,
+    source_generation: u64,
     playback_id: u64,
     processing_mode: Option<PlaybackProcessingMode>,
     passthrough_available: bool,
@@ -226,9 +230,51 @@ enum WorkerAction {
 mod tests;
 
 mod session;
+mod crossfade_worker;
 mod staging;
 use staging::PreparedStage;
 pub use staging::{StageIdentity, StageSnapshot, StageState};
+
+/// Session-scoped transition settings, validated before configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CrossfadeConfig {
+    pub duration_ms: u32,
+    pub prepare_before_ms: u32,
+}
+
+impl CrossfadeConfig {
+    pub fn new(duration_ms: u32, prepare_before_ms: u32) -> Option<Self> {
+        if !(1_000..=30_000).contains(&duration_ms)
+            || !(5_000..=120_000).contains(&prepare_before_ms)
+        {
+            return None;
+        }
+        Some(Self { duration_ms, prepare_before_ms })
+    }
+}
+
+/// Events only emitted for explicitly enabled staged playback.
+#[derive(Clone, Debug)]
+pub enum CrossfadeEvent {
+    PrepareRequested { generation: u64, remaining_ms: u64 },
+    TransitionStarted {
+        outgoing_generation: u64,
+        incoming_generation: u64,
+        identity: StageIdentity,
+        info: AudioStreamInfo,
+    },
+    TransitionCompleted {
+        outgoing_generation: u64,
+        incoming_generation: u64,
+        identity: StageIdentity,
+    },
+}
+impl SessionShared {
+    fn publish(&self, event: CrossfadeEvent) {
+        lock(&self.events).push_back(event);
+    }
+}
+
 
 mod worker;
 use worker::*;
