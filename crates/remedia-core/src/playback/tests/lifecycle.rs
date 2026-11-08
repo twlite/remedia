@@ -287,3 +287,101 @@ fn stop_then_play_replaces_a_source_without_old_frames_after_stop() {
     );
     session.stop().unwrap();
 }
+
+#[test]
+fn opted_in_crossfade_promotes_staged_decoder_without_restarting_output() {
+    use super::super::{CrossfadeConfig, CrossfadeEvent, StageIdentity, StageState};
+
+    let outgoing = TempWave::constant(480_000, 8_000);
+    let incoming = TempWave::constant(480_000, -8_000);
+    let session = PlaybackSession::new();
+    session
+        .configure_crossfade(Some(CrossfadeConfig::new(5_000, 30_000).unwrap()))
+        .expect("crossfade options accepted while idle");
+    let (output, gate) = GateOutput::new();
+    let initial = session.play(outgoing.source(), output).expect("outgoing source opened");
+    assert_eq!(initial.duration, Some(Duration::from_secs(10)));
+    assert_eq!(session.processing_mode(), Some(PlaybackProcessingMode::Transcoding));
+    assert!(gate.wait_for_calls(1));
+
+    let identity = StageIdentity {
+        expected_generation: session.source_generation(),
+        entry_id: "entry-b".to_string(),
+        queue_revision: 1,
+        source_revision: 0,
+    };
+    let first = session
+        .stage_next(incoming.source(), identity.clone())
+        .expect("stage source accepted");
+    assert!(matches!(first.state, StageState::Preparing | StageState::Ready));
+    let duplicate = session
+        .stage_next(incoming.source(), identity)
+        .expect("duplicate stage is idempotent");
+    assert!(matches!(duplicate.state, StageState::Preparing | StageState::Ready));
+
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    while !matches!(
+        session.staged_source().map(|stage| stage.state),
+        Some(StageState::Ready)
+    ) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        session.staged_source().map(|stage| stage.state),
+        Some(StageState::Ready),
+        "the next source should decode into its bounded buffer",
+    );
+
+    gate.release(1_000);
+    assert_eq!(session.wait(), PlaybackState::Completed);
+    assert_eq!(session.source_generation(), 2);
+    let frames = gate.snapshot();
+    assert!(frames.finished);
+    // 10 seconds outgoing + 10 seconds incoming - 5 seconds overlapped.
+    let frame_count = frames.accepted.len();
+    assert!(
+        (740..=770).contains(&frame_count),
+        "crossfading should produce approximately 15 seconds of 20ms frames, got {frame_count}",
+    );
+    assert!(frames.accepted.windows(2).all(|frames| {
+        frames[0].0 + 960 == frames[1].0
+    }));
+
+    let events = session.take_crossfade_events();
+    assert!(events.iter().any(|event| matches!(
+        event, CrossfadeEvent::PrepareRequested { generation: 1, .. }
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event, CrossfadeEvent::TransitionStarted {
+            outgoing_generation: 1, incoming_generation: 2, ..
+        }
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event, CrossfadeEvent::TransitionCompleted {
+            outgoing_generation: 1, incoming_generation: 2, ..
+        }
+    )));
+}
+
+#[test]
+fn normal_playback_cannot_stage_without_crossfade_opt_in() {
+    use super::super::StageIdentity;
+    let source = TempWave::constant(48_000, 4_096);
+    let session = PlaybackSession::new();
+    let (output, gate) = GateOutput::new();
+    session.play(source.source(), output).unwrap();
+    assert!(gate.wait_for_calls(1));
+    assert!(matches!(
+        session.stage_next(
+            source.source(),
+            StageIdentity {
+                expected_generation: session.source_generation(),
+                entry_id: "next".to_string(),
+                queue_revision: 0,
+                source_revision: 0,
+            },
+        ),
+        Err(PlaybackError::Cancelled)
+    ));
+    session.stop().unwrap();
+}

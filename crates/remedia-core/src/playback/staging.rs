@@ -146,6 +146,9 @@ impl PlaybackSession {
         source: InputSource,
         identity: StageIdentity,
     ) -> Result<StageSnapshot, PlaybackError> {
+        if self.crossfade_config().is_none() {
+            return Err(PlaybackError::Cancelled);
+        }
         {
             let data = lock(&self.shared.data);
             if !matches!(data.state, PlaybackState::Playing | PlaybackState::Paused)
