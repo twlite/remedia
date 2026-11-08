@@ -1873,6 +1873,17 @@ function parsePlaybackSnapshot(value: Record<string, unknown>, nodeId: string): 
     },
     durationMs: nullableNumber(value.durationMs),
     source: isRecord(value.source) ? toStreamInfo(value.source, nodeId) : null,
+    ...(isRecord(value.crossfade) && value.crossfade.enabled === true &&
+      Number.isSafeInteger(value.crossfade.durationMs) &&
+      Number.isSafeInteger(value.crossfade.prepareBeforeMs)
+        ? { crossfade: {
+          enabled: true as const,
+          durationMs: value.crossfade.durationMs as number,
+          prepareBeforeMs: value.crossfade.prepareBeforeMs as number,
+          curve: 'equalPower' as const,
+        } }
+        : { crossfade: null }),
+    staged: isRecord(value.staged) ? parseStageSnapshot(value.staged, nodeId) : null,
     filterGraph: nullableString(value.filterGraph),
     volume: typeof value.volume === 'number' ? value.volume : 1,
     lastError:

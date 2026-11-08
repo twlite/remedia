@@ -267,6 +267,7 @@ class EmbeddedGuildBackend extends RemediaEventEmitter<GuildBackendEvents> imple
       durationMs: this.durationMs,
       filterGraph: this.filterGraph,
       volume: this.volume,
+      staged: this.#session.stagedSource,
       lastError: this.error ? { code: 'playback_failed', message: this.error } : null,
     };
   }

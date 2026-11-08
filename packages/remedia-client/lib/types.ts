@@ -146,6 +146,9 @@ export interface PlaybackSnapshot {
   /** Session master linear gain from 0 through 2, independent of filtergraph processing; defaults to 1. */
   volume: number;
   /** Most recent structured playback failure, or null when none is recorded. */
+  /** Optional crossfade policy and staged state reported by capable nodes. */
+  crossfade?: { enabled: true; durationMs: number; prepareBeforeMs: number; curve: 'equalPower' } | null;
+  staged?: StageSnapshot | null;
   lastError: {
     /** Machine-readable error code supplied by the remote server. */
     code: string;
