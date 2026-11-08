@@ -8,7 +8,9 @@ it('promotes a staged Readable once, preserves metadata and emits continuation c
   const engine = await Remedia.create();
   const held = await createHeldAudioServer(makeWave(20), 512 * 1024);
   const session = engine.createPlaybackSession<{ entry: string }>();
-  session.configureCrossfade({ enabled: true });
+  // A one-second fade fits entirely in the ready buffer, so the no-op output
+  // can run at full speed without depending on decoder thread scheduling.
+  session.configureCrossfade({ enabled: true, durationMs: 1000 });
   const events: Array<{
     kind: string;
     generation: number;

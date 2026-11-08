@@ -471,6 +471,11 @@ fn worker_loop(
         }
     }
 
+    // Release staged and active decoders before exposing terminal completion.
+    // A completion waiter may immediately inspect the stage or reuse the session.
+    drop(_stage_cleanup);
+    drop(current);
+
     // Finish is called once, after the final (non-promoted) source reaches EOF.
     let gain = lock(&shared.data).volume;
     let finish = processor

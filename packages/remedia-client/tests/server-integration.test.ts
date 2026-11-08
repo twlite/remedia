@@ -109,7 +109,7 @@ describe('SDK against the Rust WebSocket server', () => {
       if (!crossfade) {
         await expect(node.createGuild(guildId, { enabled: true })).rejects.toThrow();
       }
-      await node.createGuild(guildId, crossfade ? { enabled: true } : undefined);
+      await node.createGuild(guildId, crossfade ? { enabled: true, durationMs: 1000 } : undefined);
       if (crossfade) {
         const wave = silentWave(20);
         const incoming = resolve(mediaDirectory, 'next.wav');
