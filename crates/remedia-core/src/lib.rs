@@ -37,7 +37,7 @@ pub use output::{
 };
 pub use playback::{
     MediaPosition, MediaPositionAccuracy, PlaybackError, PlaybackPosition, PlaybackProcessingMode,
-    PlaybackSession, PlaybackState, PlaybackWaiter,
+    PlaybackSession, PlaybackState, PlaybackWaiter, StageIdentity, StageSnapshot, StageState,
 };
 pub use source::{CancellationToken, InputSource};
 

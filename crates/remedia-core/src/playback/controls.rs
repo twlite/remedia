@@ -117,12 +117,14 @@ impl PlaybackSession {
             );
         });
 
-        response_rx.recv().unwrap_or_else(|_| {
+        let outcome = response_rx.recv().unwrap_or_else(|_| {
             Err(lock(&self.shared.data)
                 .last_error
                 .clone()
                 .unwrap_or(PlaybackError::WorkerPanicked))
-        })
+        });
+        if outcome.is_ok() { self.clear_staged_source(); }
+        outcome
     }
 
     /// Validate and configure a trusted FFmpeg audio filtergraph.
@@ -297,6 +299,7 @@ impl PlaybackSession {
     /// harmless. `Completed` and `Failed` remain terminal so their outcome and
     /// error remain observable.
     pub fn stop(&self) -> Result<(), PlaybackError> {
+        self.clear_staged_source();
         let (
             needs_cleanup,
             active,

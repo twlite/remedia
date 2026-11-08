@@ -48,6 +48,7 @@ impl PlaybackSession {
             worker: Mutex::new(None),
             start_lock: Mutex::new(()),
             filter_update_lock: Mutex::new(()),
+            stage: Mutex::new(None),
         }
     }
 
@@ -92,6 +93,7 @@ impl PlaybackSession {
             }
         }
         self.reap_previous_worker()?;
+        self.clear_staged_source();
         if cancellation.is_cancelled() {
             return Err(PlaybackError::Cancelled);
         }

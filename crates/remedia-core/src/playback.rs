@@ -159,6 +159,7 @@ pub struct PlaybackSession {
     worker: Mutex<Option<JoinHandle<()>>>,
     start_lock: Mutex<()>,
     filter_update_lock: Mutex<()>,
+    stage: Mutex<Option<Arc<PreparedStage>>>,
 }
 
 /// A completion wait bound to the playback generation active when it was
@@ -225,6 +226,9 @@ enum WorkerAction {
 mod tests;
 
 mod session;
+mod staging;
+pub use staging::{StageIdentity, StageSnapshot, StageState};
+use staging::PreparedStage;
 
 mod worker;
 use worker::*;
