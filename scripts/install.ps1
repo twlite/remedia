@@ -2,7 +2,8 @@
 param(
   [switch]$NoFFmpeg,
   [string]$Version = $(if ($env:REMEDIA_VERSION) { $env:REMEDIA_VERSION } else { 'latest' }),
-  [string]$InstallDir = $(if ($env:REMEDIA_INSTALL_DIR) { $env:REMEDIA_INSTALL_DIR } else { Join-Path $HOME '.remedia' })
+  [string]$InstallDir = $(if ($env:REMEDIA_INSTALL_DIR) { $env:REMEDIA_INSTALL_DIR } else { Join-Path $HOME '.remedia' }),
+  [string]$ArchivePath = $env:REMEDIA_ARCHIVE_PATH
 )
 $ErrorActionPreference = 'Stop'
 if (-not [Environment]::Is64BitOperatingSystem -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne [Runtime.InteropServices.Architecture]::X64) {
@@ -40,15 +41,16 @@ function Save-InstallDownload {
     [string]$Url,
     [string]$Destination,
     [string]$Label,
-    [long]$ExpectedBytes = 0
+    [long]$ExpectedBytes = 0,
+    [int]$Attempts = 4
   )
 
   # Write-Host works even when PowerShell's progress renderer is hidden by a host or preference.
   $interactive = -not [Console]::IsOutputRedirected
   $client = [System.Net.Http.HttpClient]::new()
   $client.DefaultRequestHeaders.UserAgent.ParseAdd('remedia-installer')
+  $client.DefaultRequestHeaders.Accept.ParseAdd('application/octet-stream')
   $client.Timeout = [TimeSpan]::FromSeconds(60)
-  $attempts = 4
 
   try {
     for ($attempt = 1; $attempt -le $attempts; $attempt++) {
@@ -198,7 +200,23 @@ $tmp = Join-Path ([IO.Path]::GetTempPath()) ("remedia-" + [guid]::NewGuid().ToSt
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 try {
   $archive = Join-Path $tmp 'server.tar.gz'
-  Save-InstallDownload -Url $asset.browser_download_url -Destination $archive -Label 'Remedia server' -ExpectedBytes $asset.size
+  if ($ArchivePath) {
+    # A browser-downloaded release archive can bypass a failing CLI download route.
+    $localArchive = (Resolve-Path -LiteralPath $ArchivePath -ErrorAction Stop).ProviderPath
+    if (-not (Test-Path -LiteralPath $localArchive -PathType Leaf)) {
+      throw "Release archive is not a file: $ArchivePath"
+    }
+    Copy-Item -LiteralPath $localArchive -Destination $archive
+    Write-InstallStatus "Using locally downloaded release archive: $localArchive"
+  } else {
+    try {
+      Save-InstallDownload -Url $asset.browser_download_url -Destination $archive -Label 'Remedia server' -ExpectedBytes $asset.size -Attempts 2
+    } catch {
+      if (-not $asset.url) { throw }
+      Write-InstallStatus 'Direct GitHub download failed. Trying the release-asset API...'
+      Save-InstallDownload -Url $asset.url -Destination $archive -Label 'Remedia server (API)' -ExpectedBytes $asset.size -Attempts 2
+    }
+  }
   Write-InstallStatus 'Verifying server archive SHA-256...'
   $actual = (Get-FileHash $archive -Algorithm SHA256).Hash
   if ($actual -ine $asset.digest.Substring(7)) { throw 'Release SHA-256 checksum mismatch.' }
