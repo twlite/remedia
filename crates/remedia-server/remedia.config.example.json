@@ -33,6 +33,12 @@
       "bitrate": 128000,
       "complexity": 9,
       "vbr": true
+    },
+    "crossfade": {
+      "enabled": false,
+      "durationMs": 5000,
+      "prepareBeforeMs": 30000,
+      "curve": "equalPower"
     }
   },
   "observability": {
