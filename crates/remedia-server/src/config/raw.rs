@@ -34,8 +34,7 @@ pub(super) struct RawAudio {
     pub(super) crossfade: RawCrossfade,
 }
 
-/// Server-side permission and defaults. This does not enable the playback
-/// pipeline until the native staged-source engine is available.
+/// Server-side permission and defaults; individual guild sessions also opt in.
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub(super) struct RawCrossfade {

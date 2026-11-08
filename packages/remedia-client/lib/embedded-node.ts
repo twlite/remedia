@@ -33,7 +33,10 @@ interface EmbeddedPlayback extends EventEmitterType {
     clear(): Promise<void>;
   };
   play(source: MediaSource, options?: PlayOptions<unknown>): Promise<AudioStreamInfo>;
-  stageNext(source: MediaSource, options: import('./types.js').StageNextOptions<unknown>): Promise<import('./types.js').StageSnapshot>;
+  stageNext(
+    source: MediaSource,
+    options: import('./types.js').StageNextOptions<unknown>,
+  ): Promise<import('./types.js').StageSnapshot>;
   clearStage(): Promise<void>;
   readonly stagedSource: import('./types.js').StageSnapshot | null;
   pause(): Promise<void>;
@@ -400,7 +403,10 @@ class EmbeddedGuildBackend extends RemediaEventEmitter<GuildBackendEvents> imple
     const add = (name: keyof GuildBackendEvents, payload: Record<string, unknown>): void => {
       const generation =
         typeof payload.generation === 'number' ? payload.generation : this.#generation;
-      this.#generation = Math.max(this.#generation, generation);
+      this.#generation =
+        name === PlaybackEvent.transitionCancelled
+          ? generation
+          : Math.max(this.#generation, generation);
       const normalized = {
         ...payload,
         sessionId: this.#session.sessionId,

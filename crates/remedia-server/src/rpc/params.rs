@@ -82,6 +82,7 @@ pub(super) struct StageNextParams {
     pub(super) entry_id: String,
     pub(super) queue_revision: u64,
     pub(super) source_revision: u64,
+    pub(super) expires_at_ms: Option<u64>,
 }
 
 #[derive(Deserialize)]

@@ -32,11 +32,10 @@ malformed assignments are errors. These values are used only for JSON
 
 The full example file is [`remedia.config.example.json`](https://github.com/twlite/remedia/blob/main/crates/remedia-server/remedia.config.example.json).
 
-## Crossfade capability (under development)
+## Crossfade capability
 
 The server config accepts an optional `audio.crossfade` object. It is **off by
-default** and does not enable crossfading in this build. The session-level
-staging/mixing engine and embedded transport are still being implemented.
+default**. Set `enabled: true` to permit individual guild sessions to opt in.
 
 ```json
 {
@@ -53,15 +52,14 @@ staging/mixing engine and embedded transport are still being implemented.
 
 `node.info.capabilities.crossfade` reports `configured` separately from
 `available`. Clients must check **`available: true`** before opting in. Until
-the complete audio engine and continuation events are available, the server
-reports `available: false` and rejects guild session crossfade requests, even
-when `enabled` is true in the file. Older clients can continue their existing
-single-source playback without changes.
+crossfade is enabled in server policy, the server reports `available: false`.
+When enabled, clients must also pass `crossfade: { enabled: true }` to guild
+session creation. Existing sessions without opt-in retain single-source playback.
 
 `prepareBeforeMs` is the lead time **before the crossfade begins**, rather than
 before the outgoing source completes. For example, a 5-second fade and 30-second
 preparation lead means the prepare event would occur approximately 35 seconds
-before the track ends, once event scheduling has been implemented.
+before the track ends.
 
 ## Schema
 

@@ -1,13 +1,15 @@
 //! RPC controls for independently staged playback.
 use super::*;
-use remedia_core::{CrossfadeConfig, StageIdentity, StageSnapshot, StageState};
+use remedia_core::{StageIdentity, StageSnapshot, StageState};
 
 pub(super) async fn execute(
     server: Arc<ServerInner>,
     connection: Arc<ConnectionContext>,
     request: RpcRequest,
 ) -> Result<Value, RpcError> {
-    let guild_id = request.params.get("guildId")
+    let guild_id = request
+        .params
+        .get("guildId")
         .and_then(Value::as_str)
         .ok_or_else(|| RpcError::new("invalid_request", "guildId is required"))?
         .to_owned();
@@ -16,18 +18,25 @@ pub(super) async fn execute(
     let guild = server.get_guild(&client, &guild_id).map_err(state_error)?;
     guild.ensure_open().map_err(state_error)?;
     if !server.config.crossfade.enabled || guild.playback.crossfade_config().is_none() {
-        return Err(RpcError::new("feature_disabled", "crossfade is not enabled for this guild"));
+        return Err(RpcError::new(
+            "feature_disabled",
+            "crossfade is not enabled for this guild",
+        ));
     }
     match request.command.as_str() {
         "player.prepare.ack" => {
             let params: PrepareAckParams = decode_params(request.params)?;
             ensure_param_guild(&params.guild_id, &guild_id)?;
             let generation = guild.source_generation.load(Ordering::Acquire);
-            Ok(json!({"acknowledged": generation == params.expected_generation, "generation": generation}))
+            Ok(
+                json!({"acknowledged": generation == params.expected_generation, "generation": generation}),
+            )
         }
         "player.stage.state" => {
             decode_params::<GuildParams>(request.params)?;
-            Ok(guild.playback.staged_source().map_or(Value::Null, |stage| stage_json(stage, guild.source_generation.load(Ordering::Acquire))))
+            Ok(guild.playback.staged_source().map_or(Value::Null, |stage| {
+                stage_json(stage, guild.source_generation.load(Ordering::Acquire))
+            }))
         }
         "player.stage.clear" => {
             decode_params::<GuildParams>(request.params)?;
@@ -45,7 +54,10 @@ pub(super) async fn execute(
             let params: StageNextParams = decode_params(request.params)?;
             ensure_param_guild(&params.guild_id, &guild_id)?;
             if params.entry_id.trim().is_empty() || params.entry_id.len() > 256 {
-                return Err(RpcError::new("invalid_request", "entryId must be 1-256 characters"));
+                return Err(RpcError::new(
+                    "invalid_request",
+                    "entryId must be 1-256 characters",
+                ));
             }
             let source = match params.source {
                 PlaySource::File { path } => {
@@ -53,7 +65,11 @@ pub(super) async fn execute(
                     InputSource::file(file)
                 }
                 PlaySource::Url { url } => {
-                    let url = server.config.authorize_url(&url).await.map_err(media_error)?;
+                    let url = server
+                        .config
+                        .authorize_url(&url)
+                        .await
+                        .map_err(media_error)?;
                     InputSource::http_url(url)
                 }
             };
@@ -61,7 +77,10 @@ pub(super) async fn execute(
             guild.ensure_open().map_err(state_error)?;
             let generation = guild.source_generation.load(Ordering::Acquire);
             if params.expected_generation != generation {
-                return Err(RpcError::new("stale_generation", "playback generation changed before staging"));
+                return Err(RpcError::new(
+                    "stale_generation",
+                    "playback generation changed before staging",
+                ));
             }
             let playback = Arc::clone(&guild.playback);
             let identity = StageIdentity {
@@ -72,12 +91,17 @@ pub(super) async fn execute(
             };
             let result = tokio::task::spawn_blocking(move || {
                 let _operation = operation;
-                playback.stage_next(source, identity)
-            }).await.map_err(|_| RpcError::new("playback_failed", "staging worker failed"))?
-              .map_err(playback_error)?;
+                playback.stage_next_with_expiration(source, identity, params.expires_at_ms)
+            })
+            .await
+            .map_err(|_| RpcError::new("playback_failed", "staging worker failed"))?
+            .map_err(playback_error)?;
             Ok(stage_json(result, generation))
         }
-        _ => Err(RpcError::new("invalid_request", "unknown staging operation")),
+        _ => Err(RpcError::new(
+            "invalid_request",
+            "unknown staging operation",
+        )),
     }
 }
 

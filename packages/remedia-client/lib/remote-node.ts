@@ -1017,6 +1017,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
   readonly #lifecycleListener: (event: ServerLifecycleEvent) => void;
   readonly #statusListener: (event: { snapshot: NodeSnapshot; error: Error | null }) => void;
   #snapshot = emptyPlaybackSnapshot();
+  #outgoingSnapshot: PlaybackSnapshot | undefined;
   #connectionState: VoiceConnectionState = 'disconnected';
   #connectionError: string | null = null;
   #guildCreated = false;
@@ -1277,6 +1278,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
       entryId: options.entryId,
       queueRevision: options.queueRevision,
       sourceRevision: options.sourceRevision ?? 0,
+      ...(options.expiresAtMs === undefined ? {} : { expiresAtMs: options.expiresAtMs }),
     });
     return parseStageSnapshot(data, this.#node.id);
   }
@@ -1367,8 +1369,11 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     if (generation < this.#snapshot.generation) {
       // A promoted track has already started when the outgoing generation
       // finishes. Forward its completion without replacing the active snapshot.
-      if (event === 'player.completed' && isRecord(data.continuation) &&
-          data.continuation.type === 'promoted') {
+      if (
+        event === 'player.completed' &&
+        isRecord(data.continuation) &&
+        data.continuation.type === 'promoted'
+      ) {
         this.#emitTerminal('completed', generation, 'playing', data, false);
       }
       return;
@@ -1417,9 +1422,19 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
       eventGeneration !== undefined &&
       eventGeneration !== this.#snapshot.generation &&
       !isNewStart &&
-      !(event.event === RemoteProtocolEvents.playerCompleted &&
+      !(
+        event.event === RemoteProtocolEvents.playerSeeked &&
+        event.data.previousGeneration === this.#snapshot.generation
+      ) &&
+      !(
+        event.event === RemoteProtocolEvents.playerTransitionCancelled &&
+        event.data.failedGeneration === this.#snapshot.generation
+      ) &&
+      !(
+        event.event === RemoteProtocolEvents.playerCompleted &&
         isRecord(event.data.continuation) &&
-        event.data.continuation.type === 'promoted')
+        event.data.continuation.type === 'promoted'
+      )
     ) {
       return;
     }
@@ -1437,6 +1452,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
       const generation = asNonnegativeInteger(event.data.generation);
       if (generation !== undefined && generation >= this.#snapshot.generation) {
         const source = isRecord(event.data.source) ? event.data.source : undefined;
+        if (isRecord(event.data.transition)) this.#outgoingSnapshot = this.#snapshot;
         this.#snapshot = {
           ...this.#snapshot,
           generation,
@@ -1456,14 +1472,17 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
             state: 'playing',
             info: toStreamInfo(source, this.#node.id),
             ...(isRecord(event.data.transition) &&
-              event.data.transition.type === 'crossfade' &&
-              typeof event.data.transition.entryId === 'string' &&
-              Number.isSafeInteger(event.data.transition.outgoingGeneration)
-                ? { transition: {
-                  type: 'crossfade' as const,
-                  entryId: event.data.transition.entryId,
-                  outgoingGeneration: event.data.transition.outgoingGeneration as number,
-                } } : {}),
+            event.data.transition.type === 'crossfade' &&
+            typeof event.data.transition.entryId === 'string' &&
+            Number.isSafeInteger(event.data.transition.outgoingGeneration)
+              ? {
+                  transition: {
+                    type: 'crossfade' as const,
+                    entryId: event.data.transition.entryId,
+                    outgoingGeneration: event.data.transition.outgoingGeneration as number,
+                  },
+                }
+              : {}),
           });
         }
       }
@@ -1513,8 +1532,17 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
       const entryId = event.data.entryId;
       const queueRevision = asNonnegativeInteger(event.data.queueRevision);
       const sourceRevision = asNonnegativeInteger(event.data.sourceRevision);
-      if (typeof entryId === 'string' && queueRevision !== undefined && sourceRevision !== undefined) {
-        const identity = { ...this.#playbackIdentity(event.data), entryId, queueRevision, sourceRevision };
+      if (
+        typeof entryId === 'string' &&
+        queueRevision !== undefined &&
+        sourceRevision !== undefined
+      ) {
+        const identity = {
+          ...this.#playbackIdentity(event.data),
+          entryId,
+          queueRevision,
+          sourceRevision,
+        };
         if (event.event === RemoteProtocolEvents.playerStageReady)
           this.emit(PlaybackEvent.stageReady, identity);
         else if (event.event === RemoteProtocolEvents.playerStageFailed)
@@ -1527,7 +1555,9 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     } else if (event.event === RemoteProtocolEvents.playerTransitionCancelled) {
       const failedGeneration = asNonnegativeInteger(event.data.failedGeneration);
       const entryId = event.data.entryId;
-      if (failedGeneration !== undefined && typeof entryId === 'string') {
+      if (failedGeneration !== undefined && typeof entryId === 'string' && this.#outgoingSnapshot) {
+        this.#snapshot = this.#outgoingSnapshot;
+        this.#outgoingSnapshot = undefined;
         this.emit(PlaybackEvent.transitionCancelled, {
           ...this.#playbackIdentity(event.data),
           failedGeneration,
@@ -1555,6 +1585,13 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
         });
       }
     } else if (event.event === RemoteProtocolEvents.playerSeeked) {
+      if (
+        eventGeneration !== undefined &&
+        event.data.previousGeneration === this.#snapshot.generation
+      ) {
+        this.#snapshot = { ...this.#snapshot, generation: eventGeneration };
+        this.#startedGenerations.add(eventGeneration);
+      }
       const positionMs = asNonnegativeInteger(event.data.positionMs);
       if (positionMs !== undefined) {
         this.emit(PlaybackEvent.playbackSeeked, {
@@ -1625,14 +1662,17 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
         state,
         position: this.#snapshot.position,
         ...(isRecord(data.continuation) &&
-          data.continuation.type === 'promoted' &&
-          typeof data.continuation.entryId === 'string' &&
-          Number.isSafeInteger(data.continuation.generation)
-            ? { continuation: {
-              type: 'promoted' as const,
-              entryId: data.continuation.entryId,
-              generation: data.continuation.generation as number,
-            } } : {}),
+        data.continuation.type === 'promoted' &&
+        typeof data.continuation.entryId === 'string' &&
+        Number.isSafeInteger(data.continuation.generation)
+          ? {
+              continuation: {
+                type: 'promoted' as const,
+                entryId: data.continuation.entryId,
+                generation: data.continuation.generation as number,
+              },
+            }
+          : {}),
       });
     } else if (state === 'stopped') {
       this.emit(PlaybackEvent.playbackStopped, {
@@ -1873,16 +1913,19 @@ function parsePlaybackSnapshot(value: Record<string, unknown>, nodeId: string): 
     },
     durationMs: nullableNumber(value.durationMs),
     source: isRecord(value.source) ? toStreamInfo(value.source, nodeId) : null,
-    ...(isRecord(value.crossfade) && value.crossfade.enabled === true &&
-      Number.isSafeInteger(value.crossfade.durationMs) &&
-      Number.isSafeInteger(value.crossfade.prepareBeforeMs)
-        ? { crossfade: {
-          enabled: true as const,
-          durationMs: value.crossfade.durationMs as number,
-          prepareBeforeMs: value.crossfade.prepareBeforeMs as number,
-          curve: 'equalPower' as const,
-        } }
-        : { crossfade: null }),
+    ...(isRecord(value.crossfade) &&
+    value.crossfade.enabled === true &&
+    Number.isSafeInteger(value.crossfade.durationMs) &&
+    Number.isSafeInteger(value.crossfade.prepareBeforeMs)
+      ? {
+          crossfade: {
+            enabled: true as const,
+            durationMs: value.crossfade.durationMs as number,
+            prepareBeforeMs: value.crossfade.prepareBeforeMs as number,
+            curve: 'equalPower' as const,
+          },
+        }
+      : { crossfade: null }),
     staged: isRecord(value.staged) ? parseStageSnapshot(value.staged, nodeId) : null,
     filterGraph: nullableString(value.filterGraph),
     volume: typeof value.volume === 'number' ? value.volume : 1,
@@ -2085,7 +2128,8 @@ function parseStageSnapshot(input: unknown, nodeId: string): import('./types.js'
     !Number.isSafeInteger(input.queueRevision) ||
     !Number.isSafeInteger(input.sourceRevision) ||
     (input.state !== 'preparing' && input.state !== 'ready' && input.state !== 'failed')
-  ) throw new ProtocolError(nodeId, 'server returned an invalid staged-source snapshot');
+  )
+    throw new ProtocolError(nodeId, 'server returned an invalid staged-source snapshot');
   return {
     entryId: input.entryId,
     expectedGeneration: input.expectedGeneration as number,

@@ -23,17 +23,44 @@ pub(super) fn spawn_playback_monitor(
                 {
                     return;
                 }
-                let Some(session) = session.upgrade() else { return };
+                let Some(session) = session.upgrade() else {
+                    return;
+                };
                 for event in guild.playback.take_crossfade_events() {
                     match event {
+                        remedia_core::CrossfadeEvent::TimelineChanged {
+                            previous_generation,
+                            generation: logical,
+                            position_ms,
+                        } => {
+                            let previous = logical_to_rpc
+                                .get(&previous_generation)
+                                .copied()
+                                .unwrap_or(active_rpc);
+                            let next = guild.source_generation.fetch_add(1, Ordering::AcqRel) + 1;
+                            logical_to_rpc.insert(logical, next);
+                            active_rpc = next;
+                            session.emit(
+                                "player.seeked",
+                                json!({
+                                    "guildId": guild.guild_id, "generation": next,
+                                    "previousGeneration": previous, "positionMs": position_ms,
+                                }),
+                            );
+                        }
                         remedia_core::CrossfadeEvent::PrepareRequested {
                             generation: source_generation,
                             remaining_ms,
                         } => {
-                            let rpc_gen = logical_to_rpc.get(&source_generation).copied()
+                            let rpc_gen = logical_to_rpc
+                                .get(&source_generation)
+                                .copied()
                                 .unwrap_or(active_rpc);
-                            let fade_ms = guild.playback.crossfade_config()
-                                .map(|config| config.duration_ms).unwrap_or(0);
+                            let fade_ms = guild
+                                .playback
+                                .crossfade_config()
+                                .map(|config| config.duration_ms)
+                                .unwrap_or(0);
                             session.emit("player.prepare_requested", json!({
                                 "guildId": guild.guild_id,
                                 "generation": rpc_gen,
@@ -42,32 +69,41 @@ pub(super) fn spawn_playback_monitor(
                             }));
                         }
                         remedia_core::CrossfadeEvent::StageReady { identity } => {
-                            session.emit("player.stage_ready", json!({
-                                "guildId": guild.guild_id,
-                                "generation": active_rpc,
-                                "entryId": identity.entry_id,
-                                "queueRevision": identity.queue_revision,
-                                "sourceRevision": identity.source_revision,
-                            }));
+                            session.emit(
+                                "player.stage_ready",
+                                json!({
+                                    "guildId": guild.guild_id,
+                                    "generation": logical_to_rpc.get(&identity.expected_generation).copied().unwrap_or(active_rpc),
+                                    "entryId": identity.entry_id,
+                                    "queueRevision": identity.queue_revision,
+                                    "sourceRevision": identity.source_revision,
+                                }),
+                            );
                         }
                         remedia_core::CrossfadeEvent::StageFailed { identity, reason } => {
-                            session.emit("player.stage_failed", json!({
-                                "guildId": guild.guild_id,
-                                "generation": active_rpc,
-                                "entryId": identity.entry_id,
-                                "queueRevision": identity.queue_revision,
-                                "sourceRevision": identity.source_revision,
-                                "reason": reason,
-                            }));
+                            session.emit(
+                                "player.stage_failed",
+                                json!({
+                                    "guildId": guild.guild_id,
+                                    "generation": logical_to_rpc.get(&identity.expected_generation).copied().unwrap_or(active_rpc),
+                                    "entryId": identity.entry_id,
+                                    "queueRevision": identity.queue_revision,
+                                    "sourceRevision": identity.source_revision,
+                                    "reason": reason,
+                                }),
+                            );
                         }
                         remedia_core::CrossfadeEvent::StageInvalidated { identity } => {
-                            session.emit("player.stage_invalidated", json!({
-                                "guildId": guild.guild_id,
-                                "generation": active_rpc,
-                                "entryId": identity.entry_id,
-                                "queueRevision": identity.queue_revision,
-                                "sourceRevision": identity.source_revision,
-                            }));
+                            session.emit(
+                                "player.stage_invalidated",
+                                json!({
+                                    "guildId": guild.guild_id,
+                                    "generation": logical_to_rpc.get(&identity.expected_generation).copied().unwrap_or(active_rpc),
+                                    "entryId": identity.entry_id,
+                                    "queueRevision": identity.queue_revision,
+                                    "sourceRevision": identity.source_revision,
+                                }),
+                            );
                         }
                         remedia_core::CrossfadeEvent::TransitionStarted {
                             outgoing_generation,
@@ -75,42 +111,54 @@ pub(super) fn spawn_playback_monitor(
                             identity,
                             info,
                         } => {
-                            let previous = logical_to_rpc.get(&outgoing_generation).copied()
+                            let previous = logical_to_rpc
+                                .get(&outgoing_generation)
+                                .copied()
                                 .unwrap_or(active_rpc);
                             let next = guild.source_generation.fetch_add(1, Ordering::AcqRel) + 1;
                             logical_to_rpc.insert(incoming_generation, next);
                             active_rpc = next;
-                            session.emit("player.started", json!({
-                                "guildId": guild.guild_id,
-                                "generation": next,
-                                "source": stream_info_json(info),
-                                "transition": {
-                                    "type": "crossfade",
-                                    "outgoingGeneration": previous,
-                                    "entryId": identity.entry_id,
-                                },
-                            }));
+                            session.emit(
+                                "player.started",
+                                json!({
+                                    "guildId": guild.guild_id,
+                                    "generation": next,
+                                    "source": stream_info_json(info),
+                                    "transition": {
+                                        "type": "crossfade",
+                                        "outgoingGeneration": previous,
+                                        "entryId": identity.entry_id,
+                                    },
+                                }),
+                            );
                         }
                         remedia_core::CrossfadeEvent::TransitionCompleted {
                             outgoing_generation,
                             incoming_generation,
                             identity,
                         } => {
-                            let previous = logical_to_rpc.get(&outgoing_generation).copied()
+                            let previous = logical_to_rpc
+                                .get(&outgoing_generation)
+                                .copied()
                                 .unwrap_or(generation);
-                            let next = logical_to_rpc.get(&incoming_generation).copied()
+                            let next = logical_to_rpc
+                                .get(&incoming_generation)
+                                .copied()
                                 .unwrap_or(active_rpc);
                             if guild.claim_terminal_event(previous) {
-                                session.emit("player.completed", json!({
-                                    "guildId": guild.guild_id,
-                                    "generation": previous,
-                                    "state": "completed",
-                                    "continuation": {
-                                        "type": "promoted",
-                                        "generation": next,
-                                        "entryId": identity.entry_id,
-                                    },
-                                }));
+                                session.emit(
+                                    "player.completed",
+                                    json!({
+                                        "guildId": guild.guild_id,
+                                        "generation": previous,
+                                        "state": "completed",
+                                        "continuation": {
+                                            "type": "promoted",
+                                            "generation": next,
+                                            "entryId": identity.entry_id,
+                                        },
+                                    }),
+                                );
                             }
                         }
                         remedia_core::CrossfadeEvent::TransitionCancelled {
@@ -118,44 +166,62 @@ pub(super) fn spawn_playback_monitor(
                             incoming_generation,
                             identity,
                         } => {
-                            let outgoing = logical_to_rpc.get(&outgoing_generation).copied()
+                            let outgoing = logical_to_rpc
+                                .get(&outgoing_generation)
+                                .copied()
                                 .unwrap_or(generation);
-                            let failed = logical_to_rpc.get(&incoming_generation).copied()
+                            let failed = logical_to_rpc
+                                .get(&incoming_generation)
+                                .copied()
                                 .unwrap_or(active_rpc);
-                            let resumed = guild.source_generation.fetch_add(1, Ordering::AcqRel) + 1;
-                            logical_to_rpc.insert(outgoing_generation, resumed);
+                            let resumed = outgoing;
                             active_rpc = resumed;
-                            session.emit("player.transition_cancelled", json!({
-                                "guildId": guild.guild_id,
-                                "generation": resumed,
-                                "outgoingGeneration": outgoing,
-                                "failedGeneration": failed,
-                                "entryId": identity.entry_id,
-                            }));
+                            session.emit(
+                                "player.transition_cancelled",
+                                json!({
+                                    "guildId": guild.guild_id,
+                                    "generation": resumed,
+                                    "outgoingGeneration": outgoing,
+                                    "failedGeneration": failed,
+                                    "entryId": identity.entry_id,
+                                }),
+                            );
                         }
                     }
                 }
                 let state = guild.playback.state();
-                if matches!(state, PlaybackState::Completed | PlaybackState::Failed | PlaybackState::Stopped) {
+                if matches!(
+                    state,
+                    PlaybackState::Completed | PlaybackState::Failed | PlaybackState::Stopped
+                ) {
                     if guild.claim_terminal_event(active_rpc) {
                         match state {
-                            PlaybackState::Completed => session.emit("player.completed", json!({
-                                "guildId": guild.guild_id,
-                                "generation": active_rpc,
-                                "state": "completed",
-                            })),
-                            PlaybackState::Failed => session.emit("player.failed", json!({
-                                "guildId": guild.guild_id,
-                                "generation": active_rpc,
-                                "state": "failed",
-                                "code": "playback_failed",
-                            })),
-                            PlaybackState::Stopped => session.emit("player.stopped", json!({
-                                "guildId": guild.guild_id,
-                                "generation": active_rpc,
-                                "state": "stopped",
-                                "reason": "stopped",
-                            })),
+                            PlaybackState::Completed => session.emit(
+                                "player.completed",
+                                json!({
+                                    "guildId": guild.guild_id,
+                                    "generation": active_rpc,
+                                    "state": "completed",
+                                }),
+                            ),
+                            PlaybackState::Failed => session.emit(
+                                "player.failed",
+                                json!({
+                                    "guildId": guild.guild_id,
+                                    "generation": active_rpc,
+                                    "state": "failed",
+                                    "code": "playback_failed",
+                                }),
+                            ),
+                            PlaybackState::Stopped => session.emit(
+                                "player.stopped",
+                                json!({
+                                    "guildId": guild.guild_id,
+                                    "generation": active_rpc,
+                                    "state": "stopped",
+                                    "reason": "stopped",
+                                }),
+                            ),
                             _ => {}
                         }
                     }
