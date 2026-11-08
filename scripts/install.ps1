@@ -16,67 +16,160 @@ function Write-InstallStatus {
   Write-Host "[remedia] $Message"
 }
 
+function Show-DownloadLine {
+  param([string]$Message, [ref]$PreviousWidth)
+  $width = [Math]::Max($PreviousWidth.Value, $Message.Length)
+  Write-Host ([char]13 + '  ' + $Message.PadRight($width)) -NoNewline
+  $PreviousWidth.Value = $width
+}
+
+function Format-DownloadProgress {
+  param([long]$Received, [long]$Total, [double]$ElapsedSeconds)
+  $speed = ($Received / 1MB) / [Math]::Max(0.1, $ElapsedSeconds)
+  if ($Total -le 0) {
+    return ('{0:N1} MiB downloaded  {1:N1} MiB/s' -f ($Received / 1MB), $speed)
+  }
+  $percent = [int][Math]::Min(100, [Math]::Floor(100.0 * $Received / $Total))
+  $filled = [int][Math]::Floor($percent / 5)
+  $bar = '[' + ('#' * $filled) + ('.' * (20 - $filled)) + ']'
+  return ('{0} {1,3}%  {2:N1}/{3:N1} MiB  {4:N1} MiB/s' -f $bar, $percent, ($Received / 1MB), ($Total / 1MB), $speed)
+}
+
 function Save-InstallDownload {
   param(
     [string]$Url,
     [string]$Destination,
-    [string]$Label
+    [string]$Label,
+    [long]$ExpectedBytes = 0
   )
 
-  Write-InstallStatus "Downloading $Label..."
+  # Write-Host works even when PowerShell's progress renderer is hidden by a host or preference.
+  $interactive = -not [Console]::IsOutputRedirected
   $client = [System.Net.Http.HttpClient]::new()
   $client.DefaultRequestHeaders.UserAgent.ParseAdd('remedia-installer')
-  $response = $null
-  $source = $null
-  $destinationStream = $null
-  $progressVisible = ($ProgressPreference -ne 'SilentlyContinue') -and
-    (-not [Console]::IsOutputRedirected) -and (-not [Console]::IsErrorRedirected)
-  $clock = [Diagnostics.Stopwatch]::StartNew()
-  $lastUpdateMs = -1000
-  $lastLogMs = 0
+  $client.Timeout = [TimeSpan]::FromSeconds(60)
+  $attempts = 4
 
   try {
-    $response = $client.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
-    $response.EnsureSuccessStatusCode() | Out-Null
-    $total = $response.Content.Headers.ContentLength
-    $source = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
-    $destinationStream = [IO.File]::Create($Destination)
-    $buffer = New-Object byte[] (128KB)
-    [long]$received = 0
+    for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+      Write-InstallStatus ("Downloading {0} (attempt {1}/{2})..." -f $Label, $attempt, $attempts)
+      $clock = [Diagnostics.Stopwatch]::StartNew()
+      $nextFeedback = 0
+      $lineWidth = 0
+      $activeLine = $false
+      $response = $null
+      $source = $null
+      $destinationStream = $null
+      $cancellation = [Threading.CancellationTokenSource]::new()
 
-    while (($read = $source.Read($buffer, 0, $buffer.Length)) -gt 0) {
-      $destinationStream.Write($buffer, 0, $read)
-      $received += $read
-      $elapsedMs = $clock.ElapsedMilliseconds
-      if (($elapsedMs - $lastUpdateMs) -lt 250) { continue }
-      $lastUpdateMs = $elapsedMs
-
-      $status = '{0:N1} MiB downloaded' -f ($received / 1MB)
-      if ($null -ne $total -and $total -gt 0) {
-        $status = '{0:N1} / {1:N1} MiB' -f ($received / 1MB), ($total / 1MB)
-      }
-
-      if ($progressVisible) {
-        if ($null -ne $total -and $total -gt 0) {
-          $percent = [int][Math]::Min(100, [Math]::Floor(100.0 * $received / $total))
-          Write-Progress -Id 1 -Activity "Downloading $Label" -Status $status -PercentComplete $percent
-        } else {
-          Write-Progress -Id 1 -Activity "Downloading $Label" -Status $status
+      try {
+        # The connection can stall or return 504 before sending any bytes.
+        $request = $client.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead)
+        while (-not $request.IsCompleted) {
+          $elapsed = $clock.ElapsedMilliseconds
+          if ($elapsed -ge $nextFeedback) {
+            $message = 'Connecting to download server... {0}s elapsed' -f [int]$clock.Elapsed.TotalSeconds
+            if ($interactive) {
+              Show-DownloadLine -Message $message -PreviousWidth ([ref]$lineWidth)
+              $activeLine = $true
+            } else {
+              Write-Host "  $message"
+            }
+            $nextFeedback = $elapsed + $(if ($interactive) { 750 } else { 5000 })
+          }
+          Start-Sleep -Milliseconds 200
         }
-      } elseif (($elapsedMs - $lastLogMs) -ge 10000) {
-        Write-Host "  $status"
-        $lastLogMs = $elapsedMs
-      }
-    }
+        $response = $request.GetAwaiter().GetResult()
+        $response.EnsureSuccessStatusCode() | Out-Null
+        if ($activeLine) { Write-Host ''; $activeLine = $false }
 
-    Write-InstallStatus ('Downloaded {0} ({1:N1} MiB)' -f $Label, ($received / 1MB))
-  } finally {
-    if ($progressVisible) {
-      Write-Progress -Id 1 -Activity "Downloading $Label" -Completed
+        [long]$total = 0
+        if ($null -ne $response.Content.Headers.ContentLength) {
+          $total = [long]$response.Content.Headers.ContentLength
+        } elseif ($ExpectedBytes -gt 0) {
+          $total = $ExpectedBytes
+        }
+
+        $source = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        $destinationStream = [IO.File]::Create($Destination)
+        $buffer = New-Object byte[] (128KB)
+        [long]$received = 0
+        $lastByteAt = $clock.ElapsedMilliseconds
+        $nextFeedback = 0
+
+        while ($true) {
+          $reading = $source.ReadAsync($buffer, 0, $buffer.Length, $cancellation.Token)
+          while (-not $reading.IsCompleted) {
+            if ($clock.ElapsedMilliseconds - $lastByteAt -ge 60000) {
+              $cancellation.Cancel()
+              throw [TimeoutException]::new('No download data received for 60 seconds.')
+            }
+            $elapsed = $clock.ElapsedMilliseconds
+            if ($elapsed -ge $nextFeedback) {
+              $message = Format-DownloadProgress -Received $received -Total $total -ElapsedSeconds $clock.Elapsed.TotalSeconds
+              if ($interactive) {
+                Show-DownloadLine -Message $message -PreviousWidth ([ref]$lineWidth)
+                $activeLine = $true
+              } else {
+                Write-Host "  $message"
+              }
+              $nextFeedback = $elapsed + $(if ($interactive) { 750 } else { 5000 })
+            }
+            Start-Sleep -Milliseconds 200
+          }
+
+          $count = $reading.GetAwaiter().GetResult()
+          if ($count -eq 0) { break }
+          $destinationStream.Write($buffer, 0, $count)
+          $received += $count
+          $lastByteAt = $clock.ElapsedMilliseconds
+          $elapsed = $clock.ElapsedMilliseconds
+          if ($elapsed -ge $nextFeedback) {
+            $message = Format-DownloadProgress -Received $received -Total $total -ElapsedSeconds $clock.Elapsed.TotalSeconds
+            if ($interactive) {
+              Show-DownloadLine -Message $message -PreviousWidth ([ref]$lineWidth)
+              $activeLine = $true
+            } else {
+              Write-Host "  $message"
+            }
+            $nextFeedback = $elapsed + $(if ($interactive) { 750 } else { 5000 })
+          }
+        }
+
+        if ($interactive) {
+          $message = Format-DownloadProgress -Received $received -Total $total -ElapsedSeconds $clock.Elapsed.TotalSeconds
+          Show-DownloadLine -Message $message -PreviousWidth ([ref]$lineWidth)
+          $activeLine = $true
+        }
+        if ($activeLine) { Write-Host ''; $activeLine = $false }
+        Write-InstallStatus ('Downloaded {0} ({1:N1} MiB)' -f $Label, ($received / 1MB))
+        return
+      } catch {
+        if ($activeLine) { Write-Host ''; $activeLine = $false }
+        $statusCode = if ($response) { [int]$response.StatusCode } else { 0 }
+        $reason = if ($statusCode) { "HTTP $statusCode ($($response.ReasonPhrase))" } else { $_.Exception.Message }
+        $transientError = $_.Exception -is [System.Net.Http.HttpRequestException] -or
+          $_.Exception -is [System.Threading.Tasks.TaskCanceledException] -or
+          $_.Exception -is [TimeoutException]
+        $retryable = $transientError -or $statusCode -in @(408, 429, 500, 502, 503, 504)
+        if (-not $retryable -or $attempt -eq $attempts) {
+          throw "Failed to download $Label (attempt $attempt/$attempts): $reason"
+        }
+        $delay = [int][Math]::Pow(2, $attempt)
+        Write-InstallStatus ("Download failed: {0}. Retrying in {1}s..." -f $reason, $delay)
+      } finally {
+        if ($destinationStream) { $destinationStream.Dispose() }
+        if ($source) { $source.Dispose() }
+        if ($response) { $response.Dispose() }
+        $cancellation.Dispose()
+      }
+
+      if (Test-Path -LiteralPath $Destination) {
+        Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+      }
+      Start-Sleep -Seconds $delay
     }
-    if ($destinationStream) { $destinationStream.Dispose() }
-    if ($source) { $source.Dispose() }
-    if ($response) { $response.Dispose() }
+  } finally {
     $client.Dispose()
   }
 }
@@ -105,7 +198,7 @@ $tmp = Join-Path ([IO.Path]::GetTempPath()) ("remedia-" + [guid]::NewGuid().ToSt
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 try {
   $archive = Join-Path $tmp 'server.tar.gz'
-  Save-InstallDownload -Url $asset.browser_download_url -Destination $archive -Label 'Remedia server'
+  Save-InstallDownload -Url $asset.browser_download_url -Destination $archive -Label 'Remedia server' -ExpectedBytes $asset.size
   Write-InstallStatus 'Verifying server archive SHA-256...'
   $actual = (Get-FileHash $archive -Algorithm SHA256).Hash
   if ($actual -ine $asset.digest.Substring(7)) { throw 'Release SHA-256 checksum mismatch.' }
