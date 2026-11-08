@@ -549,6 +549,7 @@ function createHarness(
     failVoiceRecovery: (voiceId: string) => failedRecoveries.push(voiceId),
     playbackState: (playbackId: string) => playbackStates.get(playbackId) ?? 'idle',
     playbackGeneration: () => 1,
+    playbackSourceGeneration: () => 1,
     validateFilterGraph: async () => {},
     playbackSetFilterGraph: async (id: string, graph: string) => {
       operations.push('filter');
