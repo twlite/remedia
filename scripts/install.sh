@@ -97,10 +97,29 @@ log "Selected Remedia $tag for $target."
 log "Downloading server archive..."
 download_file "$url" "$tmp/server.tar.gz"
 log "Verifying server archive SHA-256..."
-# Verify against GitHub's published asset digest before extracting.
-digest="$(curl -fsSL --retry 3 "https://api.github.com/repos/$REPO/releases/tags/$tag" |
-  grep -A 18 "\"name\": \"$asset\"" | sed -n 's/.*"digest": *"sha256:\([a-fA-F0-9]*\)".*/\1/p' | head -n 1)"
-[ "${#digest}" -eq 64 ] || { echo "Release is missing a SHA-256 digest for $asset" >&2; exit 1; }
+# GitHub places a nested uploader object between an asset's name and digest.
+# Parse the matching asset's fields instead of assuming a fixed line offset.
+curl -fsSL --retry 3 "https://api.github.com/repos/$REPO/releases/tags/$tag" -o "$tmp/release.json"
+digest="$(awk -v wanted="$asset" '
+  /"name"[[:space:]]*:/ {
+    name = $0
+    sub(/^.*"name"[[:space:]]*:[[:space:]]*"/, "", name)
+    sub(/".*$/, "", name)
+    if (matched) exit
+    if (name == wanted) matched = 1
+  }
+  matched && /"digest"[[:space:]]*:/ {
+    checksum = $0
+    sub(/^.*"digest"[[:space:]]*:[[:space:]]*"sha256:/, "", checksum)
+    sub(/".*$/, "", checksum)
+    print checksum
+    exit
+  }
+' "$tmp/release.json")"
+case "$digest" in
+  *[!a-fA-F0-9]*|'') echo "Release is missing a SHA-256 digest for $asset" >&2; exit 1 ;;
+esac
+[ "${#digest}" -eq 64 ] || { echo "Release has an invalid SHA-256 digest for $asset" >&2; exit 1; }
 if command -v sha256sum >/dev/null; then
   actual="$(sha256sum "$tmp/server.tar.gz" | cut -d ' ' -f 1)"
 else
