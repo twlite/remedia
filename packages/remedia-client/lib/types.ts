@@ -16,6 +16,11 @@ export const PlaybackSessionEvents = {
   playbackResumed: 'playbackResumed',
   /** Emitted after seeking to a source timeline position. */
   playbackSeeked: 'playbackSeeked',
+  prepareRequested: 'prepareRequested',
+  stageReady: 'stageReady',
+  stageFailed: 'stageFailed',
+  stageInvalidated: 'stageInvalidated',
+  transitionCancelled: 'transitionCancelled',
   /** Emitted when the configured session filtergraph changes. */
   filterChanged: 'filterChanged',
   /** Emitted when the configured session linear gain changes. */
@@ -379,6 +384,43 @@ export interface PlayOptions<Metadata = unknown> {
  * Correlation fields identifying the session and source generation that produced a playback event.
  * @typeParam Metadata - Application-owned metadata attached to playback generations.
  */
+
+/** Identify a particular queued occurrence. Revisions prevent stale stage
+ * responses from replacing newer queue decisions.
+ */
+export interface StageNextOptions<Metadata = unknown> {
+  entryId: string;
+  queueRevision: number;
+  sourceRevision?: number;
+  expectedGeneration?: number;
+  customMetadata?: Metadata;
+}
+export interface StageSnapshot {
+  expectedGeneration: number;
+  entryId: string;
+  queueRevision: number;
+  sourceRevision: number;
+  state: 'preparing' | 'ready' | 'failed';
+  bufferedMs: number;
+  info: AudioStreamInfo | null;
+  error: string | null;
+}
+export interface CrossfadeContinuation {
+  type: 'promoted';
+  generation: number;
+  entryId: string;
+}
+export interface CrossfadeTransition {
+  type: 'crossfade';
+  outgoingGeneration: number;
+  entryId: string;
+}
+export interface CrossfadeStageEvent extends PlaybackEventIdentity {
+  entryId: string;
+  queueRevision: number;
+  sourceRevision: number;
+}
+
 export interface PlaybackEventIdentity<Metadata = unknown> {
   /** Opaque Remedia session identity used to correlate events; distinct from the Discord bot user ID. */
   sessionId: string;
@@ -406,6 +448,7 @@ export type PlaybackLifecycleEventMap<Metadata = unknown> = {
       state: 'playing';
       /** Metadata for the audio stream that started playback. */
       info: AudioStreamInfo;
+      transition?: CrossfadeTransition;
     },
   ];
   /** Emitted when a source generation reaches natural end-of-stream. */
@@ -415,6 +458,7 @@ export type PlaybackLifecycleEventMap<Metadata = unknown> = {
       state: 'completed';
       /** Latest source and output timeline measurements in milliseconds. */
       position: PlaybackPosition;
+      continuation?: CrossfadeContinuation;
     },
   ];
   /** Emitted when a source generation is explicitly stopped or cancelled. */
@@ -436,6 +480,15 @@ export type PlaybackLifecycleEventMap<Metadata = unknown> = {
     },
   ];
   /** Emitted when playback is paused without replacing its source generation. */
+  [PlaybackSessionEvents.prepareRequested]: [
+    PlaybackEventIdentity<Metadata> & { remainingMs: number; transitionInMs: number },
+  ];
+  [PlaybackSessionEvents.stageReady]: [CrossfadeStageEvent];
+  [PlaybackSessionEvents.stageFailed]: [CrossfadeStageEvent & { reason: string }];
+  [PlaybackSessionEvents.stageInvalidated]: [CrossfadeStageEvent];
+  [PlaybackSessionEvents.transitionCancelled]: [
+    PlaybackEventIdentity<Metadata> & { failedGeneration: number; entryId: string },
+  ];
   [PlaybackSessionEvents.playbackPaused]: [
     PlaybackEventIdentity<Metadata> & {
       /** Playback or transport lifecycle state before this transition. */

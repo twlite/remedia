@@ -13,6 +13,8 @@ import type {
   PlaybackState,
   PlaybackLifecycleEventMap,
   PlayOptions,
+  StageNextOptions,
+  StageSnapshot,
   VoiceConnectionState,
   VoiceLifecycleEventMap,
 } from './types.js';
@@ -128,6 +130,9 @@ export interface GuildBackend extends EventEmitter<GuildBackendEvents> {
    * @param options - Optional metadata for this generation and a cancellation signal.
    * @returns Selected stream metadata once startup succeeds; rejects if hooks, input opening, or playback startup fail.
    */
+  stageNext(source: MediaSource, options: StageNextOptions<unknown>): Promise<StageSnapshot>;
+  clearStage(): Promise<void>;
+  stagedSource(): Promise<StageSnapshot | null>;
   play(
     source: MediaSource,
     options?: PlayOptions<unknown>,
