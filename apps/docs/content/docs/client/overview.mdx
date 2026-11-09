@@ -355,7 +355,7 @@ Unknown numeric metadata stays `null`. See [native probing](/docs/node/bindings#
 for stream ownership and [the RPC reference](/docs/server/protocol#media-probing) for server limits.
 
 Metadata probing is independent of playback initialization and platform metadata extraction.
-A discord-player source plugin can obtain a YouTube title or thumbnail directly from its platform.
+A source integration can obtain a title or thumbnail directly from its media provider.
 When technical audio metadata is needed, it can resolve a temporary resource, call `probe`, then
 discard that resource. When playback begins, the plugin resolves a completely fresh source.
 Probing does not guarantee later resource availability or duration accuracy. Remedia hosts no source plugins.
