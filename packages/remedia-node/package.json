@@ -28,8 +28,11 @@
   },
   "scripts": {
     "build": "pnpm run build:native && pnpm run build:types",
-    "build:native": "napi build --platform --esm --js native.js --dts native.d.ts --release",
-    "build:native:debug": "napi build --platform --esm --js native.js --dts native.d.ts",
+    "build:native": "napi build --platform --esm --js native.js --dts native.d.ts --release && pnpm run normalize:native && pnpm run build:bootstrap",
+    "build:native:debug": "napi build --platform --esm --js native.js --dts native.d.ts && pnpm run normalize:native && pnpm run build:bootstrap:debug",
+    "build:bootstrap": "node ../../.github/scripts/build-bootstrap.mjs",
+    "build:bootstrap:debug": "node ../../.github/scripts/build-bootstrap.mjs --debug",
+    "normalize:native": "node ../../.github/scripts/normalize-macos-addon.mjs",
     "build:types": "tsc -p tsconfig.json",
     "build:debug": "pnpm run build:native:debug && pnpm run build:types",
     "test": "pnpm run build:native:debug && pnpm run build:types && pnpm run test:bindings",

@@ -2,7 +2,7 @@ import { createReadableInput, toNativeSource, type MediaSource } from './input.j
 import { toStreamInfo, type AudioStreamInfo } from './types.js';
 import { EventEmitter } from 'node:events';
 import { RemediaEventEmitter } from './events.js';
-import { NativeRemedia } from '../native.js';
+import { NativeRemedia } from './native-binding.js';
 import { DiscordSession, type DiscordSessionOptions } from './discord.js';
 import { DiscordGatewayAdapter, type DiscordGatewaySend } from './gateway.js';
 import type { RemediaLifecycleEvents } from './lifecycle.js';

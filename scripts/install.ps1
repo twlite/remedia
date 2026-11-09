@@ -1,14 +1,22 @@
 [CmdletBinding()]
 param(
   [switch]$NoFFmpeg,
+  [switch]$FFmpegOnly,
   [string]$Version = $(if ($env:REMEDIA_VERSION) { $env:REMEDIA_VERSION } else { 'latest' }),
   [string]$InstallDir = $(if ($env:REMEDIA_INSTALL_DIR) { $env:REMEDIA_INSTALL_DIR } else { Join-Path $HOME '.remedia' }),
   [string]$ArchivePath = $env:REMEDIA_ARCHIVE_PATH
 )
 $ErrorActionPreference = 'Stop'
-if (-not [Environment]::Is64BitOperatingSystem -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne [Runtime.InteropServices.Architecture]::X64) {
-  throw 'remedia-server currently publishes a Windows x64 MSVC binary only.'
+if ($FFmpegOnly -and $NoFFmpeg) {
+  throw 'Conflicting options: -FFmpegOnly installs only FFmpeg and -NoFFmpeg installs only the server, so nothing would be left to install. Remove one of them.'
 }
+if (-not [Environment]::Is64BitOperatingSystem -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne [Runtime.InteropServices.Architecture]::X64) {
+  throw 'The Remedia installer currently supports Windows x64 only (remedia-server publishes a Windows x64 MSVC binary only).'
+}
+# FFmpeg 9 shared-library ABI majors (not application versions). Keep in sync with
+# .github/scripts/ffmpeg-abi.mjs and packages/remedia-node/lib/ffmpeg-runtime.ts.
+$ffmpegAbi = [ordered]@{ avcodec = 63; avformat = 63; avutil = 61; avfilter = 12; swresample = 7 }
+$ffmpegPackage = 'ffmpeg=9.0.2'
 $repo = 'twlite/remedia'
 $headers = @{ 'User-Agent' = 'remedia-installer'; 'Accept' = 'application/vnd.github+json' }
 
@@ -204,6 +212,69 @@ function Save-InstallDownload {
   }
 }
 
+# Resolve micromamba. A micromamba on PATH or in the install directory is reused. A missing one is
+# downloaded to $BinaryDirectory, which is the server bin directory for server installs and a
+# temporary directory for -FFmpegOnly so that no server directories are created.
+function Get-RemediaMicromamba {
+  param([string]$BinaryDirectory, [string]$WorkDirectory)
+  $existing = (Get-Command micromamba -ErrorAction SilentlyContinue).Source
+  if ($existing) { return $existing }
+  $installed = Join-Path $InstallDir 'bin\micromamba.exe'
+  if (Test-Path -LiteralPath $installed) { return $installed }
+  $mamba = Join-Path $BinaryDirectory 'micromamba.exe'
+  New-Item -ItemType Directory -Path $BinaryDirectory -Force | Out-Null
+  $mambaArchive = Join-Path $WorkDirectory 'micromamba.tar.bz2'
+  Save-InstallDownload -Url 'https://micro.mamba.pm/api/micromamba/win-64/latest' -Destination $mambaArchive -Label 'micromamba'
+  Write-InstallStatus 'Extracting micromamba...'
+  & tar -xf $mambaArchive -C $WorkDirectory 'Library/bin/micromamba.exe' | Out-Host
+  if ($LASTEXITCODE -ne 0) { throw 'Failed to extract micromamba executable.' }
+  $downloaded = Join-Path $WorkDirectory 'Library/bin/micromamba.exe'
+  if (!(Test-Path -LiteralPath $downloaded)) { throw 'Unable to locate downloaded micromamba.exe.' }
+  Copy-Item -LiteralPath $downloaded -Destination $mamba
+  return $mamba
+}
+
+# Check that every FFmpeg shared library at the required ABI major exists in the prefix.
+function Test-RemediaFFmpeg {
+  param([string]$Prefix)
+  $libraryDirectory = Join-Path $Prefix 'Library\bin'
+  foreach ($entry in $ffmpegAbi.GetEnumerator()) {
+    $dll = Join-Path $libraryDirectory ('{0}-{1}.dll' -f $entry.Key, $entry.Value)
+    if (!(Test-Path -LiteralPath $dll)) { throw "FFmpeg 9 DLL was not installed: $dll" }
+  }
+  Write-InstallStatus ("Verified FFmpeg 9 libraries ({0}) in {1}" -f (($ffmpegAbi.GetEnumerator() | ForEach-Object { '{0}-{1}' -f $_.Key, $_.Value }) -join ', '), $libraryDirectory)
+}
+
+# Install or update FFmpeg 9 and its shared libraries in <install dir>\ffmpeg9.
+function Install-RemediaFFmpeg {
+  param([string]$BinaryDirectory, [string]$WorkDirectory)
+  Write-InstallStatus 'Preparing FFmpeg 9 dependencies...'
+  New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+  $mamba = Get-RemediaMicromamba -BinaryDirectory $BinaryDirectory -WorkDirectory $WorkDirectory
+  $prefix = Join-Path $InstallDir 'ffmpeg9'
+  $action = if (Test-Path -LiteralPath (Join-Path $prefix 'conda-meta')) { 'install' } else { 'create' }
+  Write-InstallStatus 'Provisioning FFmpeg 9 via micromamba (package resolution may take a while)...'
+  # Native command output must reach the console, not this function's return value (the prefix).
+  & $mamba $action --yes --prefix $prefix --override-channels -c conda-forge $ffmpegPackage | Out-Host
+  if ($LASTEXITCODE -ne 0) { throw 'FFmpeg 9 provisioning failed.' }
+  Test-RemediaFFmpeg -Prefix $prefix
+  return $prefix
+}
+
+# -FFmpegOnly never contacts GitHub releases and never touches server files.
+if ($FFmpegOnly) {
+  $tmp = Join-Path ([IO.Path]::GetTempPath()) ("remedia-" + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+  try {
+    $ffmpegPrefix = Install-RemediaFFmpeg -BinaryDirectory (Join-Path $tmp 'bin') -WorkDirectory $tmp
+    Write-Host "FFmpeg 9 is installed in $ffmpegPrefix"
+    Write-Host '@remedia/node finds this installation automatically. Set REMEDIA_FFMPEG_DIR to use another prefix.'
+  } finally {
+    Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  return
+}
+
 Write-InstallStatus "Checking GitHub releases..."
 if ($Version -eq 'latest') {
   # GitHub's latest endpoint excludes prereleases. Fall back only when no stable release exists.
@@ -260,27 +331,7 @@ try {
   if (!(Test-Path $serverExe) -or !(Test-Path $runtimeExe)) { throw 'CLI or runtime binary not present in release archive.' }
 
   if (-not $NoFFmpeg) {
-    Write-InstallStatus 'Preparing FFmpeg 9 dependencies...'
-    $mamba = (Get-Command micromamba -ErrorAction SilentlyContinue).Source
-    if (-not $mamba) {
-      $mamba = Join-Path $binDir 'micromamba.exe'
-      if (!(Test-Path $mamba)) {
-        $archive = Join-Path $tmp 'micromamba.tar.bz2'
-        Save-InstallDownload -Url 'https://micro.mamba.pm/api/micromamba/win-64/latest' -Destination $archive -Label 'micromamba'
-        Write-InstallStatus 'Extracting micromamba...'
-        & tar -xf $archive -C $tmp 'Library/bin/micromamba.exe'
-        if ($LASTEXITCODE -ne 0) { throw 'Failed to extract micromamba executable.' }
-        $downloaded = Join-Path $tmp 'Library/bin/micromamba.exe'
-        if (!(Test-Path $downloaded)) { throw 'Unable to locate downloaded micromamba.exe.' }
-        Copy-Item $downloaded $mamba
-      }
-    }
-    $prefix = Join-Path $InstallDir 'ffmpeg9'
-    $action = if (Test-Path (Join-Path $prefix 'conda-meta')) { 'install' } else { 'create' }
-    Write-InstallStatus 'Provisioning FFmpeg 9 via micromamba (package resolution may take a while)...'
-    & $mamba $action --yes --prefix $prefix --override-channels -c conda-forge 'ffmpeg=9.0.2'
-    if ($LASTEXITCODE -ne 0) { throw 'FFmpeg 9 provisioning failed.' }
-    if (!(Test-Path (Join-Path $InstallDir 'ffmpeg9\Library\bin\avcodec-63.dll'))) { throw 'FFmpeg 9 DLLs were not installed.' }
+    Install-RemediaFFmpeg -BinaryDirectory $binDir -WorkDirectory $tmp | Out-Null
   } else {
     Write-InstallStatus 'Skipping FFmpeg installation (-NoFFmpeg).'
   }

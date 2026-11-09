@@ -1,0 +1,100 @@
+---
+title: Native library troubleshooting
+description: Diagnose FFmpeg discovery and native addon loading failures, and inspect which FFmpeg installation Remedia loaded.
+---
+
+# Native library troubleshooting
+
+`@remedia/node` is two native files plus FFmpeg. The platform package `@remedia/node-<platform>` contains a tiny **bootstrap** addon (`bootstrap.<platform>.node`) that has no FFmpeg dependency, and the **engine** addon (`node.<platform>.node`) that links FFmpeg dynamically. Importing the package runs this sequence once:
+
+1. Load the bootstrap. It can open shared libraries by absolute path and nothing else.
+2. [Select an FFmpeg 9 installation](/docs/node/ffmpeg-9#how-remedianode-finds-ffmpeg) and open its five libraries through the bootstrap, keeping them resident.
+3. Load the engine addon. The operating system's loader finds FFmpeg already loaded and does not search for it again.
+4. Only then does the package report success; `getFfmpegRuntime()` returns the selected installation.
+
+Why this is needed: an addon's FFmpeg dependencies are resolved by the operating system **before** any JavaScript or Rust initialization code in that addon runs, so the addon cannot pick its own FFmpeg. Setting `LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH` or `PATH` is the traditional workaround; the bootstrap makes it unnecessary.
+
+## Which FFmpeg did Remedia load?
+
+```ts
+import { getFfmpegRuntime } from '@remedia/node';
+
+const { source, directory, libraries, considered } = getFfmpegRuntime();
+
+console.log(source); // 'explicit' | 'system' | 'managed' | 'unmanaged'
+console.log(directory); // for example /home/me/.remedia/ffmpeg9/lib
+for (const library of libraries) console.log(library.name, library.version, library.path);
+```
+
+`getFfmpegRuntime()` performs no search and never loads anything; the selection was made when the package was imported. `considered` lists every candidate that was examined, in order, with `outcome` (`selected` or `rejected`), a `reason` and a `detail` for rejected ones. `source` is `unmanaged` only on a platform that has no bootstrap; there the operating system's loader must find FFmpeg itself and `libraries` is empty.
+
+## Reading an `FfmpegLoadError`
+
+If no installation can be loaded, importing `@remedia/node` rejects with an `FfmpegLoadError`. Its message lists the required ABI majors, each path considered with a reason, and the installer command. The same data is available as `error.candidates`.
+
+```text
+FfmpegLoadError: Remedia could not load a compatible FFmpeg 9 runtime.
+Required ABI majors: libavutil 61, libswresample 7, libavcodec 63, libavformat 63, libavfilter 12.
+Considered:
+  - system: (see detail) -> rejected (not-found): No FFmpeg 9 libraries in 9 system library directories (...).
+  - managed: /home/me/.remedia/ffmpeg9 -> rejected (not-found): The Remedia installer has not installed FFmpeg here.
+
+Install FFmpeg 9 with the Remedia installer:
+  curl -fsSL https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.sh | sh -s -- --ffmpeg-only
+To use another FFmpeg 9 prefix, set REMEDIA_FFMPEG_DIR to the directory that contains lib/.
+```
+
+| Reason                  | Meaning                                                                                                                                     | What to do                                                                                                            |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `not-found`             | The directory does not exist (or no system directory held FFmpeg).                                                                          | Run the [FFmpeg-only installer](/docs/node/ffmpeg-9#install-ffmpeg-with-the-remedia-installer), or fix the path.      |
+| `missing-libraries`     | Some of the five libraries are absent from the directory.                                                                                   | Reinstall FFmpeg; the message names each missing file.                                                                |
+| `abi-mismatch`          | The libraries are a different FFmpeg major (for example FFmpeg 7's `libavcodec.so.61`), or report a different version than their file name. | Install FFmpeg **9.0.2**. Renaming or symlinking other majors does not work.                                          |
+| `architecture-mismatch` | The libraries were built for another CPU (for example x64 libraries under an ARM64 Node.js).                                                | Install libraries matching `node -p process.arch`; on Apple Silicon check you are not running x64 Node under Rosetta. |
+| `unresolved-dependency` | A library needs another shared library that cannot be found (Windows error 126, `cannot open shared object file`, `Library not loaded`).    | Install the missing dependency, or use a self-contained installation such as the installer's prefix.                  |
+| `mixed-installations`   | The five libraries resolved to more than one directory.                                                                                     | Use one installation. Remove stale copies from loader-visible directories.                                            |
+| `load-failed`           | The loader refused a library for another reason, such as an undefined symbol.                                                               | Read the loader message in `detail`.                                                                                  |
+
+An invalid `REMEDIA_FFMPEG_DIR` always fails: Remedia will not quietly use another installation when you named one explicitly. Unset the variable, or point it at a valid prefix.
+
+## Native addon failures after FFmpeg loaded
+
+If the message says FFmpeg 9 _was loaded from_ a directory but the Remedia native addon could not be loaded, the engine addon itself failed. Common causes:
+
+- **`Cannot find native binding`**: the optional `@remedia/node-<platform>` package was not installed. Reinstall with optional dependencies enabled, and check `node -p "process.platform + ' ' + process.arch"` and, on Linux, glibc versus musl. Packages are provided for the targets listed in [package distribution](/docs/node/distribution).
+- **A dependency on a different FFmpeg major** (for example `libavutil.59.dylib`): the addon was built against FFmpeg 7. Use an `@remedia/node` release built for FFmpeg 9.
+- **Another module in the same process loaded a different FFmpeg first.** The operating system uses one copy of a library name per process. If a native module loaded an incompatible `libavcodec` before Remedia, Remedia may be bound to it. Load Remedia first, or avoid combining modules that bundle FFmpeg of a different build with the same major.
+- **`NAPI_RS_NATIVE_LIBRARY_PATH`** still works to load a custom engine addon. FFmpeg discovery runs before it, so that addon must link FFmpeg 9 as well.
+
+## Platform notes
+
+**Linux and FreeBSD.** Libraries are opened by absolute path with `RTLD_LOCAL`, so FFmpeg's symbols stay out of the process-wide scope and cannot interpose another module's libraries. glibc, musl and FreeBSD satisfy the engine's `DT_NEEDED` entries from the already loaded copies by `SONAME`. The installer's conda libraries find their own dependencies through `RUNPATH $ORIGIN`. Remedia does not modify `ld.so.cache`, `ld.so.conf`, or any system directory and needs no administrator rights.
+
+**macOS.** dyld does not substitute a different file for a dependency with an absolute install name, so preloading alone cannot redirect an addon linked against `/opt/homebrew/opt/ffmpeg/lib/libavcodec.63.dylib`. The release build therefore rewrites the engine addon's FFmpeg dependencies to `@rpath/lib….dylib` (and re-signs it), adds `/opt/homebrew/opt/ffmpeg/lib` and `/usr/local/opt/ffmpeg/lib` as fallback rpaths, and dyld then reuses the image the bootstrap preloaded, because its install name matches. You can confirm a build with:
+
+```sh
+otool -L node_modules/@remedia/node-darwin-arm64/node.darwin-arm64.node | grep -i libav
+# @rpath/libavcodec.63.dylib (compatibility version 63.0.0, ...)
+```
+
+If you compile the addon yourself on macOS, run `pnpm --filter @remedia/node build` (or `node .github/scripts/normalize-macos-addon.mjs` after a manual `napi build`), otherwise the addon keeps the build machine's absolute paths and discovery cannot redirect it. Apple Silicon and Intel are handled identically; the architecture of every library is checked against `process.arch` first.
+
+**Windows.** The bootstrap calls `LoadLibraryExW` with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS` on each DLL's absolute path, so a DLL's own dependencies are found next to it. Windows then matches the engine addon's imports (`avcodec-63.dll`, …) against the modules already loaded by name. The process `PATH` is not modified and the current directory is never searched. Paths containing spaces are supported.
+
+## Inspecting binaries yourself
+
+```sh
+ldd node_modules/@remedia/node-linux-x64-gnu/node.linux-x64-gnu.node     # Linux
+otool -L node_modules/@remedia/node-darwin-arm64/node.darwin-arm64.node   # macOS
+```
+
+```powershell
+dumpbin /DEPENDENTS node_modules\@remedia\node-win32-x64-msvc\node.win32-x64-msvc.node
+```
+
+`ldd` on Linux reports FFmpeg libraries as `not found` for a managed installation. That is expected: the bootstrap supplies them at run time. The bootstrap addon itself must show **no** FFmpeg dependency.
+
+## Limits
+
+- Runtime discovery is verified in CI with a fresh Node.js process on Linux x64 / ARM64 glibc, macOS x64 / ARM64, Windows x64 and FreeBSD x64 (the FreeBSD job uses a source-built FFmpeg in `/usr/local`). The bootstrap is also built for the cross-built npm targets (musl, ARMv7, Windows x86 / ARM64, Android), which remain **build-only**: no runtime compatibility is claimed for them.
+- The one-command installer supports Linux x64 / ARM64 glibc, macOS and Windows x64. On other platforms install FFmpeg 9 yourself and use `REMEDIA_FFMPEG_DIR` or the loader's own directories.
+- Remedia does not download or update FFmpeg when imported. Run the installer again to update `~/.remedia/ffmpeg9`.

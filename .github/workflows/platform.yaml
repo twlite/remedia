@@ -157,6 +157,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - name: Test the installers and macOS install-name rewriting
+        run: node --test .github/scripts/installer.test.mjs .github/scripts/normalize-macos-addon.test.mjs
       - name: Verify FFmpeg 9 native dependencies (Linux)
         if: inputs.os == 'linux'
         shell: micromamba-shell {0}
@@ -233,6 +235,14 @@ jobs:
         env:
           RUST_TARGET: ${{ inputs.target }}
         run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target $env:RUST_TARGET
+      - name: Rewrite macOS FFmpeg install names to @rpath
+        if: inputs.os == 'macos'
+        run: node .github/scripts/normalize-macos-addon.mjs
+      - name: Build FFmpeg-free bootstrap addon
+        shell: bash
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: node .github/scripts/build-bootstrap.mjs --target "$RUST_TARGET"
       - name: Stage standalone server binary
         if: inputs.os != 'windows'
         shell: bash
@@ -258,6 +268,7 @@ jobs:
           name: bindings-${{ inputs.target }}
           path: |
             packages/remedia-node/node.*.node
+            packages/remedia-node/bootstrap.*.node
             packages/remedia-node/native.js
             packages/remedia-node/native.d.ts
           if-no-files-found: error
@@ -390,6 +401,82 @@ jobs:
         env:
           REMEDIA_SERVER_BINARY: ${{ runner.temp }}/remedia-server/remedia-server-${{ inputs.target }}${{ inputs.server_suffix }}
         run: pnpm --filter @remedia/client test:server
+
+  installer-e2e:
+    if: inputs.tier == 'supported'
+    name: FFmpeg-only installer and fresh Node.js process on ${{ inputs.target }}
+    needs: build
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Apply the release version before package installation
+        if: inputs.release_version != ''
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: node .github/scripts/release.mjs sync
+      - name: Remove any Homebrew FFmpeg so only the managed prefix can satisfy discovery
+        if: inputs.os == 'macos'
+        run: |
+          brew uninstall --ignore-dependencies ffmpeg || true
+          ! test -e /opt/homebrew/opt/ffmpeg && ! test -e /usr/local/opt/ffmpeg
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 12.16.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          name: bindings-${{ inputs.target }}
+          path: packages/remedia-node
+      - name: Create a clean home directory whose path contains spaces
+        shell: pwsh
+        run: |
+          # $HOME is a read-only automatic variable in PowerShell; use another name.
+          $e2eHome = Join-Path $env:RUNNER_TEMP 'remedia e2e home'
+          New-Item -ItemType Directory -Force -Path $e2eHome | Out-Null
+          "REMEDIA_TEST_HOME=$e2eHome" >> $env:GITHUB_ENV
+      - name: Install FFmpeg only into the clean managed prefix, twice (Unix)
+        if: inputs.os != 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$REMEDIA_TEST_HOME"
+          unset REMEDIA_INSTALL_DIR LD_LIBRARY_PATH DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH
+          sh scripts/install.sh --ffmpeg-only
+          sh scripts/install.sh --ffmpeg-only
+          # No server archive, commands, wrappers or PATH changes may have been created.
+          test "$(ls -A "$HOME/.remedia")" = ffmpeg9
+          ! test -e "$HOME/.bashrc" && ! test -e "$HOME/.zshrc" && ! test -e "$HOME/.profile"
+      - name: Install FFmpeg only into the clean managed prefix, twice (Windows)
+        if: inputs.os == 'windows'
+        shell: pwsh
+        run: |
+          $env:REMEDIA_INSTALL_DIR = Join-Path $env:REMEDIA_TEST_HOME '.remedia'
+          # The documented invocation form, applied to the checked-out script.
+          $script = [scriptblock]::Create((Get-Content -Raw -LiteralPath scripts/install.ps1))
+          & $script -FFmpegOnly
+          & $script -FFmpegOnly
+          $entries = @(Get-ChildItem -LiteralPath $env:REMEDIA_INSTALL_DIR -Name)
+          if (($entries -join ',') -ne 'ffmpeg9') { throw "Unexpected installer output: $($entries -join ', ')" }
+      - run: pnpm --filter @remedia/node build:types
+      - name: Fresh Node.js process using the workspace build and the managed prefix
+        env:
+          REMEDIA_EXPECT_FFMPEG_SOURCE: managed
+          REMEDIA_REQUIRE_FRESH_PROCESS: '1'
+        run: pnpm --filter @remedia/node exec vitest run tests/fresh-process.test.ts
+      - name: Fresh Node.js process using the packed npm packages and the managed prefix
+        shell: bash
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+          REMEDIA_EXPECT_FFMPEG_SOURCE: managed
+        run: node .github/scripts/smoke-packed-package.mjs "$RUST_TARGET"
 
   cross-build:
     if: inputs.tier == 'cross'
@@ -627,12 +714,24 @@ jobs:
         env:
           RUST_TARGET: ${{ inputs.target }}
         run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target $env:RUST_TARGET
+      - name: Build FFmpeg-free bootstrap addon for distribution
+        if: inputs.os != 'freebsd'
+        shell: bash
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: |
+          case "$RUST_TARGET" in
+            *-musl) node .github/scripts/build-bootstrap.mjs --target "$RUST_TARGET" --cross-compile ;;
+            *) node .github/scripts/build-bootstrap.mjs --target "$RUST_TARGET" ;;
+          esac
       - name: Upload cross-built native bindings for npm
         if: inputs.os != 'freebsd'
         uses: actions/upload-artifact@v7
         with:
           name: bindings-${{ inputs.target }}
-          path: packages/remedia-node/node.*.node
+          path: |
+            packages/remedia-node/node.*.node
+            packages/remedia-node/bootstrap.*.node
           if-no-files-found: error
           retention-days: 7
       - name: Start FreeBSD 15.1 native VM
@@ -693,6 +792,7 @@ jobs:
           cargo test --workspace --release --locked
           cargo build --release --locked -p remedia-server --bins
           pnpm --filter @remedia/node exec napi build --platform --esm --js native.js --dts native.d.ts --release --target x86_64-unknown-freebsd
+          node .github/scripts/build-bootstrap.mjs --target x86_64-unknown-freebsd
           pnpm --filter @remedia/node build:types
           pnpm --filter @remedia/client build
           pnpm --filter @remedia/node test:bindings

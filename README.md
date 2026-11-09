@@ -41,6 +41,15 @@ npm install @remedia/client @remedia/node
 
 Install **FFmpeg 9 shared libraries** separately on hosts running the native addon or standalone
 server. They are not bundled. Remote-only clients do not need FFmpeg or the native addon.
+For an embedded `@remedia/node` application, install only FFmpeg (to `~/.remedia/ffmpeg9`, found
+automatically with no environment variables):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.sh | sh -s -- --ffmpeg-only
+```
+
+On Windows PowerShell use
+`& ([scriptblock]::Create((irm https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.ps1))) -FFmpegOnly`.
 See [installing FFmpeg 9](apps/docs/content/docs/node/ffmpeg-9.mdx) and the [distribution guide](apps/docs/content/docs/node/distribution.mdx) for supported targets.
 
 ## Example
