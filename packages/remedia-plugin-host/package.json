@@ -1,8 +1,10 @@
 {
   "name": "@remedia/plugin-host",
   "version": "0.1.0",
+  "private": false,
   "description": "Generic plugin operation host with direct requests and optional HTTP protocol",
   "license": "MIT",
+  "repository": "https://github.com/twlite/remedia.git",
   "files": [
     "dist",
     "README.md",
