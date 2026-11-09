@@ -919,14 +919,26 @@ describe('Rust server with generic plugin hosts', () => {
       release();
     }
 
-    await sleep(800);
+    // HTTP and OS socket buffers can continue filling after pause, especially on Windows.
+    // Require the producer to stop reading for a full second, within a bounded deadline,
+    // rather than assuming those buffers settle during a fixed initial sleep.
+    await expect
+      .poll(
+        async () => {
+          const before = stats().pulled;
+
+          await sleep(1_000);
+          // 3600 s of audio is ~659 MiB; even while settling, the pipeline must stay bounded.
+          expect(stats().pulled).toBeLessThan(16 * 1024 * 1024);
+
+          return stats().pulled === before;
+        },
+        { timeout: 10_000, interval: 100 },
+      )
+      .toBe(true);
 
     const paused = stats().pulled;
 
-    // 3600 s of audio is ~659 MiB; a paused player must hold only a bounded pipeline.
-    expect(paused).toBeLessThan(16 * 1024 * 1024);
-    await sleep(800);
-    expect(stats().pulled - paused).toBeLessThan(64 * 1024);
     expect((await pluginStats('host-a')).resources.activeStreams).toBe(1);
 
     await node.control(guildId, 'player.resume');
@@ -954,7 +966,7 @@ describe('Rust server with generic plugin hosts', () => {
     await expect.poll(async () => (await pluginStats('host-a')).resources.activeStreams).toBe(0);
     expect(started.generation).toBeGreaterThan(0);
     await stopAll(guildId);
-  });
+  }, 20_000);
 
   it('enforces separate pending-operation and active-stream limits', async () => {
     const [one, two] = [guild(), guild()];
