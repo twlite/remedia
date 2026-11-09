@@ -95,6 +95,6 @@ dumpbin /DEPENDENTS node_modules\@remedia\node-win32-x64-msvc\node.win32-x64-msv
 
 ## Limits
 
-- Runtime discovery is verified in CI with a fresh Node.js process on Linux x64 / ARM64 glibc, macOS x64 / ARM64, Windows x64 and FreeBSD x64 (the FreeBSD job uses a source-built FFmpeg in `/usr/local`). The bootstrap is also built for the cross-built npm targets (musl, ARMv7, Windows x86 / ARM64, Android), which remain **build-only**: no runtime compatibility is claimed for them.
+- A fresh Node.js process without loader variables is exercised by the `fresh-process` test in the Node.js test jobs wherever the runner has an FFmpeg 9 reachable without them. The installer-managed `~/.remedia/ffmpeg9` path was verified by hand on macOS ARM64 and Linux ARM64 glibc; it has no automatic CI job, and Windows, macOS x64 and Linux x64 have not been verified that way. The bootstrap is also built for the cross-built npm targets (musl, ARMv7, Windows x86 / ARM64, Android), which remain **build-only**: no runtime compatibility is claimed for them.
 - The one-command installer supports Linux x64 / ARM64 glibc, macOS and Windows x64. On other platforms install FFmpeg 9 yourself and use `REMEDIA_FFMPEG_DIR` or the loader's own directories.
 - Remedia does not download or update FFmpeg when imported. Run the installer again to update `~/.remedia/ffmpeg9`.

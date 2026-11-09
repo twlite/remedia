@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'vitest';
 
 import {
@@ -229,9 +229,9 @@ describe('system library directories', () => {
       }),
     );
 
-    assert.deepEqual(directories.slice(0, 2), ['/custom/one', '/custom/two']);
-    assert.ok(directories.includes('/opt/homebrew/opt/ffmpeg/lib'));
-    assert.ok(directories.includes('/usr/local/opt/ffmpeg/lib'));
+    assert.deepEqual(directories.slice(0, 2), [resolve('/custom/one'), resolve('/custom/two')]);
+    assert.ok(directories.includes(resolve('/opt/homebrew/opt/ffmpeg/lib')));
+    assert.ok(directories.includes(resolve('/usr/local/opt/ffmpeg/lib')));
     assert.ok(!directories.some((directory) => directory.includes('relative')));
   });
 
@@ -244,9 +244,9 @@ describe('system library directories', () => {
       }),
     );
 
-    assert.equal(directories[0], '/opt/ffmpeg/lib');
-    assert.ok(directories.includes('/usr/lib/x86_64-linux-gnu'));
-    assert.ok(directories.includes('/usr/lib64'));
+    assert.equal(directories[0], resolve('/opt/ffmpeg/lib'));
+    assert.ok(directories.includes(resolve('/usr/lib/x86_64-linux-gnu')));
+    assert.ok(directories.includes(resolve('/usr/lib64')));
     assert.ok(!directories.includes(process.cwd()));
     assert.equal(new Set(directories).size, directories.length, 'directories are de-duplicated');
   });
@@ -421,7 +421,7 @@ describe('discovery precedence', () => {
           /libavcodec 63, libavformat 63, libavutil 61, libavfilter 12, libswresample 7|libavutil 61.*libavfilter 12/,
         );
         assert.ok(error.message.includes(join(home, '.remedia', 'ffmpeg9')));
-        assert.match(error.message, /--ffmpeg-only/);
+        assert.match(error.message, /--ffmpeg-only|-FFmpegOnly/);
         assert.match(error.message, /REMEDIA_FFMPEG_DIR/);
 
         return true;

@@ -36,10 +36,12 @@ binary inspection, and Node.js integration tests:
 | Windows x64 with MSVC  | @remedia/node-win32-x64-msvc  |
 
 These release jobs run with Node.js 22.18, 24, and 26. The package declares Node.js 22.18 or newer.
-In addition, each of these targets installs FFmpeg into a clean Remedia-managed prefix with the
-FFmpeg-only installer, then starts a fresh Node.js process with `LD_LIBRARY_PATH`, `DYLD_*` and a
-reduced `PATH` unset, imports the packed `@remedia/node` and platform packages, and probes and
-decodes audio through the discovered FFmpeg.
+The Node.js test jobs also run a fresh-process test that removes every FFmpeg loader variable, imports
+the built package, and probes and plays audio through the discovered FFmpeg. It runs wherever a
+runner has an FFmpeg 9 reachable without loader variables (for example Homebrew on the macOS
+runners). Installing into a clean managed prefix with the FFmpeg-only installer is not an automatic
+CI job; `.github/scripts/smoke-packed-package.mjs` performs that check against packed tarballs and
+is run manually.
 The Node-API addon also has runtime tests for decoding and playback, addon loading, Discord voice
 components, the embedded client, and the standalone server using the built server binary.
 

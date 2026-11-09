@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, test } from 'vitest';
 
 import { FFMPEG_LIBRARIES, layoutDirectories, libraryFileName } from '../lib/ffmpeg-runtime.js';
@@ -73,7 +73,8 @@ function run(env: NodeJS.ProcessEnv) {
 
   writeFileSync(file, script);
 
-  return spawnSync(process.execPath, [file, distEntry, fixture], {
+  // Node's ESM loader requires a file:// URL for absolute paths on Windows.
+  return spawnSync(process.execPath, [file, pathToFileURL(distEntry).href, fixture], {
     encoding: 'utf8',
     env,
     timeout: 60_000,
