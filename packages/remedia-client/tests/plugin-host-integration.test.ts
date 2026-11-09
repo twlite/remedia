@@ -16,7 +16,7 @@ import {
   type PluginHost,
 } from '@remedia/plugin-host';
 import { createNodeMiddleware } from '@remedia/plugin-host/node';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 import { RemediaRpcError } from '../lib/errors.js';
 import { RemoteNodeAdapter, RemoteNodeEvent } from '../lib/remote-node.js';
@@ -329,7 +329,14 @@ describe('Rust server with generic plugin hosts', () => {
   let externalRequests = 0;
   let nextGuild = 300000000000000000n;
 
-  const guild = (): string => String((nextGuild += 1n));
+  const testGuilds = new Set<string>();
+  const guild = (): string => {
+    const id = String((nextGuild += 1n));
+
+    testGuilds.add(id);
+
+    return id;
+  };
   const op = (hostId: string, input: unknown, operation = OPERATION) => ({
     type: 'operation' as const,
     hostId,
@@ -506,6 +513,12 @@ describe('Rust server with generic plugin hosts', () => {
     await node.start();
   }, 180_000);
 
+  afterEach(async () => {
+    // A failed assertion must not leave a paused player or prepared stream in the next test.
+    await Promise.all([...testGuilds].map(stopAll));
+    testGuilds.clear();
+  });
+
   afterAll(async () => {
     await node?.close();
 
@@ -678,11 +691,11 @@ describe('Rust server with generic plugin hosts', () => {
     await node.createGuild(guildId);
 
     const abortedBefore = hostA.behaviour.aborted;
+    const startedBefore = hostA.behaviour.started;
     const pending = node.play(guildId, op('host-a', { track: 'hang' }));
     const outcome = codeOf(pending);
 
-    await expect.poll(() => hostA.behaviour.started).toBeGreaterThan(0);
-    await sleep(150);
+    await expect.poll(() => hostA.behaviour.started).toBeGreaterThan(startedBefore);
     await node.control(guildId, 'player.stop');
     expect(await outcome).toBe('cancelled');
     await expect.poll(() => hostA.behaviour.aborted).toBe(abortedBefore + 1);
@@ -752,9 +765,12 @@ describe('Rust server with generic plugin hosts', () => {
     expect(hostA.behaviour.calls.get('slow-ignore') ?? 0).toBe(callsBefore);
 
     // A newer revision supersedes a pending preparation.
+    const callsBeforeOlder = hostA.behaviour.calls.get('hang') ?? 0;
     const older = codeOf(stage('first', 1, 'hang'));
 
-    await expect.poll(() => hostA.behaviour.started).toBeGreaterThan(0);
+    // Wait for this request to own its cancellation scope, rather than a cumulative counter
+    // which was already positive before staging. Concurrent RPC tasks can start out of order.
+    await expect.poll(() => hostA.behaviour.calls.get('hang') ?? 0).toBe(callsBeforeOlder + 1);
 
     const newer = (await stage('second', 2, 'mp3')) as { entryId: string };
 
@@ -765,17 +781,19 @@ describe('Rust server with generic plugin hosts', () => {
       .toBe('ready');
 
     // Clearing discards both the pending and prepared stage.
+    const callsBeforeClear = hostA.behaviour.calls.get('hang') ?? 0;
     const pending = codeOf(stage('third', 3, 'hang'));
 
-    await sleep(100);
+    await expect.poll(() => hostA.behaviour.calls.get('hang') ?? 0).toBe(callsBeforeClear + 1);
     await node.control(guildId, 'player.stage.clear');
     expect(await pending).toBe('cancelled');
     expect(await node.control(guildId, 'player.stage.state')).toBeNull();
 
     // An older revision than one in flight is rejected without a second operation.
+    const callsBeforeStop = hostA.behaviour.calls.get('hang') ?? 0;
     const inFlight = codeOf(stage('fourth', 5, 'hang'));
 
-    await sleep(100);
+    await expect.poll(() => hostA.behaviour.calls.get('hang') ?? 0).toBe(callsBeforeStop + 1);
     expect(await codeOf(stage('fifth', 4, 'hang'))).toBe('stale_generation');
     await node.control(guildId, 'player.stop');
     expect(await inFlight).toBe('cancelled');
