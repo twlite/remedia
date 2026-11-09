@@ -25,7 +25,7 @@ test('undefined means unhandled, including direct calls', async () => {
 test('media factory opens lazily only after URL redemption', async () => {
   const host = createPluginHost({ name: 'Lazy', publicUrl: 'http://localhost:3000' });
   let opened = 0;
-  const media = createMediaSource({ open: () => { opened++; return Readable.from(['media']); }, contentType: 'audio/webm' });
+  const media = createMediaSource({ open: () => { opened++; return Readable.from([Buffer.from('media')]); }, contentType: 'audio/webm' });
   assert.equal(isMediaSource(media), true);
   host.register({ id: 'org.example.lazy', operations: { anyName: () => media } });
   assert.strictEqual((await host.execute('org.example.lazy', 'anyName', {})).result, media);
