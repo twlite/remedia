@@ -27,6 +27,9 @@ struct Cli {
     /// Optional .env file. Missing files are ignored, malformed files are not.
     #[arg(long = "optional-env-file", value_name = "PATH", global = true)]
     optional_env_files: Vec<PathBuf>,
+    /// Shut down gracefully when the supervising process closes stdin (serve only).
+    #[arg(long, global = true)]
+    shutdown_on_stdin_close: bool,
     /// Generate a safe starter configuration without overwriting existing files.
     #[arg(long, num_args = 0..=1, default_missing_value = "remedia.config.json", value_name = "PATH")]
     generate_config_file: Option<PathBuf>,
@@ -79,6 +82,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         return Err(
             "--env-file and --optional-env-file are only valid with serve or doctor".into(),
         );
+    }
+    if cli.shutdown_on_stdin_close
+        && (!uses_config || !matches!(cli.command.as_ref(), None | Some(Commands::Serve)))
+    {
+        return Err("--shutdown-on-stdin-close is only valid with serve".into());
     }
     if let Some(path) = &cli.generate_config_file {
         if cli.command.is_some() || cli.list || cli.json {
@@ -155,6 +163,9 @@ fn launch_runtime(cli: &Cli, doctor: bool) -> Result<(), Box<dyn std::error::Err
     }
     for path in &cli.optional_env_files {
         command.arg("--optional-env-file").arg(path);
+    }
+    if cli.shutdown_on_stdin_close {
+        command.arg("--shutdown-on-stdin-close");
     }
     if doctor {
         command.arg("--doctor");
@@ -293,6 +304,27 @@ mod tests {
                 .command,
             Some(Commands::Doctor)
         ));
+    }
+
+    #[tokio::test]
+    async fn stdin_shutdown_is_only_valid_for_serve() {
+        for args in [
+            vec!["remedia-server", "--shutdown-on-stdin-close", "doctor"],
+            vec!["remedia-server", "--shutdown-on-stdin-close", "--list"],
+            vec![
+                "remedia-server",
+                "--shutdown-on-stdin-close",
+                "--generate-config-file",
+            ],
+        ] {
+            let error = run(Cli::try_parse_from(args).unwrap()).await.unwrap_err();
+            assert!(error.to_string().contains("only valid with serve"));
+        }
+        assert!(
+            Cli::try_parse_from(["remedia-server", "serve", "--shutdown-on-stdin-close"])
+                .unwrap()
+                .shutdown_on_stdin_close
+        );
     }
 
     #[test]

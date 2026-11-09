@@ -63,7 +63,7 @@ interface Behaviour {
   /** Deployment label which decides what the `deployment` track returns. */
   deployment: string;
   externalUrl?: string;
-  /** Hold every `media` stream open after its first bytes until released. */
+  /** Hold WAV production after the probe budget until pause is acknowledged. */
   gate?: Promise<void>;
 }
 
@@ -156,7 +156,7 @@ async function startHost(options: {
   return harness;
 }
 
-function wavStream(seconds: number, stats: StreamStats): Readable {
+function wavStream(seconds: number, stats: StreamStats, gate?: Promise<void>): Readable {
   const dataBytes = seconds * 48_000 * 4;
   const header = Buffer.alloc(44);
 
@@ -178,7 +178,12 @@ function wavStream(seconds: number, stats: StreamStats): Readable {
 
   const stream = new Readable({
     highWaterMark: 16 * 1024,
-    read() {
+    async read() {
+      if (gate && stats.pulled >= 1024 * 1024) {
+        await gate;
+        if (this.destroyed) return;
+      }
+
       if (!sentHeader) {
         sentHeader = true;
         stats.pulled += header.length;
@@ -241,7 +246,7 @@ async function produce(harness: Harness, input: unknown, signal: AbortSignal): P
 
           behaviour.streams.push(stats);
 
-          return wavStream(spec.seconds ?? 30, stats);
+          return wavStream(spec.seconds ?? 30, stats, behaviour.gate);
         },
       });
     case 'hang':
@@ -468,9 +473,18 @@ describe('Rust server with generic plugin hosts', () => {
     server = spawn(
       binary ?? 'cargo',
       binary
-        ? ['--config', configPath]
-        : ['run', '--quiet', '-p', 'remedia-server', '--', '--config', configPath],
-      { cwd: repositoryRoot, stdio: ['ignore', 'pipe', 'pipe'] },
+        ? ['--config', configPath, '--shutdown-on-stdin-close']
+        : [
+            'run',
+            '--quiet',
+            '-p',
+            'remedia-server',
+            '--',
+            '--config',
+            configPath,
+            '--shutdown-on-stdin-close',
+          ],
+      { cwd: repositoryRoot, stdio: ['pipe', 'pipe', 'pipe'] },
     );
     server.stderr?.resume();
 
@@ -498,7 +512,7 @@ describe('Rust server with generic plugin hosts', () => {
     if (server && server.exitCode === null) {
       const closed = once(server, 'close');
 
-      server.kill('SIGTERM');
+      server.stdin?.end();
       await Promise.race([closed, sleep(5_000)]);
     }
 
@@ -626,8 +640,9 @@ describe('Rust server with generic plugin hosts', () => {
         node.play(guildId, { ...op('host-a', { track: 'mp3' }), operation: 'other.op' }),
       ),
     ).toBe('plugin_operation_not_allowed');
-    expect(await codeOf(node.play(guildId, op('host-down', { track: 'mp3' })))).toBe(
-      'plugin_host_unavailable',
+    // A refused connection can exceed the request deadline while the OS retries (Windows).
+    expect(['plugin_host_unavailable', 'request_timeout']).toContain(
+      await codeOf(node.play(guildId, op('host-down', { track: 'mp3' }))),
     );
     expect(await codeOf(node.play(guildId, op('host-a', { track: 'declined' })))).toBe(
       'plugin_operation_declined',
@@ -868,11 +883,24 @@ describe('Rust server with generic plugin hosts', () => {
     await node.createGuild(guildId);
 
     const stats = (): StreamStats => hostA.behaviour.streams.at(-1)!;
-    // Decoding runs far faster than real time into a null output, so the track must be long enough
-    // that neither the pause below nor the forward seek can reach its end on a fast runner.
-    const started = await node.play(guildId, op('host-a', { track: 'wav', seconds: 3600 }));
+    // Let FFmpeg probe, then hold the producer until pause is acknowledged. Null output can
+    // otherwise consume arbitrarily much audio before the pause RPC is scheduled.
+    let release!: () => void;
 
-    await node.control(guildId, 'player.pause');
+    hostA.behaviour.gate = new Promise<void>((done) => {
+      release = done;
+    });
+
+    let started;
+
+    try {
+      started = await node.play(guildId, op('host-a', { track: 'wav', seconds: 3600 }));
+      await node.control(guildId, 'player.pause');
+    } finally {
+      delete hostA.behaviour.gate;
+      release();
+    }
+
     await sleep(800);
 
     const paused = stats().pulled;
@@ -1039,13 +1067,12 @@ describe('Rust server with generic plugin hosts', () => {
 
     const closed = once(server, 'close');
 
-    server.kill('SIGTERM');
+    server.stdin?.end();
 
-    const [code] = (await Promise.race([closed, sleep(10_000).then(() => 'timeout')])) as [
-      number | string | null,
-    ];
+    const result = await Promise.race([closed, sleep(10_000).then(() => null)]);
 
-    expect(code).toBe(0);
+    expect(result, 'server did not exit after stdin closed').not.toBeNull();
+    expect(result?.[0]).toBe(0);
     await expect.poll(() => stats.disposed).toBe(true);
   }, 30_000);
 });

@@ -40,6 +40,14 @@ remedia-server --config /etc/remedia/server.json
 
 Running without a subcommand is equivalent to `serve`. The default configuration path is `./remedia.config.json`, relative to the process working directory. A configuration file is required, and its contents are validated before the WebSocket listener opens.
 
+When supervising a child server through a pipe, pass `--shutdown-on-stdin-close` to
+`serve` and keep its standard input open. Closing the pipe requests graceful shutdown:
+active transfers and playback stop, resources are released, and the CLI waits for the
+runtime to exit. This works on Windows as well as Unix. Input bytes are discarded;
+EOF triggers shutdown. Without the flag, stdin does not control server lifetime.
+On Windows, terminating the CLI with `SIGTERM` from Node.js forcibly kills it and does
+not request graceful shutdown of its child runtime.
+
 ## Generate a configuration file
 
 ```sh

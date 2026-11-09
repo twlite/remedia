@@ -26,7 +26,7 @@ describe('SDK against the Rust WebSocket server', () => {
     node = undefined;
     if (server && server.exitCode === null) {
       const closed = once(server, 'close');
-      server.kill('SIGTERM');
+      server.stdin?.end();
       await Promise.race([closed, new Promise((resolveWait) => setTimeout(resolveWait, 3_000))]);
     }
     server = undefined;
@@ -83,9 +83,18 @@ describe('SDK against the Rust WebSocket server', () => {
       server = spawn(
         serverBinary ?? 'cargo',
         serverBinary
-          ? ['--config', configPath]
-          : ['run', '--quiet', '-p', 'remedia-server', '--', '--config', configPath],
-        { cwd: repositoryRoot, stdio: ['ignore', 'pipe', 'pipe'] },
+          ? ['--config', configPath, '--shutdown-on-stdin-close']
+          : [
+              'run',
+              '--quiet',
+              '-p',
+              'remedia-server',
+              '--',
+              '--config',
+              configPath,
+              '--shutdown-on-stdin-close',
+            ],
+        { cwd: repositoryRoot, stdio: ['pipe', 'pipe', 'pipe'] },
       );
       server.stderr?.resume();
       const url = await waitForServer(server);
