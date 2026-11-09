@@ -1,42 +1,71 @@
 # @remedia/plugin-host
 
-Framework-independent, experimental plugin operation host for Remedia. Remedia does not load any provider-specific libraries. Consumers register operations using their own application-level adapters.
+A framework-independent operation host with direct in-process dispatch and optional HTTP transport. Remedia does not load provider-specific libraries. Consumers register handlers for their own operation names.
 
-The same registration supports direct invocation and optional HTTP access. Local calls do not create an HTTP server, serialize their arguments, or round-trip through Fetch.
-
-## Direct invocation (no server)
+## Direct request objects, without HTTP
 
 ```js
-import { createPluginHost } from '@remedia/plugin-host';
+import { createPluginHost, createMediaSource } from '@remedia/plugin-host';
 
-const host = createPluginHost({ name: 'Sources' });
+const host = createPluginHost({ name: 'Local operations' });
 host.register({
-  id: 'example.catalog',
+  id: 'example.source',
   operations: {
-    lookup: async ({ id }, { signal }) => ({ id, title: 'Example audio' }),
+    'source.resolve': async ({ id }) => ({ id, title: 'Example source' }),
+    'source.open': ({ id }) => createMediaSource({
+      contentType: 'audio/mpeg',
+      open: async ({ signal }) => {
+        const response = await fetch(`https://media.example.net/${encodeURIComponent(id)}`, { signal });
+        if (!response.ok || !response.body) throw new Error('Cannot open source');
+        return response.body;
+      },
+    }),
   },
 });
 
-const { handled, result } = await host.execute('example.catalog', 'lookup', { id: '123' });
+// No HTTP listener or JSON serialization.
+const resolved = await host.handle({
+  pluginId: 'example.source',
+  operation: 'source.resolve',
+  input: { id: '123' },
+});
+
+const source = await host.handle({
+  pluginId: 'example.source',
+  operation: 'source.open',
+  input: { id: '123' },
+});
+
+if (source.handled) {
+  const controller = new AbortController();
+  const media = await source.result.open({ signal: controller.signal });
+  // Pass the stream to the local media consumer.
+  await media.cancel?.();
+}
+
 await host.close();
 ```
 
-An external integration can register any operation names it needs. Remedia does not know about music search, particular audio providers, or application-specific track classes.
+The direct API is `host.handle({ pluginId, operation, input, signal? })`. `host.execute(pluginId, operation, input, { signal? })` provides a positional equivalent. Both return `{ handled, result? }` and preserve the original value, including class instances, streams, and functions. An `undefined` result means unhandled; `null`, `false`, and other values are handled.
 
-## HTTP using Fetch
+No `publicUrl` or HTTP framework is needed for direct communication. `host.manifest()` provides the registered capabilities in-process.
+
+## Optional HTTP transport
 
 ```js
-const host = createPluginHost({
-  name: 'Media services',
-  publicUrl: 'http://127.0.0.1:3000',
+const remote = createPluginHost({
+  name: 'Remote operations',
+  publicUrl: 'https://plugins.example.com',
   token: process.env.REMEDIA_PLUGIN_TOKEN,
 });
 
-// Standard Request -> Response; forward using a Fetch-based framework
-const response = await host.fetch(new Request('http://127.0.0.1:3000/.well-known/remedia'));
+// Register the same plugin definitions as local mode.
+const response = await remote.fetch(
+  new Request('https://plugins.example.com/.well-known/remedia'),
+);
 ```
 
-A host has `manifest()` for in-process discovery and `matches(path)` for recognizing protocol routes. `fetch()` does not listen on a port.
+The HTTP adapter dispatches to the same underlying handlers through `host.handle()`. HTTP requests must carry JSON-compatible values; local calls do not have that restriction.
 
 ## Express, Connect, and Node HTTP
 
@@ -45,27 +74,25 @@ import express from 'express';
 import { createNodeMiddleware } from '@remedia/plugin-host/node';
 
 const app = express();
-app.use(createNodeMiddleware(host)); // Before body parsers, mounted at the origin root
+app.use(createNodeMiddleware(remote)); // Mount before body parsers, at the origin root.
 app.get('/health', (_, res) => res.json({ ok: true }));
 app.listen(3000);
 ```
 
-Unrecognized paths fall through to the next middleware. Plain Node HTTP can use the same adapter. Frameworks built on the standard Fetch API, including Hono, may forward Requests to `host.fetch` or use their own router adapter.
+Unknown paths pass to the next middleware. Plain Node HTTP can use the same adapter. Fetch-based frameworks such as Hono can forward requests to `host.fetch(request)`. The core host never starts a listener.
 
 ## HTTP protocol
 
-- `GET /.well-known/remedia`: host name, version, and registered capabilities.
-- `POST /remedia/v1/execute`: `{ "pluginId": "...", "operation": "...", "input": ... }` with optional Bearer authentication. Returns `{ "handled": true, "result": ... }` or `{ "handled": false }`.
-- `GET /remedia/v1/media/:token`: a short-lived, one-use stream of encoded media bytes.
+- `GET /.well-known/remedia` returns the host name, protocol version, and plugin operations.
+- `POST /remedia/v1/execute` accepts `{ pluginId, operation, input }` and optionally `Authorization: Bearer ...`. Returns `{ handled: true, result }` or `{ handled: false }`.
+- `GET /remedia/v1/media/:token` redeems short-lived, single-use media bytes.
 
-Only JSON-compatible values can cross the HTTP boundary. Direct `execute()` returns handler results untouched, including functions, streams, and class instances. An operation may return any Node/Web readable or a lazy media source created via `createMediaSource({ open: ({ signal }) => readable })`. The lazy source's `open()` runs when the media URL is fetched, not when its descriptor is generated.
+There are no reserved provider or operation names. A registered operation can return a Node/Web stream or a lazy media source constructed with `createMediaSource({ open, contentType })`. For HTTP requests, the host returns a temporary media URL, and invokes a lazy media factory only when the URL is requested. Local calls receive the media object directly.
 
-HTTP execute requests have a 64 KiB body limit. Remote media descriptors require `publicUrl`; local-only hosts do not. The one-use media endpoint is non-seekable and has no Range support yet.
+HTTP request bodies are capped at 64 KiB. Remote media descriptors require `publicUrl`, but local-only hosts do not. The HTTP media endpoint is currently non-seekable and does not support Range requests.
 
-Media URLs are bearer capabilities and must not be logged or exposed to untrusted callers. Operate on a trusted network with TLS and explicit outbound access controls. The host does not sandbox plugins and optional HTTP authentication is not a substitute for isolation.
+Media URLs act as bearer credentials. Keep services on trusted networks with TLS and appropriate access controls. Plugins run with host-process permissions and are not sandboxed.
 
-The `remedia` well-known URI suffix is currently unregistered; RFC 8615 requires registration for formally defined well-known URIs. Registration should follow a stable public protocol specification.
+## Integration boundaries
 
-## Scope
-
-This package is a generic host, **not a provider loader**. Provider/extractor adapters belong in consuming applications. Native `remedia-server` discovery, authenticated HTTP operation forwarding, media URL authorization, and end-to-end playback are separate integration work and not yet present in this PR.
+The package provides generic registration, execution, lifecycle, and optional transport. Application-specific adapters belong to consuming applications. Rust `remedia-server` discovery, forwarding, media authorization, and end-to-end plugin playback still require integration; they are not provided by this package.
