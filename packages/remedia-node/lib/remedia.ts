@@ -76,6 +76,18 @@ export class Remedia extends RemediaEventEmitter<RemediaLifecycleEvents> {
   }
 
   /**
+   * Read cached native resources for the shared Node.js process. Refresh runs off
+   * the calling thread at most once per second; the first snapshot has null counters.
+   * @returns Process-wide byte and CPU-time counters, shared by all embedded instances.
+   */
+  processResources(): import('./resources.js').ProcessResourceStatistics {
+    this.#assertOpen();
+    return JSON.parse(
+      this.#native.processResourcesJson(),
+    ) as import('./resources.js').ProcessResourceStatistics;
+  }
+
+  /**
    * Inspect a disposable source without creating playback or voice resources. Readables may be partially or fully consumed.
    * @param source - Encoded input; acquire a fresh source for subsequent playback.
    * @param options - Cancellation and total deadline; defaults to 15000 ms.

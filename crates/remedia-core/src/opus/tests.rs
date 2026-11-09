@@ -317,3 +317,19 @@ fn live_filter_transition_keeps_partial_opus_pcm_and_does_not_flush_sink() {
     assert_eq!(state.flushes, 0, "filter changes must not flush the sink");
     assert!(state.finished);
 }
+
+#[test]
+fn queued_packets_own_only_the_encoded_payload() {
+    let sink = CaptureSink::default();
+    let captured = Arc::clone(&sink.0);
+    let output = OpusEncoderOutput::new(sink).unwrap();
+    output
+        .write_frame(pcm(0, 960 * 4), &CancellationToken::new())
+        .unwrap();
+    let state = lock(&captured);
+    assert_eq!(state.packets.len(), 4);
+    for (index, packet) in state.packets.iter().enumerate() {
+        assert_eq!(packet.bytes.capacity(), packet.bytes.len());
+        assert_eq!(packet.start_sample, index as u64 * 960);
+    }
+}

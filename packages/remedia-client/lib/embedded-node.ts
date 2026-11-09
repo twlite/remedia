@@ -62,6 +62,7 @@ interface EmbeddedDiscordSession extends EmbeddedPlayback {
 }
 
 interface EmbeddedRemedia {
+  processResources?(): import('./types.js').ProcessResourceStatistics;
   probe(source: MediaSource, options?: import('./types.js').ProbeOptions): Promise<AudioStreamInfo>;
   createDiscordSession(options: DiscordSessionOptions): EmbeddedDiscordSession;
   receive(packet: unknown): void;
@@ -111,15 +112,23 @@ export class EmbeddedNodeAdapter implements NodeAdapter {
 
   get snapshot(): NodeSnapshot {
     const active = this.#sessions.size;
+    const resources = this.#engine?.processResources?.() ?? null;
     const statistics: NodeStatistics = {
       playersActive: active,
       playersMaximum: this.#capacity,
+      playersAvailable: Math.max(0, this.#capacity - active),
+      playbackActive: [...this.#sessions.values()].filter((session) =>
+        ['starting', 'playing', 'pausing', 'paused', 'resuming', 'stopping'].includes(
+          session.state,
+        ),
+      ).length,
       connectionsActive: active,
       connectionsMaximum: this.#capacity,
       transportHealth: this.#status === 'healthy' ? 'healthy' : 'unknown',
       processingHealth: this.#status === 'healthy' ? 'healthy' : 'unknown',
-      cpu: {},
-      memory: {},
+      cpu: resources?.cpu ?? {},
+      memory: resources?.memory ?? {},
+      resources,
     };
     return {
       id: this.id,

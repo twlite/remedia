@@ -5,7 +5,14 @@ pub(super) fn wait_for_start(shared: &SessionShared, generation: u64) -> bool {
     while data.generation == generation && data.state == PlaybackState::Starting {
         data = wait(&shared.changed, data);
     }
-    data.generation == generation && data.state == PlaybackState::Playing
+    data.generation == generation
+        && matches!(
+            data.state,
+            PlaybackState::Playing
+                | PlaybackState::Pausing
+                | PlaybackState::Paused
+                | PlaybackState::Resuming
+        )
 }
 
 pub(super) fn encoded_packet_from_demuxed(

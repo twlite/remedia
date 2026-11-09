@@ -11,6 +11,9 @@ pull-based. The core also provides a transport-independent Opus output adapter;
 the [Discord voice guide](/docs/discord/voice-output) shows how to connect it to the Discord
 transport.
 
+See [Playback performance](/docs/core/performance) for concurrent benchmark commands,
+filter worker limits, and measurement boundaries.
+
 ## Start and observe playback
 
 Choose an explicit file or HTTP(S) source and move an output into the session.
@@ -368,9 +371,18 @@ that cannot seek.
 
 ## Crossfade playback
 
-Crossfade is disabled by default. Opted-in sessions decode stereo 48 kHz PCM and mix
-the sources with a sample-accurate equal-power curve. One output and Opus encoder
-remain open across promotions. Ordinary sessions retain their existing Opus
+Crossfade is disabled by default. Opted-in sessions can pass through eligible Opus
+packets outside an overlap, and decode stereo 48 kHz PCM when mixing is required.
+A whole packet must fit before the overlap boundary; otherwise the decoder warms
+from bounded compressed history and trims to the exact source boundary. The sources
+mix with a sample-accurate equal-power curve. One output and Opus encoder
+remain open across promotions. Prepared sources keep their existing producer and
+bounded PCM buffer after promotion; they continue transcoding rather than reopen
+the source or bypass decoded samples. Direct sources can restore passthrough after
+temporary volume processing only at matching source and encoder packet boundaries.
+A gain update that leaves passthrough waits for PCM activation; restoration can
+complete later when the direct source reaches a safe boundary.
+Seeking disables passthrough restoration for that direct source. Ordinary sessions retain their existing Opus
 passthrough selection and allocate no staging decoder or PCM buffer.
 
 Defaults are a 5000 ms fade and a 30000 ms preparation lead. The engine emits

@@ -224,6 +224,8 @@ impl PlaybackSession {
     /// decoder/output error. The wait can include a blocking input read or
     /// bounded-output backpressure; `stop` cancels it. While paused, the value
     /// is staged for the resume boundary instead of making this call wait.
+    /// Crossfade sources retain a PCM fallback; returning to passthrough may
+    /// occur later when a safe source/encoder boundary is available.
     pub fn set_volume(&self, gain: f32) -> Result<(), PlaybackError> {
         if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
             return Err(PlaybackError::InvalidVolume(gain));
@@ -235,13 +237,13 @@ impl PlaybackSession {
             }
             data.last_processing_error = None;
             data.volume = gain;
-            let target_mode = data.passthrough_available.then_some(
-                if data.filter_graph.is_none() && gain == 1.0 {
-                    PlaybackProcessingMode::Passthrough
-                } else {
-                    PlaybackProcessingMode::Transcoding
-                },
-            );
+            let target_mode = (data.passthrough_available
+                || data.processing_mode == Some(PlaybackProcessingMode::Passthrough))
+            .then_some(if data.filter_graph.is_none() && gain == 1.0 {
+                PlaybackProcessingMode::Passthrough
+            } else {
+                PlaybackProcessingMode::Transcoding
+            });
             let target_mode = target_mode.filter(|target| {
                 data.processor_initialized
                     && data.state == PlaybackState::Playing
@@ -348,10 +350,6 @@ impl PlaybackSession {
             )
         };
 
-        // After the state is marked Stopping, no concurrent stage request can
-        // become eligible. Clear the stage outside the playback-state lock.
-        self.clear_staged_source();
-
         if let Some(request) = pending_seek {
             let _ = request.response.send(Err(PlaybackError::Cancelled));
         }
@@ -373,6 +371,13 @@ impl PlaybackSession {
             && output
                 .as_ref()
                 .is_some_and(|output| safe_cancel(output).is_err());
+
+        // Signal both source and output cancellation before joining any staged
+        // decoder. Slow preparation cleanup must not delay the active worker's
+        // cancellation or keep its output blocked while stop is in progress.
+        // After the state is marked Stopping, no concurrent stage request can
+        // become eligible. Clear the stage outside the playback-state lock.
+        self.clear_staged_source();
 
         let worker = lock(&self.worker).take();
         let worker_panicked = worker.is_some_and(|worker| worker.join().is_err());

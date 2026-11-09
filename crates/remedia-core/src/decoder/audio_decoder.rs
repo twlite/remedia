@@ -17,6 +17,8 @@ pub struct AudioDecoder {
 }
 
 struct ResamplerState {
+    output: Option<ffmpeg::frame::Audio>,
+    output_capacity: usize,
     context: Resampler,
     input_format: ffmpeg::format::Sample,
     input_layout: String,

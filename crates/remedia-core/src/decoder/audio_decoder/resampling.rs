@@ -48,6 +48,8 @@ impl AudioDecoder {
             )
             .map_err(|error| DecoderError::Resample(error.to_string()))?;
             self.resampler = Some(ResamplerState {
+                output: None,
+                output_capacity: 0,
                 context,
                 input_format,
                 input_layout: input_layout_key,
@@ -56,18 +58,33 @@ impl AudioDecoder {
             });
         }
 
-        let normalized_input = frame_with_channel_layout(decoded, input_layout)?;
         let resampler = self.resampler.as_mut().expect("resampler initialized");
         let delay = resampler_delay_output(&resampler.context);
         let capacity = output_capacity(decoded.samples(), input_rate, delay)?;
-        let mut output =
-            ffmpeg::frame::Audio::new(OUTPUT_SAMPLE_FORMAT, capacity, ChannelLayout::STEREO);
+        let mut output = match resampler.output.take() {
+            Some(output) if resampler.output_capacity >= capacity => output,
+            _ => {
+                resampler.output_capacity = capacity;
+                ffmpeg::frame::Audio::new(OUTPUT_SAMPLE_FORMAT, capacity, ChannelLayout::STEREO)
+            }
+        };
+        // swr_convert_frame overwrites nb_samples with the produced length.
+        // Restore the allocated capacity before reusing the exclusively owned frame.
+        output.set_samples(resampler.output_capacity);
         output.set_rate(OUTPUT_SAMPLE_RATE_HZ);
-        resampler
-            .context
-            .run(&normalized_input, &mut output)
-            .map_err(|error| DecoderError::Resample(error.to_string()))?;
-        self.enqueue_output(&output, decoded.timestamp())
+        if decoded.channel_layout().is_empty() {
+            let normalized_input = frame_with_channel_layout(decoded, input_layout)?;
+            resampler.context.run(&normalized_input, &mut output)
+        } else {
+            resampler.context.run(decoded, &mut output)
+        }
+        .map_err(|error| DecoderError::Resample(error.to_string()))?;
+        let result = self.enqueue_output(&output, decoded.timestamp());
+        self.resampler
+            .as_mut()
+            .expect("resampler initialized")
+            .output = Some(output);
+        result
     }
 
     pub(super) fn flush_resampler(&mut self) -> Result<(), DecoderError> {
@@ -186,5 +203,33 @@ impl AudioDecoder {
             source_position_estimated,
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resampling_reuses_native_storage_without_aliasing_returned_pcm() {
+        let fixture = include_bytes!("../../../tests/fixtures/generated-opus-passthrough.ogg");
+        let mut decoder = AudioDecoder::open(InputSource::bytes(fixture.to_vec())).unwrap();
+        let first = decoder.next_frame().unwrap().unwrap();
+        let original_samples = first.samples.clone();
+        let mut reused = 0;
+        let mut previous = None;
+        while let Some(frame) = decoder.next_frame().unwrap() {
+            assert_eq!(frame.samples.len(), frame.samples_per_channel * 2);
+            let resampler = decoder.resampler.as_ref().unwrap();
+            let output = resampler.output.as_ref().unwrap();
+            let buffer = output.plane::<f32>(0).as_ptr();
+            if previous == Some(buffer) {
+                reused += 1;
+            }
+            previous = Some(buffer);
+        }
+        assert!(reused > 80, "normal frames reuse the native sample buffer");
+        assert_eq!(first.samples, original_samples);
+        assert!(decoder.next_frame().unwrap().is_none());
     }
 }

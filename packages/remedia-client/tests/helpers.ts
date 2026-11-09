@@ -76,6 +76,7 @@ export class FakeServerNode {
   voiceSuspendRequests = 0;
   voiceConnectFailures = 0;
   voiceConnectGate: (() => Promise<void>) | undefined;
+  resources: import('../lib/types.js').ProcessResourceStatistics | undefined;
   nodeIdentity: string;
   url = '';
 
@@ -228,7 +229,8 @@ export class FakeServerNode {
               maximum: this.playersMaximum,
             },
             cpu: { availableParallelism: 2, loadAverage1m: null },
-            memory: { residentBytes: null },
+            memory: this.resources?.memory ?? { residentBytes: null },
+            ...(this.resources ? { resources: this.resources } : {}),
             transportHealth: 'healthy',
             processingHealth: 'healthy',
           };

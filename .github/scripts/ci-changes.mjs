@@ -44,6 +44,7 @@ export function needsNativeChecks(paths) {
       path.startsWith('crates/') ||
       path.startsWith('packages/remedia-node/') ||
       path.startsWith('packages/remedia-client/') ||
+      path.startsWith('packages/remedia-config/') ||
       path.startsWith('.cargo/') ||
       path.startsWith('.github/native-deps/') ||
       path.startsWith('.github/scripts/') ||

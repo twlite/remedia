@@ -52,6 +52,16 @@ impl NativeRemedia {
         })
     }
 
+    /// Return cached process resources as JSON. All embedded instances share
+    /// these process counters. Collection runs off the caller; unsupported
+    /// values and the first CPU utilization sample are null.
+    /// @returns A JSON process snapshot with byte and millisecond units.
+    #[napi]
+    pub fn process_resources_json(&self) -> napi::Result<String> {
+        serde_json::to_string(&remedia_resources::cached_snapshot())
+            .map_err(|error| napi_error(Status::GenericFailure, error.to_string()))
+    }
+
     /// Stop all playback, disconnect all voice transports, flush telemetry, and close the context.
     /// This method is safe to call repeatedly.
     #[napi]

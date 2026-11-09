@@ -1,4 +1,4 @@
-use super::{FilterGraphError, PcmProcessor};
+use super::{FilterGraphError, PcmFilterGraph, PcmProcessor};
 use crate::decoder::PcmFrame;
 
 fn pcm(start_sample: u64, samples_per_channel: usize, value: f32) -> PcmFrame {
@@ -278,4 +278,11 @@ fn sample_frames(frames: &[PcmFrame]) -> usize {
 fn rms(frames: &[PcmFrame]) -> f32 {
     let samples = samples(frames);
     (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt()
+}
+
+#[test]
+fn filter_graph_does_not_create_a_machine_sized_worker_pool() {
+    let graph = PcmFilterGraph::build("tremolo=f=5:d=0.2").unwrap();
+    // SAFETY: read-only inspection of a live, exclusively owned graph.
+    assert_eq!(unsafe { (*graph.graph.as_ptr()).nb_threads }, 1);
 }

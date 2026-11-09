@@ -1,0 +1,47 @@
+{
+  "bind": {
+    "host": "127.0.0.1",
+    "port": 8787
+  },
+  "users": [
+    {
+      "username": "bot",
+      "password": "example"
+    }
+  ],
+  "sessionResumptionTimeoutSeconds": 60,
+  "limits": {
+    "maxConnections": 128,
+    "maxClientSessions": 128,
+    "maxTotalPlayers": 256,
+    "maxPlayersPerClient": 16,
+    "maxMessageBytes": 65536,
+    "requestTimeoutMs": 30000,
+    "maxInFlightRequests": 16,
+    "maxRequestsPerSecond": 60,
+    "eventBuffer": 128
+  },
+  "media": {
+    "allowedFileRoots": [],
+    "allowedUrlHosts": [],
+    "allowHttp": true,
+    "allowHttps": true,
+    "blockPrivateNetworks": true
+  },
+  "audio": {
+    "opus": {
+      "bitrate": 128000,
+      "complexity": 9,
+      "vbr": true
+    },
+    "crossfade": {
+      "enabled": false,
+      "durationMs": 5000,
+      "prepareBeforeMs": 30000,
+      "curve": "equalPower"
+    }
+  },
+  "observability": {
+    "console": true
+  }
+}

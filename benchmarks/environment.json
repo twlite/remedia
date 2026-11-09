@@ -1,0 +1,26 @@
+{
+  "baseline_commit": "3f0984b0ae372155cf618548b68b03a82b05d9c8",
+  "baseline_binary_sha256": "4276f58a95e95ffb0470b67ae523b5ddb83c08fc281913ea1f71616129539179",
+  "after_binary_sha256": "ea74da9d2c3be0a7c15d4d6d43877091d3d671caf059ec2244f30d70a9f4b963",
+  "machine": "Apple M5; 10 logical CPUs; 24 GiB RAM; Darwin 27 arm64",
+  "rust": "1.99.1",
+  "libavcodec": "63.1.102",
+  "libavfilter": "12.1.102",
+  "libswresample": "7.1.102",
+  "complexity": 9,
+  "bitrate": 128000,
+  "vbr": true,
+  "profile": "release",
+  "repetitions": 3,
+  "fixtures": {
+    "generated-tone.mp3": "d1c93dedab01e40951c4732d81090a0095a16b38f2557ec1f123d9b96bc143bf",
+    "generated-opus-trimmed.ogg": "6088bf468751292950f6b5769609b42f8103cea59c80769c54b962d04d340892",
+    "generated-opus-passthrough.ogg": "9b38c39a1405286e24f92ebeaf30fb2582943a77805b5b17bbf27fce57edfeea"
+  },
+  "limitations": [
+    "Short fixtures, no sustained qualification",
+    "Host not isolated; verification activity overlapped some baseline runs",
+    "Sampled resource peaks at 20 ms intervals are lower bounds",
+    "No performance measurements for AAC, crossfade, HTTP stalls, commands, stage attribution or RTP"
+  ]
+}
