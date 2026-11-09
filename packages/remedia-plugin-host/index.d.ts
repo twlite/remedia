@@ -52,10 +52,19 @@ export declare class PluginHostError extends Error {
 }
 
 /** Framework-independent operation registry and optional HTTP protocol handler. */
+/** Structured in-process operation message. No HTTP Request is involved. */
+export interface PluginRequest<Input = unknown> {
+  pluginId: string;
+  operation: string;
+  input: Input;
+  signal?: AbortSignal;
+}
+
 export declare class PluginHost {
   constructor(options: PluginHostOptions);
   register(plugin: PluginDefinition): void;
   unregister(id: string): Promise<boolean>;
+  handle<T = unknown>(request: PluginRequest, options?: { signal?: AbortSignal }): Promise<ExecuteResult<T>>;
   execute<T = unknown>(pluginId: string, operation: string, input: unknown, options?: { signal?: AbortSignal }): Promise<ExecuteResult<T>>;
   manifest(): {
     name: string;
