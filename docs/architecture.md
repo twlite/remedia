@@ -250,3 +250,32 @@ libavutil, libavfilter, and libswresample). Cargo builds libopus from the `opus2
 and statically links the Opus adapter into Remedia binaries, so a separate system libopus development
 package is not required. CI installs FFmpeg development/runtime libraries on each platform. No
 FFmpeg executable is used at runtime.
+
+## Concurrent processing measurements
+
+The reproducible runner is `benchmarks/playback.py`, backed by the release
+`concurrent_playback_benchmark` core example. Filtergraphs now run with one native
+processing thread per graph rather than FFmpeg's automatic machine-sized pool.
+Resampling output frames are reused under exclusive decoder ownership; Opus
+packets own payload-sized allocations instead of retaining 4000-byte buffers.
+No encoder quality defaults or transport pacing behavior changed.
+
+Playback still uses dedicated blocking workers. Crossfade policy now permits direct
+source passthrough at verified compressed boundaries; prepared producers retain PCM
+ownership after promotion. Shared CPU scheduling and separation of blocking
+input/output have not replaced the measured per-session architecture.
+See `apps/docs/content/docs/core/performance.mdx` for execution boundaries and
+benchmark limitations, and `benchmarks/README.md` for before/after evidence.
+
+## Process resources and configuration metadata
+
+`remedia-resources` owns native process sampling independently of audio and transport.
+Demand-driven, one-second snapshots are shared across server RPC/discovery and
+embedded instances; expensive system queries run on one short-lived collector at a
+time. USS, PSS, RSS, private commit, virtual reservation, and macOS footprint retain
+distinct meanings and unsupported counters remain null.
+
+`@remedia/config` owns the Zod input schema and generated editor artifact. Rust
+configuration parsing remains independent and authoritative at startup. Shared
+validation/default fixtures and CI freshness checks tie both implementations together.
+The docs serve the generated JSON Schema as a static public asset.

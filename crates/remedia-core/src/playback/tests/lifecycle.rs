@@ -287,3 +287,54 @@ fn stop_then_play_replaces_a_source_without_old_frames_after_stop() {
     );
     session.stop().unwrap();
 }
+
+#[test]
+fn saturated_sessions_do_not_prevent_other_sessions_from_progressing_or_stopping() {
+    let source = TempWave::constant(48_000, 4096);
+    for _ in 0..3 {
+        let mut sessions = Vec::new();
+        for _ in 0..32 {
+            let session = PlaybackSession::new();
+            session.set_filter_graph(Some("tremolo=f=5:d=0.2")).unwrap();
+            let (output, gate) = GateOutput::new();
+            session.play(source.source(), output).unwrap();
+            sessions.push((session, gate));
+        }
+        for (_, gate) in &sessions {
+            assert!(gate.wait_for_calls(1));
+        }
+        // Half of the sinks remain saturated while the others finish.
+        for (_, gate) in sessions.iter().step_by(2) {
+            gate.release(10_000);
+        }
+        for (index, (session, gate)) in sessions.iter().enumerate() {
+            if index % 2 == 0 {
+                assert_eq!(session.wait(), PlaybackState::Completed);
+                assert!(gate.snapshot().finished);
+            }
+            session.stop().unwrap();
+            assert!(lock(&session.worker).is_none());
+        }
+    }
+}
+
+#[test]
+fn pause_immediately_after_play_does_not_abandon_a_starting_worker() {
+    let source = TempWave::constant(480000, 4096);
+    for _ in 0..16 {
+        let session = Arc::new(PlaybackSession::new());
+        session.play(source.source(), NullOutput::new()).unwrap();
+        let worker_session = Arc::clone(&session);
+        let (done, completed) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let _ = done.send(worker_session.pause());
+        });
+        let result = completed.recv_timeout(TEST_TIMEOUT);
+        session.stop().unwrap();
+        worker.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "worker must acknowledge pause after play returns"
+        );
+    }
+}

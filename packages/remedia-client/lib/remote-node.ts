@@ -90,10 +90,12 @@ interface NodeStatsResult {
   protocolVersion: number;
   players: { active: number; maximum: number };
   connections?: { active: number; maximum: number };
+  playback?: { activeSessions?: number };
   transportHealth?: string;
   processingHealth?: string;
   cpu?: Record<string, number | null>;
   memory?: Record<string, number | null>;
+  resources?: import('./types.js').ProcessResourceStatistics;
 }
 
 interface NodeHealthResult {
@@ -1835,12 +1837,18 @@ function toNodeStatistics(stats: NodeStatsResult, nodeId: string): NodeStatistic
   return {
     playersActive: stats.players.active,
     playersMaximum: stats.players.maximum,
+    playersAvailable: Math.max(0, stats.players.maximum - stats.players.active),
+    playbackActive:
+      isRecord(stats.playback) && isCount(stats.playback.activeSessions)
+        ? stats.playback.activeSessions
+        : null,
     connectionsActive: stats.connections?.active ?? 0,
     connectionsMaximum: stats.connections?.maximum ?? 0,
     transportHealth: stats.transportHealth ?? 'unknown',
     processingHealth: stats.processingHealth ?? 'unknown',
     cpu: numberRecord(stats.cpu),
     memory: numberRecord(stats.memory),
+    resources: stats.resources ? toResources(stats.resources) : null,
   };
 }
 
@@ -2209,5 +2217,22 @@ function parseStageSnapshot(input: unknown, nodeId: string): import('./types.js'
     bufferedMs: typeof input.bufferedMs === 'number' ? input.bufferedMs : 0,
     info: isRecord(input.source) ? toStreamInfo(input.source, nodeId) : null,
     error: typeof input.error === 'string' ? input.error : null,
+  };
+}
+
+function toResources(
+  value: import('./types.js').ProcessResourceStatistics,
+): import('./types.js').ProcessResourceStatistics | null {
+  if (!isRecord(value) || !isRecord(value.memory) || !isRecord(value.cpu)) return null;
+  const finite = (item: unknown): number | null =>
+    typeof item === 'number' && Number.isFinite(item) && item >= 0 ? item : null;
+  return {
+    memory: numberRecord(value.memory),
+    cpu: numberRecord(value.cpu),
+    collectedAtUnixMs: finite(value.collectedAtUnixMs),
+    cpuSampleIntervalMs: finite(value.cpuSampleIntervalMs),
+    samplingIntervalMs: finite(value.samplingIntervalMs) ?? 1000,
+    collectionDurationMs: finite(value.collectionDurationMs),
+    openHandles: finite(value.openHandles),
   };
 }

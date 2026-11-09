@@ -437,3 +437,191 @@ fn interrupted_fade_continues_outgoing_without_waiting_for_incoming_pcm() {
     );
     session.stop().unwrap();
 }
+
+#[test]
+fn crossfade_without_a_ready_stage_preserves_all_source_opus_packets() {
+    use super::super::CrossfadeConfig;
+    let fixture = include_bytes!("../../../tests/fixtures/generated-opus-passthrough.ogg");
+    let (sink, handle) = StepPacketSink::new();
+    handle.release(1000);
+    let session = PlaybackSession::new();
+    session
+        .configure_crossfade(Some(CrossfadeConfig::new(1000, 5000).unwrap()))
+        .unwrap();
+    session
+        .play(
+            InputSource::bytes(fixture.to_vec()),
+            OpusEncoderOutput::new(sink).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(session.wait(), PlaybackState::Completed);
+    assert_eq!(
+        session.processing_mode(),
+        Some(PlaybackProcessingMode::Passthrough)
+    );
+    let actual = handle.snapshot().packets;
+    let (sink, handle) = StepPacketSink::new();
+    handle.release(1000);
+    let reference = PlaybackSession::new();
+    reference
+        .play(
+            InputSource::bytes(fixture.to_vec()),
+            OpusEncoderOutput::new(sink).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(reference.wait(), PlaybackState::Completed);
+    assert_eq!(actual, handle.snapshot().packets);
+}
+
+#[test]
+fn opus_crossfade_enters_pcm_at_overlap_and_keeps_exact_output_sample_accounting() {
+    use super::super::{CrossfadeConfig, StageIdentity};
+    let fixture = include_bytes!("../../../tests/fixtures/generated-opus-passthrough.ogg");
+    let (sink, handle) = StepPacketSink::new();
+    let session = PlaybackSession::new();
+    session
+        .configure_crossfade(Some(CrossfadeConfig::new(1000, 5000).unwrap()))
+        .unwrap();
+    session
+        .play(
+            InputSource::bytes(fixture.to_vec()),
+            OpusEncoderOutput::new(sink).unwrap(),
+        )
+        .unwrap();
+    assert!(handle.wait_for_calls(1));
+    assert_eq!(
+        session.processing_mode(),
+        Some(PlaybackProcessingMode::Passthrough)
+    );
+    session
+        .stage_next(
+            InputSource::bytes(fixture.to_vec()),
+            StageIdentity {
+                expected_generation: session.source_generation(),
+                entry_id: "next".into(),
+                queue_revision: 1,
+                source_revision: 1,
+            },
+        )
+        .unwrap();
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    while session.staged_source().unwrap().buffered_samples < 96000 {
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    }
+    handle.release(1000);
+    assert_eq!(session.wait(), PlaybackState::Completed);
+    assert_eq!(session.source_generation(), 2);
+    assert_eq!(
+        session.processing_mode(),
+        Some(PlaybackProcessingMode::Transcoding)
+    );
+    let packets = handle.snapshot().packets;
+    assert!(packets.windows(2).all(|pair| pair[1].start_sample
+        == pair[0].start_sample + u64::from(pair[0].media_samples_per_channel)));
+    assert_eq!(
+        packets
+            .iter()
+            .map(|packet| u64::from(packet.media_samples_per_channel))
+            .sum::<u64>(),
+        145920
+    );
+}
+
+#[test]
+fn crossfade_policy_restores_direct_opus_after_temporary_volume_processing() {
+    use super::super::CrossfadeConfig;
+    let fixture = include_bytes!("../../../tests/fixtures/generated-opus-passthrough.ogg");
+    let (sink, handle) = StepPacketSink::new();
+    let session = Arc::new(PlaybackSession::new());
+    session
+        .configure_crossfade(Some(CrossfadeConfig::new(1000, 5000).unwrap()))
+        .unwrap();
+    session
+        .play(
+            InputSource::bytes(fixture.to_vec()),
+            OpusEncoderOutput::new(sink).unwrap(),
+        )
+        .unwrap();
+    assert!(handle.wait_for_calls(1));
+    let update_session = Arc::clone(&session);
+    let update = thread::spawn(move || update_session.set_volume(0.5));
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    while session.volume() != 0.5 {
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    }
+    handle.release(1);
+    assert!(handle.wait_for_calls(2));
+    update.join().unwrap().unwrap();
+    assert_eq!(
+        session.processing_mode(),
+        Some(PlaybackProcessingMode::Transcoding)
+    );
+    session.set_volume(1.0).unwrap();
+    handle.release(1);
+    assert!(handle.wait_for_calls(3));
+    assert_eq!(
+        session.processing_mode(),
+        Some(PlaybackProcessingMode::Passthrough)
+    );
+    handle.release(1000);
+    assert_eq!(session.wait(), PlaybackState::Completed);
+    let packets = handle.snapshot().packets;
+    assert_eq!(
+        packets
+            .iter()
+            .map(|packet| u64::from(packet.media_samples_per_channel))
+            .sum::<u64>(),
+        96960
+    );
+}
+
+#[test]
+fn cancelling_http_preparation_preserves_unrelated_playback_and_joins_every_worker() {
+    use super::super::{CrossfadeConfig, StageIdentity};
+    use std::io::Read;
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (seen, request_seen) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let (mut connection, _) = listener.accept().unwrap();
+        connection.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+        let mut request = [0; 4096];
+        assert!(connection.read(&mut request).unwrap() > 0);
+        seen.send(()).unwrap();
+        // Never send headers. FFmpeg must close this connection on cancellation.
+        let _ = connection.read(&mut request);
+    });
+    let fixture = TempWave::constant(480000, 4096);
+    let session = PlaybackSession::new();
+    session
+        .configure_crossfade(Some(CrossfadeConfig::new(1000, 5000).unwrap()))
+        .unwrap();
+    let (output, gate) = GateOutput::new();
+    session.play(fixture.source(), output).unwrap();
+    assert!(gate.wait_for_calls(1));
+    session
+        .stage_next(
+            InputSource::http_url(format!("http://{address}/stalled")),
+            StageIdentity {
+                expected_generation: session.source_generation(),
+                entry_id: "stalled".into(),
+                queue_revision: 1,
+                source_revision: 1,
+            },
+        )
+        .unwrap();
+    request_seen.recv_timeout(TEST_TIMEOUT).unwrap();
+    let unrelated = PlaybackSession::new();
+    unrelated.play(fixture.source(), NullOutput::new()).unwrap();
+    assert_eq!(unrelated.wait(), PlaybackState::Completed);
+    let started = Instant::now();
+    session.stop().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(session.staged_source().is_none());
+    assert!(lock(&session.worker).is_none());
+    assert!(gate.snapshot().cancelled);
+    server.join().unwrap();
+}

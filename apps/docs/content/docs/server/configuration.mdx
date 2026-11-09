@@ -61,39 +61,46 @@ before the outgoing source completes. For example, a 5-second fade and 30-second
 preparation lead means the prepare event would occur approximately 35 seconds
 before the track ends.
 
-## Schema
+## Schema and editor completion
 
-| Field                             | Type         | Default / validation                                                                                                  |
-| --------------------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `bind.host`                       | string       | `127.0.0.1`; must not be empty                                                                                        |
-| `bind.port`                       | integer      | `8787`; valid `u16` port, `0` is available for ephemeral test binding                                                 |
-| `users`                           | array        | Required and non-empty; usernames must be unique                                                                      |
-| `users[].username`                | string       | 1–128 characters, cannot contain `:`                                                                                  |
-| `users[].password`                | string       | Required; 1–4096 bytes                                                                                                |
-| `sessionResumptionTimeoutSeconds` | integer      | `60`; valid range 1–86,400                                                                                            |
-| `limits.maxConnections`           | integer      | `128`; valid range 1–65,536                                                                                           |
-| `limits.maxClientSessions`        | integer      | `128` per authenticated username; valid range 1–10,000                                                                |
-| `limits.maxTotalPlayers`          | integer      | `256` server-wide; valid range 1–10,000                                                                               |
-| `limits.maxPlayersPerClient`      | integer      | `16`; valid range 1–1,000 and no greater than `maxTotalPlayers`                                                       |
-| `limits.maxMessageBytes`          | integer      | `65,536`; valid range 1,024–1,048,576                                                                                 |
-| `limits.requestTimeoutMs`         | integer      | `30,000`; valid range 1–300,000; also bounds the WebSocket handshake                                                  |
-| `limits.maxInFlightRequests`      | integer      | `16` per WebSocket; valid range 1–4,096                                                                               |
-| `limits.maxRequestsPerSecond`     | integer      | `60` per WebSocket; valid range 1–100,000                                                                             |
-| `limits.eventBuffer`              | integer      | `128` events per client session; valid range 1–65,536                                                                 |
-| `media.allowedFileRoots`          | string array | Empty by default, which denies file playback; relative paths use the config directory, `~` expands to the user's home |
-| `media.allowedUrlHosts`           | string array | Empty by default, which denies URL playback; exact host and subdomains are matched, or explicitly use `*`             |
-| `media.allowHttp`                 | boolean      | `true`; controls `http:` URLs                                                                                         |
-| `media.allowHttps`                | boolean      | `true`; controls `https:` URLs                                                                                        |
-| `media.blockPrivateNetworks`      | boolean      | `true`; rejects hostnames resolving to private or special IP ranges                                                   |
-| `audio.opus.bitrate`              | integer      | `128000` bits per second; valid range 500–512000                                                                      |
-| `audio.opus.complexity`           | integer      | `9`; valid range 0–10                                                                                                 |
-| `audio.opus.vbr`                  | boolean      | `true`; enables variable bitrate                                                                                      |
-| `observability.console`           | boolean      | `true`; enables the existing console subscriber for this server process                                               |
-| `pluginHosts`                     | array        | Empty by default; up to 64 plugin-host registrations. See [Plugin hosts](#plugin-hosts)                               |
+The workspace package `@remedia/config` exports `RemediaConfigSchema` (Zod 4), the
+`RemediaConfig` input type, and `generateJsonSchema()`. Its generated draft 2020-12
+artifact is served with the docs at
+[remedia.config.schema.json](https://twlite.github.io/remedia/schemas/remedia.config.schema.json).
+The same artifact is distributed as `@remedia/config/schema.json`.
 
-For an empty `limits`, `media`, `observability`, or `bind` object, the defaults above apply. The
-`users` array is required. Discord bot identity is not server configuration: each remote client
-sends its bot snowflake in the `X-Remedia-Bot-Id` WebSocket handshake header.
+```json
+{
+  "$schema": "https://twlite.github.io/remedia/schemas/remedia.config.schema.json",
+  "users": [{ "username": "bot", "password": "env('REMEDIA_RPC_PASSWORD')" }]
+}
+```
+
+The configuration generator includes this metadata automatically. Rust accepts
+`$schema` without fetching it and continues rejecting every other unknown key.
+VS Code and JetBrains JSON-aware editors can resolve the URI for completion,
+field descriptions, types, enums, numeric bounds, and defaults. Before the docs
+artifact is deployed, use the local generated file through a relative `$schema`
+path or an editor association, for example in VS Code workspace settings:
+
+```json
+{
+  "json.schemas": [
+    {
+      "fileMatch": ["remedia.config.json"],
+      "url": "./packages/remedia-config/remedia.config.schema.json"
+    }
+  ]
+}
+```
+
+The generated artifact is the field reference, avoiding a separately maintained
+settings table. Rebuild with `pnpm --filter @remedia/config schema`; CI runs
+`schema:check` and a validation corpus shared with Rust. Runtime schema parsing
+applies defaults but never expands environment references or accesses directories.
+Custom refinements such as UTF-8 byte lengths, duplicate usernames, cross-field
+player limits, and normalized host restrictions require runtime validation. Rust
+also validates resolved environment values and filesystem access at startup.
 
 ## Opus encoder settings
 
@@ -206,8 +213,8 @@ lifecycle and security. Every entry is validated at startup; duplicate IDs fail 
 `replaySafe` declares that executing the operation again has no side effects, which authorizes
 automatic retries and fresh resolution of expired grants. Leave it `false` for anything else.
 
-This repository's `main` branch has no generated JSON Schema for `remedia.config.json`; the strict
-Rust loader above is the authoritative validation.
+The `pluginHosts` fields are part of the generated JSON Schema and `RemediaConfigSchema`. The strict
+Rust loader remains authoritative for resolved values such as environment references.
 
 ## Media access restrictions
 

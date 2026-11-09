@@ -198,6 +198,7 @@ fn launch_runtime(cli: &Cli, doctor: bool) -> Result<(), Box<dyn std::error::Err
 
 fn generate_config_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let config = serde_json::json!({
+        "$schema": "https://twlite.github.io/remedia/schemas/remedia.config.schema.json",
         "bind": {"host": "127.0.0.1", "port": 8787},
         "users": [{"username": "media-bot", "password": "env('REMEDIA_RPC_PASSWORD')"}],
         "media": {

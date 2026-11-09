@@ -79,6 +79,7 @@ impl PluginHostConfig {
     }
 }
 
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(super) struct RawPluginHost {
@@ -99,6 +100,7 @@ pub(super) struct RawPluginHost {
     limits: RawPluginHostLimits,
 }
 
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Default, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 enum RawPluginAuth {
@@ -109,6 +111,7 @@ enum RawPluginAuth {
     },
 }
 
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct RawAllowedOperation {
@@ -118,6 +121,7 @@ struct RawAllowedOperation {
     replay_safe: bool,
 }
 
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 struct RawPluginHostLimits {

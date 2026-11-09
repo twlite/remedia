@@ -60,6 +60,13 @@ export declare class NativeRemedia {
   /** Create an isolated, diagnostics-only Remedia context from environment configuration. */
   static create(): Promise<NativeRemedia>
   /**
+   * Return cached process resources as JSON. All embedded instances share
+   * these process counters. Collection runs off the caller; unsupported
+   * values and the first CPU utilization sample are null.
+   * @returns A JSON process snapshot with byte and millisecond units.
+   */
+  processResourcesJson(): string
+  /**
    * Stop all playback, disconnect all voice transports, flush telemetry, and close the context.
    * This method is safe to call repeatedly.
    */

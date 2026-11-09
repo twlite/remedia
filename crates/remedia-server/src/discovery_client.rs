@@ -115,8 +115,8 @@ pub fn print_instances(
         return Ok(());
     }
     println!(
-        "{:<9} {:<23} {:>8} {:>12} {:>11}  HEALTH",
-        "PID", "LISTEN", "PLAYERS", "CONNECTIONS", "RSS (MiB)"
+        "{:<9} {:<23} {:>8} {:>12} {:>11} {:>20}  HEALTH",
+        "PID", "LISTEN", "PLAYERS", "CONNECTIONS", "RSS (MiB)", "PRIVATE/FOOTPRINT MiB"
     );
     for instance in instances {
         let stats = &instance["stats"];
@@ -130,14 +130,51 @@ pub fn print_instances(
             .as_u64()
             .map(|b| format!("{:.1}", b as f64 / 1_048_576.0))
             .unwrap_or_else(|| "n/a".into());
+        let physical = physical_memory_label(stats);
         let health = format!(
             "{}/{}",
             stats["processingHealth"].as_str().unwrap_or("?"),
             stats["transportHealth"].as_str().unwrap_or("?")
         );
         println!(
-            "{pid:<9} {addr:<23} {players:>3}/{max_players:<4} {connections:>5}/{max_connections:<6} {rss:>11}  {health}"
+            "{pid:<9} {addr:<23} {players:>3}/{max_players:<4} {connections:>5}/{max_connections:<6} {rss:>11} {physical:>20}  {health}"
         );
     }
     Ok(())
+}
+
+fn physical_memory_label(stats: &Value) -> String {
+    for (field, label) in [
+        ("privateResidentBytes", "private"),
+        ("footprintBytes", "footprint"),
+    ] {
+        if let Some(bytes) = stats["memory"][field].as_u64() {
+            return format!("{:.1} {label}", bytes as f64 / 1_048_576.0);
+        }
+    }
+    "n/a".into()
+}
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn never_labels_private_commit_as_resident() {
+        assert_eq!(
+            physical_memory_label(&json!({"memory":{"committedPrivateBytes": 1024}})),
+            "n/a"
+        );
+        assert_eq!(
+            physical_memory_label(&json!({"memory":{"footprintBytes": 1048576}})),
+            "1.0 footprint"
+        );
+        assert_eq!(
+            physical_memory_label(
+                &json!({"memory":{"privateResidentBytes": 2097152, "footprintBytes": 1048576}})
+            ),
+            "2.0 private"
+        );
+    }
 }

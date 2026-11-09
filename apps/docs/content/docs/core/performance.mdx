@@ -1,0 +1,92 @@
+---
+title: Playback performance
+description: Reproduce concurrent playback measurements and understand worker and buffering limits.
+---
+
+# Playback performance
+
+Both embedded Node.js playback and the standalone server use the same Rust core.
+Each active playback owns a blocking worker. FFmpeg input acquisition, decoding,
+filtering, encoding, and synchronous output delivery currently share that worker.
+A slow source or full output queue can park its worker, without parking another
+session's worker. Crossfade preparation owns an additional worker and a bounded
+PCM staging buffer.
+
+## Native processing and memory
+
+Each FFmpeg filtergraph uses one processing thread on its owning playback worker.
+This prevents FFmpeg's automatic graph threading from creating a pool sized to
+the machine for every session. Filters still run through native libavfilter;
+filter expressions, master volume, and Opus quality settings are unchanged.
+Particularly expensive graphs should be measured with representative input.
+
+The decoder reuses its exclusively owned native resampling output frame, growing
+it when required. Returned PCM remains independently owned. Seeking and processing
+mode changes release resampler state through the existing lifecycle.
+
+The Opus adapter encodes into bounded scratch storage and transfers only an
+allocation sized to the encoded payload to its sink. It still emits 20 ms stereo
+packets and uses complexity **9**, bitrate **128000**, and VBR by default.
+Configuration remains available through the existing audio Opus settings; lower
+complexity is an explicit application choice.
+
+## Reproduce measurements
+
+From the repository root, with the supported FFmpeg development libraries available:
+
+```sh
+cargo build --release -p remedia-core --example concurrent_playback_benchmark
+python3 benchmarks/playback.py --output /tmp/remedia-playback.jsonl
+```
+
+On this development machine, Cargo needs
+`PKG_CONFIG_PATH=/opt/homebrew/opt/ffmpeg/lib/pkgconfig` to select the supported
+FFmpeg installation. Use your installation's pkg-config path on other hosts.
+
+The runner uses checked-in generated Opus and MP3 fixtures, 1, 8, 32, 64, and 128
+sessions, three repetitions, and separate paced and unpaced runs. Workloads select
+automatic passthrough, volume processing, or a native tremolo graph. MP3 always
+transcodes, including in the automatic workload. No external service or Discord
+credentials are used. Override counts and repetitions with `--counts 1,32,128`
+and `--repeats 3`. `--binary PATH` selects a previously built executable.
+
+For a longer local fixture or a different encoder complexity, invoke the example:
+
+```sh
+target/release/examples/concurrent_playback_benchmark ./long-track.aac 128 filter paced 9
+```
+
+The JSON output includes wall time, delivered audio seconds, packet count,
+cumulative packet allocation capacity, startup p99, and sink deadline delay p95
+and p99. The runner adds child process CPU seconds and samples RSS and thread count
+approximately every 20 ms on macOS and Linux. Short unpaced runs can finish between
+samples, so their resource peaks are lower bounds. Startup is measured per session;
+sessions start sequentially. Deadline delay is relative to each sink's first packet.
+Percentiles use the sorted observation at `floor((n - 1) * percentile / 100)`.
+
+The paced sink directly backpressures delivery at audio deadlines, retaining no
+packet queue. Its delay is **not measured Discord RTP delay**. Cumulative packet
+capacity is neither live memory nor a process-wide allocation profile. CPU time
+includes source opening and teardown, without attributing time to individual audio
+stages. The short fixtures are regression probes, not sustained load qualification.
+The repository's `benchmarks/` report records the measured environment and results.
+
+## Remaining architecture limits
+
+A shared CPU scheduler has not replaced playback workers. Moving the current loop
+into a fixed pool would allow synchronous network reads, staging joins, or output
+backpressure to occupy every worker. A scheduler change requires separate bounded
+I/O and output handoffs, decoder ownership, readiness notification, and comparison
+against the paced baseline before adoption.
+
+Crossfade-enabled direct sources now use eligible Opus passthrough outside overlaps;
+promoted staged sources retain PCM ownership and continue transcoding. Ordinary
+sessions retain adaptive Opus passthrough and live processing transitions described
+in [Playback sessions](/docs/core/playback). Direct-source transitions use bounded codec preroll and exact packet boundary
+accounting. Staged compressed restoration remains a conservative PCM fallback.
+
+Encoder state remains serialized with packet submission to preserve ordering and
+seek barriers. Staging cancellation still joins its worker before exposing terminal
+completion. Long-running crossfades, AAC, stalled HTTP sources, command latency,
+per-stage CPU/I/O attribution, queue occupancy, and live RTP/DAVE reliability need
+additional performance workloads beyond this benchmark.

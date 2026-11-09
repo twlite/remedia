@@ -376,3 +376,38 @@ fn plugin_host_registrations_are_strictly_validated() {
     assert!(allowed.plugin_hosts[0].allow_insecure_http);
     assert!(allowed.plugin_hosts[0].allow_private_network);
 }
+
+#[test]
+fn shared_zod_validation_corpus_matches_rust() {
+    let cases: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../packages/remedia-config/tests/parity.json"
+    ))
+    .unwrap();
+    for case in cases.as_array().unwrap() {
+        let valid =
+            ServerConfig::parse_with(
+                &case["config"].to_string(),
+                Path::new("."),
+                |name| match name {
+                    "USER" => Some("bot".into()),
+                    "PASSWORD" => Some("secret".into()),
+                    _ => None,
+                },
+            )
+            .is_ok();
+        assert_eq!(valid, case["valid"].as_bool().unwrap(), "{}", case["name"]);
+    }
+}
+
+#[test]
+fn raw_default_expansion_matches_zod() {
+    let expected: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../packages/remedia-config/tests/defaults.json"
+    ))
+    .unwrap();
+    let raw: super::raw::RawConfig =
+        serde_json::from_str(r#"{"users":[{"username":"bot","password":"example"}]}"#).unwrap();
+    let mut actual = serde_json::to_value(raw).unwrap();
+    actual.as_object_mut().unwrap().remove("$schema");
+    assert_eq!(actual, expected);
+}

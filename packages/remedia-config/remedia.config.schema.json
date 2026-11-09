@@ -1,0 +1,477 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "Editor JSON Schema URI; metadata only, never fetched by the server.",
+      "type": ["string", "null"]
+    },
+    "bind": {
+      "description": "RPC listen address.",
+      "default": {},
+      "type": "object",
+      "properties": {
+        "host": {
+          "default": "127.0.0.1",
+          "description": "Bind host; literal or runtime environment reference.",
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^env\\('[A-Za-z_][A-Za-z0-9_]*'\\)$",
+              "description": "Runtime environment reference, for example env('REMEDIA_RPC_PASSWORD'). Validation never resolves it."
+            },
+            { "type": "string" }
+          ]
+        },
+        "port": {
+          "default": 8787,
+          "description": "TCP listen port; zero requests an ephemeral port.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      },
+      "additionalProperties": false
+    },
+    "users": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^env\\('[A-Za-z_][A-Za-z0-9_]*'\\)$",
+                "description": "Runtime environment reference, for example env('REMEDIA_RPC_PASSWORD'). Validation never resolves it."
+              },
+              { "type": "string" }
+            ],
+            "description": "Basic authentication username; literal or runtime environment reference. Resolved usernames must be unique."
+          },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^env\\('[A-Za-z_][A-Za-z0-9_]*'\\)$",
+                "description": "Runtime environment reference, for example env('REMEDIA_RPC_PASSWORD'). Validation never resolves it."
+              },
+              { "type": "string" }
+            ],
+            "description": "Basic authentication password; literal or runtime environment reference. Never exposed by configuration inspection."
+          }
+        },
+        "required": ["username", "password"],
+        "additionalProperties": false
+      },
+      "description": "Required authenticated users; duplicate resolved usernames are rejected at startup."
+    },
+    "sessionResumptionTimeoutSeconds": {
+      "default": 60,
+      "description": "Disconnected client session retention in seconds.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 86400
+    },
+    "limits": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "maxConnections": {
+          "default": 128,
+          "description": "Maximum concurrent RPC connections.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        },
+        "maxClientSessions": {
+          "default": 128,
+          "description": "Maximum resumable client sessions per authenticated username.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "maxTotalPlayers": {
+          "default": 256,
+          "description": "Maximum allocated players across the server.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "maxPlayersPerClient": {
+          "default": 16,
+          "description": "Maximum players per client; cannot exceed maxTotalPlayers.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "maxMessageBytes": {
+          "default": 65536,
+          "description": "Maximum RPC message size in bytes.",
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 1048576
+        },
+        "requestTimeoutMs": {
+          "default": 30000,
+          "description": "Request and handshake deadline in milliseconds.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
+        },
+        "maxInFlightRequests": {
+          "default": 16,
+          "description": "Maximum simultaneous requests per WebSocket.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "maxRequestsPerSecond": {
+          "default": 60,
+          "description": "Maximum requests per second per WebSocket.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "eventBuffer": {
+          "default": 128,
+          "description": "Retained events per client session.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        }
+      },
+      "additionalProperties": false
+    },
+    "media": {
+      "description": "Media access policy, evaluated on the server host.",
+      "default": {},
+      "type": "object",
+      "properties": {
+        "allowedFileRoots": {
+          "default": [],
+          "description": "Server-local directories; relative to the config file. ~ expands at startup. Roots must exist and be directories; empty denies file playback.",
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^env\\('[A-Za-z_][A-Za-z0-9_]*'\\)$",
+                "description": "Runtime environment reference, for example env('REMEDIA_RPC_PASSWORD'). Validation never resolves it."
+              },
+              { "type": "string" }
+            ]
+          }
+        },
+        "allowedUrlHosts": {
+          "default": [],
+          "description": "Allowed DNS hosts and subdomains. Empty denies URL playback; wildcard cannot be mixed with specific resolved hosts.",
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^env\\('[A-Za-z_][A-Za-z0-9_]*'\\)$",
+                "description": "Runtime environment reference, for example env('REMEDIA_RPC_PASSWORD'). Validation never resolves it."
+              },
+              { "type": "string" }
+            ],
+            "description": "Allowed DNS host and its subdomains, or * for all hosts. Literal or runtime environment reference."
+          }
+        },
+        "allowHttp": {
+          "default": true,
+          "description": "Permit HTTP media URLs, subject to host and network policy.",
+          "type": "boolean"
+        },
+        "allowHttps": {
+          "default": true,
+          "description": "Permit HTTPS media URLs, subject to host and network policy.",
+          "type": "boolean"
+        },
+        "blockPrivateNetworks": {
+          "default": true,
+          "description": "Reject media URLs resolving to private or reserved network addresses.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "pluginHosts": {
+      "default": [],
+      "description": "Generic plugin-host deployments whose allowed operations can produce audio.",
+      "maxItems": 64,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+            "description": "Stable, unique deployment ID used by clients."
+          },
+          "endpoint": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^env\\('[A-Za-z_][A-Za-z0-9_]*'\\)$",
+                "description": "Runtime environment reference, for example env('REMEDIA_RPC_PASSWORD'). Validation never resolves it."
+              },
+              { "type": "string" }
+            ],
+            "description": "Discovery and execution origin; https unless allowInsecureHttp."
+          },
+          "auth": {
+            "default": { "type": "none" },
+            "description": "Authentication sent only to the configured endpoint origin.",
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": { "type": { "type": "string", "const": "none" } },
+                "required": ["type"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": { "type": "string", "const": "bearer" },
+                  "token": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^env\\('[A-Za-z_][A-Za-z0-9_]*'\\)$",
+                        "description": "Runtime environment reference, for example env('REMEDIA_RPC_PASSWORD'). Validation never resolves it."
+                      },
+                      { "type": "string" }
+                    ],
+                    "description": "Bearer token for the configured plugin-host origin; never sent to media URLs."
+                  }
+                },
+                "required": ["type", "token"],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "allowInsecureHttp": {
+            "default": false,
+            "description": "Permit http: endpoints and media origins.",
+            "type": "boolean"
+          },
+          "allowPrivateNetwork": {
+            "default": false,
+            "description": "Permit loopback, private and link-local addresses for this host.",
+            "type": "boolean"
+          },
+          "mediaOrigins": {
+            "default": [],
+            "description": "Extra origins fetched without credentials; the endpoint origin is always included.",
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^env\\('[A-Za-z_][A-Za-z0-9_]*'\\)$",
+                  "description": "Runtime environment reference, for example env('REMEDIA_RPC_PASSWORD'). Validation never resolves it."
+                },
+                { "type": "string" }
+              ],
+              "description": "HTTP(S) origin; literal or runtime environment reference."
+            }
+          },
+          "allowExternalMedia": {
+            "default": false,
+            "description": "Allow descriptor URLs on other origins under the ordinary media.* policy.",
+            "type": "boolean"
+          },
+          "operations": {
+            "minItems": 1,
+            "maxItems": 256,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "pluginId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$" },
+                "operation": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$" },
+                "replaySafe": {
+                  "default": false,
+                  "description": "Executing again has no side effects; enables retries and grant refresh.",
+                  "type": "boolean"
+                }
+              },
+              "required": ["pluginId", "operation"],
+              "additionalProperties": false
+            },
+            "description": "Allowed (pluginId, operation) pairs."
+          },
+          "limits": {
+            "description": "Per-host resource limits.",
+            "default": {},
+            "type": "object",
+            "properties": {
+              "requestTimeoutMs": {
+                "default": 10000,
+                "description": "Connect and total deadline for each discovery or execute request, in milliseconds.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 300000
+              },
+              "discoveryTtlMs": {
+                "default": 60000,
+                "description": "Discovery refresh interval in milliseconds.",
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 3600000
+              },
+              "maxRequestBytes": {
+                "default": 65536,
+                "description": "Maximum serialized execute request in bytes.",
+                "type": "integer",
+                "minimum": 64,
+                "maximum": 16777216
+              },
+              "maxResponseBytes": {
+                "default": 65536,
+                "description": "Maximum discovery or execute response body in bytes.",
+                "type": "integer",
+                "minimum": 256,
+                "maximum": 16777216
+              },
+              "maxPendingOperations": {
+                "default": 8,
+                "description": "Maximum concurrent operation preparations for this host.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1024
+              },
+              "maxActiveStreams": {
+                "default": 8,
+                "description": "Maximum concurrent media transfers for this host.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1024
+              },
+              "maxMediaBytes": {
+                "default": 1073741824,
+                "description": "Maximum bytes accepted for one media transfer.",
+                "type": "integer",
+                "minimum": 1024,
+                "maximum": 68719476736
+              },
+              "mediaIdleTimeoutMs": {
+                "default": 15000,
+                "description": "Maximum wait for the next media chunk, in milliseconds.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 300000
+              },
+              "mediaBufferBytes": {
+                "default": 262144,
+                "description": "Per-stream queue between the network and the decoder, in bytes.",
+                "type": "integer",
+                "minimum": 4096,
+                "maximum": 16777216
+              },
+              "maxAttempts": {
+                "default": 2,
+                "description": "Total attempts for replay-safe operations.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "endpoint", "operations"],
+        "additionalProperties": false,
+        "description": "A generic plugin-host deployment."
+      }
+    },
+    "audio": {
+      "description": "Native audio processing defaults.",
+      "default": {},
+      "type": "object",
+      "properties": {
+        "opus": {
+          "description": "PCM-to-Opus encoder settings.",
+          "default": {},
+          "type": "object",
+          "properties": {
+            "bitrate": {
+              "default": 128000,
+              "description": "Opus target bitrate in bits per second. Does not affect passthrough.",
+              "type": "integer",
+              "minimum": 500,
+              "maximum": 512000
+            },
+            "complexity": {
+              "default": 9,
+              "description": "Opus encoder complexity; lower values trade quality for CPU. Default remains 9.",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10
+            },
+            "vbr": {
+              "default": true,
+              "description": "Allow variable bitrate for encoded Opus.",
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "crossfade": {
+          "description": "Server crossfade permission and defaults.",
+          "default": {},
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "description": "Allow clients to opt into crossfade; each session must also opt in.",
+              "type": "boolean"
+            },
+            "durationMs": {
+              "default": 5000,
+              "description": "Overlap duration in milliseconds.",
+              "type": "integer",
+              "minimum": 1000,
+              "maximum": 30000
+            },
+            "prepareBeforeMs": {
+              "default": 30000,
+              "description": "Preparation lead before overlap begins, in milliseconds.",
+              "type": "integer",
+              "minimum": 5000,
+              "maximum": 120000
+            },
+            "curve": {
+              "default": "equalPower",
+              "description": "Sample-accurate equal-power overlap curve.",
+              "type": "string",
+              "const": "equalPower"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "observability": {
+      "description": "Local observability settings.",
+      "default": {},
+      "type": "object",
+      "properties": {
+        "console": {
+          "default": true,
+          "description": "Enable console diagnostics; exporter configuration uses existing runtime environment settings.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": ["users"],
+  "additionalProperties": false,
+  "description": "Remedia server configuration. Unknown fields are rejected at every level. Environment references are resolved only by the Rust runtime.",
+  "$id": "https://twlite.github.io/remedia/schemas/remedia.config.schema.json"
+}

@@ -1,0 +1,1302 @@
+[
+  {
+    "name": "defaults",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "schema metadata",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "$schema": "https://twlite.github.io/remedia/schemas/remedia.config.schema.json"
+    },
+    "valid": true
+  },
+  {
+    "name": "null metadata",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "$schema": null
+    },
+    "valid": true
+  },
+  {
+    "name": "unknownroot",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "extra": 1
+    },
+    "valid": false
+  },
+  {
+    "name": "missing users",
+    "config": {
+      "users": null
+    },
+    "valid": false
+  },
+  {
+    "name": "empty users",
+    "config": {
+      "users": []
+    },
+    "valid": false
+  },
+  {
+    "name": "duplicate users",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "a"
+        },
+        {
+          "username": "bot",
+          "password": "b"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "colon username",
+    "config": {
+      "users": [
+        {
+          "username": "a:b",
+          "password": "a"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "empty password",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": ""
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "malformed env",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "env(\"KEY\")"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "multibyte username",
+    "config": {
+      "users": [
+        {
+          "username": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+          "password": "a"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "port -1",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "bind": {
+        "port": -1
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "port 0",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "bind": {
+        "port": 0
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "port 65535",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "bind": {
+        "port": 65535
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "port 65536",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "bind": {
+        "port": 65536
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "port 0.5",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "bind": {
+        "port": 0.5
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "maxConnections 0",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "maxConnections": 0
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "maxConnections 65537",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "maxConnections": 65537
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "maxClientSessions 0",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "maxClientSessions": 0
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "maxClientSessions 10001",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "maxClientSessions": 10001
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "maxTotalPlayers 0",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "maxTotalPlayers": 0
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "maxTotalPlayers 10001",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "maxTotalPlayers": 10001
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "maxPlayersPerClient 0",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "maxPlayersPerClient": 0
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "maxPlayersPerClient 1001",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "maxPlayersPerClient": 1001
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "maxMessageBytes 0",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "maxMessageBytes": 0
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "maxMessageBytes 1048577",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "maxMessageBytes": 1048577
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "requestTimeoutMs 0",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "requestTimeoutMs": 0
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "requestTimeoutMs 300001",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "requestTimeoutMs": 300001
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "maxInFlightRequests 0",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "maxInFlightRequests": 0
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "maxInFlightRequests 4097",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "maxInFlightRequests": 4097
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "maxRequestsPerSecond 0",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "maxRequestsPerSecond": 0
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "maxRequestsPerSecond 100001",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "maxRequestsPerSecond": 100001
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "eventBuffer 0",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "eventBuffer": 0
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "eventBuffer 65537",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "eventBuffer": 65537
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "cross capacity",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "maxTotalPlayers": 2,
+        "maxPlayersPerClient": 3
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid opus {'complexity': -1}",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "audio": {
+        "opus": {
+          "complexity": -1
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid opus {'complexity': 11}",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "audio": {
+        "opus": {
+          "complexity": 11
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid opus {'bitrate': 499}",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "audio": {
+        "opus": {
+          "bitrate": 499
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid opus {'bitrate': 512001}",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "audio": {
+        "opus": {
+          "bitrate": 512001
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid opus {'vbr': 'true'}",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "audio": {
+        "opus": {
+          "vbr": "true"
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid opus {'extra': 1}",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "audio": {
+        "opus": {
+          "extra": 1
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "opus boundaries",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "audio": {
+        "opus": {
+          "bitrate": 500,
+          "complexity": 0,
+          "vbr": false
+        }
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "invalid fade {'durationMs': 999}",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "audio": {
+        "crossfade": {
+          "durationMs": 999
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid fade {'durationMs': 30001}",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "audio": {
+        "crossfade": {
+          "durationMs": 30001
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid fade {'prepareBeforeMs': 4999}",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "audio": {
+        "crossfade": {
+          "prepareBeforeMs": 4999
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid fade {'prepareBeforeMs': 120001}",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "audio": {
+        "crossfade": {
+          "prepareBeforeMs": 120001
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid fade {'curve': 'linear'}",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "audio": {
+        "crossfade": {
+          "curve": "linear"
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid fade {'extra': 1}",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "audio": {
+        "crossfade": {
+          "extra": 1
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "hosts ['*']",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "media": {
+        "allowedUrlHosts": ["*"]
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "hosts ['Example.COM.']",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "media": {
+        "allowedUrlHosts": ["Example.COM."]
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "hosts ['*', 'example.com']",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "media": {
+        "allowedUrlHosts": ["*", "example.com"]
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "hosts ['https://example.com']",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "media": {
+        "allowedUrlHosts": ["https://example.com"]
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "hosts ['foo..com']",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "media": {
+        "allowedUrlHosts": ["foo..com"]
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "hosts ['-foo.com']",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "media": {
+        "allowedUrlHosts": ["-foo.com"]
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "hosts ['*', '*']",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "media": {
+        "allowedUrlHosts": ["*", "*"]
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "unknown bind",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "bind": {
+        "unexpected": true
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown limits",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "limits": {
+        "unexpected": true
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown media",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "media": {
+        "unexpected": true
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown audio",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "audio": {
+        "unexpected": true
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown observability",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "observability": {
+        "unexpected": true
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "env reference",
+    "config": {
+      "users": [
+        {
+          "username": "env('USER')",
+          "password": "env('PASSWORD')"
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin host defaults",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin host full",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "p",
+              "operation": "o",
+              "replaySafe": true
+            }
+          ],
+          "auth": {
+            "type": "bearer",
+            "token": "0123456789abcdef-token"
+          },
+          "mediaOrigins": ["https://cdn.example.com"],
+          "allowExternalMedia": true,
+          "limits": {
+            "maxAttempts": 3,
+            "maxActiveStreams": 1
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin host insecure opt in",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "http://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ],
+          "allowInsecureHttp": true
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin host duplicate ids",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ]
+        },
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host http without opt in",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "http://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host endpoint with path",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com/v1",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host endpoint credentials",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://u:p@plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host short token",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ],
+          "auth": {
+            "type": "bearer",
+            "token": "short"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host unknown auth type",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ],
+          "auth": {
+            "type": "basic"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host unknown field",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ],
+          "extra": 1
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host invalid id",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "bad id",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host no operations",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": []
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host duplicate operations",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            },
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host invalid limit",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ],
+          "limits": {
+            "maxAttempts": 4
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host zero streams",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ],
+          "limits": {
+            "maxActiveStreams": 0
+          }
+        }
+      ]
+    },
+    "valid": false
+  }
+]
