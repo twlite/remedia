@@ -1,0 +1,226 @@
+# @remedia/plugin-host
+
+A TypeScript-first, framework-independent operation registry for Remedia clients and independently hosted plugin services. Direct calls preserve object identity. Optional HTTP uses the same dispatcher. The package has no runtime dependencies and requires Node.js 22.18 or newer. It never starts a listener automatically and does not sandbox plugins.
+
+```sh
+pnpm add @remedia/plugin-host
+```
+
+## Local-only execution
+
+Declare operation inputs and outputs once. Register initialized plugins with explicit schemas; operation names and semantics belong to the application.
+
+```ts
+import { createPluginHost, type Operation } from '@remedia/plugin-host';
+
+type Operations = {
+  resolve: Operation<{ id: string }, { id: string; title: string }>;
+};
+const host = createPluginHost<Operations>({ name: 'My Host' });
+host.register<Operations>({
+  id: 'example.source',
+  operations: {
+    resolve: async ({ id }, { signal }) => {
+      signal.throwIfAborted();
+      return { id, title: 'Example' };
+    },
+  },
+});
+try {
+  const outcome = await host.handle({
+    pluginId: 'example.source',
+    operation: 'resolve',
+    input: { id: '123' },
+  });
+  if (outcome.handled) console.log(outcome.result.title);
+} finally {
+  await host.close();
+}
+```
+
+No HTTP server, serialization, or native Remedia installation is required. Inputs and outputs can contain arbitrary objects, class instances, functions and streams. Only `undefined` means unhandled; `null` and `false` are valid handled results. `execute(pluginId, operation, input, { signal })` provides positional dispatch with unknown input/output types; `handle()` is the typed primary API. Without a schema, `handle()` accepts unknown values. You can alternatively augment the exported `PluginOperations` interface with application-wide operations.
+
+Registration requires a unique ID and at least one own operation. IDs and operation names start with an ASCII letter/digit and contain at most 128 letters, digits, dots, underscores or hyphens. Duplicate IDs throw `PluginHostError` with `duplicate_plugin`. Handlers are copied at registration. Registration does not initialize plugins for you.
+
+## Independently hosted Fetch service
+
+```ts
+import { createPluginHost, type Operation } from '@remedia/plugin-host';
+
+type Operations = { resolve: Operation<unknown, { id: string; title: string }> };
+const secret = process.env.REMEDIA_PLUGIN_TOKEN;
+if (!secret) throw new Error('REMEDIA_PLUGIN_TOKEN is required');
+export const host = createPluginHost<Operations>({
+  name: 'Source service',
+  publicUrl: 'https://plugins.example.com',
+  token: secret,
+  onError: (error) => console.error('Plugin service failure', error),
+});
+host.register<Operations>({
+  id: 'example.source',
+  operations: {
+    resolve(input) {
+      if (
+        typeof input !== 'object' ||
+        input === null ||
+        !('id' in input) ||
+        typeof input.id !== 'string'
+      )
+        throw new TypeError('Expected a string id');
+      return { id: input.id, title: 'Example' };
+    },
+  },
+});
+// Supply this function to your deployment's Fetch-compatible HTTP runtime:
+export function fetchHandler(request: Request): Promise<Response> {
+  return host.fetch(request);
+}
+```
+
+A remote client can invoke the service:
+
+```ts
+const response = await fetch('https://plugins.example.com/remedia/v1/execute', {
+  method: 'POST',
+  headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' },
+  body: JSON.stringify({ pluginId: 'example.source', operation: 'resolve', input: { id: '123' } }),
+});
+if (!response.ok) throw new Error(`Plugin HTTP ${response.status}`);
+console.log(await response.json());
+```
+
+TypeScript contracts do not validate remote JSON. Each handler must validate its untrusted inputs. Handler validation failures currently map to `plugin_failed` (502); a handler can throw `PluginHostError('invalid_request', 400)` to provide a typed client error.
+
+## Express and Connect
+
+```ts
+import express from 'express';
+import { createNodeMiddleware } from '@remedia/plugin-host/node';
+import { host } from './service.js'; // The initialized host above.
+
+const app = express();
+app.use(createNodeMiddleware(host)); // Mount at origin root, before all body parsers.
+app.use(express.json());
+app.get('/health', (_req, res) => {
+  res.send('ok');
+});
+const server = app.listen(3000); // Application owns the listener.
+async function shutdown() {
+  server.close();
+  await host.close();
+}
+process.once('SIGTERM', () => {
+  void shutdown().catch(console.error);
+});
+```
+
+For Connect, use `app.use(createNodeMiddleware(host))` before body parsers and pass the Connect app to `http.createServer(app)`. Unknown paths call `next()`; without `next`, they return 404. Previously parsed or consumed bodies produce 400 with a mounting instruction. Request bodies are read once with a byte limit. The adapter uses streaming pipeline backpressure, cancels operations/media on disconnect and removes listeners after completion. Do not mount under a URL prefix; protocol routes are absolute.
+
+## Hono
+
+```ts
+import { Hono } from 'hono';
+import { host } from './service.js';
+
+const app = new Hono();
+app.get('/.well-known/remedia', (c) => host.fetch(c.req.raw));
+app.all('/remedia/v1/*', (c) => host.fetch(c.req.raw));
+app.get('/health', (c) => c.text('ok'));
+export default app;
+```
+
+Hono remains an application dependency. The host itself depends only on standard Fetch APIs and Node built-ins. Its Node middleware is optional.
+
+## Lazy encoded media
+
+```ts
+import { createReadStream } from 'node:fs';
+import { createMediaSource, createPluginHost } from '@remedia/plugin-host';
+
+const host = createPluginHost({ name: 'Media', publicUrl: 'https://plugins.example.com' });
+host.register({
+  id: 'example.media',
+  operations: {
+    stream: () =>
+      createMediaSource({
+        contentType: 'audio/ogg',
+        open: ({ signal }) => createReadStream('/srv/media/example.ogg', { signal }),
+        // Optional dispose(): release factory-owned resources, even if never opened.
+      }),
+  },
+});
+```
+
+Return a fresh source per operation. Its `open({ signal })` returns a Node Readable or Web ReadableStream of Uint8Array encoded bytes, optionally through a promise. PCM objects and object-mode data are invalid. The factory must respect cancellation during asynchronous opening; a stream returned after cancellation is destroyed. `dispose()` runs once per HTTP grant after expiry, cancellation, failure or completion, including unopened grants. Keep resources inside the factory until opening succeeds; if opening throws before returning a stream, the factory must clean any partially created resources itself.
+
+For direct calls, the caller receives the exact source or stream and owns opening, cancellation, consumption and disposal after successful dispatch. A caller opening a source directly passes its own AbortSignal. The host destroys a stream returned by an operation that was cancelled before successful dispatch.
+
+For HTTP calls, streams and sources become `{ url, expiresAtMs }` descriptors. No source is opened until the media URL is redeemed. Eager streams are also supported but may buffer while waiting; prefer lazy factories. Unredeemed tokens expire automatically. URLs use 256-bit random tokens, can be redeemed once, and remain tied to their registration during delivery. Expiration limits redemption time; it does not terminate an already redeemed stream. Streams use bounded transport buffering and are pulled by consumers; producers must honor their stream implementation's backpressure.
+
+Media is non-seekable. Range requests return 416 without consuming the token. The factory signature does not promise offsets, lengths or seek support. Future seeking requires a separate contract.
+
+## Cleanup and cancellation
+
+```ts
+import { createPluginHost } from '@remedia/plugin-host';
+const host = createPluginHost({ name: 'Cancellation' });
+host.register({
+  id: 'example.work',
+  operations: {
+    wait: async (_input, { signal }) => {
+      const response = await fetch('https://provider.example.com/status', { signal });
+      return response.text();
+    },
+  },
+  dispose: async () => {
+    /* Close plugin-owned pools or workers here. */
+  },
+});
+const controller = new AbortController();
+const pending = host.handle({
+  pluginId: 'example.work',
+  operation: 'wait',
+  input: null,
+  signal: controller.signal,
+});
+controller.abort(new Error('Client cancelled'));
+try {
+  await pending;
+} catch (error) {
+  console.error(error);
+}
+await host.unregister('example.work');
+await host.close();
+```
+
+Request and optional `handle(request, { signal })` cancellation are combined with host/registration cancellation. Direct cancellation rejects with the original signal reason. Already aborted requests do not invoke handlers. Unexpected direct handler errors propagate unchanged. `unregister(id)` immediately removes discovery/dispatch access, aborts operations and HTTP media, waits for operations and media opening to settle, releases resources, then invokes plugin disposal exactly once. Concurrent unregister calls share completion; IDs cannot be reused during disposal. Returns false for unknown IDs. Cleanup failures reject as AggregateError while other registrations still clean up.
+
+`close()` synchronously prevents new operations, cancels requests and returns one shared shutdown promise. Always await it. Handlers and factories must settle after cancellation: JavaScript cannot forcibly terminate an uncooperative promise, so shutdown waits for it. A handler owns resources it creates before throwing; use try/finally for partial work. Successful direct results belong to the caller and are not revoked by host shutdown.
+
+Unexpected HTTP and background cleanup failures go to `onError`, defaulting to `console.error`. Keep this callback non-throwing. HTTP errors redact original messages. Stream read failures reject the response body and are reported; after headers have been sent, middleware terminates the connection.
+
+## HTTP reference and limits
+
+| Method | Path                       | Behavior                                                                                           |
+| ------ | -------------------------- | -------------------------------------------------------------------------------------------------- |
+| GET    | `/.well-known/remedia`     | Public discovery: name, protocolVersion: 1, endpoints, plugin IDs and operation lists              |
+| POST   | `/remedia/v1/execute`      | JSON `{ pluginId, operation, input }`; returns `{ handled: false }` or `{ handled: true, result }` |
+| GET    | `/remedia/v1/media/:token` | Redeem a temporary encoded media response                                                          |
+
+`/.well-known/remedia` is Remedia's private discovery endpoint. All responses use `Cache-Control: no-store`. Execute requires `application/json` (parameters allowed), limits bodies to 65536 bytes by default, and requires `Authorization: Bearer …` when `token` is configured. `maxRequestBytes` adjusts that limit. Requests and results must be JSON-safe: remote results reject cycles, undefined properties, functions, BigInt, non-finite numbers, getters, symbols and non-plain objects rather than silently converting them. Top-level streams/sources use media delivery instead.
+
+`publicUrl` must be a trusted HTTP(S) origin without paths, credentials, queries or fragments; it is only required for media grants. Incoming Host headers do not affect grants. `mediaTtlMs` defaults to 60000 (range 1–3600000). `maxMediaTokens` defaults to 1024. Limits must be positive safe integers. `token` must contain at least 16 characters. Authentication covers execute; discovery is public and media URLs themselves are bearer credentials. Use TLS and restrict network access; never log media URLs. Applications must authorize operations and restrict any user-selected URLs/files inside their handlers.
+
+Errors use `{ error: { code } }`: 400 invalid_request/invalid_json, 401 unauthorized, 404 plugin_not_found/operation_not_found/media_not_found/not_found, 405 method_not_allowed, 413 request_too_large, 415 unsupported_media_type, 416 range_not_supported, 499 cancelled, 500 public_url_required, 502 plugin_failed/invalid_result/invalid_media_source, 503 host_closed/plugin_unregistered/media_token_limit. Direct duplicate registration uses 409 duplicate_plugin. Handler errors use their explicit PluginHostError status where supplied.
+
+## Build and verification
+
+```sh
+pnpm --filter @remedia/plugin-host build
+pnpm --filter @remedia/plugin-host typecheck
+pnpm --filter @remedia/plugin-host test
+```
+
+Strict TypeScript lives in `src/`; `tsc` emits ESM JavaScript and declarations to `dist/`. Both the root and `/node` subpath export generated declarations. TypeScript Vitest tests cover lifecycle, transport, failure and concurrency behavior, plus a packed consumer compiled with NodeNext and Bundler resolution. No declaration files are maintained manually.
+
+The package is independently usable for plugin dispatch and encoded HTTP delivery. Rust `remedia-server` discovery, forwarding, media authorization and playback integration remain outstanding. These HTTP tests do not establish remote Remedia playback.
