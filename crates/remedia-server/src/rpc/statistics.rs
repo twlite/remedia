@@ -29,6 +29,7 @@ pub(crate) fn node_stats(server: &ServerInner) -> Value {
         "players": {"active": server.active_player_count(), "maximum": server.config.limits.max_total_players},
         "cpu": {"availableParallelism": std::thread::available_parallelism().ok().map(usize::from), "loadAverage1m": load_average_1m()},
         "memory": {"residentBytes": resident_memory_bytes()},
+        "pluginHosts": server.plugin_hosts.snapshot(),
         "transportHealth": if transport_failed { "degraded" } else { "healthy" },
         "processingHealth": if processing_failed { "degraded" } else { "healthy" },
     })

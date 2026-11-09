@@ -19,8 +19,10 @@ sources, platform metadata, and their existing Discord Gateway connection.
 
 Embedded execution does not run a local server. Remote execution does not accept byte uploads or
 client-owned Readables. Applications provide source integrations. The independent [`@remedia/plugin-host`](packages/remedia-plugin-host)
-package supplies generic direct dispatch and optional HTTP media delivery; Rust server plugin playback
-integration is not implemented. Remedia does not implement the Lavalink API.
+package supplies generic direct dispatch and optional HTTP media delivery. `remedia-server` can register
+such deployments in `pluginHosts`, execute allow-listed operations on them at playback time, and play the
+returned audio as a forward-only stream ([guide](apps/docs/content/docs/server/plugin-operations.mdx)).
+Remedia does not implement the Lavalink API.
 
 ## Installation
 

@@ -13,6 +13,8 @@ pub(super) struct RawConfig {
     #[serde(default)]
     pub(super) media: RawMedia,
     #[serde(default)]
+    pub(super) plugin_hosts: Vec<plugin_hosts::RawPluginHost>,
+    #[serde(default)]
     pub(super) audio: RawAudio,
     #[serde(default)]
     pub(super) observability: RawObservability,

@@ -53,7 +53,13 @@ and diagnostics APIs. `@remedia/client` orchestrates direct embedded and remote 
   does not recreate server playback. Explicit disconnect and guild destruction stop the source.
   Remote voice lifecycle RPCs carry a monotonic transport generation; stale connect, suspend, or
   failure operations are rejected even though request handlers execute concurrently.
-  The server does not use N-API, perform Discord Gateway OP 4, or implement Lavalink. Each
+  Configured `pluginHosts` are generic plugin-host deployments addressed only by operator-assigned
+  IDs. The server discovers them (`/.well-known/remedia`), executes allow-listed operations with
+  bearer authentication under per-host pending-operation limits, and plays the returned media grant
+  through its own pinned, redirect-free HTTP client and a bounded forward-only byte stream, so
+  FFmpeg never issues a `Range` request to a single-use grant. Operation preparation shares the
+  guild's cancellation and generation model, including staged playback. The server does not
+  use N-API, perform Discord Gateway OP 4, or implement Lavalink. Each
   authenticated client session owns guild sessions; each guild session owns one playback session
   and an optional Discord transport. Session state is
   node-local and in memory; disconnects can be resumed for a configured bounded interval, while

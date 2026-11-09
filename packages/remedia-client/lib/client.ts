@@ -286,9 +286,14 @@ export class RemediaClient
         return sticky.createGuildSession(options, onDispose);
       }
 
+      const requiredHosts = options.pluginHosts ?? [];
       const node = options.nodeId
         ? this.#getPinnedNode(options.nodeId, options.guildId)
-        : await this.#chooseNode(options.guildId);
+        : await this.#chooseNode(options.guildId, undefined, requiredHosts);
+      if (!supportsHosts(node.snapshot, requiredHosts))
+        throw new NodeSelectionError(
+          `node ${node.id} does not advertise every required plugin host (${requiredHosts.join(', ')})`,
+        );
       const assignment: GuildAssignment = {
         guildId: options.guildId,
         nodeId: node.id,
@@ -380,9 +385,20 @@ export class RemediaClient
     }
   }
 
-  async #chooseNode(guildId: string, source?: MediaSource): Promise<NodeAdapter> {
+  async #chooseNode(
+    guildId: string,
+    source?: MediaSource,
+    requiredHosts: readonly string[] = [],
+  ): Promise<NodeAdapter> {
+    const operationHost =
+      source && 'hostId' in source && 'pluginId' in source && 'operation' in source
+        ? source.hostId
+        : undefined;
+    const hosts = operationHost === undefined ? requiredHosts : [...requiredHosts, operationHost];
     const healthy = [...this.#nodes.values()].filter((node) => {
       if (node.status !== 'healthy') return false;
+      // Host affinity: only nodes which advertise every required deployment may be selected.
+      if (!supportsHosts(node.snapshot, hosts)) return false;
       const snapshot = node.snapshot;
       const capacity = snapshot.capacity;
       const stats = snapshot.statistics;
@@ -398,7 +414,11 @@ export class RemediaClient
       );
     });
     if (healthy.length === 0) {
-      throw new NodeSelectionError('no healthy Remedia node has available player capacity');
+      throw new NodeSelectionError(
+        hosts.length === 0
+          ? 'no healthy Remedia node has available player capacity'
+          : `no healthy Remedia node with available capacity advertises plugin host(s) ${hosts.join(', ')}`,
+      );
     }
 
     let selected: string;
@@ -613,4 +633,9 @@ function isSnowflake(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Whether a node snapshot lists every required plugin-host ID. Absent capabilities mean no hosts. */
+function supportsHosts(snapshot: NodeSnapshot, hosts: readonly string[]): boolean {
+  return hosts.every((host) => snapshot.capabilities?.pluginOperations.hosts.includes(host));
 }

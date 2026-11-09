@@ -18,6 +18,7 @@ use tracing::Instrument;
 use tracing::instrument::WithSubscriber;
 
 use crate::config::{ConfigError, ServerConfig, parse_snowflake};
+use crate::plugin_host::PluginHostRegistry;
 use crate::protocol::{RpcResponse, parse_request};
 use crate::rpc;
 use crate::state::{ConnectionContext, ServerInner, new_inner};
@@ -51,7 +52,13 @@ impl ServerHandle {
         let observability =
             remedia_observability::Observability::new(config.observability_config()?)?;
         let shutdown = CancellationToken::new();
-        let inner = new_inner(config, observability, shutdown);
+        let plugin_hosts = PluginHostRegistry::new(&config.plugin_hosts, &observability.handle())
+            .map_err(|_| {
+            ServerError::Configuration(ConfigError::Invalid(
+                "pluginHosts HTTP client could not be initialized",
+            ))
+        })?;
+        let inner = new_inner(config, plugin_hosts, observability, shutdown);
         let listener = match TcpListener::bind((bind_host.as_str(), port)).await {
             Ok(listener) => listener,
             Err(error) => {
@@ -62,6 +69,7 @@ impl ServerHandle {
             }
         };
         let local_addr = listener.local_addr()?;
+        inner.start_plugin_hosts();
         let task_inner = Arc::clone(&inner);
         let accept = async move { accept_loop(task_inner, listener).await };
         let task = if let Some(dispatch) = inner.observability.dispatch().cloned() {
@@ -339,6 +347,7 @@ async fn handle_connection(
         token.cancel();
     }
     connection_cancel.cancel();
+    connection.closed.cancel();
     if let Some(session) = connection.session() {
         inner.detach_client(session, &connection.id);
     }

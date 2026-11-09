@@ -92,6 +92,7 @@ pub(crate) fn open(
 
     let locator = source_locator(source)?;
     let is_network = locator.as_ref().is_some_and(|(_, network)| *network);
+    let sequential_http = matches!(source, InputSource::SequentialHttpUrl(_));
     let locator = locator
         .map(|(locator, _)| CString::new(locator).map_err(|_| DecoderError::InvalidSource))
         .transpose()?;
@@ -105,6 +106,19 @@ pub(crate) fn open(
         // chunk of an unknown-length response. Persistent-request mode keeps
         // the chunk-end state available to subsequent reads, which then see EOF.
         options.set("multiple_requests", "1");
+    }
+    if sequential_http {
+        // A forward-only resource cannot answer `Range: bytes=0-` (FFmpeg sends it
+        // by default) and cannot be reopened. Disable seeking, which also stops the
+        // HTTP protocol from probing or issuing ranged requests, and keep automatic
+        // reconnection off so an interrupted body is reported instead of replayed
+        // from a different offset. Only HTTP(S) transports are permitted, including
+        // for redirects.
+        options.set("seekable", "0");
+        options.set("reconnect", "0");
+        options.set("reconnect_at_eof", "0");
+        options.set("reconnect_streamed", "0");
+        options.set("protocol_whitelist", "http,https,tcp,tls,crypto");
     }
 
     // Allocate the format context before installing the custom AVIO pointer.
@@ -209,7 +223,7 @@ unsafe extern "C" fn interrupt_callback(opaque: *mut c_void) -> c_int {
 fn source_locator(source: &InputSource) -> Result<Option<(String, bool)>, DecoderError> {
     match source {
         InputSource::File(path) => Ok(Some((path_to_string(path)?, false))),
-        InputSource::HttpUrl(value) => {
+        InputSource::HttpUrl(value) | InputSource::SequentialHttpUrl(value) => {
             let url = url::Url::parse(value)
                 .map_err(|error| DecoderError::InvalidUrl(error.to_string()))?;
             if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {

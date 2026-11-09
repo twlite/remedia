@@ -15,10 +15,12 @@ pub(super) async fn execute_player_control(
     let session = require_client(&connection)?;
     let guild = server.get_guild(&session, &guild_id).map_err(state_error)?;
 
-    if request.command == "player.stop"
-        && let Some(cancellation) = lock(&guild.play_cancellation).as_ref()
-    {
-        cancellation.cancel();
+    if request.command == "player.stop" {
+        if let Some(cancellation) = lock(&guild.play_cancellation).as_ref() {
+            cancellation.cancel();
+        }
+
+        guild.cancel_pending_stage();
     }
     let operation = Arc::clone(&guild.playback_operations).lock_owned().await;
     guild.ensure_open().map_err(state_error)?;
@@ -229,6 +231,7 @@ pub(super) async fn stop_playback(guild: &Arc<GuildSession>) -> Result<(), RpcEr
     if let Some(cancellation) = lock(&guild.play_cancellation).as_ref() {
         cancellation.cancel();
     }
+    guild.cancel_pending_stage();
     let operation = Arc::clone(&guild.playback_operations).lock_owned().await;
     let playback = Arc::clone(&guild.playback);
     tokio::task::spawn_blocking(move || {

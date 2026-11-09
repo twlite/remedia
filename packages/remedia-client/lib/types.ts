@@ -162,8 +162,38 @@ export interface PlaybackSnapshot {
   } | null;
 }
 
+/** JSON-compatible value. Plugin operation input is opaque to Remedia and must be JSON-serializable. */
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly JsonValue[]
+  | { readonly [key: string]: JsonValue };
+
 /**
- * Encoded media input. Files and HTTP(S) URLs work in both modes; owned bytes and caller-owned binary Readables require embedded playback.
+ * A media source produced on demand by a generic plugin-host operation.
+ *
+ * Remedia never interprets `input`; the consuming application owns its schema. The selected
+ * remote node executes the operation on the configured host only when playback or staging
+ * prepares the source, and the resulting temporary media location is never stored as the
+ * source identity. Operation sources are remote-only, cannot be probed, and are not
+ * migrated to another node: host affinity is explicit, with no fallback to another deployment.
+ */
+export interface OperationMediaSource {
+  /** Operator-assigned ID of a plugin-host deployment in the node's `pluginHosts` configuration. */
+  hostId: string;
+  /** Plugin registration ID within that deployment. */
+  pluginId: string;
+  /** Operation name which the node's configuration allows for this host and plugin. */
+  operation: string;
+  /** Opaque JSON passed unchanged to the operation. Its serialized size is bounded by the host's `maxRequestBytes`. */
+  input: JsonValue;
+}
+
+/**
+ * Encoded media input. Files, HTTP(S) URLs and plugin operations work in remote mode; files and URLs also work embedded;
+ * owned bytes and caller-owned binary Readables require embedded playback.
  */
 export type MediaSource =
   | {
@@ -174,6 +204,7 @@ export type MediaSource =
       /** HTTP(S) media URL opened by the selected engine; remote nodes enforce server URL policy. */
       url: string;
     }
+  | OperationMediaSource
   | {
       /** Owned encoded media bytes, supported by embedded nodes only. */
       buffer: Buffer | Uint8Array;
@@ -186,7 +217,8 @@ export type MediaSource =
     };
 
 /**
- * Media location opened by the server: an allowed server-local file or HTTP(S) URL. Client byte uploads are unsupported.
+ * Media resolved by the server: an allowed server-local file, an HTTP(S) URL, or a plugin-host operation.
+ * Client byte uploads are unsupported.
  */
 export type RemoteMediaSource =
   | {
@@ -196,7 +228,8 @@ export type RemoteMediaSource =
   | {
       /** HTTP(S) media URL opened by the selected engine; remote nodes enforce server URL policy. */
       url: string;
-    };
+    }
+  | OperationMediaSource;
 
 /** Execution mode of a configured Remedia node. */
 export type NodeType = 'embedded' | 'remote';
@@ -239,10 +272,20 @@ export interface CrossfadeCapability {
   curve: 'equalPower';
 }
 
-/** Crossfade playback identity, state, or capability metadata. */
+/** Plugin-host operation sources supported by a node. Older nodes omit it, which means unsupported. */
+export interface PluginOperationsCapability {
+  /** Whether the node can execute operation sources at all. */
+  available: boolean;
+  /** Configured plugin-host IDs the node can address. */
+  hosts: readonly string[];
+}
+
+/** Capabilities advertised by a node's `node.info` response. */
 export interface NodeCapabilities {
   /** Crossfade policy and implementation capability. */
   crossfade: CrossfadeCapability;
+  /** Plugin-host operation support. Absent capabilities are treated as unavailable. */
+  pluginOperations: PluginOperationsCapability;
 }
 
 /** Opt-in request for staged-source crossfading on an individual guild session. */
@@ -382,6 +425,13 @@ export interface DiscordSessionOptions {
   userId: string;
   /** Configured identifier of the Remedia node associated with this resource. */
   nodeId?: string;
+  /**
+   * Plugin-host IDs which the assigned node must be configured with. Automatic assignment only
+   * considers nodes whose `pluginOperations` capability lists every ID; a pinned `nodeId` that lacks one
+   * is rejected. Without this option, assignment ignores plugin hosts and operation sources fail explicitly
+   * if the assigned node cannot execute them.
+   */
+  pluginHosts?: readonly string[];
 }
 
 /**

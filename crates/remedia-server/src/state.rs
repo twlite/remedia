@@ -15,10 +15,12 @@ use tokio_util::sync::CancellationToken as TokioCancellationToken;
 use tracing::instrument::WithSubscriber;
 
 use crate::config::ServerConfig;
+use crate::plugin_host::PluginHostRegistry;
 use crate::protocol::event;
 
 pub(crate) struct ServerInner {
     pub(crate) config: Arc<ServerConfig>,
+    pub(crate) plugin_hosts: Arc<PluginHostRegistry>,
     pub(crate) observability: ObservabilityHandle,
     pub(crate) sessions: Mutex<HashMap<String, Arc<ClientSession>>>,
     pub(crate) active_players: AtomicUsize,
@@ -57,12 +59,47 @@ pub(crate) struct GuildSession {
     pub(crate) voice_connected_generation: AtomicU64,
     pub(crate) voice_terminal_generation: AtomicU64,
     pub(crate) voice_reconnecting: AtomicBool,
-    pub(crate) play_cancellation: Mutex<Option<CancellationToken>>,
+    pub(crate) play_cancellation: Mutex<Option<PlayCancellation>>,
+    /// The operation currently resolving a staged source, if any.
+    pub(crate) stage_scope: Mutex<Option<StageScope>>,
     pub(crate) playback_operations: Arc<tokio::sync::Mutex<()>>,
     pub(crate) voice_operations: Arc<tokio::sync::Mutex<()>>,
     pub(crate) source_generation: AtomicU64,
     pub(crate) terminal_generation: AtomicU64,
     pub(crate) closed: AtomicBool,
+}
+
+/// Cancels both the native playback start and any plugin operation which precedes it.
+///
+/// A source is first resolved (possibly through a plugin host) and then opened by the
+/// decoder. Stop, skip, replacement, guild destruction and shutdown must be able to
+/// interrupt either phase through one handle.
+#[derive(Clone, Default)]
+pub(crate) struct PlayCancellation {
+    pub(crate) core: CancellationToken,
+    pub(crate) scope: TokioCancellationToken,
+}
+
+impl PlayCancellation {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.scope.cancel();
+        self.core.cancel();
+    }
+}
+
+/// Identity of a staged-source preparation which has not reached the decoder yet.
+#[derive(Clone)]
+pub(crate) struct StageScope {
+    pub(crate) id: u64,
+    pub(crate) token: TokioCancellationToken,
+    pub(crate) expected_generation: u64,
+    pub(crate) entry_id: String,
+    pub(crate) queue_revision: u64,
+    pub(crate) source_revision: u64,
 }
 
 pub(crate) struct ConnectionContext {
@@ -71,8 +108,19 @@ pub(crate) struct ConnectionContext {
     pub(crate) bot_user_id: u64,
     pub(crate) active_session: watch::Sender<Option<Arc<ClientSession>>>,
     pub(crate) session_control: tokio::sync::Mutex<()>,
+    /// Cancelled when the WebSocket closes; pending plugin operations observe it.
+    pub(crate) closed: TokioCancellationToken,
     pub(crate) probes: Mutex<std::collections::HashMap<String, remedia_core::CancellationToken>>,
     request_window: Mutex<(Instant, usize)>,
+}
+
+impl GuildSession {
+    /// Cancel an unfinished staged-source preparation, including any plugin operation.
+    pub(crate) fn cancel_pending_stage(&self) {
+        if let Some(scope) = lock(&self.stage_scope).take() {
+            scope.token.cancel();
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
@@ -89,11 +137,13 @@ pub(crate) enum StateError {
 
 pub(crate) fn new_inner(
     config: ServerConfig,
+    plugin_hosts: PluginHostRegistry,
     observability: Observability,
     shutdown: TokioCancellationToken,
 ) -> Arc<ServerInner> {
     let observability_handle = observability.handle();
     Arc::new(ServerInner {
+        plugin_hosts: Arc::new(plugin_hosts),
         connection_slots: Arc::new(Semaphore::new(config.limits.max_connections)),
         config: Arc::new(config),
         observability: observability_handle,
@@ -328,6 +378,7 @@ impl ServerInner {
             voice_terminal_generation: AtomicU64::new(0),
             voice_reconnecting: AtomicBool::new(false),
             play_cancellation: Mutex::new(None),
+            stage_scope: Mutex::new(None),
             playback_operations: Arc::new(tokio::sync::Mutex::new(())),
             voice_operations: Arc::new(tokio::sync::Mutex::new(())),
             source_generation: AtomicU64::new(0),
@@ -368,6 +419,7 @@ impl ServerInner {
         if let Some(cancellation) = lock(&guild.play_cancellation).as_ref() {
             cancellation.cancel();
         }
+        guild.cancel_pending_stage();
         let _voice_operation = Arc::clone(&guild.voice_operations).lock_owned().await;
         let playback_operation = Arc::clone(&guild.playback_operations).lock_owned().await;
         let playback = Arc::clone(&guild.playback);
@@ -406,6 +458,7 @@ impl ServerInner {
         for id in session_ids {
             let _ = self.close_client(&id).await;
         }
+        self.plugin_hosts.close().await;
     }
 
     pub(crate) fn health(&self) -> &'static str {
@@ -448,3 +501,10 @@ mod sessions;
 
 mod snapshot;
 pub(crate) use snapshot::*;
+
+impl ServerInner {
+    /// Begin background discovery for configured plugin hosts.
+    pub(crate) fn start_plugin_hosts(&self) {
+        self.plugin_hosts.start();
+    }
+}

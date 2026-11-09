@@ -157,7 +157,7 @@ For direct calls, the caller receives the exact source or stream and owns openin
 
 For HTTP calls, streams and sources become `{ url, expiresAtMs }` descriptors. No source is opened until the media URL is redeemed. Eager streams are also supported but may buffer while waiting; prefer lazy factories. Unredeemed tokens expire automatically. URLs use 256-bit random tokens, can be redeemed once, and remain tied to their registration during delivery. Expiration limits redemption time; it does not terminate an already redeemed stream. Streams use bounded transport buffering and are pulled by consumers; producers must honor their stream implementation's backpressure.
 
-Media is non-seekable. Range requests return 416 without consuming the token. The factory signature does not promise offsets, lengths or seek support. Future seeking requires a separate contract.
+Media is non-seekable. Range requests return 416 without consuming the token. The factory signature does not promise offsets, lengths or seek support. `remedia-server` redeems each grant with one plain `GET` and decodes it as a forward-only stream. Seeking or reopening requires a separate, capability-negotiated contract.
 
 ## Cleanup and cancellation
 
@@ -223,4 +223,4 @@ pnpm --filter @remedia/plugin-host test
 
 Strict TypeScript lives in `src/`; `tsc` emits ESM JavaScript and declarations to `dist/`. Both the root and `/node` subpath export generated declarations. TypeScript Vitest tests cover lifecycle, transport, failure and concurrency behavior, plus a packed consumer compiled with NodeNext and Bundler resolution. No declaration files are maintained manually.
 
-The package is independently usable for plugin dispatch and encoded HTTP delivery. Rust `remedia-server` discovery, forwarding, media authorization and playback integration remain outstanding. These HTTP tests do not establish remote Remedia playback.
+The package is independently usable for plugin dispatch and encoded HTTP delivery. `remedia-server` can register a deployment under an operator-assigned host ID, discover it, execute allow-listed operations with bearer authentication, and play the returned media (see the docs site, "Plugin operation sources"). Run a host with a `token` and a `publicUrl` reachable from the Remedia node.

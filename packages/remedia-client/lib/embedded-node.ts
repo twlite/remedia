@@ -1,3 +1,4 @@
+import { UnsupportedMediaSourceError } from './errors.js';
 import { EventEmitter } from 'node:events';
 import { RemediaEventEmitter } from './events.js';
 import {
@@ -136,6 +137,8 @@ export class EmbeddedNodeAdapter implements NodeAdapter {
           prepareBeforeMs: 30000,
           curve: 'equalPower',
         },
+        // Embedded nodes run in-process and do not talk to configured plugin hosts.
+        pluginOperations: { available: false, hosts: [] },
       },
       statistics,
       capacity: this.#capacity,
@@ -156,6 +159,7 @@ export class EmbeddedNodeAdapter implements NodeAdapter {
   ): Promise<AudioStreamInfo> {
     if (this.#status !== 'healthy' || !this.#engine)
       throw new Error(`embedded node ${this.id} is unavailable`);
+    assertEmbeddedSource(source);
     return this.#engine.probe(source, options);
   }
 
@@ -311,6 +315,7 @@ class EmbeddedGuildBackend extends RemediaEventEmitter<GuildBackendEvents> imple
     options: PlayOptions<unknown> = {},
   ): Promise<{ info: AudioStreamInfo; generation: number }> {
     this.#assertOpen();
+    assertEmbeddedSource(source);
     const info = await this.#session.play(source, options);
     this.#generation = this.#session.generation;
     this.#snapshot = {
@@ -327,6 +332,7 @@ class EmbeddedGuildBackend extends RemediaEventEmitter<GuildBackendEvents> imple
     options: import('./types.js').StageNextOptions<unknown>,
   ): Promise<import('./types.js').StageSnapshot> {
     this.#assertOpen();
+    assertEmbeddedSource(source);
     return this.#session.stageNext(source, options);
   }
 
@@ -457,4 +463,12 @@ function emptySnapshot(): PlaybackSnapshot {
     volume: 1,
     lastError: null,
   };
+}
+
+/** Embedded engines execute no plugin operations; reject them instead of falling back. */
+function assertEmbeddedSource(source: MediaSource): void {
+  if ('hostId' in source && 'pluginId' in source && 'operation' in source)
+    throw new UnsupportedMediaSourceError(
+      'embedded Remedia nodes do not support plugin operation sources; use a remote node',
+    );
 }

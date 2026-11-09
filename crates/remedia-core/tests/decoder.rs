@@ -264,5 +264,7 @@ fn request_path(stream: &TcpStream) -> String {
 mod decoding;
 #[path = "decoder/network.rs"]
 mod network;
+#[path = "decoder/sequential_http.rs"]
+mod sequential_http;
 #[path = "decoder/streams.rs"]
 mod streams;

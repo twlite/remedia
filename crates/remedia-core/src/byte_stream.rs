@@ -229,6 +229,15 @@ impl ByteStreamWriter {
         self.inner.cancel();
     }
 
+    /// Whether further writes can no longer reach a decoder: the consumer stopped
+    /// reading, or the stream was cancelled, finished or failed. Producers which wait
+    /// on external events can poll this to release upstream resources promptly.
+    pub fn is_closed(&self) -> bool {
+        let state = lock(&self.inner.state);
+
+        state.consumer_closed || !matches!(state.producer, ProducerState::Open)
+    }
+
     /// Bytes currently queued for the decoder. This is useful for diagnostics
     /// and tests; it never includes bytes held by an upstream producer.
     pub fn pending_bytes(&self) -> usize {

@@ -9,6 +9,7 @@ impl ConnectionContext {
             bot_user_id,
             active_session,
             session_control: tokio::sync::Mutex::new(()),
+            closed: TokioCancellationToken::new(),
             probes: Mutex::new(std::collections::HashMap::new()),
             request_window: Mutex::new((Instant::now(), 0)),
         }

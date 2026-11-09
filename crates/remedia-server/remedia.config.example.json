@@ -28,6 +28,28 @@
     "allowHttps": true,
     "blockPrivateNetworks": true
   },
+  "pluginHosts": [
+    {
+      "id": "source-host-1",
+      "endpoint": "https://plugins.example.com",
+      "auth": {
+        "type": "bearer",
+        "token": "env('REMEDIA_PLUGIN_HOST_TOKEN')"
+      },
+      "operations": [
+        {
+          "pluginId": "example.source",
+          "operation": "source.stream",
+          "replaySafe": true
+        }
+      ],
+      "limits": {
+        "requestTimeoutMs": 10000,
+        "maxPendingOperations": 8,
+        "maxActiveStreams": 8
+      }
+    }
+  ],
   "audio": {
     "opus": {
       "bitrate": 128000,

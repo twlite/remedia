@@ -3,6 +3,8 @@ use std::env;
 use std::fs;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
 use serde::Deserialize;
 use thiserror::Error;
@@ -28,6 +30,7 @@ pub struct ServerConfig {
     pub(crate) resume_timeout_seconds: u64,
     pub(crate) limits: Limits,
     pub(crate) media: MediaAccess,
+    pub(crate) plugin_hosts: Vec<Arc<PluginHostConfig>>,
     pub(crate) opus: OpusEncoderConfig,
     pub(crate) crossfade: CrossfadeConfig,
     pub(crate) observability_console: bool,
@@ -319,6 +322,8 @@ impl ServerConfig {
             }
         }
 
+        let plugin_hosts = parse_plugin_hosts(raw.plugin_hosts, &mut get_env)?;
+
         Ok(Self {
             bind_host,
             port: raw.bind.port,
@@ -332,10 +337,16 @@ impl ServerConfig {
                 allow_https: raw.media.allow_https,
                 block_private_networks: raw.media.block_private_networks,
             },
+            plugin_hosts,
             observability_console: raw.observability.console,
             opus,
             crossfade,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_json_for_tests(json: &str) -> Self {
+        Self::parse_with(json, Path::new("."), |_| None).expect("test configuration is valid")
     }
 
     pub(crate) fn observability_config(&self) -> Result<ObservabilityConfig, ConfigError> {
@@ -457,7 +468,7 @@ fn valid_host_pattern(host: &str) -> bool {
     })
 }
 
-fn is_public_ip(address: IpAddr) -> bool {
+pub(crate) fn is_public_ip(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(address) => {
             let [a, b, c, _] = address.octets();
@@ -492,6 +503,9 @@ fn is_public_ip(address: IpAddr) -> bool {
 mod tests;
 
 mod media_access;
+
+mod plugin_hosts;
+pub(crate) use plugin_hosts::*;
 
 mod raw;
 use raw::*;

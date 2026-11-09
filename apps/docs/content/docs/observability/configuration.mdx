@@ -136,7 +136,7 @@ fields. The bounded event route inherits correlation IDs from the active Remedia
 event does not set one directly. Playback operations use the internal `playback_id`; Discord
 operations use `voice_connection_id`. These process-unique numeric IDs correlate Remedia work and
 are unrelated to Discord's secret voice session ID. Decoder events identify only the source kind
-(`file` or `http`), not its path or URL.
+(`file`, `http`, `http_sequential`, `buffer` or `byte_stream`), not its path or URL.
 
 The Rust `DiagnosticEvent` carries this structured shape (shown here as JSON-like data):
 
@@ -157,6 +157,13 @@ Lifecycle spans cover media opening, playback worker lifetime, voice connection 
 DAVE initialization, and disconnection. Packet-level RTP and Opus details use `trace` and include
 only duration, byte count, scheduling delay, and drop reason. Remedia does not emit debug events for
 every media or network packet.
+
+`remedia-server` additionally emits `server.plugin_host.discovered`, `server.plugin_host.discovery_failed`,
+`server.plugin_host.operation_completed` and `server.plugin_host.operation_failed` (target
+`remedia_server::plugin_host`). They carry the configured host ID, plugin ID, operation name, attempt
+number, duration and a low-cardinality error label. They never contain endpoint or media URLs, tokens or
+operation input. Per-host health and counters are also in `node.stats`; see
+[Plugin operation sources](/docs/server/plugin-operations#diagnostics).
 
 OTLP metrics use low-cardinality attributes only; they do not include guild IDs, playback IDs,
 voice connection IDs, source paths, or URLs. The current instruments include:
