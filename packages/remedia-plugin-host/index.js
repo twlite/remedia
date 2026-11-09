@@ -18,7 +18,7 @@ function isRecord(value) {
 }
 
 function validId(value) {
-  return typeof value === 'string' && /^[a-zA-Z0-9][\\w.-]{0,127}$/.test(value);
+  return typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(value);
 }
 
 async function readJSON(request) {
