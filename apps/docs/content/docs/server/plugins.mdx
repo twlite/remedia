@@ -1,0 +1,56 @@
+---
+title: Plugin host protocol (experimental)
+description: Independently hosted HTTP source plugins with Fetch and Express-compatible adapters.
+---
+
+# Plugin host protocol (experimental)
+
+The experimental `@remedia/plugin-host` package provides an HTTP protocol foundation for independently hosted providers. It **does not yet integrate with remedia-server** or load discord-player's legacy extractors directly.
+
+Each host exposes a discovery endpoint at `GET /.well-known/remedia`. The response describes its protocol version, execute/media endpoints, and registered plugin operations. The suffix is a proposed well-known convention, not an IANA-registered name.
+
+## Fetch-compatible host
+
+```js
+import { createPluginHost } from '@remedia/plugin-host';
+
+const host = createPluginHost({
+  name: 'Sources',
+  publicUrl: 'http://127.0.0.1:3000',
+  token: process.env.REMEDIA_PLUGIN_TOKEN,
+});
+
+host.register({
+  id: 'example.radio',
+  operations: {
+    'search.query.resolve': async ({ query }) => ({ tracks: [{ title: query }] }),
+  },
+});
+
+// Use host.fetch(request) in a Fetch-compatible HTTP framework.
+```
+
+## Express, Connect and Node HTTP
+
+```js
+import express from 'express';
+import { createNodeMiddleware } from '@remedia/plugin-host/node';
+
+const app = express();
+app.use(createNodeMiddleware(host));
+app.listen(3000);
+```
+
+Mount the middleware at `/` before any middleware that consumes request bodies. Hono or other Fetch-based servers can call `host.fetch(request)` directly.
+
+## Execution and media
+
+`POST /remedia/v1/execute` accepts `{ pluginId, operation, input }` and an optional configured Bearer token. JSON bodies are limited to 64 KiB. The response includes `handled` and an optional `result`, or an HTTP error with an `error.code`.
+
+A `track.stream` handler can return encoded media as a Node or Web stream. The host returns a one-use media URL at `/remedia/v1/media/:token`, valid for 60 seconds by default. These URLs are bearer capabilities and **must not** be exposed to untrusted callers or written to access logs. The current media endpoint is non-seekable and does not implement HTTP Range.
+
+Other operation results must be JSON-serializable. Plugins run with the privileges of the host process; the SDK does not sandbox untrusted plugin code.
+
+## Not yet supported
+
+The current Rust Remedia server neither discovers plugin hosts nor forwards operations or consumes these media URLs as plugin sources. Legacy `BaseExtractor` compatibility, credential-safe source descriptors, authorization of provider-supplied URLs, and automatic remote playback require a follow-up implementation. Do not present this package as end-to-end remote plugin support.
