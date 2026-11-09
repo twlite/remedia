@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "Experimental generic plugin operation host with optional HTTP protocol",
+  "description": "Generic plugin operation host with direct requests and optional HTTP protocol",
   "exports": {
     ".": {
       "types": "./index.d.ts",
