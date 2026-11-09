@@ -1,6 +1,7 @@
 //! RPC validation, error mapping, and response formatting.
 
 use super::*;
+use remedia_core::InputSource;
 
 pub(crate) fn require_client(
     connection: &ConnectionContext,
@@ -97,6 +98,104 @@ pub(super) fn state_error(error: StateError) -> RpcError {
             "session cleanup encountered a playback or transport failure",
         ),
     }
+}
+
+/// A decoder input together with the guard owning any plugin-host media transfer.
+///
+/// Dropping the guard cancels the transfer. Callers disarm it only after the decoder
+/// has successfully started, because the decoder then owns the stream's lifetime.
+pub(crate) struct ResolvedInput {
+    pub(crate) source: InputSource,
+    pub(crate) guard: Option<MediaGuard>,
+}
+
+impl ResolvedInput {
+    fn plain(source: InputSource) -> Self {
+        Self {
+            source,
+            guard: None,
+        }
+    }
+}
+
+/// Convert a client-selected source into a decoder input, applying server policy.
+///
+/// Operation sources run on exactly the configured host. `cancel` interrupts a pending
+/// operation; it is the caller's preparation scope.
+pub(crate) async fn resolve_source(
+    server: &ServerInner,
+    connection: &ConnectionContext,
+    source: PlaySource,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<ResolvedInput, RpcError> {
+    // A request whose WebSocket has closed has nobody left to receive its result, so a plugin
+    // operation in flight for it is abandoned rather than starting unattended playback.
+    if matches!(source, PlaySource::Operation { .. }) {
+        return tokio::select! {
+            biased;
+            () = connection.closed.cancelled() => Err(RpcError::new(
+                "cancelled",
+                "the client connection closed before the source was ready",
+            )),
+            resolved = resolve_source_inner(server, source, cancel) => resolved,
+        };
+    }
+
+    resolve_source_inner(server, source, cancel).await
+}
+
+async fn resolve_source_inner(
+    server: &ServerInner,
+    source: PlaySource,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<ResolvedInput, RpcError> {
+    match source {
+        PlaySource::File { path } => server
+            .config
+            .authorize_file(&path)
+            .map(|path| ResolvedInput::plain(InputSource::file(path)))
+            .map_err(media_error),
+        PlaySource::Url { url } => server
+            .config
+            .authorize_url(&url)
+            .await
+            .map(|url| ResolvedInput::plain(InputSource::http_url(url)))
+            .map_err(media_error),
+        PlaySource::Operation {
+            host_id,
+            plugin_id,
+            operation,
+            input,
+        } => {
+            let host = server.plugin_hosts.host(&host_id).ok_or_else(|| {
+                plugin_error(PluginError::new(
+                    PluginErrorKind::HostNotFound,
+                    "no plugin host with that ID is configured on this node",
+                ))
+            })?;
+            let media = host
+                .resolve(
+                    &server.config,
+                    &OperationRef {
+                        plugin_id: &plugin_id,
+                        operation: &operation,
+                        input: &input,
+                    },
+                    cancel,
+                )
+                .await
+                .map_err(plugin_error)?;
+
+            Ok(ResolvedInput {
+                source: media.source,
+                guard: media.guard,
+            })
+        }
+    }
+}
+
+pub(crate) fn plugin_error(error: PluginError) -> RpcError {
+    RpcError::new(error.rpc_code(), error.detail)
 }
 
 pub(crate) fn media_error(_error: MediaAccessError) -> RpcError {

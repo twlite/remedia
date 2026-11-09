@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use remedia_core::{
-    CancellationToken, InputSource, NullOutput, OpusEncoderOutput, PlaybackError, PlaybackState,
+    CancellationToken, NullOutput, OpusEncoderOutput, PlaybackError, PlaybackState,
 };
 use remedia_discord::{ConnectionState, DiscordVoiceConnection, VoiceConnectionInfo};
 use remedia_observability::ObservabilityHandle;
@@ -15,10 +15,11 @@ use tokio::time::MissedTickBehavior;
 use tracing::instrument::WithSubscriber;
 
 use crate::config::MediaAccessError;
+use crate::plugin_host::{MediaGuard, OperationRef, PluginError, PluginErrorKind};
 use crate::protocol::{RpcError, RpcRequest};
 use crate::state::{
-    ClientSession, ConnectionContext, GuildSession, ServerInner, StateError, lock,
-    playback_snapshot, playback_state_name,
+    ClientSession, ConnectionContext, GuildSession, PlayCancellation, ServerInner, StateError,
+    lock, playback_snapshot, playback_state_name,
 };
 
 pub(crate) async fn execute(
@@ -37,6 +38,7 @@ pub(crate) async fn execute(
                 "version": env!("CARGO_PKG_VERSION"),
                 "protocolVersion": crate::protocol::PROTOCOL_VERSION,
                 "capabilities": {
+                    "pluginOperations": server.plugin_hosts.capability(),
                     "crossfade": {
                         "configured": server.config.crossfade.enabled,
                         "available": server.config.crossfade.enabled,
@@ -261,23 +263,45 @@ pub(crate) async fn execute(
                     "stop the active source before starting another",
                 ));
             }
-            let source = match params.source {
-                PlaySource::File { path } => {
-                    let authorized = server.config.authorize_file(&path).map_err(media_error)?;
-                    InputSource::file(authorized)
-                }
-                PlaySource::Url { url } => {
-                    let authorized = server
-                        .config
-                        .authorize_url(&url)
-                        .await
-                        .map_err(media_error)?;
-                    InputSource::http_url(authorized)
+            // A staged preparation belongs to the timeline being replaced.
+            guild.cancel_pending_stage();
+
+            // Install the cancellation scope before resolving the source so a concurrent
+            // stop or skip can interrupt a pending plugin operation, not just the decoder.
+            let play_cancellation = PlayCancellation::new();
+            *lock(&guild.play_cancellation) = Some(play_cancellation.clone());
+            // If this request is dropped (timeout or socket loss) while the source resolves,
+            // cancel the pending operation instead of leaving it running.
+            let mut resolving = CancelOnDrop(Some(play_cancellation.clone()));
+            let resolved = match resolve_source(
+                &server,
+                &connection,
+                params.source,
+                &play_cancellation.scope,
+            )
+            .await
+            {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    resolving.0 = None;
+                    lock(&guild.play_cancellation).take();
+                    return Err(error);
                 }
             };
+            resolving.0 = None;
+
+            // Refuse a result which completed after the request was cancelled or the guild closed.
+            if play_cancellation.scope.is_cancelled() || guild.closed.load(Ordering::Acquire) {
+                lock(&guild.play_cancellation).take();
+                return Err(RpcError::new(
+                    "cancelled",
+                    "playback was cancelled before the source was ready",
+                ));
+            }
+            let ResolvedInput { source, guard } = resolved;
+            let mut media_guard = guard;
             let generation = guild.source_generation.fetch_add(1, Ordering::AcqRel) + 1;
-            let cancellation = CancellationToken::new();
-            *lock(&guild.play_cancellation) = Some(cancellation.clone());
+            let cancellation = play_cancellation.core.clone();
             let mut cancel_guard = PlayCancelOnDrop {
                 guild: Arc::downgrade(&guild),
                 generation,
@@ -292,6 +316,7 @@ pub(crate) async fn execute(
                     ConnectionState::Connected | ConnectionState::Reconnecting
                 ) {
                     lock(&guild.play_cancellation).take();
+                    drop(media_guard.take());
                     return Err(RpcError::new(
                         "transport_failed",
                         "Discord voice transport is not connected",
@@ -322,6 +347,7 @@ pub(crate) async fn execute(
                 .map_err(|_| RpcError::new("playback_failed", "playback worker failed to start"))?;
                 cancel_guard.completed = true;
                 lock(&guild.play_cancellation).take();
+                settle_media_guard(&mut media_guard, result.is_ok());
                 let info = result.map_err(|error| {
                     let _ = guild.claim_terminal_event(generation);
                     session.emit(
@@ -351,6 +377,7 @@ pub(crate) async fn execute(
             .await
             .map_err(|_| RpcError::new("playback_failed", "playback worker failed to start"))?;
             cancel_guard.completed = true;
+            settle_media_guard(&mut media_guard, result.is_ok());
             let info = match result {
                 Ok(info) => info,
                 Err(error) => {
@@ -398,6 +425,27 @@ pub(crate) async fn execute(
             ))
         }
         _ => Err(RpcError::new("invalid_request", "unknown command")),
+    }
+}
+
+/// Release a plugin-host media transfer if playback did not start; otherwise the
+/// decoder owns it and closes it when playback ends.
+fn settle_media_guard(guard: &mut Option<MediaGuard>, started: bool) {
+    if let Some(guard) = guard.take()
+        && started
+    {
+        guard.disarm();
+    }
+}
+
+/// Cancels a playback scope when dropped unless it was cleared first.
+struct CancelOnDrop(Option<PlayCancellation>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if let Some(cancellation) = self.0.take() {
+            cancellation.cancel();
+        }
     }
 }
 
@@ -452,4 +500,6 @@ mod voice;
 
 mod helpers;
 use helpers::*;
-pub(crate) use helpers::{decode_params, media_error, require_client, stream_info_json};
+pub(crate) use helpers::{
+    ResolvedInput, decode_params, media_error, require_client, resolve_source, stream_info_json,
+};

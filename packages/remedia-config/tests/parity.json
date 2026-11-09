@@ -903,5 +903,400 @@
       ]
     },
     "valid": true
+  },
+  {
+    "name": "plugin host defaults",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin host full",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "p",
+              "operation": "o",
+              "replaySafe": true
+            }
+          ],
+          "auth": {
+            "type": "bearer",
+            "token": "0123456789abcdef-token"
+          },
+          "mediaOrigins": ["https://cdn.example.com"],
+          "allowExternalMedia": true,
+          "limits": {
+            "maxAttempts": 3,
+            "maxActiveStreams": 1
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin host insecure opt in",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "http://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ],
+          "allowInsecureHttp": true
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin host duplicate ids",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ]
+        },
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host http without opt in",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "http://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host endpoint with path",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com/v1",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host endpoint credentials",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://u:p@plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host short token",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ],
+          "auth": {
+            "type": "bearer",
+            "token": "short"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host unknown auth type",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ],
+          "auth": {
+            "type": "basic"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host unknown field",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ],
+          "extra": 1
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host invalid id",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "bad id",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host no operations",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": []
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host duplicate operations",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            },
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host invalid limit",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ],
+          "limits": {
+            "maxAttempts": 4
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin host zero streams",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "source-host-1",
+          "endpoint": "https://plugins.example.com",
+          "operations": [
+            {
+              "pluginId": "example.source",
+              "operation": "source.stream"
+            }
+          ],
+          "limits": {
+            "maxActiveStreams": 0
+          }
+        }
+      ]
+    },
+    "valid": false
   }
 ]

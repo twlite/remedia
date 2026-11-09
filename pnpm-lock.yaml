@@ -262,6 +262,9 @@ importers:
         specifier: ^8.22.1
         version: 8.22.1
     devDependencies:
+      '@remedia/plugin-host':
+        specifier: workspace:*
+        version: link:../remedia-plugin-host
       '@types/node':
         specifier: ^22.20.5
         version: 22.20.5

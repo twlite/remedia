@@ -169,8 +169,9 @@ and its local queue tests run with Node's built-in test runner. To start the bot
 `@remedia/node` is an optional peer dependency for embedded nodes. Its default `test` command excludes
 the native hybrid and Rust-server integration files. Run `pnpm --filter @remedia/client test:hybrid`
 to require and test a built native addon. Run `pnpm --filter @remedia/client test:server` to test
-against a real local server; it uses `REMEDIA_SERVER_BINARY` when provided and otherwise runs
-`cargo run` for convenience. CI always invokes both explicit integration commands, with a previously
+against a real local server, including a real `@remedia/plugin-host` deployment (it builds that package
+first); it uses `REMEDIA_SERVER_BINARY` when provided and otherwise runs `cargo run` for convenience.
+Run `pnpm --filter @remedia/client test:plugin-host` for only the plugin-host scenarios. CI always invokes both explicit integration commands, with a previously
 built addon and server executable, so a missing environment variable cannot silently skip either
 test.
 

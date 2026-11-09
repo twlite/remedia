@@ -51,3 +51,40 @@ fn voice_generations_reject_stale_operations_and_allow_same_attempt_steps() {
     assert_eq!(claim_voice_generation(&generation, Some(9)).unwrap(), 9);
     assert!(claim_voice_generation(&generation, Some(0)).is_err());
 }
+
+#[test]
+fn operation_sources_decode_with_opaque_input_and_reject_unknown_fields() {
+    use super::PlaySource;
+
+    let source: PlaySource = serde_json::from_value(serde_json::json!({
+        "type": "operation",
+        "hostId": "source-host-1",
+        "pluginId": "example.source",
+        "operation": "source.stream",
+        "input": {"anything": [1, null, {"nested": true}]}
+    }))
+    .unwrap();
+
+    match source {
+        PlaySource::Operation {
+            host_id,
+            plugin_id,
+            operation,
+            input,
+        } => {
+            assert_eq!(host_id, "source-host-1");
+            assert_eq!(plugin_id, "example.source");
+            assert_eq!(operation, "source.stream");
+            assert_eq!(input["anything"][2]["nested"], true);
+        }
+        _ => panic!("expected an operation source"),
+    }
+
+    for invalid in [
+        serde_json::json!({"type": "operation", "hostId": "h", "pluginId": "p", "operation": "o"}),
+        serde_json::json!({"type": "operation", "hostId": "h", "pluginId": "p", "operation": "o", "input": 1, "url": "https://example.com"}),
+        serde_json::json!({"type": "operation", "host_id": "h", "pluginId": "p", "operation": "o", "input": 1}),
+    ] {
+        assert!(serde_json::from_value::<PlaySource>(invalid).is_err());
+    }
+}

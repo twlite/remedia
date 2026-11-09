@@ -13,6 +13,9 @@ pub enum InputSource {
     File(PathBuf),
     /// An HTTP or HTTPS URL.
     HttpUrl(String),
+    /// An HTTP or HTTPS URL that can be read exactly once, from the first byte
+    /// to the last. See [`InputSource::sequential_http_url`].
+    SequentialHttpUrl(String),
     /// Encoded media bytes owned by Remedia.
     Bytes(Arc<Vec<u8>>),
     /// A bounded one-shot stream of encoded media bytes.
@@ -29,6 +32,21 @@ impl InputSource {
     /// the decoder is opened.
     pub fn http_url(url: impl Into<String>) -> Self {
         Self::HttpUrl(url.into())
+    }
+
+    /// Construct a single-pass HTTP(S) input for resources which cannot answer
+    /// `Range` requests, reopen, or reconnect, such as single-use media grants.
+    ///
+    /// FFmpeg is told not to treat the resource as seekable, so it sends no
+    /// `Range` header and never reconnects. The source is therefore a forward-only
+    /// byte stream: playback can seek forward in media time by decoding and
+    /// discarding frames, but cannot rewind. Use [`InputSource::http_url`] for
+    /// ordinary resources; that variant keeps FFmpeg's seekable behavior.
+    ///
+    /// URL syntax and scheme are validated when the decoder is opened. A resource
+    /// which does not return the complete body for a plain `GET` is not supported.
+    pub fn sequential_http_url(url: impl Into<String>) -> Self {
+        Self::SequentialHttpUrl(url.into())
     }
 
     /// Construct an in-memory input. The resulting source owns its bytes and
@@ -57,13 +75,14 @@ impl InputSource {
         match self {
             Self::File(_) => "file",
             Self::HttpUrl(_) => "http",
+            Self::SequentialHttpUrl(_) => "http_sequential",
             Self::Bytes(_) => "buffer",
             Self::ByteStream(_) => "byte_stream",
         }
     }
 
     pub(crate) fn can_seek(&self) -> bool {
-        !matches!(self, Self::ByteStream(_))
+        !matches!(self, Self::ByteStream(_) | Self::SequentialHttpUrl(_))
     }
 }
 
@@ -72,6 +91,7 @@ impl PartialEq for InputSource {
         match (self, other) {
             (Self::File(left), Self::File(right)) => left == right,
             (Self::HttpUrl(left), Self::HttpUrl(right)) => left == right,
+            (Self::SequentialHttpUrl(left), Self::SequentialHttpUrl(right)) => left == right,
             (Self::Bytes(left), Self::Bytes(right)) => left == right,
             (Self::ByteStream(left), Self::ByteStream(right)) => left == right,
             _ => false,

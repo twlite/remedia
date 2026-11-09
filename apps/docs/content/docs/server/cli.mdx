@@ -91,9 +91,9 @@ The environment files may contain credentials. Limit their filesystem permission
 remedia-server doctor --config ./remedia.config.json --env-file .env
 ```
 
-The doctor prints the server version, OS and architecture, executable path, and the **actual loaded** FFmpeg library versions for avcodec, avformat, avutil, avfilter, and swresample. It compares their ABI majors with the FFmpeg 9 requirements (63, 63, 61, 12, 7). It also validates the selected JSON configuration with the loaded dotenv values.
+The doctor prints the server version, OS and architecture, executable path, and the **actual loaded** FFmpeg library versions for avcodec, avformat, avutil, avfilter, and swresample. It compares their ABI majors with the FFmpeg 9 requirements (63, 63, 61, 12, 7). It also validates the selected JSON configuration with the loaded dotenv values. When `pluginHosts` are configured, it then performs a live discovery request to each endpoint and prints the host ID, state (`healthy`, `degraded` when an allowed operation is not advertised, or `unavailable`), the endpoint origin (never credentials), the number of advertised operations, and any discovery failure. An unreachable plugin host is reported but does not fail the command, because hosts may start after the node.
 
-A failing ABI check or invalid configuration produces a non-zero exit status. Dynamic linker failures can still prevent the executable from starting at all; in that case, inspect installed libraries and loader search paths using your OS tools. Doctor does not test remote audio URLs, Discord credentials, or external network access.
+A failing ABI check or invalid configuration produces a non-zero exit status. Dynamic linker failures can still prevent the executable from starting at all; in that case, inspect installed libraries and loader search paths using your OS tools. Apart from configured plugin-host discovery, doctor does not test remote audio URLs, Discord credentials, or external network access.
 
 ## List running servers
 

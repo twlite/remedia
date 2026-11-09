@@ -181,10 +181,18 @@ mod platform;
 #[cfg(target_os = "macos")]
 #[path = "macos.rs"]
 mod platform;
+#[cfg(target_os = "freebsd")]
+#[path = "freebsd.rs"]
+mod platform;
 #[cfg(windows)]
 #[path = "windows.rs"]
 mod platform;
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    windows
+)))]
 mod platform {
     pub fn collect(result: &mut super::ProcessSnapshot) {
         #[cfg(unix)]

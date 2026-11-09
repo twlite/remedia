@@ -1,0 +1,201 @@
+---
+title: Plugin operation sources
+description: Play audio produced by a configured plugin-host deployment through generic operations, with discovery, host affinity, lifecycle and security rules.
+---
+
+# Plugin operation sources
+
+A **plugin host** is an independent service built with [`@remedia/plugin-host`](/docs/server/plugins).
+`remedia-server` can execute its operations at playback time and play the encoded audio they return.
+Remedia never interprets operation input: it is opaque JSON owned by your application. The engine
+stays independent of providers, extractors and application models. It speaks only the existing
+Remedia v1 HTTP contract (`GET /.well-known/remedia`, `POST /remedia/v1/execute`, and temporary
+`/remedia/v1/media/:token` grants).
+
+```text
+client ── player.play {type:"operation", hostId, pluginId, operation, input} ──▶ remedia-server
+remedia-server ── POST /remedia/v1/execute (Bearer) ──▶ plugin host ── {url, expiresAtMs} ─┐
+remedia-server ◀── GET media (no credentials, no Range) ◀───────────────────────────────────┘
+          decoder ◀── bounded byte stream ◀── pump thread
+```
+
+## Register a host
+
+Hosts are operator-owned entries in [`remedia.config.json`](/docs/server/configuration#plugin-hosts). A
+host ID is a stable deployment identifier chosen by you; a manifest `name` is only a display name.
+
+```json
+{
+  "pluginHosts": [
+    {
+      "id": "source-host-1",
+      "endpoint": "https://plugins.example.com",
+      "auth": { "type": "bearer", "token": "env('REMEDIA_PLUGIN_HOST_TOKEN')" },
+      "operations": [
+        { "pluginId": "example.source", "operation": "source.stream", "replaySafe": true }
+      ]
+    }
+  ]
+}
+```
+
+Only allow-listed `(pluginId, operation)` pairs can run, even if the host advertises more. Duplicate
+host IDs, unknown fields, cleartext HTTP without `allowInsecureHttp`, private literal addresses
+without `allowPrivateNetwork`, and invalid limits stop startup. Endpoints are origins (no path, query
+or credentials in the URL); the v1 routes are fixed.
+
+## Discovery and health
+
+At startup, and then every `limits.discoveryTtlMs` (default 60 s), the node fetches
+`/.well-known/remedia` using the host's authentication and validates it:
+
+- `protocolVersion` must be `1`; the execute route must be `/remedia/v1/execute` and the media
+  template must be under `/remedia/v1/media/`. Advertised paths are verified, never followed.
+- An optional `hostId` field, if the host emits one, must equal the configured ID.
+- Allowed operations should be advertised. `doctor` and `node.stats` report the ones that are not. A
+  missing operation triggers at most one rediscovery per five seconds before the request fails with
+  `plugin_operation_unavailable`.
+
+A host being down at startup is not fatal; its state is `unavailable` until discovery succeeds. State
+values are `unknown`, `healthy`, `degraded` (recent failures), `unavailable` (three consecutive
+availability, authentication, protocol or timeout failures) and `shutting_down`. A host which restarts
+with the same ID and endpoint recovers on its next successful request or discovery; the node does not
+restore old grant URLs.
+
+## Play an operation source
+
+`player.play` and `player.stage.next` accept a third source type:
+
+```json
+{
+  "type": "operation",
+  "hostId": "source-host-1",
+  "pluginId": "example.source",
+  "operation": "source.stream",
+  "input": { "id": "opaque to Remedia" }
+}
+```
+
+The operation runs **on the node selected for the guild, only when playback or staging prepares the
+source**. Do not resolve encoded audio during metadata search. The host ID selects exactly one
+configured deployment: there is no fallback to another host or another node, so overlapping plugin
+and operation IDs on different deployments route independently. `media.probe` rejects operation
+sources because media grants are single use.
+
+The operation must return a descriptor `{ "url": "...", "expiresAtMs"?: number }`. This is what
+`@remedia/plugin-host` produces for a returned `createMediaSource()` or stream. The URL is a bearer
+capability for one redemption and is **never** stored or exposed as the source identity; replaying a
+queue entry executes the operation again.
+
+| Descriptor URL                                   | Handling                                                                                                                                                                                          |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Origin is the host endpoint or in `mediaOrigins` | Fetched by the server's own client: pinned DNS, no redirects, no credentials, bounded size, forward-only. Counts against `maxActiveStreams`.                                                      |
+| Any other origin                                 | Rejected with `plugin_media_invalid`, unless `allowExternalMedia` is true. Then the ordinary `media.*` URL policy and FFmpeg HTTP input apply, outside the host's credential and origin boundary. |
+
+### v1 media grants are sequential
+
+A v1 grant is single use and answers every `Range` request with HTTP 416. Remedia therefore never
+lets FFmpeg talk to it. The node redeems the URL with exactly one plain `GET` and feeds a bounded
+queue to the decoder, so default playback needs no FFmpeg flags and no `-seekable 0`:
+
+- No `Range`, reopen, reconnect or second request is ever made for a grant.
+- `player.seek` can move **forward** by decoding and discarding audio. Seeking backward, or into
+  source that has already been consumed, returns `unsupported`. The source is not silently reopened.
+- A transfer interrupted midway fails the playback generation (`player.failed`); a fresh `player.play`
+  runs the operation again and resolves a new grant.
+
+The same strategy is available to Rust callers of `remedia-core` as `InputSource::sequential_http_url`
+(see [Decoding](/docs/core/decoding)). Ordinary URLs keep FFmpeg's seekable behavior.
+
+## Lifecycle and cancellation
+
+Operation requests share the guild's generation and cancellation model:
+
+- **Stop, skip or replacement** cancels a pending `player.play` operation; the request fails with
+  `cancelled` and the HTTP request to the host is dropped (a well-behaved host sees its operation
+  signal abort). A late result from a handler which ignores cancellation is discarded and cannot
+  start an outdated generation.
+- **Staged-next** preparation has its own scope. A newer `queueRevision` (or `sourceRevision` for the
+  same entry) supersedes a pending one, `player.stage.clear`, `player.stop`, a replacement play, guild
+  destruction and shutdown cancel it, and a result which arrives after the timeline moved on fails
+  with `stale_generation` without being staged.
+- **Client disconnect.** If the WebSocket closes while an operation is pending, the operation is
+  cancelled. Active playback follows the existing session-resumption rules.
+- **Shutdown** cancels pending operations and media transfers, stops players, and waits briefly for
+  transfer threads to finish before the process exits.
+- **Backpressure.** Each stream has a fixed queue (`mediaBufferBytes`, default 256 KiB). A paused or
+  slow player stops pulling from the host; nothing buffers without bound.
+- **Expired grants.** If the descriptor has already expired, or redemption returns 404 (expired or
+  already redeemed), the node executes the operation again once per remaining attempt, but only for
+  operations marked `replaySafe`. Other operations fail with `plugin_media_expired`.
+- **Retries.** Only `replaySafe` operations are retried, only for connection failures, timeouts and
+  `408`/`429`/`5xx` responses (except a reported plugin failure), up to `limits.maxAttempts` (default 2, maximum 3). Authentication failures
+  (`plugin_host_unauthorized`) and policy or validation failures are never retried. Each attempt
+  carries a fresh `X-Remedia-Operation-Id` header so hosts can correlate or deduplicate.
+
+## Security model
+
+- Requests use the configured host ID and endpoint; credentials are sent **only** to that origin for
+  discovery and execution, never to media URLs, `mediaOrigins`, or redirect targets. They are
+  redacted from debug output and are never logged.
+- Redirects are never followed for discovery, execution or media. A `3xx` is a protocol failure.
+- DNS answers are checked at connect time, so a rebinding hostname cannot switch to a private address
+  between validation and use. Hostnames resolving to non-public addresses are refused, and IP literals
+  are checked directly, unless the host sets `allowPrivateNetwork` for an internal deployment.
+- Requests, responses, media size (`maxMediaBytes`), pending operations and active streams are
+  bounded per host. Exceeding a concurrency limit returns `resource_exhausted`.
+- Media must not declare a textual or JSON content type.
+- Operation input is limited to `limits.maxRequestBytes` and by the RPC message limit.
+
+## Errors
+
+| Code                                                                | Meaning                                                                   |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `plugin_host_not_found`                                             | The host ID is not configured on this node                                |
+| `plugin_operation_not_allowed`                                      | The operation is not in the host's allowlist                              |
+| `plugin_operation_unavailable`                                      | The host does not advertise the operation                                 |
+| `plugin_host_unavailable`                                           | Connection failure, DNS policy rejection, or transient `429`/`5xx`        |
+| `plugin_host_unauthorized`                                          | The host rejected the configured credentials                              |
+| `plugin_host_incompatible`                                          | Wrong protocol version, identity or routes, or a redirect                 |
+| `plugin_operation_failed`                                           | The plugin failed or returned an invalid response                         |
+| `plugin_operation_declined`                                         | The operation returned no result (`handled: false`)                       |
+| `plugin_media_invalid`                                              | Bad descriptor, disallowed origin, redirect, oversized or non-audio media |
+| `plugin_media_expired`                                              | The grant was expired or consumed and could not be refreshed              |
+| `plugin_media_failed`                                               | The media origin could not be reached or transferred                      |
+| `resource_exhausted`                                                | Pending-operation or active-stream limit reached                          |
+| `cancelled`, `request_timeout`, `stale_generation`, `invalid_state` | Lifecycle outcomes described above                                        |
+
+Messages never contain URLs, tokens, or operation input.
+
+## Diagnostics
+
+- `node.info.capabilities.pluginOperations` is `{ available, hosts }`. Older nodes omit it, and
+  clients treat that as unsupported.
+- `node.stats.pluginHosts` and `remedia-server --list --json` report each host's state, consecutive
+  failures, last error label, pending and active-stream counts, and cumulative counters (operations,
+  failures, retries, declined, unauthorized, timeouts, cancelled, grants opened and expired, media
+  bytes and failures, discoveries).
+- `remedia-server doctor` performs a live discovery for each host. See the [CLI guide](/docs/server/cli).
+- Structured events `server.plugin_host.discovered`, `discovery_failed`, `operation_completed` and
+  `operation_failed` (target `remedia_server::plugin_host`) carry the host ID, plugin, operation,
+  attempt, duration and error label, never URLs or input.
+
+## Requirements for plugin-host authors
+
+1. Return `createMediaSource()` (or a stream) from the operation, with `publicUrl` set to an origin
+   which the Remedia node can reach and that appears in the node's `endpoint` or `mediaOrigins`.
+2. Configure a `token` (at least 16 characters) and put the same value in the node configuration.
+3. Make allow-listed operations side-effect free if you mark them `replaySafe`.
+4. Respect the operation `signal`; return audio only (MP3, Ogg/Opus, and anything FFmpeg can decode).
+5. Keep `mediaTtlMs` long enough for the node to redeem immediately after the operation returns. The
+   node redeems at once; the TTL does not limit how long playback may take.
+6. Do not rely on seeking, ranges or reopening. v1 grants support none of them.
+
+## Limitations
+
+- Operation sources are remote-only. Embedded `@remedia/node` rejects them explicitly.
+- They are not migrated between nodes; a guild stays on the node (and host affinity) it started on.
+- Backward seeking and seeking into already-consumed audio are unsupported for sequential grants.
+- No seekable or reopenable media contract exists yet. It would need explicit capability negotiation,
+  validated `Range`/`206`/`416` semantics and content validators in `@remedia/plugin-host` first.
+- A host can only be added or removed by editing configuration and restarting the node.

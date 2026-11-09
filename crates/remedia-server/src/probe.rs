@@ -46,6 +46,14 @@ pub(crate) async fn execute(
                         .map_err(media_error)?;
                     InputSource::file(path)
                 }
+                PlaySource::Operation { .. } => {
+                    // Operation results are single-use media grants. Probing would consume the
+                    // grant, and metadata discovery must not resolve encoded audio.
+                    return Err(RpcError::new(
+                        "invalid_request",
+                        "operation sources cannot be probed; resolve them only for playback",
+                    ));
+                }
                 PlaySource::Url { url } => InputSource::http_url(
                     server
                         .config

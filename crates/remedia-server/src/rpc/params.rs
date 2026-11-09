@@ -66,11 +66,31 @@ pub(super) struct PlayParams {
     pub(super) source: PlaySource,
 }
 
+/// A media source selected by the client.
+///
+/// `Operation` addresses a configured plugin-host deployment by its stable `hostId`.
+/// `input` is opaque JSON owned by the consuming application; the server forwards it
+/// unchanged and never interprets provider-specific references.
 #[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub(crate) enum PlaySource {
-    File { path: String },
-    Url { url: String },
+    File {
+        path: String,
+    },
+    Url {
+        url: String,
+    },
+    Operation {
+        host_id: String,
+        plugin_id: String,
+        operation: String,
+        input: Value,
+    },
 }
 
 #[derive(Deserialize)]

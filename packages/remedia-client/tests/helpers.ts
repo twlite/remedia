@@ -42,6 +42,8 @@ export interface FakeServerOptions {
   playersMaximum?: number;
   dropSessionsOnDisconnect?: boolean;
   requiredAuthorization?: string;
+  /** Advertise plugin-host operation support for these configured host IDs. */
+  pluginHosts?: readonly string[];
 }
 
 /** A local protocol-v1 node fixture used by client integration tests. */
@@ -59,6 +61,9 @@ export class FakeServerNode {
   readonly #socketBotUserIds = new Map<WebSocket, string>();
   readonly #dropSessionsOnDisconnect: boolean;
   readonly #requiredAuthorization: string | undefined;
+  readonly #pluginHosts: readonly string[] | undefined;
+  /** Wire sources received by `player.play`, in order. */
+  readonly playSources: unknown[] = [];
   #sessionSequence = 0;
   #guildSequence = 0;
   #closed = false;
@@ -92,6 +97,7 @@ export class FakeServerNode {
     this.playersMaximum = options.playersMaximum ?? 8;
     this.#dropSessionsOnDisconnect = options.dropSessionsOnDisconnect ?? false;
     this.#requiredAuthorization = options.requiredAuthorization;
+    this.#pluginHosts = options.pluginHosts;
     this.#websocketServer = websocketServer;
     websocketServer.on('connection', (socket) => {
       socket.on('message', (message) => {
@@ -209,6 +215,20 @@ export class FakeServerNode {
             nodeId: this.nodeIdentity,
             version: 'test',
             protocolVersion: this.protocolVersion,
+            ...(this.#pluginHosts
+              ? {
+                  capabilities: {
+                    crossfade: {
+                      configured: false,
+                      available: false,
+                      durationMs: 5000,
+                      prepareBeforeMs: 30000,
+                      curve: 'equalPower',
+                    },
+                    pluginOperations: { available: true, hosts: this.#pluginHosts },
+                  },
+                }
+              : {}),
           };
           break;
         case 'node.health':
@@ -417,6 +437,7 @@ export class FakeServerNode {
           break;
         case 'player.play': {
           this.playerPlayRequests += 1;
+          this.playSources.push(params.source);
           const session = this.#session(socket);
           const guild = this.#guild(socket, String(params.guildId));
           const generation = ++guild.playback.generation;

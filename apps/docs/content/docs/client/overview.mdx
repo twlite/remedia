@@ -96,6 +96,44 @@ Remote `{ url }` and `{ file }` sources are resolved by the server. `{ buffer }`
 sources require an embedded node; pin that guild with `nodeId: 'local'` or Remedia rejects the input
 instead of uploading it or silently moving the guild.
 
+## Plugin operation sources
+
+A remote node can execute an operation on a plugin-host deployment configured in its
+`pluginHosts` and play the audio it returns (see [Plugin operation sources](/docs/server/plugin-operations)).
+The source is a plain object; `input` is opaque JSON which Remedia never interprets:
+
+```ts
+const voice = remedia.createDiscordSession({
+  guildId,
+  channelId,
+  userId,
+  // Optional: only assign this guild to nodes which are configured with the host.
+  pluginHosts: ['source-host-1'],
+});
+await voice.connect();
+await voice.play({
+  hostId: 'source-host-1',
+  pluginId: 'example.source',
+  operation: 'source.stream',
+  input: { id: 'opaque to Remedia' },
+});
+```
+
+The same shape works for `stageNext`. Rules:
+
+- `hostId` is an operator-assigned deployment ID, not a manifest name, and carries no endpoint or
+  credentials. Store references to it in your own track model; never store the resulting media URL.
+- A node advertises `capabilities.pluginOperations = { available, hosts }`. Nodes without it, and
+  embedded nodes, reject operation sources with `UnsupportedMediaSourceError` before anything is sent.
+  The client never retries on another node or host, and a guild is never migrated with an operation
+  source. `pluginHosts` on `createDiscordSession` selects only nodes that advertise every listed host
+  (and rejects a pinned `nodeId` which does not).
+- Resolve audio only at playback time. `probe()` rejects operation sources because grants are single use.
+- Server errors surface as `RemediaRpcError` with codes such as `plugin_host_unavailable`,
+  `plugin_host_unauthorized`, `plugin_operation_declined` and `cancelled` (stop or skip while the
+  operation was pending). Seeking is forward-only for these sources; a backward seek rejects with
+  `unsupported`.
+
 ## Playback and cached state
 
 `play`, `pause`, `resume`, `seek`, `stop`, `filters.set`, `filters.clear`, `setVolume`, `refresh`,

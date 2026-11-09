@@ -78,6 +78,34 @@ without a known content length are handled by FFmpeg's demuxer. HTTP status fail
 timeouts, invalid media, and missing audio streams return errors. The server must expose a supported
 FFmpeg HTTP(S) protocol and the requested media must be reachable from the process.
 
+### Single-use HTTP resources
+
+FFmpeg's HTTP protocol asks for `Range: bytes=0-` by default and reopens the resource to seek or
+reconnect. A resource which can be read exactly once, such as a temporary media grant, answers that
+request with HTTP 416. Use `InputSource::sequential_http_url(url)` for these resources:
+
+```rust
+use remedia_core::{AudioDecoder, InputSource};
+
+let mut decoder =
+    AudioDecoder::open(InputSource::sequential_http_url("https://media.example.com/grant/token"))?;
+while let Some(frame) = decoder.next_frame()? {
+    // Consume the frame before requesting the next one.
+    let _ = frame.samples_per_channel;
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The input sends one plain `GET`, disables FFmpeg seeking and automatic reconnection, and restricts
+redirects to HTTP(S) transports. It is a forward-only byte stream, like
+`InputSource::byte_stream`: `seek` can move forward by decoding and discarding frames, and seeking
+backwards returns `DecoderError::UnsupportedSeeking`. An interrupted transfer is reported rather than
+resumed from another offset, and the source cannot be reopened; resolve a fresh resource instead.
+`InputSource::http_url` keeps FFmpeg's seekable behavior and is not changed. Diagnostics report this
+source kind as `http_sequential`. The input does not validate the host: a caller which accepts URLs
+from an untrusted party must apply its own address, redirect and size policy, as `remedia-server`
+does for plugin operation sources.
+
 ## In-memory bytes and producer streams
 
 `InputSource::bytes` owns encoded bytes and permits byte-offset seeking when the container supports

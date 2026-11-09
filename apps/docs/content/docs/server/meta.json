@@ -1,4 +1,13 @@
 {
   "title": "Remote server",
-  "pages": ["overview", "installation", "cli", "configuration", "protocol", "deployment", "plugins"]
+  "pages": [
+    "overview",
+    "installation",
+    "cli",
+    "configuration",
+    "protocol",
+    "deployment",
+    "plugins",
+    "plugin-operations"
+  ]
 }

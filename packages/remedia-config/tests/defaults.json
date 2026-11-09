@@ -41,6 +41,7 @@
       "curve": "equalPower"
     }
   },
+  "pluginHosts": [],
   "observability": {
     "console": true
   }

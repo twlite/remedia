@@ -431,9 +431,9 @@ export class RemoteNodeAdapter
     options: import('./types.js').ProbeOptions = {},
   ): Promise<AudioStreamInfo> {
     this.#assertHealthy();
-    if ('buffer' in source || 'stream' in source)
+    if ('buffer' in source || 'stream' in source || isOperationSource(source))
       throw new UnsupportedMediaSourceError(
-        'remote probes support only server-accessible URLs and files',
+        'remote probes support only server-accessible URLs and files; plugin operation sources are single-use and cannot be probed',
       );
     const timeoutMs = options.timeoutMs ?? 15000;
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 0xffffffff)
@@ -452,7 +452,7 @@ export class RemoteNodeAdapter
 
   async play(
     guildId: string,
-    source: { type: 'url'; url: string } | { type: 'file'; path: string },
+    source: RemoteWireSource,
   ): Promise<{ info: AudioStreamInfo; generation: number }> {
     this.#assertHealthy();
     const result = await this.request<Record<string, unknown>>('player.play', { guildId, source });
@@ -1229,15 +1229,12 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
 
   async play(source: MediaSource): Promise<{ info: AudioStreamInfo; generation: number }> {
     this.#assertGuildReady();
-    if ('buffer' in source || 'stream' in source) {
-      throw new UnsupportedMediaSourceError(
-        'remote Remedia nodes accept only server-accessible { url } and { file } media sources',
-      );
-    }
-    const remoteSource =
-      'url' in source
-        ? { type: 'url' as const, url: source.url }
-        : { type: 'file' as const, path: source.file };
+    const remoteSource = toRemoteSource(
+      source,
+      this.#node.snapshot.capabilities,
+      this.#node.id,
+      'play',
+    );
     const result = await this.#node.play(this.#options.guildId, remoteSource);
     const terminalBeforeResponse =
       this.#snapshot.generation === result.generation &&
@@ -1262,18 +1259,15 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     this.#assertGuildReady();
     if (!this.#node.snapshot.capabilities?.crossfade.available || !this.#options.crossfade)
       throw new Error('crossfading is not enabled for this remote session');
-    if ('buffer' in source || 'stream' in source) {
-      throw new UnsupportedMediaSourceError(
-        'remote staged sources must be an accessible file or URL',
-      );
-    }
+    const remoteSource = toRemoteSource(
+      source,
+      this.#node.snapshot.capabilities,
+      this.#node.id,
+      'stage',
+    );
     if (!options.entryId.trim() || !Number.isSafeInteger(options.queueRevision))
       throw new TypeError('invalid stage identity');
     const generation = options.expectedGeneration ?? this.#snapshot.generation;
-    const remoteSource =
-      'url' in source
-        ? { type: 'url' as const, url: source.url }
-        : { type: 'file' as const, path: source.file };
     const data = await this.#node.control(this.#options.guildId, 'player.stage.next', {
       source: remoteSource,
       expectedGeneration: generation,
@@ -2099,7 +2093,12 @@ function parseNodeCapabilities(input: unknown): import('./types.js').NodeCapabil
     prepareBeforeMs: 30000,
     curve: 'equalPower',
   };
-  if (!isRecord(input) || !isRecord(input.crossfade)) return { crossfade: fallback };
+  const pluginOperations = parsePluginOperations(
+    isRecord(input) ? input.pluginOperations : undefined,
+  );
+
+  if (!isRecord(input) || !isRecord(input.crossfade))
+    return { crossfade: fallback, pluginOperations };
   const fade = input.crossfade;
   const configured = fade.configured === true;
   const available = fade.available === true && configured;
@@ -2125,7 +2124,78 @@ function parseNodeCapabilities(input: unknown): import('./types.js').NodeCapabil
       prepareBeforeMs,
       curve: 'equalPower',
     },
+    pluginOperations,
   };
+}
+
+function parsePluginOperations(input: unknown): import('./types.js').PluginOperationsCapability {
+  if (!isRecord(input) || input.available !== true || !Array.isArray(input.hosts))
+    return { available: false, hosts: [] };
+
+  return {
+    available: true,
+    hosts: input.hosts.filter((host): host is string => typeof host === 'string'),
+  };
+}
+
+/** Wire representation of a source accepted by `player.play` and `player.stage.next`. */
+type RemoteWireSource =
+  | { type: 'url'; url: string }
+  | { type: 'file'; path: string }
+  | { type: 'operation'; hostId: string; pluginId: string; operation: string; input: unknown };
+
+function isOperationSource(
+  source: MediaSource,
+): source is import('./types.js').OperationMediaSource {
+  return 'hostId' in source && 'pluginId' in source && 'operation' in source;
+}
+
+/**
+ * Convert a media source for a remote node and enforce explicit capability negotiation.
+ * Operation sources are never downgraded: a node which lacks the capability or the host rejects them.
+ */
+function toRemoteSource(
+  source: MediaSource,
+  capabilities: import('./types.js').NodeCapabilities | undefined,
+  nodeId: string,
+  purpose: string,
+): RemoteWireSource {
+  if ('buffer' in source || 'stream' in source) {
+    throw new UnsupportedMediaSourceError(
+      `remote Remedia nodes accept only server-accessible { url }, { file } and plugin operation sources (${purpose})`,
+    );
+  }
+
+  if (isOperationSource(source)) {
+    for (const field of ['hostId', 'pluginId', 'operation'] as const) {
+      if (typeof source[field] !== 'string' || source[field].length === 0)
+        throw new TypeError(`operation source ${field} must be a non-empty string`);
+    }
+
+    if (source.input === undefined) throw new TypeError('operation source input is required');
+
+    if (!capabilities?.pluginOperations.available) {
+      throw new UnsupportedMediaSourceError(
+        `Remedia node ${nodeId} does not support plugin operation sources`,
+      );
+    }
+
+    if (!capabilities.pluginOperations.hosts.includes(source.hostId)) {
+      throw new UnsupportedMediaSourceError(
+        `Remedia node ${nodeId} has no plugin host configured with ID ${source.hostId}`,
+      );
+    }
+
+    return {
+      type: 'operation',
+      hostId: source.hostId,
+      pluginId: source.pluginId,
+      operation: source.operation,
+      input: source.input,
+    };
+  }
+
+  return 'url' in source ? { type: 'url', url: source.url } : { type: 'file', path: source.file };
 }
 
 function parseStageSnapshot(input: unknown, nodeId: string): import('./types.js').StageSnapshot {

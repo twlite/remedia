@@ -41,7 +41,7 @@ async fn run(cli: RuntimeCli) -> Result<(), Box<dyn std::error::Error>> {
         .config
         .unwrap_or(std::env::current_dir()?.join("remedia.config.json"));
     if cli.doctor {
-        return doctor(&config_path, &values);
+        return doctor(&config_path, &values).await;
     }
     let config = ServerConfig::from_file_with_env(&config_path, &values)?;
     let server = Arc::new(ServerHandle::start(config).await?);
@@ -64,7 +64,7 @@ async fn run(cli: RuntimeCli) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn doctor(
+async fn doctor(
     path: &Path,
     variables: &HashMap<String, String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -108,14 +108,44 @@ fn doctor(
         return Err("FFmpeg runtime ABI versions do not match the required FFmpeg 9 majors".into());
     }
     match ServerConfig::from_file_with_env(path, variables) {
-        Ok(_) => {
+        Ok(config) => {
             println!("Config: {} (valid)", path.display());
             println!("Local discovery: ~/.remedia/run (authenticated loopback)");
+            report_plugin_hosts(&config).await;
             Ok(())
         }
         Err(error) => {
             eprintln!("Config: {} (invalid: {error})", path.display());
             Err("doctor found configuration errors".into())
+        }
+    }
+}
+
+/// Probe each configured plugin host. Unreachable hosts are reported, not fatal: a host may
+/// legitimately start after this node, and its health is also available from `node.stats`.
+async fn report_plugin_hosts(config: &ServerConfig) {
+    let diagnostics = remedia_server::diagnose_plugin_hosts(config).await;
+
+    if diagnostics.is_empty() {
+        println!("Plugin hosts: none configured");
+
+        return;
+    }
+
+    println!("Plugin hosts:");
+
+    for host in diagnostics {
+        println!(
+            "  {:<24} {:<12} {} ({} operations advertised)",
+            host.id, host.state, host.origin, host.advertised_operations
+        );
+
+        if let Some(detail) = host.detail {
+            println!("    discovery failed: {detail}");
+        }
+
+        for missing in host.missing_operations {
+            println!("    allowed operation not advertised: {missing}");
         }
     }
 }

@@ -42,6 +42,7 @@ pub(crate) fn node_stats(server: &ServerInner) -> Value {
         "cpu": resources.cpu,
         "memory": resources.memory,
         "resources": resources,
+        "pluginHosts": server.plugin_hosts.snapshot(),
         "transportHealth": if transport_failed { "degraded" } else { "healthy" },
         "processingHealth": if processing_failed { "degraded" } else { "healthy" },
     })
