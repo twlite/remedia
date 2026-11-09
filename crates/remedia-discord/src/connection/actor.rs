@@ -48,14 +48,7 @@ pub(super) async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError
         voice_connection_id,
         metrics: metrics.clone(),
     };
-    let mut active_generation = *generation_rx.borrow();
-    let mut queued = VecDeque::with_capacity(QUEUE_CAPACITY);
-    let mut processed_id = 0_u64;
-    let mut barrier: Option<PendingBarrier> = None;
-    let mut paused = false;
-    let mut playback_active = false;
-    let mut speaking = false;
-    let mut next_send_at: Option<Instant> = None;
+    let mut scheduler = PacketScheduler::new(*generation_rx.borrow());
     let mut heartbeat_nonce = 0_u64;
     let mut pending_heartbeat_nonce = None;
     let mut last_heartbeat_ack = Instant::now();
@@ -76,7 +69,7 @@ pub(super) async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError
     }
 
     loop {
-        let deadline = next_send_at;
+        let deadline = scheduler.next_send_at;
         enum Event {
             Socket(Option<Result<Message, tokio_tungstenite::tungstenite::Error>>),
             Packet(Result<QueuedPacket, flume::RecvError>),
@@ -90,7 +83,7 @@ pub(super) async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError
         let event = tokio::select! {
             _ = cancellation.cancelled() => Event::Cancel,
             message = websocket.next() => Event::Socket(message),
-            packet = packet_rx.recv_async(), if queued.len() < QUEUE_CAPACITY && dave_ready => Event::Packet(packet),
+            packet = packet_rx.recv_async(), if scheduler.queued.len() < QUEUE_CAPACITY && dave_ready => Event::Packet(packet),
             control = control_rx.recv_async() => Event::Control(control),
             _ = heartbeat.tick() => Event::Heartbeat,
             _ = async { if let Some(deadline) = deadline { time::sleep_until(deadline).await } }, if deadline.is_some() => Event::Deadline,
@@ -279,38 +272,38 @@ pub(super) async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError
                 let published_generation = *generation_rx.borrow();
                 if synchronize_output_generation(
                     published_generation,
-                    &mut active_generation,
+                    &mut scheduler.active_generation,
                     &cancelled_generation,
                 ) {
                     begin_output_cancel(
-                        &mut queued,
-                        &mut processed_id,
-                        &mut barrier,
-                        &mut paused,
-                        &mut playback_active,
-                        speaking,
-                        &mut next_send_at,
+                        &mut scheduler.queued,
+                        &mut scheduler.processed_id,
+                        &mut scheduler.barrier,
+                        &mut scheduler.paused,
+                        &mut scheduler.playback_active,
+                        scheduler.speaking,
+                        &mut scheduler.next_send_at,
                     );
                 }
-                if packet.generation == active_generation {
+                if packet.generation == scheduler.active_generation {
                     if supersede_cancel_barrier(
-                        &mut barrier,
-                        &mut paused,
-                        &mut playback_active,
-                        &mut next_send_at,
+                        &mut scheduler.barrier,
+                        &mut scheduler.paused,
+                        &mut scheduler.playback_active,
+                        &mut scheduler.next_send_at,
                     ) {
                         tracing::debug!(
                             name: "discord.rtp_sender.cancel_superseded",
                             target: "remedia_discord::connection",
                             voice_connection_id,
-                            generation = active_generation,
+                            generation = scheduler.active_generation,
                             "new playback superseded the previous sender cancellation barrier"
                         );
                     }
-                    playback_active = true;
-                    queued.push_back(packet);
-                    if next_send_at.is_none() && !paused {
-                        next_send_at = Some(Instant::now());
+                    scheduler.playback_active = true;
+                    scheduler.queued.push_back(packet);
+                    if scheduler.next_send_at.is_none() && !scheduler.paused {
+                        scheduler.next_send_at = Some(Instant::now());
                     }
                 } else {
                     metrics.rtp_packet_dropped();
@@ -322,57 +315,59 @@ pub(super) async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError
                         samples_per_channel = packet.packet.samples_per_channel,
                         "queued RTP packet discarded after output generation changed"
                     );
-                    processed_id = processed_id.max(packet.id);
+                    scheduler.processed_id = scheduler.processed_id.max(packet.id);
                 }
             }
             Event::Packet(Err(_)) => return Err(VoiceError::Disconnected),
             Event::Control(Ok(Control::Flush { generation, ack })) => {
-                active_generation = generation;
-                metrics.rtp_packet_dropped_by(u64::try_from(queued.len()).unwrap_or(u64::MAX));
-                while let Some(packet) = queued.pop_front() {
-                    processed_id = processed_id.max(packet.id);
+                scheduler.active_generation = generation;
+                metrics.rtp_packet_dropped_by(
+                    u64::try_from(scheduler.queued.len()).unwrap_or(u64::MAX),
+                );
+                while let Some(packet) = scheduler.queued.pop_front() {
+                    scheduler.processed_id = scheduler.processed_id.max(packet.id);
                 }
-                if !paused && playback_active {
-                    next_send_at = Some(Instant::now());
+                if !scheduler.paused && scheduler.playback_active {
+                    scheduler.next_send_at = Some(Instant::now());
                 }
                 let _ = ack.send(Ok(()));
             }
             Event::Control(Ok(Control::Pause { target_id, ack })) => {
-                let silence_packets = if speaking { 5 } else { 0 };
-                barrier = Some(PendingBarrier {
+                let silence_packets = if scheduler.speaking { 5 } else { 0 };
+                scheduler.barrier = Some(PendingBarrier {
                     target_id,
                     silence_packets,
                     kind: BarrierKind::Pause,
                     ack: Some(ack),
                 });
-                if next_send_at.is_none() {
-                    next_send_at = Some(Instant::now());
+                if scheduler.next_send_at.is_none() {
+                    scheduler.next_send_at = Some(Instant::now());
                 }
             }
             Event::Control(Ok(Control::Resume { ack })) => {
-                if !paused {
+                if !scheduler.paused {
                     let _ = ack.send(Err(VoiceError::Protocol(
                         "output resume was requested while it was not paused".into(),
                     )));
                 } else {
-                    paused = false;
-                    playback_active = true;
+                    scheduler.paused = false;
+                    scheduler.playback_active = true;
                     send_speaking(&mut websocket, ssrc, true, voice_connection_id).await?;
-                    speaking = true;
-                    next_send_at = None;
+                    scheduler.speaking = true;
+                    scheduler.next_send_at = None;
                     let _ = ack.send(Ok(()));
                 }
             }
             Event::Control(Ok(Control::Finish { target_id, ack })) => {
-                let silence_packets = if speaking { 5 } else { 0 };
-                barrier = Some(PendingBarrier {
+                let silence_packets = if scheduler.speaking { 5 } else { 0 };
+                scheduler.barrier = Some(PendingBarrier {
                     target_id,
                     silence_packets,
                     kind: BarrierKind::Finish,
                     ack: Some(ack),
                 });
-                if next_send_at.is_none() {
-                    next_send_at = Some(Instant::now());
+                if scheduler.next_send_at.is_none() {
+                    scheduler.next_send_at = Some(Instant::now());
                 }
             }
             Event::Control(Ok(Control::Cancel { generation })) => {
@@ -387,17 +382,17 @@ pub(super) async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError
                     &cancelled_generation,
                 ) && synchronize_output_generation(
                     published_generation,
-                    &mut active_generation,
+                    &mut scheduler.active_generation,
                     &cancelled_generation,
                 ) {
                     begin_output_cancel(
-                        &mut queued,
-                        &mut processed_id,
-                        &mut barrier,
-                        &mut paused,
-                        &mut playback_active,
-                        speaking,
-                        &mut next_send_at,
+                        &mut scheduler.queued,
+                        &mut scheduler.processed_id,
+                        &mut scheduler.barrier,
+                        &mut scheduler.paused,
+                        &mut scheduler.playback_active,
+                        scheduler.speaking,
+                        &mut scheduler.next_send_at,
                     );
                 }
             }
@@ -457,163 +452,38 @@ pub(super) async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError
                 }
             }
             Event::Deadline => {
-                let now = Instant::now();
-                let scheduled_deadline = deadline.unwrap_or(now);
-                if let Some(pending) = barrier.as_mut()
-                    && processed_id >= pending.target_id
-                {
-                    if pending.silence_packets > 0 {
-                        send_transport_packet(
-                            &udp,
+                scheduler
+                    .send_due(
+                        deadline,
+                        PacketTransport {
+                            udp: &udp,
                             udp_server,
-                            &mut rtp,
-                            &dave,
-                            &packet_observability,
-                            now.saturating_duration_since(scheduled_deadline),
-                            &EncodedOpusPacket {
-                                bytes: SILENCE_PACKET.to_vec(),
-                                samples_per_channel: 960,
-                                media_samples_per_channel: 960,
-                                start_sample: 0,
-                            },
-                        )
-                        .await?;
-                        pending.silence_packets -= 1;
-                        next_send_at = Some(paced_deadline(
-                            scheduled_deadline,
-                            now,
-                            Duration::from_millis(20),
-                        ));
-                        continue;
-                    }
-
-                    let action = barrier.take().expect("barrier exists");
-                    send_speaking(&mut websocket, ssrc, false, voice_connection_id).await?;
-                    speaking = false;
-                    match action.kind {
-                        BarrierKind::Pause => {
-                            paused = true;
-                            playback_active = false;
-                            next_send_at = None;
-                        }
-                        BarrierKind::Finish | BarrierKind::Cancel => {
-                            paused = false;
-                            playback_active = false;
-                            next_send_at = None;
-                        }
-                    }
-                    if let Some(ack) = action.ack {
-                        let _ = ack.send(Ok(()));
-                    }
-                    continue;
-                }
-
-                if paused || !playback_active {
-                    next_send_at = None;
-                    continue;
-                }
-                if !lock(&dave).is_ready() {
-                    next_send_at = Some(now + Duration::from_millis(20));
-                    continue;
-                }
-                if !speaking {
-                    send_speaking(&mut websocket, ssrc, true, voice_connection_id).await?;
-                    speaking = true;
-                }
-
-                while queued
-                    .front()
-                    .is_some_and(|packet| packet.generation != active_generation)
-                {
-                    if let Some(packet) = queued.pop_front() {
-                        metrics.rtp_packet_dropped();
-                        processed_id = processed_id.max(packet.id);
-                        rtp.skip_packet_duration(packet.packet.samples_per_channel);
-                    }
-                }
-
-                let packet = queued.pop_front();
-                if let Some(packet) = packet {
-                    let duration = Duration::from_secs_f64(
-                        f64::from(packet.packet.samples_per_channel) / f64::from(PACKET_RATE),
-                    );
-                    match packet_deadline(scheduled_deadline, now, duration) {
-                        None => {
-                            metrics.rtp_packet_dropped();
-                            tracing::trace!(
-                                name: "discord.rtp.packet_dropped",
-                                target: "remedia_discord::connection",
-                                voice_connection_id,
-                                reason = "late_deadline",
-                                late_by_ms = now.saturating_duration_since(scheduled_deadline).as_secs_f64() * 1_000.0,
-                                samples_per_channel = packet.packet.samples_per_channel,
-                                "late RTP packet dropped to avoid catch-up bursts"
-                            );
-                            rtp.skip_packet_duration(packet.packet.samples_per_channel);
-                            processed_id = processed_id.max(packet.id);
-                            next_send_at = Some(now + duration);
-                        }
-                        Some(next_deadline) => {
-                            send_transport_packet(
-                                &udp,
-                                udp_server,
-                                &mut rtp,
-                                &dave,
-                                &packet_observability,
-                                now.saturating_duration_since(scheduled_deadline),
-                                &packet.packet,
-                            )
-                            .await?;
-                            processed_id = processed_id.max(packet.id);
-                            next_send_at = Some(next_deadline);
-                        }
-                    }
-                } else {
-                    metrics.packet_underrun();
-                    tracing::trace!(
-                        name: "discord.rtp.packet_underrun",
-                        target: "remedia_discord::connection",
-                        voice_connection_id,
-                        "RTP send deadline reached with no audio packet queued"
-                    );
-                    let silence = EncodedOpusPacket {
-                        bytes: SILENCE_PACKET.to_vec(),
-                        samples_per_channel: 960,
-                        media_samples_per_channel: 960,
-                        start_sample: 0,
-                    };
-                    send_transport_packet(
-                        &udp,
-                        udp_server,
-                        &mut rtp,
-                        &dave,
-                        &packet_observability,
-                        now.saturating_duration_since(scheduled_deadline),
-                        &silence,
+                            rtp: &mut rtp,
+                            dave: &dave,
+                            packet_observability: &packet_observability,
+                            websocket: &mut websocket,
+                            ssrc,
+                            voice_connection_id,
+                            metrics: &metrics,
+                        },
                     )
                     .await?;
-                    next_send_at = Some(paced_deadline(
-                        scheduled_deadline,
-                        now,
-                        Duration::from_millis(20),
-                    ));
-                }
             }
             Event::Generation(Ok(())) => {
                 let generation = *generation_rx.borrow_and_update();
                 if synchronize_output_generation(
                     generation,
-                    &mut active_generation,
+                    &mut scheduler.active_generation,
                     &cancelled_generation,
                 ) {
                     begin_output_cancel(
-                        &mut queued,
-                        &mut processed_id,
-                        &mut barrier,
-                        &mut paused,
-                        &mut playback_active,
-                        speaking,
-                        &mut next_send_at,
+                        &mut scheduler.queued,
+                        &mut scheduler.processed_id,
+                        &mut scheduler.barrier,
+                        &mut scheduler.paused,
+                        &mut scheduler.playback_active,
+                        scheduler.speaking,
+                        &mut scheduler.next_send_at,
                     );
                 }
             }
@@ -621,3 +491,6 @@ pub(super) async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError
         }
     }
 }
+
+mod scheduler;
+use scheduler::{PacketScheduler, PacketTransport};

@@ -39,141 +39,18 @@ pub(super) fn worker_loop(
     ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
 ) {
     let _log_capture = crate::ffmpeg_logging::capture();
-    let source_kind = source.kind();
-    let decoder_started = Instant::now();
-    let open_span = tracing::info_span!(
-        target: "remedia_core::decoder",
-        "core.media.open",
-        source_kind,
-        otel.status_code = tracing::field::Empty,
-        error.type = tracing::field::Empty,
-    );
-    let decoder_result = open_span.in_scope(|| {
-        AudioDecoder::open_for_playback(
-            source,
-            DecoderOptions {
-                cancellation: cancellation.clone(),
-                ..DecoderOptions::default()
-            },
-        )
-    });
-    let metrics = shared.observability.metrics();
-    metrics.record_decoder_startup(decoder_started.elapsed().as_secs_f64());
-    let mut decoder = match decoder_result {
-        Ok(decoder) => {
-            open_span.record("otel.status_code", "OK");
-            tracing::info!(
-                name: "core.media.opened",
-                target: "remedia_core::decoder",
-                source_kind,
-                stream_index = decoder.info().stream_index,
-                codec = %decoder.info().codec,
-                source_sample_rate = decoder.info().sample_rate,
-                source_channels = decoder.info().channels,
-                duration_known = decoder.info().duration.is_some(),
-                "audio stream selected"
-            );
-            decoder
-        }
-        Err(error) => {
-            open_span.record("otel.status_code", "ERROR");
-            open_span.record("error.type", error.kind());
-            tracing::error!(
-                name: "core.media.open_failed",
-                target: "remedia_core::decoder",
-                source_kind,
-                error_kind = error.kind(),
-                "media input could not be opened"
-            );
-            let error = if is_stopped(&shared, generation) {
-                PlaybackError::Cancelled
-            } else {
-                error.into()
-            };
-            fail_session(&shared, generation, error.clone(), &cancellation, &output);
-            let _ = ready.send(Err(error));
-            return;
-        }
-    };
-
-    let graph_expression = {
-        let mut data = lock(&shared.data);
-        data.processor_initialized = true;
-        data.filter_graph.clone()
-    };
-    let mut processor = match PcmProcessor::new(graph_expression.as_deref(), 0) {
-        Ok(processor) => processor,
-        Err(error) => {
-            let error = PlaybackError::FilterGraph(Arc::new(error));
-            fail_session(&shared, generation, error.clone(), &cancellation, &output);
-            let _ = ready.send(Err(error));
-            return;
-        }
-    };
-
-    let info = decoder.info().clone();
-    let output_opus = output.encoded_opus_output();
-    let passthrough_rejection = decoder.opus_passthrough_rejection();
-    let mut can_passthrough = output_opus.is_some() && passthrough_rejection.is_none();
-    let mut passthrough_mode =
-        can_passthrough && graph_expression.is_none() && lock(&shared.data).volume == 1.0;
-    {
-        let mut data = lock(&shared.data);
-        data.processing_mode = Some(if passthrough_mode {
-            PlaybackProcessingMode::Passthrough
-        } else {
-            PlaybackProcessingMode::Transcoding
-        });
-        data.passthrough_available = can_passthrough;
-        shared.changed.notify_all();
-    }
-    if can_passthrough {
-        tracing::info!(
-            name: "core.playback.opus_passthrough_eligible",
-            target: "remedia_core::playback",
-            playback_id = lock(&shared.data).playback_id,
-            "selected Opus stream can use the encoded packet path"
-        );
-    } else if let Some(reason) = passthrough_rejection {
-        tracing::debug!(
-            name: "core.playback.opus_passthrough_rejected",
-            target: "remedia_core::playback",
-            playback_id = lock(&shared.data).playback_id,
-            reason,
-            "selected stream requires PCM transcoding"
-        );
-    } else if output_opus.is_none() {
-        tracing::trace!(
-            name: "core.playback.opus_passthrough_rejected",
-            target: "remedia_core::playback",
-            playback_id = lock(&shared.data).playback_id,
-            reason = "output does not accept encoded Opus",
-            "selected output uses the PCM path"
-        );
-    }
-    if !passthrough_mode && let Err(error) = decoder.activate_decoder(&[], None) {
-        let error: PlaybackError = error.into();
-        fail_session(&shared, generation, error.clone(), &cancellation, &output);
-        let _ = ready.send(Err(error));
-        return;
-    }
-    if ready.send(Ok(info)).is_err() {
-        cancellation.cancel();
-        let _ = safe_cancel(&output);
-        return;
-    }
-    if !wait_for_start(&shared, generation) {
-        return;
-    }
-    metrics.playback_started();
-    let _active_playback = ActivePlaybackGuard { metrics };
-    let playback_id = lock(&shared.data).playback_id;
-    tracing::debug!(
-        name: "core.playback.worker_ready",
-        target: "remedia_core::playback",
+    let Some(startup::PreparedWorker {
+        output_opus,
+        mut decoder,
+        mut processor,
+        mut can_passthrough,
+        mut passthrough_mode,
         playback_id,
-        "playback worker entered decode loop"
-    );
+        _active_playback,
+    }) = startup::prepare(&shared, generation, source, &output, &cancellation, ready)
+    else {
+        return;
+    };
 
     let mut pending_frame = None;
     let mut deferred_filter_update: Option<FilterUpdate> = None;
@@ -189,146 +66,23 @@ pub(super) fn worker_loop(
         ) {
             WorkerAction::Exit => return,
             WorkerAction::ConfigureProcessing => {
-                if passthrough_mode {
-                    let source_boundary = processor
-                        .source_position()
-                        .map(|position| position.sample)
-                        .or_else(|| decoder.source_boundary_sample())
-                        .unwrap_or(0);
-                    let history = decoder.packet_history_before(source_boundary);
-                    let activation = decoder.activate_decoder(&history, Some(source_boundary));
-                    if let Err(error) = activation {
-                        let playback_error: PlaybackError = error.into();
-                        if can_passthrough {
-                            decoder.discard_decoder_activation();
-                            {
-                                let mut data = lock(&shared.data);
-                                data.filter_graph = processor.expression().map(str::to_owned);
-                                data.volume = 1.0;
-                                data.processing_mode = Some(PlaybackProcessingMode::Passthrough);
-                                data.last_processing_error = Some(playback_error.clone());
-                                shared.changed.notify_all();
-                            }
-                            tracing::warn!(
-                                name: "core.playback.processing_mode_transition_failed",
-                                target: "remedia_core::playback",
-                                playback_id,
-                                source_boundary_sample = source_boundary,
-                                fallback_mode = "passthrough",
-                                error_kind = "decoder_initialization",
-                                "PCM mode could not be initialized; existing Opus passthrough continues"
-                            );
-                            if let Some(update) = deferred_filter_update.take() {
-                                let _ = update.response.send(Err(playback_error));
-                            }
-                            continue;
-                        }
-                        if let Some(update) = deferred_filter_update.take() {
-                            let _ = update.response.send(Err(playback_error.clone()));
-                        }
-                        fail_session(&shared, generation, playback_error, &cancellation, &output);
-                        return;
-                    }
-                    let applied_filter_update = deferred_filter_update.take();
-                    if let Some(update) = applied_filter_update {
-                        processor.replace(update.graph);
-                        passthrough_mode = false;
-                        {
-                            let mut data = lock(&shared.data);
-                            data.processing_mode = Some(PlaybackProcessingMode::Transcoding);
-                            shared.changed.notify_all();
-                        }
-                        // Do not acknowledge a filter change until the decoder,
-                        // graph, and public processing-mode snapshot agree.
-                        let _ = update.response.send(Ok(()));
-                    } else {
-                        passthrough_mode = false;
-                        {
-                            let mut data = lock(&shared.data);
-                            data.processing_mode = Some(PlaybackProcessingMode::Transcoding);
-                            shared.changed.notify_all();
-                        }
-                    }
-                    tracing::info!(
-                        name: "core.playback.processing_mode_changed",
-                        target: "remedia_core::playback",
-                        playback_id,
-                        mode = "transcoding",
-                        source_boundary_sample = source_boundary,
-                        warmup_packets = history.len(),
-                        warmup_policy_ms = 120_u16,
-                        "playback switched from Opus passthrough to PCM processing"
-                    );
-                } else {
-                    if decoder.has_pending_frames() {
-                        match decoder.read_next_timed_frame() {
-                            Ok(Some(frame)) => {
-                                pending_frame = Some(frame);
-                                continue;
-                            }
-                            Ok(None) => {}
-                            Err(error) => {
-                                let playback_error: PlaybackError = error.into();
-                                if let Some(update) = deferred_filter_update.take() {
-                                    let _ = update.response.send(Err(playback_error.clone()));
-                                }
-                                fail_session(
-                                    &shared,
-                                    generation,
-                                    playback_error,
-                                    &cancellation,
-                                    &output,
-                                );
-                                return;
-                            }
-                        }
-                    }
-                    let next_sample = processor.next_sample();
-                    let Some(encoded_output) = output.encoded_opus_output() else {
-                        let error = PlaybackError::Output(OutputError::new(
-                            "passthrough output capability disappeared during playback",
-                        ));
-                        fail_session(&shared, generation, error, &cancellation, &output);
-                        return;
-                    };
-                    if let Err(error) =
-                        encoded_output.prepare_passthrough(next_sample, &cancellation)
-                    {
-                        if is_stopped(&shared, generation) {
-                            return;
-                        }
-                        fail_session(
-                            &shared,
-                            generation,
-                            PlaybackError::Output(error),
-                            &cancellation,
-                            &output,
-                        );
-                        return;
-                    }
-                    if let Err(error) = decoder.deactivate_decoder() {
-                        fail_session(&shared, generation, error.into(), &cancellation, &output);
-                        return;
-                    }
-                    processor.replace(None);
-                    passthrough_mode = true;
-                    {
-                        let mut data = lock(&shared.data);
-                        data.processing_mode = Some(PlaybackProcessingMode::Passthrough);
-                        shared.changed.notify_all();
-                    }
-                    if let Some(update) = deferred_filter_update.take() {
-                        let _ = update.response.send(Ok(()));
-                    }
-                    tracing::info!(
-                        name: "core.playback.processing_mode_changed",
-                        target: "remedia_core::playback",
-                        playback_id,
-                        mode = "passthrough",
-                        output_sample = next_sample,
-                        buffered_filter_output = "discarded_at_live_transition",
-                        "playback switched from PCM processing to Opus passthrough"
-                    );
+                if (processing::ProcessingTransition {
+                    shared: &shared,
+                    generation,
+                    output: &output,
+                    cancellation: &cancellation,
+                    playback_id,
+                    decoder: &mut decoder,
+                    processor: &mut processor,
+                    can_passthrough,
+                    passthrough_mode: &mut passthrough_mode,
+                    pending_frame: &mut pending_frame,
+                    deferred_filter_update: &mut deferred_filter_update,
+                })
+                .apply()
+                .is_break()
+                {
+                    return;
                 }
             }
             WorkerAction::Decode => {
@@ -825,3 +579,7 @@ pub(super) fn worker_loop(
         }
     }
 }
+
+mod startup;
+
+mod processing;
