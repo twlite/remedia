@@ -691,7 +691,7 @@ describe('Rust server with generic plugin hosts', () => {
     expect(await slow).toBe('cancelled');
     expect(Date.now() - skippedAt).toBeLessThan(600);
 
-    const next = await node.play(guildId, op('host-a', { track: 'wav', seconds: 600 }));
+    const next = await node.play(guildId, op('host-a', { track: 'wav', seconds: 3600 }));
 
     await node.control(guildId, 'player.pause');
     await sleep(900);
@@ -868,14 +868,16 @@ describe('Rust server with generic plugin hosts', () => {
     await node.createGuild(guildId);
 
     const stats = (): StreamStats => hostA.behaviour.streams.at(-1)!;
-    const started = await node.play(guildId, op('host-a', { track: 'wav', seconds: 400 }));
+    // Decoding runs far faster than real time into a null output, so the track must be long enough
+    // that neither the pause below nor the forward seek can reach its end on a fast runner.
+    const started = await node.play(guildId, op('host-a', { track: 'wav', seconds: 3600 }));
 
     await node.control(guildId, 'player.pause');
     await sleep(800);
 
     const paused = stats().pulled;
 
-    // 400 s of audio is ~73 MiB; a paused player must hold only a bounded pipeline.
+    // 3600 s of audio is ~659 MiB; a paused player must hold only a bounded pipeline.
     expect(paused).toBeLessThan(16 * 1024 * 1024);
     await sleep(800);
     expect(stats().pulled - paused).toBeLessThan(64 * 1024);
@@ -924,7 +926,8 @@ describe('Rust server with generic plugin hosts', () => {
     expect(await first).toBe('cancelled');
 
     // One active stream consumes the only stream permit; a second stream is refused.
-    await node.play(one, op('host-tight', { track: 'wav', seconds: 60 }));
+    // Long enough that the unpaced player cannot finish and release the stream permit early.
+    await node.play(one, op('host-tight', { track: 'wav', seconds: 3600 }));
     expect(await codeOf(node.play(two, op('host-tight', { track: 'mp3' })))).toBe(
       'resource_exhausted',
     );
