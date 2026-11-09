@@ -139,7 +139,7 @@ export default function HomePage() {
             </h1>
             <p className={styles.description}>
               High performance, low overhead audio playback with a unified engine for both embedded
-              and remote setups. Built in Rust, designed for discord-player and beyond.
+              and remote setups. Built in Rust for embedded and remote audio applications.
             </p>
             <InstallCommand />
             <div className={styles.buttons}>
@@ -201,10 +201,8 @@ export default function HomePage() {
       </main>
 
       <footer className={styles.footer}>
-        <p>Powering the next generation of Discord audio, including</p>
-        <a href="https://discord-player.js.org" target="_blank" rel="noreferrer">
-          discord-player <ExternalLink size={13} aria-hidden="true" />
-        </a>
+        <p>Native audio processing for Discord applications and custom voice clients.</p>
+
       </footer>
     </div>
   );
