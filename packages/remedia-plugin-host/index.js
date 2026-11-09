@@ -138,22 +138,25 @@ export class PluginHost {
     this.#plugins.set(plugin.id, { ...plugin, controller: new AbortController() });
   }
 
-  /** Execute a registered operation without HTTP or JSON serialization.
-   * @param {string} pluginId Registered plugin identifier.
-   * @param {string} operation Operation name.
-   * @param {unknown} input Unmodified operation input.
-   * @param {{signal?: AbortSignal}} options Caller cancellation.
-   * @returns {Promise<{handled: boolean, result?: unknown}>} Raw result.
+  /** Handle an operation request directly, without any HTTP connection or serialization.
+   * @param {{pluginId: string, operation: string, input: unknown, signal?: AbortSignal}} request Structured operation request.
+   * @param {{signal?: AbortSignal}} options Optional transport-specific cancellation override.
+   * @returns {Promise<{handled: boolean, result?: unknown}>} Original handler result, unmodified.
    */
-  async execute(pluginId, operation, input, options = {}) {
+  async handle(request, options = {}) {
     if (this.#closed) throw new PluginHostError('host_closed', 503);
-    if (!validId(pluginId) || !validId(operation)) throw new PluginHostError('invalid_request', 400);
+    if (!isRecord(request) || !Object.hasOwn(request, 'input') ||
+        !validId(request.pluginId) || !validId(request.operation)) {
+      throw new PluginHostError('invalid_request', 400);
+    }
+    const { pluginId, operation, input } = request;
     const plugin = this.#plugins.get(pluginId);
     if (!plugin) throw new PluginHostError('plugin_not_found', 404);
     const handler = Object.hasOwn(plugin.operations, operation) ? plugin.operations[operation] : undefined;
     if (typeof handler !== 'function') throw new PluginHostError('operation_not_found', 404);
-    const signal = options.signal
-      ? AbortSignal.any([options.signal, plugin.controller.signal])
+    const incomingSignal = options.signal ?? request.signal;
+    const signal = incomingSignal
+      ? AbortSignal.any([incomingSignal, plugin.controller.signal])
       : plugin.controller.signal;
     signal.throwIfAborted();
     const result = await handler(input, { signal });
@@ -162,6 +165,17 @@ export class PluginHost {
       throw signal.reason;
     }
     return result === undefined ? { handled: false } : { handled: true, result };
+  }
+
+  /** Convenience overload for direct operation dispatch.
+   * @param {string} pluginId Registered plugin ID.
+   * @param {string} operation Operation name.
+   * @param {unknown} input Handler input without serialization.
+   * @param {{signal?: AbortSignal}} options Optional cancellation.
+   * @returns {Promise<{handled: boolean, result?: unknown}>} Raw dispatch result.
+   */
+  async execute(pluginId, operation, input, options = {}) {
+    return this.handle({ pluginId, operation, input, signal: options.signal });
   }
 
   /** Obtain JSON-safe host discovery metadata without making an HTTP request. */
@@ -236,7 +250,7 @@ export class PluginHost {
         return fail('invalid_request', 400);
       }
       try {
-        const outcome = await this.execute(body.pluginId, body.operation, body.input, { signal: request.signal });
+        const outcome = await this.handle(body, { signal: request.signal });
         if (!outcome.handled) return reply({ handled: false });
         if (isStream(outcome.result) || isMediaSource(outcome.result)) {
           return reply({ handled: true, result: this.#grant(body.pluginId, outcome.result) });
