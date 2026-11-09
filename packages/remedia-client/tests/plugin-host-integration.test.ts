@@ -1024,20 +1024,25 @@ describe('Rust server with generic plugin hosts', () => {
 
     await node.createGuild(guildId);
 
-    const started = await node.play(guildId, op('host-a', { track: 'wav', seconds: 120 }));
+    // Null output is unpaced, so a short fixture can finish before interruption is requested.
+    const started = await node.play(guildId, op('host-a', { track: 'wav', seconds: 3600 }));
+    const stream = hostA.behaviour.streams.at(-1)!;
 
-    await node.control(guildId, 'player.pause');
-    // Host-side interruption: destroy the connection carrying the active grant.
+    expect(stream.disposed).toBe(false);
+
+    // Interrupt the live transfer directly. Pause/resume can race with the resulting failure
+    // and return invalid_state after the player has already reached its terminal state.
     hostA.http.closeAllConnections();
-    await node.control(guildId, 'player.resume');
+    await expect.poll(() => stream.disposed).toBe(true);
     await expect
       .poll(() =>
         lifecycle
           .slice(events)
           .some(
             (event) =>
-              (event.event === 'player.failed' || event.event === 'player.completed') &&
-              event.data.guildId === guildId,
+              event.event === 'player.failed' &&
+              event.data.guildId === guildId &&
+              event.data.generation === started.generation,
           ),
       )
       .toBe(true);
@@ -1077,7 +1082,9 @@ describe('Rust server with generic plugin hosts', () => {
     const guildId = guild();
 
     await node.createGuild(guildId);
-    await node.play(guildId, op('host-a', { track: 'wav', seconds: 300 }));
+
+    // Keep the transfer active until shutdown, including when the VM delays the next RPC.
+    await node.play(guildId, op('host-a', { track: 'wav', seconds: 3600 }));
 
     const stats = hostA.behaviour.streams.at(-1)!;
 
