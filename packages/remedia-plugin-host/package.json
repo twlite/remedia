@@ -4,12 +4,20 @@
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "Experimental framework-independent Remedia HTTP plugin host",
+  "description": "Experimental generic plugin operation host with optional HTTP protocol",
   "exports": {
-    ".": "./index.js",
-    "./node": "./node.js"
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js"
+    },
+    "./node": {
+      "types": "./node.d.ts",
+      "import": "./node.js"
+    }
   },
-  "engines": { "node": ">=22.18.0" },
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "scripts": {
     "test": "node --test test/*.test.js",
     "typecheck": "node --check index.js && node --check node.js"
