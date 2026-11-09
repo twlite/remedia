@@ -261,8 +261,10 @@ impl OpusEncoderOutput {
         sink: &dyn OpusPacketSink,
         cancellation: &CancellationToken,
     ) -> Result<(), OutputError> {
-        let mut bytes = vec![0; MAX_OPUS_PACKET_BYTES];
-        let len = encoder.encode_float(pcm, &mut bytes).map_err(|error| {
+        // Encode into bounded scratch storage. Only the encoded payload is owned
+        // by the sink; retaining a 4 KB allocation per queued packet wastes memory.
+        let mut scratch = [0; MAX_OPUS_PACKET_BYTES];
+        let len = encoder.encode_float(pcm, &mut scratch).map_err(|error| {
             tracing::error!(
                 name: "core.opus.encode_failed",
                 target: "remedia_core::opus",
@@ -271,7 +273,7 @@ impl OpusEncoderOutput {
             );
             OutputError::with_source(error)
         })?;
-        bytes.truncate(len);
+        let bytes = scratch[..len].to_vec();
         let media_samples_per_channel = u32::try_from(media_samples_per_channel)
             .map_err(|_| OutputError::new("Opus frame sample count exceeds u32"))?;
         let packet_bytes = bytes.len();

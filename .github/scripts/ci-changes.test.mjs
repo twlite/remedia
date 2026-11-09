@@ -69,6 +69,7 @@ test('engine, native integration, toolchain, and build configuration changes run
     'packages/remedia-node/src/lib.rs',
     'packages/remedia-node/lib/index.ts',
     'packages/remedia-client/tests/server-integration.test.ts',
+    'packages/remedia-config/tests/parity.json',
     'Cargo.lock',
     'Cargo.toml',
     'rust-toolchain.toml',

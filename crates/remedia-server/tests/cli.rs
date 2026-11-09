@@ -56,6 +56,12 @@ fn cli_commands_remain_available_without_ffmpeg_loader_paths() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(config.exists());
+    let generated: serde_json::Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../packages/remedia-config/remedia.config.schema.json"
+    ))
+    .unwrap();
+    assert_eq!(generated["$schema"], schema["$id"]);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -188,5 +194,12 @@ fn list_reads_live_server_stats_without_rpc_credentials() {
     assert_eq!(row["stats"]["connections"]["active"], 0);
     assert!(row["address"].as_str().unwrap().contains(':'));
     assert!(row["stats"]["nodeId"].is_string());
+    assert_eq!(row["stats"]["resources"]["samplingIntervalMs"], 1000);
+    assert!(row["stats"]["memory"].get("privateResidentBytes").is_some());
+    assert!(
+        row["stats"]["memory"]
+            .get("committedPrivateBytes")
+            .is_some()
+    );
     fs::remove_dir_all(root).unwrap();
 }

@@ -81,7 +81,7 @@ fn worker_loop(
     config: CrossfadeConfig,
 ) {
     let _stage_cleanup = StageCleanup(stage_slot);
-    let opened = AudioDecoder::open_with_options(
+    let opened = AudioDecoder::open_for_playback(
         source,
         DecoderOptions {
             cancellation: cancellation.clone(),
@@ -103,7 +103,17 @@ fn worker_loop(
     let graph = {
         let mut data = lock(&shared.data);
         data.processor_initialized = true;
-        data.processing_mode = Some(PlaybackProcessingMode::Transcoding);
+        data.processing_mode = Some(
+            if current.passthrough_eligible()
+                && data.filter_graph.is_none()
+                && data.volume == 1.0
+                && output.encoded_opus_output().is_some()
+            {
+                PlaybackProcessingMode::Passthrough
+            } else {
+                PlaybackProcessingMode::Transcoding
+            },
+        );
         data.passthrough_available = false;
         data.filter_graph.clone()
     };
@@ -239,6 +249,55 @@ fn worker_loop(
             .as_ref()
             .map(|t| FRAME_SAMPLES.min(t.fading.remaining_samples()))
             .unwrap_or(FRAME_SAMPLES.min(until_fade));
+        let before_overlap = current.duration_samples.map(|duration| {
+            duration
+                .saturating_sub(fade_samples.samples() as u64)
+                .saturating_sub(current.consumed)
+        });
+        let before_overlap = if fade_decided && transition.is_none() {
+            None
+        } else {
+            before_overlap
+        };
+        match current.try_encoded(
+            &shared,
+            &output,
+            &mut processor,
+            &cancellation,
+            before_overlap,
+        ) {
+            Ok(Some(false)) => break,
+            Ok(Some(true)) => {
+                {
+                    let mut data = lock(&shared.data);
+                    data.processing_mode = Some(PlaybackProcessingMode::Passthrough);
+                    shared.changed.notify_all();
+                }
+                record_encoded_packet_submitted(
+                    &shared,
+                    generation,
+                    &output,
+                    processor.next_sample(),
+                    processor.source_position(),
+                );
+                continue;
+            }
+            Ok(None) => {}
+            Err(_) if is_stopped(&shared, generation) => return,
+            Err(error) => {
+                fail_session(&shared, generation, error, &cancellation, &output);
+                return;
+            }
+        }
+        if let Err(error) = current.enter_pcm() {
+            fail_session(&shared, generation, error, &cancellation, &output);
+            return;
+        }
+        {
+            let mut data = lock(&shared.data);
+            data.processing_mode = Some(PlaybackProcessingMode::Transcoding);
+            shared.changed.notify_all();
+        }
         let mut pcm = match current.read(wanted, &cancellation) {
             Ok(Some(data)) => data,
             Ok(None) if transition.is_none() => break,

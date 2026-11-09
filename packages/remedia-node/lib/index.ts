@@ -44,3 +44,5 @@ export type {
   VoiceEventIdentity,
   VoiceLifecycleEvents,
 } from './lifecycle.js';
+
+export type { ResourceMemory, ResourceCpu, ProcessResourceStatistics } from './resources.js';

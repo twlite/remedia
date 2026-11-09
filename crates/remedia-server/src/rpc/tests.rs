@@ -1,7 +1,4 @@
-use super::{
-    claim_voice_generation, load_average_1m, parse_snowflake, resident_memory_bytes,
-    valid_discord_voice_endpoint,
-};
+use super::{claim_voice_generation, parse_snowflake, valid_discord_voice_endpoint};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[test]
@@ -13,8 +10,18 @@ fn snowflakes_are_decimal_and_remain_u64() {
 
 #[test]
 fn host_stats_are_optional_and_well_formed_when_available() {
-    assert!(resident_memory_bytes().is_none_or(|memory| memory > 0));
-    assert!(load_average_1m().is_none_or(|load| load.is_finite() && load >= 0.0));
+    assert!(
+        remedia_resources::collect()
+            .memory
+            .resident_bytes
+            .is_none_or(|memory| memory > 0)
+    );
+    assert!(
+        remedia_resources::collect()
+            .cpu
+            .load_average_1m
+            .is_none_or(|load| load.is_finite() && load >= 0.0)
+    );
 }
 
 #[test]

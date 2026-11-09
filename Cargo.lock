@@ -2629,6 +2629,8 @@ dependencies = [
  "ffmpeg-next",
  "opus2",
  "remedia-observability",
+ "remedia-resources",
+ "serde_json",
  "thiserror",
  "tracing",
  "url",
@@ -2666,6 +2668,8 @@ dependencies = [
  "remedia-core",
  "remedia-discord",
  "remedia-observability",
+ "remedia-resources",
+ "serde_json",
  "tracing",
 ]
 
@@ -2686,6 +2690,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "remedia-resources"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "remedia-server"
 version = "0.1.0"
 dependencies = [
@@ -2696,6 +2709,7 @@ dependencies = [
  "remedia-core",
  "remedia-discord",
  "remedia-observability",
+ "remedia-resources",
  "serde",
  "serde_json",
  "subtle",

@@ -83,6 +83,14 @@ pub(super) fn handle_commands(
         }
         if let Some(update) = data.pending_filter_graph.take() {
             drop(data);
+            if current.encoded_mode() {
+                if let Err(error) = current.enter_pcm() {
+                    let _ = update.response.send(Err(error.clone()));
+                    return Err(error);
+                }
+                lock(&shared.data).processing_mode = Some(PlaybackProcessingMode::Transcoding);
+                shared.changed.notify_all();
+            }
             let result = output
                 .filter_transition(processor.next_sample(), cancellation)
                 .map_err(PlaybackError::from);

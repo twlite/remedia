@@ -179,6 +179,8 @@ jobs:
         run: sh -n scripts/install.sh
       - run: pnpm lint
       - run: pnpm typecheck
+      - run: pnpm --filter @remedia/config schema:check
+      - run: pnpm --filter @remedia/config test
       - name: Check formatting
         id: formatting
         run: pnpm format:check

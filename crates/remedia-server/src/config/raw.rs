@@ -1,8 +1,11 @@
 use super::*;
 
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(super) struct RawConfig {
+    #[serde(default, rename = "$schema")]
+    pub(super) _schema: Option<String>,
     #[serde(default)]
     pub(super) bind: RawBind,
     pub(super) users: Vec<RawUser>,
@@ -18,6 +21,7 @@ pub(super) struct RawConfig {
     pub(super) observability: RawObservability,
 }
 
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(super) struct RawBind {
@@ -27,6 +31,7 @@ pub(super) struct RawBind {
     pub(super) port: u16,
 }
 
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct RawAudio {
@@ -35,6 +40,7 @@ pub(super) struct RawAudio {
 }
 
 /// Server-side permission and defaults; individual guild sessions also opt in.
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub(super) struct RawCrossfade {
@@ -55,6 +61,7 @@ impl Default for RawCrossfade {
     }
 }
 
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct RawOpus {
@@ -107,6 +114,7 @@ impl Default for RawBind {
     }
 }
 
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(super) struct RawUser {
@@ -114,6 +122,7 @@ pub(super) struct RawUser {
     pub(super) password: String,
 }
 
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub(super) struct RawLimits {
@@ -144,6 +153,7 @@ impl Default for RawLimits {
     }
 }
 
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub(super) struct RawMedia {
@@ -166,6 +176,7 @@ impl Default for RawMedia {
     }
 }
 
+#[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub(super) struct RawObservability {

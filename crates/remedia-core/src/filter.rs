@@ -41,6 +41,14 @@ impl PcmFilterGraph {
         crate::input::initialize().map_err(|error| FilterGraphError::Invalid(error.to_string()))?;
 
         let mut graph = ffmpeg::filter::Graph::new();
+        // Audio sessions already execute independently. FFmpeg's automatic
+        // graph threading otherwise creates a machine-sized pool per graph,
+        // even for tiny stereo blocks. Keep processing on the owning worker.
+        // SAFETY: this newly allocated graph is exclusively owned, and its
+        // threading policy is set before filters are added or configured.
+        unsafe {
+            (*graph.as_mut_ptr()).nb_threads = 1;
+        }
         let source = ffmpeg::filter::find("abuffer")
             .ok_or_else(|| FilterGraphError::Invalid("FFmpeg abuffer is unavailable".into()))?;
         let sink = ffmpeg::filter::find("abuffersink")
