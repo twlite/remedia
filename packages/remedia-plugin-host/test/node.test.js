@@ -9,7 +9,7 @@ test('Node middleware handles Fetch requests and responses', async () => {
   const host = createPluginHost({ name: 'Node test', publicUrl: 'http://127.0.0.1:3000' });
   host.register({ id: 'example.echo', operations: { echo: ({ value }) => ({ value }) } });
   const middleware = createNodeMiddleware(host);
-  const server = createServer((req, res) => void middleware(req, res));
+  const server = createServer((req, res) => void middleware(req, res, () => { res.statusCode = 200; res.end('other route'); }));
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   try {
@@ -23,6 +23,9 @@ test('Node middleware handles Fetch requests and responses', async () => {
     });
     assert.equal(response.status, 200);
     assert.deepEqual((await response.json()).result, { value: 42 });
+    const other = await fetch(base + '/health');
+    assert.equal(other.status, 200);
+    assert.equal(await other.text(), 'other route');
   } finally {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
