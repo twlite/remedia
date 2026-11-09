@@ -61,3 +61,40 @@ test('unregister aborts a handler and disposes the plugin', async () => {
   assert.equal(disposed, true);
   await host.close();
 });
+
+
+test('request object dispatch returns exact reference and accepts plain objects', async () => {
+  const host = createPluginHost({ name: 'Direct request' });
+  const input = { requestId: 'r1', classInstance: new Map([['id', 12]]) };
+  const output = { input, result: new Date('2026-01-01T00:00:00Z') };
+  let received;
+  host.register({ id: 'org.example.request', operations: {
+    'custom.resolve': (value) => { received = value; return output; },
+  } });
+  const result = await host.handle({
+    pluginId: 'org.example.request',
+    operation: 'custom.resolve',
+    input,
+  });
+  assert.equal(result.handled, true);
+  assert.strictEqual(received, input);
+  assert.strictEqual(result.result, output);
+  assert.strictEqual(result.result.input.classInstance, input.classInstance);
+  await host.close();
+});
+
+test('request object honors abort signal without invoking the handler', async () => {
+  const host = createPluginHost({ name: 'Aborted' });
+  let invoked = false;
+  host.register({ id: 'org.example.request', operations: { doWork: () => { invoked = true; } } });
+  const aborter = new AbortController();
+  aborter.abort(new Error('already cancelled'));
+  await assert.rejects(host.handle({
+    pluginId: 'org.example.request',
+    operation: 'doWork',
+    input: {},
+    signal: aborter.signal,
+  }), /already cancelled/);
+  assert.equal(invoked, false);
+  await host.close();
+});
