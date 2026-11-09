@@ -63,8 +63,6 @@ interface Behaviour {
   /** Deployment label which decides what the `deployment` track returns. */
   deployment: string;
   externalUrl?: string;
-  /** Hold WAV production after the probe budget until pause is acknowledged. */
-  gate?: Promise<void>;
 }
 
 interface Harness {
@@ -156,7 +154,7 @@ async function startHost(options: {
   return harness;
 }
 
-function wavStream(seconds: number, stats: StreamStats, gate?: Promise<void>): Readable {
+function wavStream(seconds: number, stats: StreamStats): Readable {
   const dataBytes = seconds * 48_000 * 4;
   const header = Buffer.alloc(44);
 
@@ -178,12 +176,7 @@ function wavStream(seconds: number, stats: StreamStats, gate?: Promise<void>): R
 
   const stream = new Readable({
     highWaterMark: 16 * 1024,
-    async read() {
-      if (gate && stats.pulled >= 1024 * 1024) {
-        await gate;
-        if (this.destroyed) return;
-      }
-
+    read() {
       if (!sentHeader) {
         sentHeader = true;
         stats.pulled += header.length;
@@ -246,7 +239,7 @@ async function produce(harness: Harness, input: unknown, signal: AbortSignal): P
 
           behaviour.streams.push(stats);
 
-          return wavStream(spec.seconds ?? 30, stats, behaviour.gate);
+          return wavStream(spec.seconds ?? 30, stats);
         },
       });
     case 'hang':
@@ -901,23 +894,18 @@ describe('Rust server with generic plugin hosts', () => {
     await node.createGuild(guildId);
 
     const stats = (): StreamStats => hostA.behaviour.streams.at(-1)!;
-    // Let FFmpeg probe, then hold the producer until pause is acknowledged. Null output can
-    // otherwise consume arbitrarily much audio before the pause RPC is scheduled.
-    let release!: () => void;
+    // Keep the source readable: pause waits for an in-progress decoder read to finish.
+    const started = await node.play(guildId, op('host-a', { track: 'wav', seconds: 3600 }));
 
-    hostA.behaviour.gate = new Promise<void>((done) => {
-      release = done;
-    });
+    await node.control(guildId, 'player.pause');
 
-    let started;
+    const positionMs = (await node.playerState(guildId)).position.mediaMs;
 
-    try {
-      started = await node.play(guildId, op('host-a', { track: 'wav', seconds: 3600 }));
-      await node.control(guildId, 'player.pause');
-    } finally {
-      delete hostA.behaviour.gate;
-      release();
-    }
+    expect(positionMs).not.toBeNull();
+
+    // This fixture is 48 kHz stereo signed 16-bit PCM (192 bytes/ms). Subtract audio
+    // already consumed before pause, since null output decodes much faster than real time.
+    const consumedBytes = (positionMs ?? 0) * 192;
 
     // HTTP and OS socket buffers can continue filling after pause, especially on Windows.
     // Require the producer to stop reading for a full second, within a bounded deadline,
@@ -928,8 +916,8 @@ describe('Rust server with generic plugin hosts', () => {
           const before = stats().pulled;
 
           await sleep(1_000);
-          // 3600 s of audio is ~659 MiB; even while settling, the pipeline must stay bounded.
-          expect(stats().pulled).toBeLessThan(16 * 1024 * 1024);
+          // Encoded bytes ahead of the paused playback position must remain bounded.
+          expect(stats().pulled - consumedBytes).toBeLessThan(16 * 1024 * 1024);
 
           return stats().pulled === before;
         },
