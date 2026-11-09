@@ -47,6 +47,7 @@ These describe intended responsibilities, not a claim that every component or fe
 - Format Rust with rustfmt and check it with Clippy. Follow existing workspace lint rules; do not silence warnings globally.
 - Use pnpm for JavaScript and TypeScript workspaces, Oxlint for linting, Oxfmt for formatting, and the project's shared TypeScript configurations.
 - Do not introduce ESLint, Prettier, a second package manager, or a new task orchestrator without an explicit requirement.
+- Give code breathing room: use blank lines between declarations, methods, test cases, and logical steps within functions. Keep closely related statements grouped, and keep documentation comments attached to the declarations they describe. Avoid dense blocks of code with no visual separation; preserve this spacing when formatting.
 - Keep TypeScript interfaces strict and avoid untyped escape hatches where practical.
 - Expose a small public API. Document important invariants, units, lifetimes, ownership, input formats, and failure cases.
 - Never change generated bindings or generated files manually when a source-of-truth generator exists.

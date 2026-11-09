@@ -4,15 +4,20 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
+
 const require = createRequire(import.meta.url);
+
 it('packs generated declarations and imports from a separate TypeScript consumer', () => {
   const dir = mkdtempSync(join(tmpdir(), 'remedia-host-consumer-'));
+
   try {
     execFileSync('pnpm', ['pack', '--out', join(dir, 'host.tgz')], {
       cwd: resolve('.'),
       stdio: 'pipe',
     });
+
     const pkg = join(dir, 'node_modules/@remedia/plugin-host');
+
     mkdirSync(pkg, { recursive: true });
     execFileSync('tar', ['-xzf', join(dir, 'host.tgz'), '--strip-components=1', '-C', pkg]);
     mkdirSync(join(dir, 'node_modules/@types'), { recursive: true });
@@ -20,6 +25,7 @@ it('packs generated declarations and imports from a separate TypeScript consumer
       dirname(require.resolve('@types/node/package.json')),
       join(dir, 'node_modules/@types/node'),
     );
+
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ type: 'module' }));
     writeFileSync(
       join(dir, 'consumer.ts'),
@@ -42,6 +48,7 @@ createNodeMiddleware(host);
 void result;
 `,
     );
+
     for (const moduleKind of ['NodeNext', 'ESNext']) {
       writeFileSync(
         join(dir, 'tsconfig.json'),
@@ -59,16 +66,19 @@ void result;
           include: ['consumer.ts'],
         }),
       );
+
       execFileSync(
         process.execPath,
         [require.resolve('typescript/bin/tsc'), '-p', join(dir, 'tsconfig.json')],
         { stdio: 'pipe' },
       );
     }
+
     writeFileSync(
       join(dir, 'runtime.mjs'),
       `import { createPluginHost } from '@remedia/plugin-host'; import { createNodeMiddleware } from '@remedia/plugin-host/node'; const h = createPluginHost({name:'x'}); if(typeof createNodeMiddleware(h)!=='function') throw Error('adapter'); await h.close();`,
     );
+
     execFileSync(process.execPath, [join(dir, 'runtime.mjs')], { stdio: 'pipe' });
     expect(readFileSync(join(pkg, 'dist/index.d.ts'), 'utf8')).toContain('class PluginHost');
   } finally {
