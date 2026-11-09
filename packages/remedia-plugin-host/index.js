@@ -4,6 +4,7 @@ import { Readable } from 'node:stream';
 const mediaPrefix = '/remedia/v1/media/';
 const executePath = '/remedia/v1/execute';
 const maxBody = 65536;
+const mediaSymbol = Symbol('remedia.media');
 
 function reply(value, status = 200) {
   return Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
@@ -47,6 +48,27 @@ async function readJSON(request) {
   return JSON.parse(new TextDecoder().decode(bytes));
 }
 
+/** Describe encoded media that should be opened only when consumed. */
+export function createMediaSource({ open, contentType = 'application/octet-stream' }) {
+  if (typeof open !== 'function') throw new TypeError('media source requires open()');
+  return Object.freeze({ [mediaSymbol]: true, open, contentType });
+}
+
+/** Identify a deferred media source. */
+export function isMediaSource(value) {
+  return Boolean(value && typeof value === 'object' && value[mediaSymbol] === true);
+}
+
+/** Typed dispatch error for direct and HTTP callers. */
+export class PluginHostError extends Error {
+  constructor(code, status = 500) {
+    super(code);
+    this.name = 'PluginHostError';
+    this.code = code;
+    this.status = status;
+  }
+}
+
 function isStream(value) {
   return value instanceof Readable || value instanceof ReadableStream;
 }
@@ -73,13 +95,17 @@ export class PluginHost {
   #token;
   #ttl;
   #maxTokens;
+  #closed = false;
 
   /** @param {{name: string, publicUrl: string, token?: string, mediaTtlMs?: number, maxMediaTokens?: number}} options Host settings. */
   constructor(options) {
     if (!options || typeof options.name !== 'string' || !options.name.trim()) throw new TypeError('name is required');
-    const url = new URL(options.publicUrl);
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
-      throw new TypeError('publicUrl must be an HTTP(S) origin without credentials');
+    let url;
+    if (options.publicUrl !== undefined) {
+      url = new URL(options.publicUrl);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
+        throw new TypeError('publicUrl must be an HTTP(S) origin without credentials');
+      }
     }
     if (options.token !== undefined && (typeof options.token !== 'string' || options.token.length < 16)) {
       throw new TypeError('token must have at least 16 characters');
@@ -91,7 +117,7 @@ export class PluginHost {
       throw new RangeError('maxMediaTokens must be positive');
     }
     this.#name = options.name;
-    this.#origin = url.origin;
+    this.#origin = url?.origin;
     this.#token = options.token;
     this.#ttl = options.mediaTtlMs ?? 60000;
     this.#maxTokens = options.maxMediaTokens ?? 1024;
@@ -104,11 +130,65 @@ export class PluginHost {
     if (!validId(plugin?.id) || !isRecord(plugin.operations) || !Object.keys(plugin.operations).length) {
       throw new TypeError('plugin requires id and operations');
     }
+    if (this.#closed) throw new PluginHostError('host_closed', 503);
     if (this.#plugins.has(plugin.id)) throw new Error('Duplicate plugin ID: ' + plugin.id);
     for (const [operation, handler] of Object.entries(plugin.operations)) {
       if (!validId(operation) || typeof handler !== 'function') throw new TypeError('invalid operation handler');
     }
-    this.#plugins.set(plugin.id, plugin);
+    this.#plugins.set(plugin.id, { ...plugin, controller: new AbortController() });
+  }
+
+  /** Execute a registered operation without HTTP or JSON serialization.
+   * @param {string} pluginId Registered plugin identifier.
+   * @param {string} operation Operation name.
+   * @param {unknown} input Unmodified operation input.
+   * @param {{signal?: AbortSignal}} options Caller cancellation.
+   * @returns {Promise<{handled: boolean, result?: unknown}>} Raw result.
+   */
+  async execute(pluginId, operation, input, options = {}) {
+    if (this.#closed) throw new PluginHostError('host_closed', 503);
+    if (!validId(pluginId) || !validId(operation)) throw new PluginHostError('invalid_request', 400);
+    const plugin = this.#plugins.get(pluginId);
+    if (!plugin) throw new PluginHostError('plugin_not_found', 404);
+    const handler = Object.hasOwn(plugin.operations, operation) ? plugin.operations[operation] : undefined;
+    if (typeof handler !== 'function') throw new PluginHostError('operation_not_found', 404);
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, plugin.controller.signal])
+      : plugin.controller.signal;
+    signal.throwIfAborted();
+    const result = await handler(input, { signal });
+    if (signal.aborted) {
+      if (isStream(result)) await destroyStream(result);
+      throw signal.reason;
+    }
+    return result === undefined ? { handled: false } : { handled: true, result };
+  }
+
+  /** Obtain JSON-safe host discovery metadata without making an HTTP request. */
+  manifest() {
+    return {
+      name: this.#name,
+      protocolVersion: 1,
+      endpoints: { execute: executePath, media: mediaPrefix + '{token}' },
+      plugins: [...this.#plugins.values()].map((plugin) => ({
+        id: plugin.id,
+        operations: Object.keys(plugin.operations),
+      })),
+    };
+  }
+
+  /** Check whether an HTTP path belongs to the plugin host. */
+  matches(path) {
+    return path === '/.well-known/remedia' || path === executePath || path.startsWith(mediaPrefix);
+  }
+
+  /** Close the host and dispose all registrations. */
+  async close() {
+    if (this.#closed) return;
+    this.#closed = true;
+    const results = await Promise.allSettled([...this.#plugins.keys()].map((id) => this.unregister(id)));
+    const failures = results.filter((item) => item.status === 'rejected');
+    if (failures.length) throw new AggregateError(failures.map((item) => item.reason), 'plugin cleanup failed');
   }
 
   /** Remove a registration and any unclaimed media it owns.
@@ -119,6 +199,7 @@ export class PluginHost {
     const plugin = this.#plugins.get(id);
     if (!plugin) return false;
     this.#plugins.delete(id);
+    plugin.controller.abort(new Error('plugin_unregistered'));
     for (const [token, entry] of this.#media) {
       if (entry.pluginId !== id) continue;
       clearTimeout(entry.timer);
@@ -135,17 +216,10 @@ export class PluginHost {
    */
   async fetch(request) {
     const path = new URL(request.url).pathname;
+    if (this.#closed) return fail('host_closed', 503);
     if (path === '/.well-known/remedia') {
       if (request.method !== 'GET') return fail('method_not_allowed', 405);
-      return reply({
-        name: this.#name,
-        protocolVersion: 1,
-        endpoints: { execute: executePath, media: mediaPrefix + '{token}' },
-        plugins: [...this.#plugins.values()].map((plugin) => ({
-          id: plugin.id,
-          operations: Object.keys(plugin.operations),
-        })),
-      });
+      return reply(this.manifest());
     }
     if (path === executePath) {
       if (request.method !== 'POST') return fail('method_not_allowed', 405);
@@ -161,27 +235,16 @@ export class PluginHost {
       if (!isRecord(body) || !validId(body.pluginId) || !validId(body.operation) || !Object.hasOwn(body, 'input')) {
         return fail('invalid_request', 400);
       }
-      const plugin = this.#plugins.get(body.pluginId);
-      if (!plugin) return fail('plugin_not_found', 404);
-      const handler = Object.hasOwn(plugin.operations, body.operation) ? plugin.operations[body.operation] : undefined;
-      if (!handler) return fail('operation_not_found', 404);
       try {
-        const result = await handler(body.input, { signal: request.signal });
-        if (request.signal.aborted) {
-          if (isStream(result)) await destroyStream(result);
-          return fail('cancelled', 499);
+        const outcome = await this.execute(body.pluginId, body.operation, body.input, { signal: request.signal });
+        if (!outcome.handled) return reply({ handled: false });
+        if (isStream(outcome.result) || isMediaSource(outcome.result)) {
+          return reply({ handled: true, result: this.#grant(body.pluginId, outcome.result) });
         }
-        if (isStream(result)) {
-          if (body.operation !== 'track.stream') {
-            await destroyStream(result);
-            return fail('invalid_operation_result', 502);
-          }
-          return reply({ handled: true, result: this.#grant(body.pluginId, result) });
-        }
-        if (result === undefined) return reply({ handled: false });
-        return reply({ handled: true, result });
-      } catch {
-        return fail('plugin_failed', 502);
+        return reply({ handled: true, result: outcome.result });
+      } catch (cause) {
+        if (cause instanceof PluginHostError) return fail(cause.code, cause.status);
+        return fail(request.signal.aborted ? 'cancelled' : 'plugin_failed', request.signal.aborted ? 499 : 502);
       }
     }
     if (path.startsWith(mediaPrefix)) {
@@ -198,18 +261,29 @@ export class PluginHost {
       }
       this.#media.delete(token);
       clearTimeout(entry.timer);
-      const stream = entry.stream instanceof Readable ? Readable.toWeb(entry.stream) : entry.stream;
+      let value;
+      try {
+        value = isMediaSource(entry.stream) ? await entry.stream.open({ signal: request.signal }) : entry.stream;
+        if (!isStream(value)) return fail('invalid_media_source', 502);
+      } catch {
+        return fail('plugin_failed', 502);
+      }
+      const stream = value instanceof Readable ? Readable.toWeb(value) : value;
       request.signal.addEventListener('abort', () => {
         void stream.cancel().catch(() => undefined);
       }, { once: true });
       return new Response(stream, {
-        headers: { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' },
+        headers: { 'content-type': entry.stream.contentType ?? 'application/octet-stream', 'cache-control': 'no-store' },
       });
     }
     return fail('not_found', 404);
   }
 
   #grant(pluginId, stream) {
+    if (!this.#origin) {
+      if (isStream(stream)) void destroyStream(stream);
+      throw new PluginHostError('public_url_required', 500);
+    }
     if (this.#media.size >= this.#maxTokens) {
       void destroyStream(stream);
       throw new RangeError('media_token_limit');
