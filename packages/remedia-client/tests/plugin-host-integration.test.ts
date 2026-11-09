@@ -710,7 +710,10 @@ describe('Rust server with generic plugin hosts', () => {
 
     await node.createGuild(guildId, { enabled: true, durationMs: 1000 });
 
-    const current = await node.play(guildId, op('host-a', { track: 'wav', seconds: 60 }));
+    // Decoding runs faster than real time into a null output; hold the source open so staging stays valid.
+    const current = await node.play(guildId, op('host-a', { track: 'wav', seconds: 3600 }));
+
+    await node.control(guildId, 'player.pause');
     const stage = (
       entryId: string,
       queueRevision: number,
