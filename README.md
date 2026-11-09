@@ -18,8 +18,9 @@ sources, platform metadata, and their existing Discord Gateway connection.
 | [`remedia-discord`](crates/remedia-discord)  | Discord voice transport, encryption, and packet scheduling                      |
 
 Embedded execution does not run a local server. Remote execution does not accept byte uploads or
-client-owned Readables. Remedia does not extract sources, host source plugins, or implement the
-Lavalink API.
+client-owned Readables. Applications provide source integrations. The independent [`@remedia/plugin-host`](packages/remedia-plugin-host)
+package supplies generic direct dispatch and optional HTTP media delivery; Rust server plugin playback
+integration is not implemented. Remedia does not implement the Lavalink API.
 
 ## Installation
 

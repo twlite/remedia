@@ -191,6 +191,7 @@ jobs:
         if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
         if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
+      - run: pnpm --filter @remedia/plugin-host test
       - run: pnpm --filter @remedia/client test
       - run: pnpm --filter discord-app test
       - run: pnpm test:ci

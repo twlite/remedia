@@ -202,7 +202,6 @@ export default function HomePage() {
 
       <footer className={styles.footer}>
         <p>Native audio processing for Discord applications and custom voice clients.</p>
-
       </footer>
     </div>
   );

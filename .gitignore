@@ -33,3 +33,7 @@ packages/remedia-client/LICENSE
 packages/remedia-client/THIRD_PARTY_NOTICES.md
 packages/remedia-node/THIRD_PARTY_LICENSES.txt
 packages/remedia-client/THIRD_PARTY_LICENSES.txt
+
+packages/remedia-plugin-host/LICENSE
+packages/remedia-plugin-host/THIRD_PARTY_NOTICES.md
+packages/remedia-plugin-host/THIRD_PARTY_LICENSES.txt

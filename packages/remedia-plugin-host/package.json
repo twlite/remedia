@@ -1,25 +1,41 @@
 {
   "name": "@remedia/plugin-host",
   "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "license": "MIT",
   "description": "Generic plugin operation host with direct requests and optional HTTP protocol",
+  "license": "MIT",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "THIRD_PARTY_LICENSES.txt"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./index.d.ts",
-      "import": "./index.js"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     },
     "./node": {
-      "types": "./node.d.ts",
-      "import": "./node.js"
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js"
     }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "pnpm build && vitest run",
+    "test:watch": "vitest",
+    "prepack": "pnpm build && node ../../.github/scripts/stage-licenses.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "~5.9.3",
+    "vitest": "^5.0.5"
   },
   "engines": {
     "node": ">=22.18.0"
-  },
-  "scripts": {
-    "test": "node --test test/*.test.js",
-    "typecheck": "node --check index.js && node --check node.js"
   }
 }
