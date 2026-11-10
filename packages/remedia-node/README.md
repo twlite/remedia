@@ -34,18 +34,32 @@ Requires Node.js **22.18.0 or newer** (ESM).
 npm install @remedia/node
 ```
 
-Install FFmpeg 9 shared libraries separately before importing the package. npm does not install
-FFmpeg or compile the addon. Required ABI majors are avcodec 63, avformat 63, avutil 61,
-avfilter 12, and swresample 7. libopus is statically included; FFmpeg is dynamically linked.
+Install FFmpeg 9 shared libraries separately on the Node.js host. npm does not install FFmpeg, and
+importing the package never downloads anything. The Remedia installer provisions FFmpeg 9.0.2 only
+(no server) into `~/.remedia/ffmpeg9`, which the package finds automatically:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.sh | sh -s -- --ffmpeg-only
+```
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.ps1))) -FFmpegOnly
+```
+
+No `LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, `PATH` change, or launcher is needed. Discovery order:
+`REMEDIA_FFMPEG_DIR` (an explicit override that is never silently replaced), an existing system
+FFmpeg 9, then `~/.remedia/ffmpeg9`. Required ABI majors are avcodec 63, avformat 63, avutil 61,
+avfilter 12, and swresample 7. `getFfmpegRuntime()` reports which installation was loaded, and a
+failed import lists the paths considered. libopus is statically included; FFmpeg is dynamically linked.
+FFmpeg is needed on the Node.js host in embedded mode; in remote mode it is needed on the
+`remedia-server` host instead.
 
 Native runtime CI covers Linux x64/ARM64 glibc, macOS x64/ARM64, Windows x64 MSVC, and
 FreeBSD x64. Additional build-only packages cover Linux x64/ARM64 musl, Linux ARMv7 hard-float GNU,
 Windows x86/ARM64 MSVC, and Android ARM64/ARMv7 (API 24). Build-only targets have no native runtime
 integration coverage. See the [distribution guide](https://github.com/twlite/remedia/blob/main/apps/docs/content/docs/node/distribution.mdx)
-for verification limits and library discovery: `LD_LIBRARY_PATH` on Linux/FreeBSD,
-`DYLD_LIBRARY_PATH` on macOS, and DLL directories on `PATH` on Windows. For load errors, check
-matching architecture/ABI, transitive FFmpeg dependencies, and that optional npm dependencies were
-installed. Windows also needs the Visual C++ v14 runtime.
+and [native library troubleshooting](https://github.com/twlite/remedia/blob/main/apps/docs/content/docs/node/troubleshooting.mdx)
+for verification limits and load errors. Windows also needs the Visual C++ v14 runtime.
 
 ```js
 import { Remedia } from '@remedia/node';

@@ -22,6 +22,8 @@ struct RuntimeCli {
     optional_env_files: Vec<PathBuf>,
     #[arg(long)]
     doctor: bool,
+    #[arg(long)]
+    shutdown_on_stdin_close: bool,
 }
 
 #[tokio::main]
@@ -56,7 +58,21 @@ async fn run(cli: RuntimeCli) -> Result<(), Box<dyn std::error::Error>> {
         "remedia-server listening on {} (WebSocket /v1/ws)",
         server.local_addr()
     );
-    let signal = shutdown_signal().await;
+    let signal = if cli.shutdown_on_stdin_close {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        // A dedicated thread avoids an uncancellable Tokio blocking stdin task keeping the
+        // async runtime alive when shutdown is instead triggered by an OS signal.
+        std::thread::spawn(move || {
+            let result = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+            let _ = sender.send(result.map(|_| ()));
+        });
+        tokio::select! {
+            result = shutdown_signal() => result,
+            result = receiver => result.map_err(std::io::Error::other)?,
+        }
+    } else {
+        shutdown_signal().await
+    };
     drop(instance);
     let shutdown = server.shutdown().await;
     signal?;

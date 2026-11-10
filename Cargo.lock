@@ -2770,6 +2770,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "remedia-node-bootstrap"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "remedia-observability"
 version = "0.1.0"
 dependencies = [

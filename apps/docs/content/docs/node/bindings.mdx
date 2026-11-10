@@ -42,11 +42,93 @@ The test command builds a debug addon and runs local Node integration tests.
 `build` creates the release addon and TypeScript declarations. The N-API loader
 and native declarations are generated from Rust source by `@napi-rs/cli`.
 
+Both scripts also build the FFmpeg-free **bootstrap** addon (`bootstrap/` crate,
+output `bootstrap.<platform>.node`) and, on macOS, rewrite the engine addon's FFmpeg
+install names to `@rpath` (`.github/scripts/normalize-macos-addon.mjs`) so that FFmpeg
+discovery can choose the installation at run time. `FFMPEG_DIR` and `PKG_CONFIG_PATH`
+select the FFmpeg you compile **against**; they are not used when the package runs. If
+`pkg-config` finds more than one FFmpeg (for example Homebrew's `ffmpeg` and
+`ffmpeg@7`), set them explicitly so the addon links FFmpeg 9.
+
 Windows builds use the dynamic MSVC CRT to match bundled Opus's CMake defaults;
 Opus itself remains statically linked. A Windows runtime machine needs a
 compatible Microsoft Visual C++ v14 runtime if it is not already installed.
 The N-API package does not bundle that runtime or guarantee static CRT
 linkage. FFmpeg's DLLs remain separate runtime dependencies.
+
+## FFmpeg discovery and diagnostics
+
+The addon needs FFmpeg 9 shared libraries on the Node.js host. Install them once with the
+[FFmpeg-only installer](/docs/node/ffmpeg-9#install-ffmpeg-with-the-remedia-installer);
+`import '@remedia/node'` then finds `~/.remedia/ffmpeg9` without `LD_LIBRARY_PATH`,
+`DYLD_LIBRARY_PATH`, a `PATH` change, or a launcher. The package never downloads or installs
+anything when it is imported.
+
+Selection happens during module evaluation, before the native engine loads, in this order:
+`REMEDIA_FFMPEG_DIR`, an existing system installation, then `~/.remedia/ffmpeg9` (under the home
+directory of the user running the process). An explicit `REMEDIA_FFMPEG_DIR` that cannot be
+loaded is an error and never falls back. Only an installation whose five libraries are all FFmpeg 9
+ABI majors (63, 63, 61, 12, 7), match the process CPU, resolve their own dependencies and come from
+one directory is accepted.
+
+```ts
+import { FfmpegLoadError, getFfmpegRuntime } from '@remedia/node';
+
+const runtime = getFfmpegRuntime();
+
+console.log(runtime.source); // 'explicit' | 'system' | 'managed' | 'unmanaged'
+console.log(runtime.directory);
+console.log(runtime.libraries.map(({ name, version }) => `${name} ${version}`));
+```
+
+### `getFfmpegRuntime()`
+
+```ts
+function getFfmpegRuntime(): FfmpegRuntimeInfo;
+```
+
+Returns the installation that was loaded. It does not search, load or download anything, so it
+is cheap and safe to call at any time after the package is imported, and it is independent of
+Discord, playback and the standalone server. It is only ever populated after the engine addon has
+actually loaded against the libraries.
+
+| Field        | Type                                                 | Description                                                                                                    |
+| ------------ | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `source`     | `'explicit' \| 'system' \| 'managed' \| 'unmanaged'` | How the installation was found. `unmanaged` means the platform has no bootstrap and the OS loader chose.       |
+| `directory`  | `string \| null`                                     | Directory holding the loaded libraries; `null` when `unmanaged`.                                               |
+| `libraries`  | `readonly FfmpegLibraryInfo[]`                       | The five loaded libraries (`name`, `path`, `version` as `major.minor.micro`, `major`); empty when `unmanaged`. |
+| `considered` | `readonly FfmpegCandidateReport[]`                   | Every candidate examined in order (`source`, `directory`, `outcome`, optional `reason` and `detail`).          |
+
+### `FfmpegLoadError`
+
+Importing `@remedia/node` rejects with an `FfmpegLoadError` (an `Error` subclass with a `candidates`
+array of `FfmpegCandidateReport`) when no compatible installation can be loaded or an explicit
+`REMEDIA_FFMPEG_DIR` is unusable. Its message lists every considered path, the classified reason
+(`not-found`, `missing-libraries`, `abi-mismatch`, `architecture-mismatch`, `unresolved-dependency`,
+`mixed-installations`, `load-failed`), the installer command for the current OS, and how to set
+`REMEDIA_FFMPEG_DIR`. Because the failure is raised while the module loads, catch it around a dynamic
+import if you want to present your own message:
+
+```ts
+try {
+  const { Remedia } = await import('@remedia/node');
+  await Remedia.create();
+} catch (error) {
+  if (error instanceof Error && error.name === 'FfmpegLoadError') {
+    console.error(error.message); // paths considered, reasons, install instructions
+  }
+  throw error;
+}
+```
+
+With `@remedia/client`, an embedded node reports this error when it loads `@remedia/node`; remote
+nodes never need FFmpeg on the client. See [native library troubleshooting](/docs/node/troubleshooting)
+for causes and fixes, and for how the bootstrap loads libraries on each operating system.
+
+| Environment variable          | Effect                                                                                                      |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `REMEDIA_FFMPEG_DIR`          | Use this FFmpeg 9 prefix (or its library directory). Takes precedence; failure is an error, not a fallback. |
+| `NAPI_RS_NATIVE_LIBRARY_PATH` | Unchanged napi-rs override for the engine addon path. FFmpeg discovery still runs first.                    |
 
 ## Create and close an instance
 

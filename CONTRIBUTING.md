@@ -161,6 +161,28 @@ CI entry point after downloading a target artifact. Add tests under
 `packages/remedia-node/tests/` and split them by behavior; `typecheck` checks both library and test
 TypeScript. The package keeps Rust code in `src/`, TypeScript library code in `lib/`, and generated
 TypeScript output in `dist/`.
+
+#### FFmpeg loading in `@remedia/node`
+
+The engine addon links FFmpeg dynamically, so the operating system resolves FFmpeg before any of
+its code runs. `packages/remedia-node/bootstrap/` is a second, tiny N-API crate with **no FFmpeg
+dependency**. `lib/native-binding.ts` loads `bootstrap.<platform>.node`, asks
+`lib/ffmpeg-runtime.ts` to pick an installation (`REMEDIA_FFMPEG_DIR`, then system, then
+`~/.remedia/ffmpeg9`), has the bootstrap open its five libraries by absolute path, and only then
+imports the napi-rs generated `native.js`. Do not edit `native.js`; the sequencing lives in
+maintained code. `pnpm --filter @remedia/node build:native[:debug]` builds the engine, rewrites its
+FFmpeg install names to `@rpath` on macOS (`.github/scripts/normalize-macos-addon.mjs`; dyld will
+not substitute a different file for an absolute install name, and re-signs are required on arm64),
+and builds the bootstrap (`.github/scripts/build-bootstrap.mjs`, which accepts `--target` and
+`--cross-compile`). If you call `napi build` yourself on macOS, run the normalize script
+afterwards. `FFMPEG_DIR`/`PKG_CONFIG_PATH` choose what you compile against; make them explicit when
+more than one FFmpeg is installed. The unit tests in `tests/ffmpeg-runtime.test.ts` need no FFmpeg;
+`tests/fresh-process.test.ts` spawns a Node process with all loader variables removed and skips
+itself where no FFmpeg is reachable without them (set `REMEDIA_REQUIRE_FRESH_PROCESS=1` to make that
+a failure, `REMEDIA_TEST_HOME` to choose the home directory, and `REMEDIA_EXPECT_FFMPEG_SOURCE` to
+assert the selected source). `.github/scripts/smoke-packed-package.mjs <target>` repeats the check
+against the packed npm tarballs, and `.github/scripts/installer.test.mjs` tests both installers
+with a fake micromamba (`pnpm test:release`).
 The Discord harness runs TypeScript directly with `tsx`; its `typecheck` script uses `tsc --noEmit`,
 and its local queue tests run with Node's built-in test runner. To start the bot, run
 `pnpm --filter discord-app start`. This builds the native Node package first and reads

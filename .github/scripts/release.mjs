@@ -315,11 +315,22 @@ function readTarManifest(tarball) {
   return JSON.parse(manifestJson);
 }
 
+/**
+ * File name of the FFmpeg-free bootstrap addon that accompanies an engine addon
+ * (`node.<suffix>.node` -> `bootstrap.<suffix>.node`).
+ */
+export function bootstrapFileName(engineFileName) {
+  if (!/^node\..+\.node$/.test(engineFileName)) {
+    throw new Error('Unexpected N-API engine addon name: ' + engineFileName);
+  }
+  return 'bootstrap.' + engineFileName.slice('node.'.length);
+}
+
 export function assertTarContents(tarball, manifest, kind) {
   const entries = execFileSync('tar', ['-tzf', tarball], { encoding: 'utf8' }).trim().split('\n');
   const required =
     kind === 'platform'
-      ? ['package/' + manifest.main]
+      ? ['package/' + manifest.main, 'package/' + bootstrapFileName(manifest.main)]
       : kind === 'node'
         ? [
             'package/dist/index.js',
@@ -379,6 +390,7 @@ export function verifyReleaseArtifacts(bindingsDirectory, serversDirectory) {
   }
   for (const target of RELEASE_TARGETS) {
     const addon = join(bindingsDirectory, 'node.' + target.suffix + '.node');
+    const bootstrap = join(bindingsDirectory, bootstrapFileName('node.' + target.suffix + '.node'));
     const server =
       target.server === false
         ? undefined
@@ -388,13 +400,13 @@ export function verifyReleaseArtifacts(bindingsDirectory, serversDirectory) {
         ? undefined
         : join(serversDirectory, 'remedia-server-runtime-' + target.triple) +
           (target.extension ?? '');
-    for (const required of [addon, ...(server ? [server, serverRuntime] : [])]) {
+    for (const required of [addon, bootstrap, ...(server ? [server, serverRuntime] : [])]) {
       if (!existsSync(required))
         throw new Error('Required verified release artifact is missing: ' + required);
       if (readFileSync(required).byteLength === 0)
         throw new Error('Release artifact is empty: ' + required);
     }
-    artifacts.push({ ...target, addon, ...(server ? { server, serverRuntime } : {}) });
+    artifacts.push({ ...target, addon, bootstrap, ...(server ? { server, serverRuntime } : {}) });
   }
   return artifacts;
 }
@@ -495,10 +507,15 @@ export function packRelease(
     stageReleaseLicenses(directory, workspaceRoot);
     const platformManifestPath = join(directory, 'package.json');
     const platformManifest = JSON.parse(readFileSync(platformManifestPath, 'utf8'));
+    // The bootstrap loads before the FFmpeg-linked engine addon and selects the FFmpeg runtime,
+    // so it ships in the same platform package, next to the engine addon it belongs to.
+    const bootstrapFile = bootstrapFileName(platformManifest.main);
+    copyFileSync(target.bootstrap, join(directory, bootstrapFile));
     platformManifest.license = 'MIT';
     platformManifest.files = [
       ...new Set([
         ...(platformManifest.files ?? [platformManifest.main]),
+        bootstrapFile,
         'LICENSE',
         'THIRD_PARTY_NOTICES.md',
         'THIRD_PARTY_LICENSES.txt',

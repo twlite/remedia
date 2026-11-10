@@ -1,5 +1,5 @@
 import { RemediaEventEmitter } from './events.js';
-import { NativeRemedia } from '../native.js';
+import { NativeRemedia } from './native-binding.js';
 import type { NativeMediaSource, NativeCrossfadeEvent, NativeStageSnapshot } from '../native.js';
 import {
   createReadableInput,

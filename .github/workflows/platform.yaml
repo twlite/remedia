@@ -157,6 +157,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - name: Test the installers and macOS install-name rewriting
+        run: node --test .github/scripts/installer.test.mjs .github/scripts/normalize-macos-addon.test.mjs
       - name: Verify FFmpeg 9 native dependencies (Linux)
         if: inputs.os == 'linux'
         shell: micromamba-shell {0}
@@ -233,6 +235,14 @@ jobs:
         env:
           RUST_TARGET: ${{ inputs.target }}
         run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target $env:RUST_TARGET
+      - name: Rewrite macOS FFmpeg install names to @rpath
+        if: inputs.os == 'macos'
+        run: node .github/scripts/normalize-macos-addon.mjs
+      - name: Build FFmpeg-free bootstrap addon
+        shell: bash
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: node .github/scripts/build-bootstrap.mjs --target "$RUST_TARGET"
       - name: Stage standalone server binary
         if: inputs.os != 'windows'
         shell: bash
@@ -258,6 +268,7 @@ jobs:
           name: bindings-${{ inputs.target }}
           path: |
             packages/remedia-node/node.*.node
+            packages/remedia-node/bootstrap.*.node
             packages/remedia-node/native.js
             packages/remedia-node/native.d.ts
           if-no-files-found: error
@@ -627,12 +638,24 @@ jobs:
         env:
           RUST_TARGET: ${{ inputs.target }}
         run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target $env:RUST_TARGET
+      - name: Build FFmpeg-free bootstrap addon for distribution
+        if: inputs.os != 'freebsd'
+        shell: bash
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: |
+          case "$RUST_TARGET" in
+            *-musl) node .github/scripts/build-bootstrap.mjs --target "$RUST_TARGET" --cross-compile ;;
+            *) node .github/scripts/build-bootstrap.mjs --target "$RUST_TARGET" ;;
+          esac
       - name: Upload cross-built native bindings for npm
         if: inputs.os != 'freebsd'
         uses: actions/upload-artifact@v7
         with:
           name: bindings-${{ inputs.target }}
-          path: packages/remedia-node/node.*.node
+          path: |
+            packages/remedia-node/node.*.node
+            packages/remedia-node/bootstrap.*.node
           if-no-files-found: error
           retention-days: 7
       - name: Start FreeBSD 15.1 native VM
@@ -693,6 +716,7 @@ jobs:
           cargo test --workspace --release --locked
           cargo build --release --locked -p remedia-server --bins
           pnpm --filter @remedia/node exec napi build --platform --esm --js native.js --dts native.d.ts --release --target x86_64-unknown-freebsd
+          node .github/scripts/build-bootstrap.mjs --target x86_64-unknown-freebsd
           pnpm --filter @remedia/node build:types
           pnpm --filter @remedia/client build
           pnpm --filter @remedia/node test:bindings
@@ -704,6 +728,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: bindings-${{ inputs.target }}
-          path: packages/remedia-node/node.freebsd-x64.node
+          path: |
+            packages/remedia-node/node.freebsd-x64.node
+            packages/remedia-node/bootstrap.freebsd-x64.node
           if-no-files-found: error
           retention-days: 7

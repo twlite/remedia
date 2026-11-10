@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
   assertPackedManifest,
   assertTarContents,
+  bootstrapFileName,
   packServerArchives,
   stageReleaseLicenses,
   detectRelease,
@@ -279,6 +280,7 @@ test('matches release server artifacts to the target-triple filenames staged by 
   writeFileSync(path.join(bindings, 'native.d.ts'), 'declarations');
   for (const target of RELEASE_TARGETS) {
     writeFileSync(path.join(bindings, 'node.' + target.suffix + '.node'), 'addon');
+    writeFileSync(path.join(bindings, 'bootstrap.' + target.suffix + '.node'), 'bootstrap');
     if (target.server !== false) {
       writeFileSync(
         path.join(servers, 'remedia-server-' + target.triple + (target.extension ?? '')),
@@ -334,6 +336,20 @@ test('matches release server artifacts to the target-triple filenames staged by 
       () => verifyReleaseArtifacts(bindings, servers),
       /Required verified release artifact/,
     );
+    writeFileSync(path.join(bindings, 'node.' + addonOnlyTarget.suffix + '.node'), 'addon');
+
+    // Every platform package needs the FFmpeg-free bootstrap next to its engine addon.
+    for (const target of RELEASE_TARGETS) {
+      const bootstrap = path.join(bindings, 'bootstrap.' + target.suffix + '.node');
+      rmSync(bootstrap);
+      assert.throws(
+        () => verifyReleaseArtifacts(bindings, servers),
+        new RegExp('Required verified release artifact is missing: .*bootstrap\\.' + target.suffix),
+      );
+      writeFileSync(bootstrap, '');
+      assert.throws(() => verifyReleaseArtifacts(bindings, servers), /Release artifact is empty/);
+      writeFileSync(bootstrap, 'bootstrap');
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -529,6 +545,7 @@ test('platform tarballs require all exact license files, including negative case
     const manifest = { name: '@remedia/node-darwin-arm64', main: 'node.darwin-arm64.node' };
     writeFileSync(path.join(fixture, 'package.json'), JSON.stringify(manifest));
     writeFileSync(path.join(fixture, manifest.main), 'packaging fixture, not a native binary');
+    writeFileSync(path.join(fixture, 'bootstrap.darwin-arm64.node'), 'packaging fixture');
     stageReleaseLicenses(fixture);
     manifest.version = '0.1.0-beta.1';
     writeFileSync(path.join(fixture, 'package.json'), JSON.stringify(manifest));
@@ -540,6 +557,12 @@ test('platform tarballs require all exact license files, including negative case
       return path.join(directory, 'remedia-node-darwin-arm64-' + manifest.version + '.tgz');
     };
     assertTarContents(pack(), manifest, 'platform');
+    rmSync(path.join(fixture, 'bootstrap.darwin-arm64.node'));
+    assert.throws(
+      () => assertTarContents(pack(), manifest, 'platform'),
+      /missing required file package\/bootstrap\.darwin-arm64\.node/,
+    );
+    writeFileSync(path.join(fixture, 'bootstrap.darwin-arm64.node'), 'packaging fixture');
     rmSync(path.join(fixture, 'THIRD_PARTY_NOTICES.md'));
     assert.throws(() => assertTarContents(pack(), manifest, 'platform'), /missing required file/);
     stageReleaseLicenses(fixture);
@@ -548,4 +571,26 @@ test('platform tarballs require all exact license files, including negative case
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('derives the bootstrap file name from the engine addon file name', () => {
+  assert.equal(bootstrapFileName('node.linux-x64-gnu.node'), 'bootstrap.linux-x64-gnu.node');
+  assert.equal(bootstrapFileName('node.win32-x64-msvc.node'), 'bootstrap.win32-x64-msvc.node');
+  assert.throws(
+    () => bootstrapFileName('bootstrap.linux-x64-gnu.node'),
+    /Unexpected N-API engine addon name/,
+  );
+});
+
+test('the bootstrap napi config targets exactly the configured engine targets', () => {
+  const root = path.resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+  const engine = JSON.parse(
+    readFileSync(path.join(root, 'packages/remedia-node/package.json'), 'utf8'),
+  );
+  const bootstrap = JSON.parse(
+    readFileSync(path.join(root, 'packages/remedia-node/bootstrap/napi.json'), 'utf8'),
+  );
+
+  assert.deepEqual(bootstrap.targets, engine.napi.targets);
+  assert.equal(bootstrap.packageName, engine.napi.packageName);
 });

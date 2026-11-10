@@ -184,7 +184,10 @@ export class EmbeddedNodeAdapter implements NodeAdapter {
       this.#lastError = null;
     } catch (error) {
       this.#status = 'disconnected';
-      this.#lastError = 'embedded @remedia/node could not be loaded';
+      // The native package explains FFmpeg and addon load failures (paths considered, ABI
+      // mismatches, install commands); keep that text visible rather than only in `cause`.
+      const reason = error instanceof Error && error.message ? `: ${error.message}` : '';
+      this.#lastError = `embedded @remedia/node could not be loaded${reason}`;
       throw new Error(this.#lastError, { cause: error });
     } finally {
       this.#onStatus({

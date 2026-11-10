@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { RemediaEventEmitter } from './events.js';
-import { NativeRemedia, type NativeVoiceOptions, type NativeVoiceSessionIds } from '../native.js';
+import type { NativeVoiceOptions, NativeVoiceSessionIds } from '../native.js';
+import { NativeRemedia } from './native-binding.js';
 import { DiscordGatewayAdapter, isSnowflake } from './gateway.js';
 import {
   PlaybackHooks,

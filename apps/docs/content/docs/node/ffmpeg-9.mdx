@@ -5,7 +5,65 @@ description: Install FFmpeg 9.0.2 runtime libraries with the ABI majors required
 
 Remedia's native engine uses **FFmpeg 9.0.2** headers and shared libraries. It dynamically links FFmpeg rather than bundling it inside the npm addon or standalone server. This is an **ABI-breaking update from FFmpeg 7**: replacing the executable alone is not enough, and older `.so`, `.dylib`, or `.dll` major versions will not satisfy the runtime loader.
 
-Remote-only `@remedia/client` installations do **not** need FFmpeg on the bot host. Install FFmpeg on the host running `remedia-server`. Embedded `@remedia/node` requires FFmpeg on the Node.js host.
+## Where FFmpeg must be installed
+
+| Deployment                                                        | FFmpeg required on                                       |
+| ----------------------------------------------------------------- | -------------------------------------------------------- |
+| **Embedded** (`@remedia/node` or `@remedia/client` embedded node) | The machine running **Node.js**                          |
+| **Remote** (`@remedia/client` with `remedia-server` nodes)        | The machine running **`remedia-server`**, not the client |
+
+A remote-only `@remedia/client` host needs neither FFmpeg nor the native addon.
+
+## Install FFmpeg with the Remedia installer
+
+The installer can provision only FFmpeg 9.0.2 and its shared dependencies into `~/.remedia/ffmpeg9` (through micromamba and conda-forge) without installing the Remedia server. `@remedia/node` finds that directory automatically, so no `LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, or `PATH` setup and no launcher script is needed.
+
+**Linux and macOS:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.sh | sh -s -- --ffmpeg-only
+```
+
+**Windows PowerShell:**
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.ps1))) -FFmpegOnly
+```
+
+`irm … | iex` cannot pass parameters to a script, so the script text is turned into a script block that receives `-FFmpegOnly`. To inspect the script first, save it with `irm … -OutFile install.ps1` and run `.\install.ps1 -FFmpegOnly`.
+
+Then install and run your application normally:
+
+```sh
+pnpm add @remedia/node
+node bot.js
+```
+
+`--ffmpeg-only` (Unix) and `-FFmpegOnly` (PowerShell) do the following:
+
+- Install or update FFmpeg 9.0.2 and verify the five required library ABI majors, reporting the install directory.
+- Skip the GitHub release lookup and the server archive download entirely, so they work even when no server release is published.
+- Create no server executables, `remedia` commands, wrappers, `bin/` or `libexec/` directories, and modify no shell profile or user `PATH`.
+- Leave any existing server installation under the same prefix untouched, and can be repeated safely to update or re-verify FFmpeg.
+
+| Mode                            | FFmpeg  | Server  |
+| ------------------------------- | ------- | ------- |
+| Default                         | Install | Install |
+| `--ffmpeg-only` / `-FFmpegOnly` | Install | Skip    |
+| `--no-ffmpeg` / `-NoFFmpeg`     | Skip    | Install |
+
+Combining `--ffmpeg-only` with `--no-ffmpeg` (or `-FFmpegOnly` with `-NoFFmpeg`) is rejected with an error, because nothing would be left to install. Set `REMEDIA_INSTALL_DIR` (Unix and PowerShell) or `-InstallDir` (PowerShell) to install under a prefix other than `~/.remedia`; the libraries then live in `<prefix>/ffmpeg9`. Supported installer platforms: Linux x64 / ARM64 with glibc, macOS Intel / Apple Silicon, and Windows x64.
+
+## How `@remedia/node` finds FFmpeg
+
+Importing `@remedia/node` selects and loads an FFmpeg installation before the native engine starts. Nothing is downloaded or installed, no environment variable is modified, and no system library directory is touched. The first usable installation in this order is used:
+
+1. **`REMEDIA_FFMPEG_DIR`**, when set. It names an installation prefix (for example `~/.remedia/ffmpeg9`) or its library directory (`lib` on Linux / macOS, `Library\bin` on Windows). If it cannot be loaded, the import fails; Remedia never falls back to another installation after an explicit override.
+2. **An existing system installation**: the directories your platform's loader would search. That includes `LD_LIBRARY_PATH` and the standard library directories on Linux and FreeBSD, `DYLD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH` and Homebrew's prefixes on macOS, and the Node.js directory plus `PATH` on Windows. The current directory is never searched.
+3. **The installer-managed prefix** `~/.remedia/ffmpeg9`, under the home directory of the user running the process.
+4. Otherwise, an `FfmpegLoadError` that lists every path considered and how to install FFmpeg.
+
+A candidate is accepted only when all five libraries are present at FFmpeg 9's ABI majors (the file names below **and** the version each library reports about itself), were built for the process's CPU architecture, resolve their own dependencies, and come from the **same directory**. A rejected candidate is closed again before the next is tried, so libraries from different installations are never mixed. See [native library troubleshooting](/docs/node/troubleshooting) for the failure reasons and the diagnostic API.
 
 ## Required library versions
 
@@ -21,7 +79,7 @@ These majors are confirmed against [FFmpeg 9.0.2](https://ffmpeg.org/download.ht
 
 ## Linux: glibc x64 and ARM64
 
-If the distribution supplies matching FFmpeg 9 shared libraries, install its FFmpeg package and development headers. Many LTS distributions still have older ABI majors. For predictable builds and CI parity, the repository uses pinned conda-forge packages:
+The installer above is the simplest runtime setup. If the distribution supplies matching FFmpeg 9 shared libraries, installing its FFmpeg package also works: `@remedia/node` finds libraries in the loader's standard directories without further configuration. Many LTS distributions still have older ABI majors. For predictable **builds** and CI parity, the repository uses pinned conda-forge packages:
 
 ```bash
 micromamba create -n remedia-ffmpeg9 -c conda-forge 'ffmpeg=9.0.2' 'pkg-config=0.29.2'
@@ -31,11 +89,11 @@ export PKG_CONFIG_PATH="$CONDA_PREFIX/lib/pkgconfig"
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
 ```
 
-Load the same environment before starting Node.js or `remedia-server`. The default loader search path differs across distributions; setting `FFMPEG_DIR` alone **does not** configure runtime library discovery. For system installations, use your loader's configured directories and `ldconfig` where appropriate.
+`FFMPEG_DIR` and `PKG_CONFIG_PATH` are **build** settings used when compiling Remedia from source. At runtime, `@remedia/node` also finds libraries listed in `LD_LIBRARY_PATH`, so this environment keeps working; it is no longer required when FFmpeg is installed with `--ffmpeg-only`. The standalone `remedia-server-runtime` binary, which is not started through `@remedia/node`, still relies on the loader's own search or on the `remedia` launcher.
 
 ## macOS: Intel and Apple Silicon
 
-Homebrew's unversioned `ffmpeg` formula is FFmpeg **9.0.2** as of November 2026 and is also known as `ffmpeg@9`. Check the installed ABI before launching:
+Homebrew's unversioned `ffmpeg` formula is FFmpeg **9.0.2** as of November 2026 and is also known as `ffmpeg@9`. `@remedia/node` finds Homebrew's `ffmpeg` formula under `/opt/homebrew` (Apple Silicon) or `/usr/local` (Intel) automatically. Check the installed ABI, and set the build variables when compiling from source:
 
 ```bash
 brew install ffmpeg pkg-config
@@ -45,7 +103,7 @@ export PKG_CONFIG_PATH="$ffmpeg_prefix/lib/pkgconfig"
 export DYLD_LIBRARY_PATH="$ffmpeg_prefix/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 ```
 
-On macOS, inspect the exact linked install names using `otool -L` if the addon still fails. Your Node.js architecture and FFmpeg library architecture must match. Some protected launch contexts ignore `DYLD_*` variables. Use compatible installed libraries and their original install paths in those cases.
+`DYLD_LIBRARY_PATH` is only needed for the standalone server runtime; the Node.js addon does not need it. The released macOS addon requests FFmpeg as `@rpath/libavcodec.63.dylib` (and so on) rather than a fixed Homebrew path, which is what lets `@remedia/node` choose between Homebrew, the managed prefix, or a `REMEDIA_FFMPEG_DIR` installation. Your Node.js architecture and FFmpeg library architecture must match. A custom FFmpeg build is usable if its install names are `@rpath/...` (as in conda-forge packages) or it is Homebrew's formula; a build whose libraries carry absolute install names elsewhere cannot be selected and is reported as an unresolved dependency.
 
 ## Windows: x64 MSVC
 
@@ -60,7 +118,7 @@ $env:FFMPEG_DIR = $ffmpegRoot
 $env:PKG_CONFIG_PATH = Join-Path $ffmpegRoot "lib\pkgconfig"
 ```
 
-Add the `Library\bin` directory to the environment of the **actual process** launching Remedia. Use the matching Microsoft Visual C++ Redistributable. FFmpeg-dependent DLLs must also be discoverable. Cross-built Windows x86 and ARM64 packages currently have build-only, not runtime, CI coverage.
+`@remedia/node` does **not** need `Library\bin` on `PATH`: it loads the five FFmpeg DLLs by absolute path and resolves their dependencies from their own directory, using Windows' `LOAD_LIBRARY_SEARCH_*` rules and without changing `PATH`. Directories already on `PATH` are still searched as a system installation. The standalone server runtime needs the `remedia.cmd` wrapper or a `PATH` containing `Library\bin`. Use the matching Microsoft Visual C++ Redistributable. Cross-built Windows x86 and ARM64 packages currently have build-only, not runtime, CI coverage.
 
 ## FreeBSD, musl, ARMv7, and Android
 
@@ -78,7 +136,7 @@ for library in libavcodec libavformat libavutil libavfilter libswresample; do
 done
 ```
 
-The major versions should be **63, 63, 61, 12, 7**, in that order. The runtime also requires each matching shared library file, not only `pkg-config` metadata. Inspect the compiled addon with `ldd` (Linux / FreeBSD), `otool -L` (macOS), or `dumpbin /DEPENDENTS` (Windows).
+The major versions should be **63, 63, 61, 12, 7**, in that order. The runtime also requires each matching shared library file, not only `pkg-config` metadata. Inspect the compiled addon with `ldd` (Linux / FreeBSD), `otool -L` (macOS), or `dumpbin /DEPENDENTS` (Windows). From Node.js, `getFfmpegRuntime()` reports the installation that was actually loaded; see the [Node.js bindings guide](/docs/node/bindings#ffmpeg-discovery-and-diagnostics).
 
 For the repository's exact build and runtime assertions, see [`verify-native-deps.mjs`](https://github.com/twlite/remedia/blob/main/.github/scripts/verify-native-deps.mjs). These checks run in CI for native build and test targets.
 
@@ -86,8 +144,8 @@ For the repository's exact build and runtime assertions, see [`verify-native-dep
 
 1. Install FFmpeg 9.0.2 shared libraries and their transitive dependencies alongside or in place of the old packages.
 2. Upgrade the matching `@remedia/node` native addon or `remedia-server` binary built against FFmpeg 9.
-3. Verify the ABI majors and correct loader paths on the **audio host** before restarting.
+3. Verify the ABI majors on the **audio host** before restarting (re-running the FFmpeg-only installer updates and re-verifies `~/.remedia/ffmpeg9`).
 4. Restart the application. Do not mix an FFmpeg 7-linked addon with FFmpeg 9 libraries.
 5. Test startup, probing, decoding, filtering, and Discord voice on your deployment platform.
 
-The native addon does not download FFmpeg during `npm install`; the application operator is responsible for installing and maintaining compatible shared libraries. See [package distribution](/docs/node/distribution) for platform coverage and [licensing](/docs/licensing) for redistribution implications.
+The native addon does not download FFmpeg during `npm install` or when imported; the application operator is responsible for installing and maintaining compatible shared libraries, for example with the installer above. See [package distribution](/docs/node/distribution) for platform coverage and [licensing](/docs/licensing) for redistribution implications.

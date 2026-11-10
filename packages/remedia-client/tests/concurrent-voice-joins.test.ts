@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { RemediaClient } from '../lib/client.js';
 import type { DiscordGatewayVoicePayload } from '../lib/types.js';
 import { FakeServerNode } from './helpers.js';
@@ -49,34 +49,71 @@ function gatewayResponder(
 describe('concurrent Discord voice joins', () => {
   it('connects five guilds concurrently even when voice handshake exceeds the ordinary RPC deadline', async () => {
     const server = await FakeServerNode.listen({ id: 'concurrent-voice-joins' });
-    server.voiceConnectGate = () => new Promise((resolve) => setTimeout(resolve, 150));
+    let release!: () => void;
+    let allHandshakesStarted!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      allHandshakesStarted = resolve;
+    });
+    let handshakes = 0;
+
+    server.voiceConnectGate = () => {
+      if (++handshakes === GUILDS.length) allHandshakesStarted();
+
+      return gate;
+    };
+
     const sent: DiscordGatewayVoicePayload[] = [];
     let receive: (packet: unknown) => void = () => undefined;
-    const client = await RemediaClient.create({
-      botUserId: BOT_ID,
-      nodes: [
-        {
-          id: 'remote-concurrent',
-          type: 'remote',
-          url: server.url,
-          auth: { username: 'bot', password: 'secret' },
-        },
-      ],
-      requestTimeoutMs: 100,
-      send: gatewayResponder((packet) => receive(packet), sent),
-    });
-    receive = (packet) => client.receive(packet);
+    let client: RemediaClient | undefined;
+
+    // Keep real socket I/O, but advance RPC deadlines only after every handshake is pending.
+    // A 100 ms wall-clock startup deadline can expire under parallel CI worker contention.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
     try {
+      client = await RemediaClient.create({
+        botUserId: BOT_ID,
+        nodes: [
+          {
+            id: 'remote-concurrent',
+            type: 'remote',
+            url: server.url,
+            auth: { username: 'bot', password: 'secret' },
+          },
+        ],
+        requestTimeoutMs: 100,
+        send: gatewayResponder((packet) => receive(packet), sent),
+      });
+      receive = (packet) => client!.receive(packet);
+      expect(client.nodes[0]?.status).toBe('healthy');
+
       const sessions = GUILDS.map(({ guildId, channelId }) =>
-        client.createDiscordSession({ guildId, channelId, userId: BOT_ID }),
+        client!.createDiscordSession({ guildId, channelId, userId: BOT_ID }),
       );
-      await Promise.all(sessions.map((session) => session.connect({ timeoutMs: 3_000 })));
+      const connecting = Promise.all(
+        sessions.map((session) => session.connect({ timeoutMs: 3_000 })),
+      );
+      // Observe rejections immediately while advancing timers; the assertion below still fails.
+      const outcome = connecting.then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+      await started;
+      await vi.advanceTimersByTimeAsync(101);
+      release();
+      expect(await outcome).toBeNull();
       expect(server.voiceConnectRequests).toBe(5);
       expect(sessions.every((session) => session.connectionState === 'connected')).toBe(true);
       expect(sent.filter((payload) => payload.d.channel_id !== null)).toHaveLength(5);
       expect(sent.some((payload) => payload.d.channel_id === null)).toBe(false);
     } finally {
-      await client.close();
+      release();
+      vi.useRealTimers();
+      await client?.close();
       await server.close();
     }
   });
