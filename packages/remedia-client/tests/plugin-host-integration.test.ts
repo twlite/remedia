@@ -971,13 +971,27 @@ describe('Rust server with generic plugin hosts', () => {
     await node.control(one, 'player.stop');
     expect(await first).toBe('cancelled');
 
-    // One active stream consumes the only stream permit; a second stream is refused.
-    // Long enough that the unpaced player cannot finish and release the stream permit early.
+    // Hold the first stream's permit through the second request. Null output is unpaced,
+    // so a long source alone does not keep the transfer alive across RPC scheduling delays.
     await node.play(one, op('host-tight', { track: 'wav', seconds: 3600 }));
+    await node.control(one, 'player.pause');
+    expect((await pluginStats('host-tight')).resources).toMatchObject({
+      pending: 0,
+      activeStreams: 1,
+    });
     expect(await codeOf(node.play(two, op('host-tight', { track: 'mp3' })))).toBe(
       'resource_exhausted',
     );
+    expect((await node.playerState(one)).state).toBe('paused');
     await stopAll(one);
+    await expect
+      .poll(async () => (await pluginStats('host-tight')).resources.activeStreams)
+      .toBe(0);
+
+    // Releasing the occupied permit allows the other guild to acquire it.
+    const recovered = await node.play(two, op('host-tight', { track: 'mp3' }));
+
+    await node.waitForCompletion(two, recovered.generation);
     await stopAll(two);
   });
 
