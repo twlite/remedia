@@ -42,3 +42,13 @@ buttons use those direct files.
 The homepage and documentation pages generate branded 1200 × 630 PNG images at build time.
 No external image service is required. `NEXT_PUBLIC_SITE_URL` must include the project path when
 one is configured, so both homepage and per-page Open Graph and Twitter images resolve correctly.
+
+## Installer downloads
+
+The canonical installer scripts live at `scripts/install.sh` and `scripts/install.ps1`
+in the repository root. The docs build copies them to the ignored
+`apps/docs/public/install.sh` and `apps/docs/public/install.ps1` before static export.
+GitHub Pages serves them at `https://remedia.twlite.dev/install.sh` and
+`https://remedia.twlite.dev/install.ps1`.
+
+Edit only the canonical scripts. Changes to either trigger a documentation deployment.

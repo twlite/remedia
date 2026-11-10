@@ -22,17 +22,17 @@ Choose the mode by where audio is processed: **remote mode** needs FFmpeg on the
 ## Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.ps1 | iex
+irm https://remedia.twlite.dev/install.ps1 | iex
 ```
 
 `irm … | iex` cannot pass parameters. To use an option such as `-FFmpegOnly` or `-NoFFmpeg`, run the downloaded script text as a script block:
 
 ```powershell
 # FFmpeg only (embedded @remedia/node): no server, no commands, no PATH change
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.ps1))) -FFmpegOnly
+& ([scriptblock]::Create((irm https://remedia.twlite.dev/install.ps1))) -FFmpegOnly
 
 # Server only, managing FFmpeg yourself
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.ps1))) -NoFFmpeg
+& ([scriptblock]::Create((irm https://remedia.twlite.dev/install.ps1))) -NoFFmpeg
 ```
 
 `-InstallDir <path>` (or `REMEDIA_INSTALL_DIR`) selects another prefix; paths with spaces are supported.
@@ -43,7 +43,7 @@ If the GitHub release archive returns an HTTP 504 in PowerShell, the installer a
 
 ```powershell
 $env:REMEDIA_ARCHIVE_PATH = "$HOME\Downloads\remedia-server-x86_64-pc-windows-msvc.tar.gz"
-irm https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.ps1 | iex
+irm https://remedia.twlite.dev/install.ps1 | iex
 Remove-Item Env:REMEDIA_ARCHIVE_PATH
 ```
 
@@ -52,13 +52,13 @@ The installer still retrieves release metadata and checks the local archive agai
 ## macOS and Linux
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.sh | sh
+curl -fsSL https://remedia.twlite.dev/install.sh | sh
 ```
 
 To install only FFmpeg for an embedded `@remedia/node` application, pass `--ffmpeg-only` through `sh -s --`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.sh | sh -s -- --ffmpeg-only
+curl -fsSL https://remedia.twlite.dev/install.sh | sh -s -- --ffmpeg-only
 ```
 
 Supported standalone targets: macOS Intel / Apple Silicon and Linux glibc x64 / ARM64. The script requires `curl`, `tar`, and a SHA-256 tool (`sha256sum` or `shasum`). It places `remedia` and `remedia-server` launchers in `~/.remedia/bin`. On Linux, a glibc-compatible host is required. The install script does not support Alpine/musl or FreeBSD server binaries.

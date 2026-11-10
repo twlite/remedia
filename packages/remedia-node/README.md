@@ -39,11 +39,11 @@ importing the package never downloads anything. The Remedia installer provisions
 (no server) into `~/.remedia/ffmpeg9`, which the package finds automatically:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.sh | sh -s -- --ffmpeg-only
+curl -fsSL https://remedia.twlite.dev/install.sh | sh -s -- --ffmpeg-only
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.ps1))) -FFmpegOnly
+& ([scriptblock]::Create((irm https://remedia.twlite.dev/install.ps1))) -FFmpegOnly
 ```
 
 No `LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, `PATH` change, or launcher is needed. Discovery order:

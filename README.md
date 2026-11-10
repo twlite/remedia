@@ -45,11 +45,11 @@ For an embedded `@remedia/node` application, install only FFmpeg (to `~/.remedia
 automatically with no environment variables):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.sh | sh -s -- --ffmpeg-only
+curl -fsSL https://remedia.twlite.dev/install.sh | sh -s -- --ffmpeg-only
 ```
 
 On Windows PowerShell use
-`& ([scriptblock]::Create((irm https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.ps1))) -FFmpegOnly`.
+`& ([scriptblock]::Create((irm https://remedia.twlite.dev/install.ps1))) -FFmpegOnly`.
 See [installing FFmpeg 9](apps/docs/content/docs/node/ffmpeg-9.mdx) and the [distribution guide](apps/docs/content/docs/node/distribution.mdx) for supported targets.
 
 ## Example

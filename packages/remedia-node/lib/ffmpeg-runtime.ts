@@ -82,11 +82,11 @@ export interface FfmpegRuntimeInfo {
 
 /** Command that installs FFmpeg 9 on Linux and macOS with the Remedia installer. */
 export const UNIX_INSTALL_COMMAND =
-  'curl -fsSL https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.sh | sh -s -- --ffmpeg-only';
+  'curl -fsSL https://remedia.twlite.dev/install.sh | sh -s -- --ffmpeg-only';
 
 /** Command that installs FFmpeg 9 on Windows PowerShell with the Remedia installer. */
 export const WINDOWS_INSTALL_COMMAND =
-  '& ([scriptblock]::Create((irm https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.ps1))) -FFmpegOnly';
+  '& ([scriptblock]::Create((irm https://remedia.twlite.dev/install.ps1))) -FFmpegOnly';
 
 /**
  * Raised when no compatible FFmpeg 9 installation could be loaded, or when an explicit

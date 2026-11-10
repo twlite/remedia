@@ -6,8 +6,8 @@ import styles from './install-command.module.css';
 
 type Platform = 'windows' | 'unix';
 const commands: Record<Platform, string> = {
-  windows: 'irm https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.ps1 | iex',
-  unix: 'curl -fsSL https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.sh | sh',
+  windows: 'irm https://remedia.twlite.dev/install.ps1 | iex',
+  unix: 'curl -fsSL https://remedia.twlite.dev/install.sh | sh',
 };
 
 export function InstallCommand() {

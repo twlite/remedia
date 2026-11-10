@@ -24,3 +24,6 @@ yarn-error.log*
 .env*.local
 .vercel
 next-env.d.ts
+# Installer copies staged by the documentation build
+/public/install.sh
+/public/install.ps1

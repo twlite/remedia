@@ -21,13 +21,13 @@ The installer can provision only FFmpeg 9.0.2 and its shared dependencies into `
 **Linux and macOS:**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.sh | sh -s -- --ffmpeg-only
+curl -fsSL https://remedia.twlite.dev/install.sh | sh -s -- --ffmpeg-only
 ```
 
 **Windows PowerShell:**
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.ps1))) -FFmpegOnly
+& ([scriptblock]::Create((irm https://remedia.twlite.dev/install.ps1))) -FFmpegOnly
 ```
 
 `irm … | iex` cannot pass parameters to a script, so the script text is turned into a script block that receives `-FFmpegOnly`. To inspect the script first, save it with `irm … -OutFile install.ps1` and run `.\install.ps1 -FFmpegOnly`.
