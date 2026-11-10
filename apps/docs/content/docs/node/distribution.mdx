@@ -68,11 +68,11 @@ Remedia addons but does not install FFmpeg. Install it on the machine that runs 
 the FFmpeg-only installer:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.sh | sh -s -- --ffmpeg-only
+curl -fsSL https://remedia.twlite.dev/install.sh | sh -s -- --ffmpeg-only
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/twlite/remedia/main/scripts/install.ps1))) -FFmpegOnly
+& ([scriptblock]::Create((irm https://remedia.twlite.dev/install.ps1))) -FFmpegOnly
 ```
 
 `@remedia/node` then finds `~/.remedia/ffmpeg9` automatically: no `LD_LIBRARY_PATH`,

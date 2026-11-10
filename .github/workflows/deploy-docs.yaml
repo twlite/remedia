@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - 'apps/docs/**'
+      - 'scripts/install.sh'
+      - 'scripts/install.ps1'
       - '.github/workflows/deploy-docs.yaml'
       - '.github/scripts/verify-docs-export.mjs'
       - 'packages/remedia-node/package.json'
