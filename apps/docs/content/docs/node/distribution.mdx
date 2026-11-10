@@ -108,6 +108,24 @@ embedded playback, so applications that use only remote server nodes can install
 the native package. During release packing, pnpm resolves this workspace peer dependency to the
 actual released @remedia/node version.
 
+## Plugin host package
+
+`@remedia/plugin-host` is pure TypeScript and ships with each npm release using the same
+version and dist-tag as `@remedia/node` and `@remedia/client`. Release packaging builds it,
+verifies both the main entrypoint and the `@remedia/plugin-host/node` HTTP middleware
+entrypoint (JavaScript and declarations), and includes the shared license notices.
+It requires Node.js 22.18 or newer and ESM, and does not require FFmpeg or the native addon.
+
+```sh
+npm install @remedia/plugin-host
+```
+
+See the [plugin host guide](/docs/server/plugins) for direct dispatch and HTTP hosting examples.
+The release publisher verifies this package is present before publishing and reuses an
+already published exact version when resuming an interrupted release. Configure npm Trusted
+Publishing for `@remedia/plugin-host` with the same `twlite/remedia` repository and `ci.yaml`
+workflow as the other release packages, or use the workflow's existing `NPM_TOKEN` configuration.
+
 ## Install the public beta
 
 ```sh

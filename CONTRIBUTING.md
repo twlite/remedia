@@ -241,12 +241,12 @@ making changes, including when an individual job is rerun.
 Manual workflow dispatch on `main` can also release the selected commit when its subject matches
 the same release format. Dispatches on other branches or ordinary commits run checks only.
 
-The workflow overrides the @remedia/node and @remedia/client npm versions in each CI checkout
+The workflow overrides the @remedia/node, @remedia/client, and @remedia/plugin-host npm versions in each CI checkout
 before installing, building, or packing. It does not commit those overrides or alter Rust crate
 versions. @napi-rs/cli creates platform packages and synchronizes their versions; pnpm pack
 resolves the client's workspace:* peer dependency in the packed manifest. All 13 configured
 addon targets are packed and published. Exact package versions already on npm are skipped, and
-platform packages publish before @remedia/node, followed by @remedia/client.
+platform packages publish before @remedia/node, followed by @remedia/plugin-host and @remedia/client.
 
 A detected release first creates (or reuses) a GitHub draft and verifies that its immutable tag
 points to the release commit. After checks, native builds, and packaging pass, all 13 `.node`
@@ -271,6 +271,7 @@ For token-free releases, configure npm Trusted Publishing for each package the w
 - @remedia/node-win32-x64-msvc
 - @remedia/node
 - @remedia/client
+- @remedia/plugin-host
 
 For every package, choose GitHub Actions with organization/user twlite, repository remedia, and
 workflow filename ci.yaml. Leave the environment unset and allow direct publishing. Alternatively,

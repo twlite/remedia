@@ -111,6 +111,7 @@ export const RELEASE_TARGETS = [
 const workspacePackages = [
   'packages/remedia-node/package.json',
   'packages/remedia-client/package.json',
+  'packages/remedia-plugin-host/package.json',
 ];
 const npmName = '@remedia/node';
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -340,6 +341,7 @@ export function assertTarContents(tarball, manifest, kind) {
             'package/README.md',
           ]
         : ['package/dist/index.js', 'package/dist/index.d.ts', 'package/README.md'];
+  if (kind === 'plugin-host') required.push('package/dist/node.js', 'package/dist/node.d.ts');
   required.push(
     'package/LICENSE',
     'package/THIRD_PARTY_NOTICES.md',
@@ -461,6 +463,7 @@ export function packRelease(
   ) {
     throw new Error('RELEASE_TARGETS must exactly match @remedia/node napi.targets');
   }
+  syncWorkspaceVersions(version, workspaceRoot);
   nodeManifest.version = version;
   nodeManifest.private = false;
   writeFileSync(nodeManifestPath, JSON.stringify(nodeManifest, null, 2) + '\n');
@@ -470,10 +473,6 @@ export function packRelease(
       join(workspaceRoot, 'packages/remedia-node', generated),
     );
   }
-  const clientManifestPath = join(workspaceRoot, 'packages/remedia-client/package.json');
-  const clientManifest = JSON.parse(readFileSync(clientManifestPath, 'utf8'));
-  clientManifest.version = version;
-  writeFileSync(clientManifestPath, JSON.stringify(clientManifest, null, 2) + '\n');
 
   run('pnpm', ['--filter', '@remedia/node', 'exec', 'napi', 'create-npm-dirs'], workspaceRoot);
   run('pnpm', ['--filter', '@remedia/node', 'exec', 'napi', 'version'], workspaceRoot);
@@ -498,6 +497,7 @@ export function packRelease(
     workspaceRoot,
   );
   run('pnpm', ['--filter', '@remedia/node', 'build:types'], workspaceRoot);
+  run('pnpm', ['--filter', '@remedia/plugin-host', 'build'], workspaceRoot);
   run('pnpm', ['--filter', '@remedia/client', 'build'], workspaceRoot);
 
   const platformDirectory = join(workspaceRoot, 'packages/remedia-node/npm');
@@ -541,6 +541,7 @@ export function packRelease(
 
   for (const [name, kind, directory] of [
     [npmName, 'node', join(workspaceRoot, 'packages/remedia-node')],
+    ['@remedia/plugin-host', 'plugin-host', join(workspaceRoot, 'packages/remedia-plugin-host')],
     ['@remedia/client', 'client', join(workspaceRoot, 'packages/remedia-client')],
   ]) {
     const tarball = packPackage(directory, outputDirectory);
@@ -572,6 +573,7 @@ export async function publishRelease({
   const platformPackages = packages.filter((item) => item.kind === 'platform');
   const rootPackage = packages.find((item) => item.name === npmName);
   const clientPackage = packages.find((item) => item.name === '@remedia/client');
+  const pluginHostPackage = packages.find((item) => item.name === '@remedia/plugin-host');
 
   if (platformPackages.length !== RELEASE_TARGETS.length) {
     throw new Error(
@@ -591,15 +593,13 @@ export async function publishRelease({
       );
     }
   }
-  for (const item of [rootPackage, clientPackage]) {
+  for (const [name, item] of [
+    [npmName, rootPackage],
+    ['@remedia/plugin-host', pluginHostPackage],
+    ['@remedia/client', clientPackage],
+  ]) {
     if (!item || item.version !== version) {
-      throw new Error(
-        'Required package ' +
-          (item?.name ?? '(unknown)') +
-          '@' +
-          version +
-          ' is missing or mismatched.',
-      );
+      throw new Error('Required package ' + name + '@' + version + ' is missing or mismatched.');
     }
   }
 
@@ -608,6 +608,7 @@ export async function publishRelease({
       platformPackages.find((item) => item.name === npmName + '-' + target.suffix),
     ),
     rootPackage,
+    pluginHostPackage,
     clientPackage,
   ];
   const publishedThisRun = new Set();

@@ -50,6 +50,8 @@ function packageSet(directory, version) {
   );
   const rootTarball = path.join(directory, 'node.tgz');
   const clientTarball = path.join(directory, 'client.tgz');
+  const pluginHostTarball = path.join(directory, 'plugin-host.tgz');
+  writeFileSync(pluginHostTarball, 'fixture');
   writeFileSync(rootTarball, 'fixture');
   writeFileSync(clientTarball, 'fixture');
   return [
@@ -66,6 +68,13 @@ function packageSet(directory, version) {
         optionalDependencies,
         files: ['dist', 'native.js', 'native.d.ts'],
       },
+    },
+    {
+      name: '@remedia/plugin-host',
+      version,
+      kind: 'plugin-host',
+      tarball: pluginHostTarball,
+      manifest: { license: 'MIT', name: '@remedia/plugin-host', version },
     },
     {
       name: '@remedia/client',
@@ -199,6 +208,7 @@ test('synchronizes npm workspace versions without rewriting workspace protocols'
     for (const packagePath of [
       'packages/remedia-node/package.json',
       'packages/remedia-client/package.json',
+      'packages/remedia-plugin-host/package.json',
     ]) {
       const fullPath = path.join(directory, packagePath);
       mkdirSync(path.dirname(fullPath), { recursive: true });
@@ -212,7 +222,9 @@ test('synchronizes npm workspace versions without rewriting workspace protocols'
                 version: '0.1.0',
                 peerDependencies: { '@remedia/node': 'workspace:*' },
               }
-            : { name: '@remedia/node', version: '0.0.0', private: true },
+            : packagePath.includes('plugin-host')
+              ? { name: '@remedia/plugin-host', version: '0.1.0', private: false }
+              : { name: '@remedia/node', version: '0.0.0', private: true },
         ),
       );
     }
@@ -223,6 +235,10 @@ test('synchronizes npm workspace versions without rewriting workspace protocols'
     const clientManifest = JSON.parse(
       readFileSync(path.join(directory, 'packages/remedia-client/package.json'), 'utf8'),
     );
+    const pluginHostManifest = JSON.parse(
+      readFileSync(path.join(directory, 'packages/remedia-plugin-host/package.json'), 'utf8'),
+    );
+    assert.equal(pluginHostManifest.version, '2.4.0-canary.5');
     assert.equal(nodeManifest.version, '2.4.0-canary.5');
     assert.equal(clientManifest.version, '2.4.0-canary.5');
     assert.equal(clientManifest.peerDependencies['@remedia/node'], 'workspace:*');
@@ -404,8 +420,8 @@ test('skips exact versions already on npm and publishes in dependency order', as
     });
     assert.equal(published[0][0], packages[1].name);
     assert.deepEqual(
-      published.slice(-2).map(([name]) => name),
-      ['@remedia/node', '@remedia/client'],
+      published.slice(-3).map(([name]) => name),
+      ['@remedia/node', '@remedia/plugin-host', '@remedia/client'],
     );
     assert(published.every(([, tag]) => tag === 'latest'));
   } finally {
@@ -413,50 +429,99 @@ test('skips exact versions already on npm and publishes in dependency order', as
   }
 });
 
-test('supports a safe rerun after a partially published prerelease', async () => {
+test('requires a matching plugin-host package before any publication or registry lookup', async () => {
   const directory = temporaryDirectory();
   try {
-    const packages = packageSet(directory, '1.0.0-canary.5');
-    const existing = new Set();
-    let failed = false;
-    const registryCheck = async (name, version) => existing.has(name + '@' + version);
-    const publish = async (tarball) => {
-      const item = packages.find((candidate) => candidate.tarball === tarball);
-      if (item.name === '@remedia/client' && !failed) {
-        failed = true;
-        throw new Error('simulated network interruption');
-      }
-      existing.add(item.name + '@' + item.version);
-    };
-    await assert.rejects(
-      publishRelease({
-        packages,
-        version: '1.0.0-canary.5',
-        npmTag: 'canary',
-        registryCheck,
-        publish,
-        log: () => {},
-      }),
-      /simulated network interruption/,
-    );
-    const retried = [];
-    await publishRelease({
-      packages,
-      version: '1.0.0-canary.5',
-      npmTag: 'canary',
-      registryCheck,
-      publish: async (tarball, tag) => {
-        const item = packages.find((candidate) => candidate.tarball === tarball);
-        retried.push([item.name, tag]);
-        existing.add(item.name + '@' + item.version);
-      },
-      log: () => {},
-    });
-    assert.deepEqual(retried, [['@remedia/client', 'canary']]);
+    for (const mismatch of [false, true]) {
+      const packages = packageSet(directory, '1.0.0');
+      const index = packages.findIndex((item) => item.name === '@remedia/plugin-host');
+      if (mismatch) packages[index].version = '0.9.0';
+      else packages.splice(index, 1);
+      let touchedRegistry = false;
+      await assert.rejects(
+        publishRelease({
+          packages,
+          version: '1.0.0',
+          npmTag: 'latest',
+          registryCheck: async () => {
+            touchedRegistry = true;
+            return false;
+          },
+          publish: async () => {
+            touchedRegistry = true;
+          },
+          log: () => {},
+        }),
+        /Required package @remedia\/plugin-host@1\.0\.0 is missing or mismatched/,
+      );
+      assert.equal(touchedRegistry, false);
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+for (const interruptedPackage of ['@remedia/plugin-host', '@remedia/client']) {
+  test(
+    'supports a safe rerun after an interrupted ' + interruptedPackage + ' prerelease',
+    async () => {
+      const directory = temporaryDirectory();
+      try {
+        const packages = packageSet(directory, '1.0.0-canary.5');
+        const existing = new Set();
+        let failed = false;
+        const registryCheck = async (name, version) => existing.has(name + '@' + version);
+        const publish = async (tarball) => {
+          const item = packages.find((candidate) => candidate.tarball === tarball);
+          if (item.name === interruptedPackage && !failed) {
+            failed = true;
+            throw new Error('simulated network interruption');
+          }
+          existing.add(item.name + '@' + item.version);
+        };
+        await assert.rejects(
+          publishRelease({
+            packages,
+            version: '1.0.0-canary.5',
+            npmTag: 'canary',
+            registryCheck,
+            publish,
+            log: () => {},
+          }),
+          /simulated network interruption/,
+        );
+        assert.equal(
+          existing.has('@remedia/plugin-host@1.0.0-canary.5'),
+          interruptedPackage === '@remedia/client',
+        );
+        const retried = [];
+        await publishRelease({
+          packages,
+          version: '1.0.0-canary.5',
+          npmTag: 'canary',
+          registryCheck,
+          publish: async (tarball, tag) => {
+            const item = packages.find((candidate) => candidate.tarball === tarball);
+            retried.push([item.name, tag]);
+            existing.add(item.name + '@' + item.version);
+          },
+          log: () => {},
+        });
+        assert.deepEqual(
+          retried,
+          interruptedPackage === '@remedia/plugin-host'
+            ? [
+                ['@remedia/plugin-host', 'canary'],
+                ['@remedia/client', 'canary'],
+              ]
+            : [['@remedia/client', 'canary']],
+        );
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+}
 
 test('fails closed on registry errors or missing required artifacts', async () => {
   const directory = temporaryDirectory();
@@ -516,7 +581,7 @@ test('actual workspace tarballs carry exact root licenses and notices', () => {
   const directory = temporaryDirectory();
   const root = path.resolve(dirname(fileURLToPath(import.meta.url)), '../..');
   try {
-    for (const name of ['node', 'client']) {
+    for (const name of ['node', 'client', 'plugin-host']) {
       const packageDirectory = path.join(root, 'packages/remedia-' + name);
       execFileSync('pnpm', ['run', name === 'node' ? 'build:types' : 'build'], {
         cwd: packageDirectory,
