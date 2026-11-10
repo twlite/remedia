@@ -728,6 +728,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: bindings-${{ inputs.target }}
-          path: packages/remedia-node/node.freebsd-x64.node
+          path: |
+            packages/remedia-node/node.freebsd-x64.node
+            packages/remedia-node/bootstrap.freebsd-x64.node
           if-no-files-found: error
           retention-days: 7
