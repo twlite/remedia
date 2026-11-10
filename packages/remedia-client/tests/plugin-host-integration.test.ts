@@ -176,7 +176,13 @@ function wavStream(seconds: number, stats: StreamStats): Readable {
 
   const stream = new Readable({
     highWaterMark: 16 * 1024,
-    read() {
+    async read() {
+      // A synthetic zero-filled source can otherwise outrun control RPCs, even for an hour
+      // of audio. Bound production to one chunk per timer turn, without waiting on playback
+      // state: pause must be able to finish an in-progress decoder read independently.
+      await sleep(1);
+      if (this.destroyed) return;
+
       if (!sentHeader) {
         sentHeader = true;
         stats.pulled += header.length;
@@ -506,7 +512,29 @@ describe('Rust server with generic plugin hosts', () => {
     await node.start();
   }, 180_000);
 
-  afterEach(async () => {
+  afterEach(async ({ task }) => {
+    if (task.result?.state === 'fail') {
+      console.error(
+        'Plugin-host failure diagnostics',
+        JSON.stringify(
+          {
+            lifecycle: lifecycle
+              .filter(
+                (event) =>
+                  typeof event.data.guildId === 'string' && testGuilds.has(event.data.guildId),
+              )
+              .slice(-12),
+            streams: [hostA, hostTight].map((host) => ({
+              origin: host.origin,
+              latest: host.behaviour.streams.at(-1),
+            })),
+          },
+          null,
+          2,
+        ),
+      );
+    }
+
     // A failed assertion must not leave a paused player or prepared stream in the next test.
     await Promise.all([...testGuilds].map(stopAll));
     testGuilds.clear();
