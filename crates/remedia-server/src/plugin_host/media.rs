@@ -12,8 +12,10 @@ use tokio::runtime::Handle;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio_util::sync::CancellationToken;
 
-use super::error::{PluginError, PluginErrorKind};
-use super::registry::{HostState, send_cancellable};
+use remedia_server_config::error::{PluginError, PluginErrorKind};
+use remedia_server_config::transport::send_cancellable;
+
+use super::registry::HostState;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 

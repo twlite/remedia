@@ -1,0 +1,52 @@
+---
+title: Choose your setup
+description: Decide whether to run Remedia inside your Node.js process or on a separate server, and which packages to install.
+---
+
+Remedia plays audio into Discord voice channels for a bot you write. It decodes media, applies
+filters and volume, encodes Opus and sends it over Discord's encrypted voice transport. Your
+application keeps its own Discord Gateway connection, queue, and search logic.
+
+You choose where the audio engine runs. Install only the packages for that choice.
+
+## Embedded or remote
+
+|                          | Embedded                                                     | Remote                                                            |
+| ------------------------ | ------------------------------------------------------------ | ----------------------------------------------------------------- |
+| Where audio is processed | Inside your Node.js process                                  | On a `remedia-server` process, possibly another machine           |
+| You install              | `@remedia/node` (or `@remedia/client` with an embedded node) | `remedia-server` on the audio host, `@remedia/client` in your bot |
+| FFmpeg 9 needed on       | The machine running your bot                                 | The machine running `remedia-server`                              |
+| Good for                 | One bot process, simplest setup, local development           | Several bots or nodes, keeping audio load off the bot process     |
+| Start with               | [Embedded quickstart](/docs/getting-started/embedded)        | [Remote quickstart](/docs/getting-started/remote)                 |
+
+A bot that only talks to remote servers needs **no FFmpeg and no native addon**. FFmpeg is required
+only where audio is actually decoded.
+
+## Which packages do I need?
+
+| Package                | Install it when                                                                                                                                 |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@remedia/node`        | You embed the engine and want the lowest-level Node.js API.                                                                                     |
+| `@remedia/client`      | You want one API for embedded nodes, remote nodes, or both. It is the usual choice for remote servers and for bots that may move between modes. |
+| `remedia-server`       | You run a standalone audio server. It is a binary from the installer, not an npm package.                                                       |
+| `@remedia/plugin-host` | You build your own plugin service that produces audio or answers application-defined operations. Most bots do not need this.                    |
+
+You can mix them. A `RemediaClient` can hold an embedded node and several remote nodes, and keeps
+each Discord guild on the node it was first assigned to.
+
+<Callout title="Not sure?">
+  Start embedded. Moving to a remote server later means changing the node list passed to
+  `@remedia/client`, not rewriting your playback code.
+</Callout>
+
+## What Remedia does not do
+
+- It is not a music search service or source extractor. Your application decides which URL, file, or plugin operation to play.
+- It does not implement Discord's Gateway. You pass it a function that sends Gateway payloads and forward the packets you receive.
+- It is not a Lavalink-compatible server.
+
+## Next steps
+
+- [Embedded quickstart](/docs/getting-started/embedded)
+- [Remote quickstart](/docs/getting-started/remote)
+- [Install FFmpeg 9](/docs/node/ffmpeg-9)

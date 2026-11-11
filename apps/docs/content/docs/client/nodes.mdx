@@ -1,0 +1,111 @@
+---
+title: Nodes and routing
+description: Configure a pool of embedded and remote nodes, how guilds are assigned and kept on a node, and explicit migration between nodes.
+---
+
+A `RemediaClient` holds a pool of **nodes**: an embedded engine in your process, remote
+`remedia-server` processes, or both. Every Discord guild is assigned to one node when its session
+first connects, and stays there.
+
+## Configure a node pool
+
+```ts
+import { RemediaClient } from '@remedia/client';
+
+const remedia = await RemediaClient.create({
+  botUserId: discord.user.id,
+  nodes: [
+    { type: 'embedded', id: 'local', capacity: 8 },
+    {
+      type: 'remote',
+      id: 'media-a',
+      url: 'remedia://127.0.0.1:8787',
+      auth: { username: 'bot', password: process.env.REMEDIA_PASSWORD! },
+    },
+    {
+      type: 'remote',
+      id: 'media-b',
+      url: 'remedias://media.example.net',
+      auth: { username: 'bot', password: process.env.REMEDIA_PASSWORD! },
+    },
+  ],
+  send(guildId, payload) {
+    discord.guilds.cache.get(guildId)?.shard.send(payload);
+  },
+});
+
+discord.on('raw', (packet) => remedia.receive(packet));
+```
+
+When any remote node is configured, `botUserId` is required and must be the host Discord client's
+positive decimal snowflake. `@remedia/client` sends it as `X-Remedia-Bot-Id` on each WebSocket
+handshake; it is never part of the server's static user configuration. This lets independent bot
+clients use the same server credentials while retaining separate server sessions. For embedded-only
+node pools the option is optional.
+
+The application owns the Discord Gateway connection. Remedia sends OP 4 through `send`, correlates
+the matching `VOICE_STATE_UPDATE` and `VOICE_SERVER_UPDATE`, and connects the selected node's voice
+transport after both fresh events arrive. Snowflakes are decimal strings. `voice.connect()` resolves
+after the selected backend has connected; remote mode waits for server-side voice and DAVE setup.
+Call `remedia.receive(packet)` for each raw Gateway packet and `await remedia.close()` during
+application shutdown.
+
+`remedia://` maps to `ws://`, `remedias://` maps to `wss://`, and a missing path becomes `/v1/ws`.
+Standard `ws://` and `wss://` URLs are also accepted. Configure Basic credentials with `auth`; URL
+userinfo is supported as a convenience, decoded, stripped from the URL, and sent only in the
+WebSocket `Authorization` header. TLS certificate validation remains enabled. Use `remedias://`
+for remote deployment and terminate TLS at a trusted reverse proxy; the server itself does not
+provide TLS.
+
+## Node selection and guild affinity
+
+Healthy nodes are selected by current player allocation divided by the node's reported player
+capacity, with stable ID ordering to break ties. Local assignment reservations prevent concurrent
+guild creation from overfilling a node. Nodes reporting degraded transport or processing health,
+full capacity, or a disconnected state are excluded. An optional `selectNode(nodes, { guildId })`
+callback can choose among the healthy candidates.
+
+Inspect `remedia.nodes` for client IDs, server IDs, status, health statistics, capacity, assignments,
+and the last connection error. `remedia.assignments` and `getAssignment(guildId)` expose the sticky
+guild-to-node mapping. All later playback, filter, volume, and voice operations stay on that node.
+Remote `{ url }` and `{ file }` sources are resolved by the server. `{ buffer }` and `{ stream }`
+sources require an embedded node; pin that guild with `nodeId: 'local'` or Remedia rejects the input
+instead of uploading it or silently moving the guild.
+
+## Explicit cross-node migration
+
+```ts
+const session = remedia.createDiscordSession({
+  guildId,
+  channelId,
+  userId,
+  nodeId: 'media-a',
+});
+await session.connect();
+await session.play({ url: 'https://example.net/song.mp3' });
+
+// Once the media position is available:
+await session.migrate('media-b');
+console.log(session.nodeId); // 'media-b'
+```
+
+`migrate(nodeId)` reserves capacity on a healthy destination node before touching the source.
+It disconnects and disposes the original backend, commits the new sticky assignment, then
+requests fresh Discord Gateway credentials and connects the destination. The logical JavaScript
+`DiscordSession` remains the same object. Volume, filtergraph, channel, self-deaf and self-mute
+settings persist. A `guildMigrated` client event contains `guildId`, `fromNodeId`,
+`toNodeId`, and `nodeType`.
+
+For an active source, the SDK currently supports HTTP(S) URL playback with an observed
+`position.mediaMs`. The destination opens a new decoder and seeks to the last observed source
+position; it also restores the paused state and local `customMetadata`. This starts a new
+backend playback generation and emits a new `playbackStarted`. There may be audible gaps or
+brief playback from the beginning before the seek completes. Exact sample continuity and
+preservation of a pending `wait()` call are not guaranteed. Active `{ file }`, `{ buffer }`,
+`{ stream }`, unknown-position sources, and transitional playback states are rejected
+before cutover. Idle players can migrate without a source.
+
+If the destination is full or unhealthy, the migration fails without touching the source.
+After the source backend is released, a failed destination connection is not rolled back:
+the destination assignment remains and callers can retry `connect()`. This is explicit
+migration, not automatic failover, and cannot resurrect a lost source or a one-shot stream.

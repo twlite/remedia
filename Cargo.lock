@@ -2817,6 +2817,7 @@ dependencies = [
  "remedia-discord",
  "remedia-observability",
  "remedia-resources",
+ "remedia-server-config",
  "reqwest",
  "rustls",
  "serde",
@@ -2827,6 +2828,21 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "tracing",
+ "url",
+]
+
+[[package]]
+name = "remedia-server-config"
+version = "0.1.0"
+dependencies = [
+ "rand 0.9.5",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
  "url",
 ]
 

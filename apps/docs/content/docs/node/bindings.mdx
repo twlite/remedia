@@ -1,75 +1,27 @@
 ---
-title: Node.js bindings
+title: '@remedia/node reference'
 description: Control native Remedia playback and Discord voice sessions from Node.js.
 ---
 
-# Node.js bindings
+`@remedia/node` runs the Remedia audio engine inside your Node.js process. It plays audio into
+Discord voice channels, decodes local files, HTTP(S) URLs, in-memory bytes and Node.js streams, and
+exposes structured diagnostics. This page is the API reference; for a first working setup, follow the
+[embedded quickstart](/docs/getting-started/embedded).
 
-`@remedia/node` is a Rust N-API addon with a thin TypeScript wrapper. It calls
-`remedia-core`, `remedia-discord`, and `remedia-observability` in the current
-Node process. It does not start `remedia-server` and does not install a global
-Rust tracing subscriber.
+## What it supports
 
-The package includes prebuilt native addons for verified platforms. It supports local
-files, HTTP(S) URLs, in-memory `Buffer`/`Uint8Array` data, and Node.js binary
-`Readable` streams. A standalone playback session decodes into a null output
-for inspection and testing; a Discord session connects the existing Opus
-output to the voice transport. A local audio device, server RPC, full Discord
-Gateway connection, and REST client are not implemented by these bindings; the
-Node package adapts a Gateway client supplied by the application.
+- **Discord voice playback.** Audio is audible only through a Discord voice session (`createDiscordSession`). Your application supplies the Gateway connection; see [Discord Gateway adapter](#discord-gateway-adapter).
+- **Standalone playback sessions** (`createPlaybackSession`) decode into a null output that consumes audio as fast as possible. They are for tests, tools and inspection. **They do not produce sound through local speakers.**
+- **Media probing** without playback, and optional [crossfading](#staged-crossfade-playback).
+- **Not included:** a local audio device, the `remedia-server` protocol, a Discord Gateway or REST client. Use [`@remedia/client`](/docs/client/overview) to choose between embedded and remote nodes.
 
-For applications that select between direct embedded playback and one or more
-`remedia-server` nodes, use the separate pure TypeScript
-[`@remedia/client` guide](/docs/client/overview). The high-level client loads
-this native package lazily and only when an embedded node is configured; remote
-only consumers do not need native FFmpeg or N-API dependencies.
-
-## Build prerequisites
-
-Use the repository's pinned Rust toolchain, Node.js 22.18 or newer, and pnpm
-12.16.1. Building the native addon requires the FFmpeg development libraries
-used by `remedia-core`. The Opus encoder is built from bundled source and linked
-statically, so a separate system libopus development package is not required.
-From the repository root:
-
-```sh
-pnpm install --frozen-lockfile
-pnpm --filter @remedia/node test
-pnpm --filter @remedia/node build
-```
-
-The test command builds a debug addon and runs local Node integration tests.
-`build` creates the release addon and TypeScript declarations. The N-API loader
-and native declarations are generated from Rust source by `@napi-rs/cli`.
-
-Both scripts also build the FFmpeg-free **bootstrap** addon (`bootstrap/` crate,
-output `bootstrap.<platform>.node`) and, on macOS, rewrite the engine addon's FFmpeg
-install names to `@rpath` (`.github/scripts/normalize-macos-addon.mjs`) so that FFmpeg
-discovery can choose the installation at run time. `FFMPEG_DIR` and `PKG_CONFIG_PATH`
-select the FFmpeg you compile **against**; they are not used when the package runs. If
-`pkg-config` finds more than one FFmpeg (for example Homebrew's `ffmpeg` and
-`ffmpeg@7`), set them explicitly so the addon links FFmpeg 9.
-
-Windows builds use the dynamic MSVC CRT to match bundled Opus's CMake defaults;
-Opus itself remains statically linked. A Windows runtime machine needs a
-compatible Microsoft Visual C++ v14 runtime if it is not already installed.
-The N-API package does not bundle that runtime or guarantee static CRT
-linkage. FFmpeg's DLLs remain separate runtime dependencies.
+The package ships prebuilt native addons for the platforms listed in
+[distribution](/docs/node/distribution). It needs FFmpeg 9 shared libraries on the host:
+[install FFmpeg 9](/docs/node/ffmpeg-9).
 
 ## FFmpeg discovery and diagnostics
 
-The addon needs FFmpeg 9 shared libraries on the Node.js host. Install them once with the
-[FFmpeg-only installer](/docs/node/ffmpeg-9#install-ffmpeg-with-the-remedia-installer);
-`import '@remedia/node'` then finds `~/.remedia/ffmpeg9` without `LD_LIBRARY_PATH`,
-`DYLD_LIBRARY_PATH`, a `PATH` change, or a launcher. The package never downloads or installs
-anything when it is imported.
-
-Selection happens during module evaluation, before the native engine loads, in this order:
-`REMEDIA_FFMPEG_DIR`, an existing system installation, then `~/.remedia/ffmpeg9` (under the home
-directory of the user running the process). An explicit `REMEDIA_FFMPEG_DIR` that cannot be
-loaded is an error and never falls back. Only an installation whose five libraries are all FFmpeg 9
-ABI majors (63, 63, 61, 12, 7), match the process CPU, resolve their own dependencies and come from
-one directory is accepted.
+On import, `@remedia/node` chooses an FFmpeg 9 installation (`REMEDIA_FFMPEG_DIR`, then the system, then `~/.remedia/ffmpeg9`) and loads it before the engine starts. Nothing is downloaded. How the search works and how to install FFmpeg is in [Install FFmpeg 9](/docs/node/ffmpeg-9).
 
 ```ts
 import { FfmpegLoadError, getFfmpegRuntime } from '@remedia/node';
@@ -680,3 +632,35 @@ must increase when refreshing an expiring URL; optional `expiresAtMs` is an abso
 Unix timestamp in milliseconds that prevents promotion after expiry.
 
 See [crossfade playback](/docs/core/playback#crossfade-playback) for lifecycle and timing.
+
+## Building from source
+
+Use the repository's pinned Rust toolchain, Node.js 22.18 or newer, and pnpm
+12.16.1. Building the native addon requires the FFmpeg development libraries
+used by `remedia-core`. The Opus encoder is built from bundled source and linked
+statically, so a separate system libopus development package is not required.
+From the repository root:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm --filter @remedia/node test
+pnpm --filter @remedia/node build
+```
+
+The test command builds a debug addon and runs local Node integration tests.
+`build` creates the release addon and TypeScript declarations. The N-API loader
+and native declarations are generated from Rust source by `@napi-rs/cli`.
+
+Both scripts also build the FFmpeg-free **bootstrap** addon (`bootstrap/` crate,
+output `bootstrap.<platform>.node`) and, on macOS, rewrite the engine addon's FFmpeg
+install names to `@rpath` (`.github/scripts/normalize-macos-addon.mjs`) so that FFmpeg
+discovery can choose the installation at run time. `FFMPEG_DIR` and `PKG_CONFIG_PATH`
+select the FFmpeg you compile **against**; they are not used when the package runs. If
+`pkg-config` finds more than one FFmpeg (for example Homebrew's `ffmpeg` and
+an older `ffmpeg@N` formula), set them explicitly so the addon links FFmpeg 9.
+
+Windows builds use the dynamic MSVC CRT to match bundled Opus's CMake defaults;
+Opus itself remains statically linked. A Windows runtime machine needs a
+compatible Microsoft Visual C++ v14 runtime if it is not already installed.
+The N-API package does not bundle that runtime or guarantee static CRT
+linkage. FFmpeg's DLLs remain separate runtime dependencies.

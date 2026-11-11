@@ -3,8 +3,6 @@ title: Server configuration
 description: Strict configuration, environment references, media access, and observability.
 ---
 
-# Server configuration
-
 `remedia-server` loads a required JSON file from the current working directory. Override the path
 with `--config PATH`. Unknown fields, missing required fields, invalid ranges, duplicate usernames,
 and missing environment variables stop startup with an error.
@@ -155,14 +153,16 @@ environment references.
 ## Plugin hosts
 
 `pluginHosts` registers independent [plugin-host](/docs/server/plugins) deployments whose operations can
-produce playable audio. See [Plugin operation sources](/docs/server/plugin-operations) for behavior,
-lifecycle and security. Every entry is validated at startup; duplicate IDs fail startup.
+produce playable audio. See [Playing audio through plugins](/docs/server/plugin-operations) for behavior,
+lifecycle and security. Every entry is validated at startup; duplicate IDs fail startup. You can manage
+these entries with [`remedia-server plugins`](/docs/server/cli#manage-plugin-hosts) instead of editing the file.
 
 ```json
 {
   "pluginHosts": [
     {
       "id": "source-host-1",
+      "enabled": true,
       "endpoint": "https://plugins.example.com",
       "auth": { "type": "bearer", "token": "env('REMEDIA_PLUGIN_HOST_TOKEN')" },
       "allowInsecureHttp": false,
@@ -189,26 +189,27 @@ lifecycle and security. Every entry is validated at startup; duplicate IDs fail 
 }
 ```
 
-| Field                         | Type    | Default / validation                                                                                                                      |
-| ----------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`                          | string  | Required, unique; 1-128 letters, digits, `.`, `_` or `-`, starting alphanumeric. Stable deployment identity used by clients               |
-| `endpoint`                    | string  | Required HTTP(S) origin without credentials, path, query or fragment. Must be `https` unless `allowInsecureHttp` is true                  |
-| `auth`                        | object  | `{ "type": "none" }` by default, or `{ "type": "bearer", "token": "..." }` with a 16-4096 byte token without spaces or control characters |
-| `allowInsecureHttp`           | boolean | `false`; permits `http:` endpoints and media origins for this host                                                                        |
-| `allowPrivateNetwork`         | boolean | `false`; permits loopback, private and link-local addresses for this host's endpoint and media. Literal private endpoints require it      |
-| `mediaOrigins`                | array   | Extra origins whose media is fetched without credentials; the endpoint origin is always included                                          |
-| `allowExternalMedia`          | boolean | `false`; allows descriptor URLs on other origins, played under the ordinary `media.*` policy and FFmpeg HTTP input                        |
-| `operations[]`                | array   | Required, 1-256 unique allowed operations: `pluginId`, `operation` (same identifier grammar as hosts), and `replaySafe` (default `false`) |
-| `limits.requestTimeoutMs`     | integer | `10000`; 1-300,000. Connect and total deadline for each discovery or execute request, and media response headers                          |
-| `limits.discoveryTtlMs`       | integer | `60000`; 1,000-3,600,000. Discovery refresh interval                                                                                      |
-| `limits.maxRequestBytes`      | integer | `65536`; 64-16,777,216. Serialized execute request, including the opaque `input`                                                          |
-| `limits.maxResponseBytes`     | integer | `65536`; 256-16,777,216. Discovery and execute response bodies                                                                            |
-| `limits.maxPendingOperations` | integer | `8`; 1-1,024. Concurrent operation preparations per host                                                                                  |
-| `limits.maxActiveStreams`     | integer | `8`; 1-1,024. Concurrent media transfers per host                                                                                         |
-| `limits.maxMediaBytes`        | integer | 1 GiB; 1,024-68,719,476,736. A transfer exceeding it fails                                                                                |
-| `limits.mediaIdleTimeoutMs`   | integer | `15000`; 1-300,000. Maximum wait for the next media chunk while the decoder is consuming                                                  |
-| `limits.mediaBufferBytes`     | integer | `262144`; 4,096-16,777,216. Per-stream queue between the network and the decoder                                                          |
-| `limits.maxAttempts`          | integer | `2`; 1-3. Total attempts for `replaySafe` operations                                                                                      |
+| Field                         | Type    | Default / validation                                                                                                                                               |
+| ----------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`                          | string  | Required, unique; 1-128 letters, digits, `.`, `_` or `-`, starting alphanumeric. Stable deployment identity used by clients                                        |
+| `enabled`                     | boolean | `true`. When `false` the host keeps its configuration but is not registered at startup; requests naming it fail with `plugin_host_disabled`. Still fully validated |
+| `endpoint`                    | string  | Required HTTP(S) origin without credentials, path, query or fragment. Must be `https` unless `allowInsecureHttp` is true                                           |
+| `auth`                        | object  | `{ "type": "none" }` by default, or `{ "type": "bearer", "token": "..." }` with a 16-4096 byte token without spaces or control characters                          |
+| `allowInsecureHttp`           | boolean | `false`; permits `http:` endpoints and media origins for this host                                                                                                 |
+| `allowPrivateNetwork`         | boolean | `false`; permits loopback, private and link-local addresses for this host's endpoint and media. Literal private endpoints require it                               |
+| `mediaOrigins`                | array   | Extra origins whose media is fetched without credentials; the endpoint origin is always included                                                                   |
+| `allowExternalMedia`          | boolean | `false`; allows descriptor URLs on other origins, played under the ordinary `media.*` policy and FFmpeg HTTP input                                                 |
+| `operations[]`                | array   | Required, 1-256 unique allowed operations: `pluginId`, `operation` (same identifier grammar as hosts), and `replaySafe` (default `false`)                          |
+| `limits.requestTimeoutMs`     | integer | `10000`; 1-300,000. Connect and total deadline for each discovery or execute request, and media response headers                                                   |
+| `limits.discoveryTtlMs`       | integer | `60000`; 1,000-3,600,000. Discovery refresh interval                                                                                                               |
+| `limits.maxRequestBytes`      | integer | `65536`; 64-16,777,216. Serialized execute request, including the opaque `input`                                                                                   |
+| `limits.maxResponseBytes`     | integer | `65536`; 256-16,777,216. Discovery and execute response bodies                                                                                                     |
+| `limits.maxPendingOperations` | integer | `8`; 1-1,024. Concurrent operation preparations per host                                                                                                           |
+| `limits.maxActiveStreams`     | integer | `8`; 1-1,024. Concurrent media transfers per host                                                                                                                  |
+| `limits.maxMediaBytes`        | integer | 1 GiB; 1,024-68,719,476,736. A transfer exceeding it fails                                                                                                         |
+| `limits.mediaIdleTimeoutMs`   | integer | `15000`; 1-300,000. Maximum wait for the next media chunk while the decoder is consuming                                                                           |
+| `limits.mediaBufferBytes`     | integer | `262144`; 4,096-16,777,216. Per-stream queue between the network and the decoder                                                                                   |
+| `limits.maxAttempts`          | integer | `2`; 1-3. Total attempts for `replaySafe` operations                                                                                                               |
 
 `replaySafe` declares that executing the operation again has no side effects, which authorizes
 automatic retries and fresh resolution of expired grants. Leave it `false` for anything else.

@@ -3,8 +3,6 @@ title: Audio decoding
 description: Open local files or HTTP(S) URLs and consume normalized PCM frames.
 ---
 
-# Audio decoding
-
 `remedia-core` opens a source through FFmpeg's native libavformat, selects an audio stream, decodes
 it with libavcodec, and converts frames with libswresample. Sources may be local files, HTTP(S)
 URLs, owned encoded bytes, or a bounded producer-backed byte stream. It does not launch `ffmpeg` or

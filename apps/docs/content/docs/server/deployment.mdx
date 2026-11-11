@@ -1,9 +1,7 @@
 ---
-title: Server deployment
+title: Deployment
 description: Local operation, TLS termination, network restrictions, and independent nodes.
 ---
-
-# Server deployment
 
 ## Release binaries
 
@@ -16,24 +14,16 @@ See [runtime ABI versions and library discovery](/docs/node/distribution) and
 
 ## Local development
 
-Create a local media directory and configuration, then provide the configured secrets through
-environment variables:
-
-```sh
-cp crates/remedia-server/remedia.config.example.json remedia.config.json
-mkdir -p media
-export REMEDIA_RPC_PASSWORD='use-a-local-development-password'
-cargo run -p remedia-server
-```
-
-The listener defaults to `127.0.0.1:8787`, and accepts WebSocket RPC at `/v1/ws`. Use `--config
-PATH` for another file. The server uses native FFmpeg libraries and the native Discord voice
-transport. Install the workspace's FFmpeg development libraries as described in
-[core decoding](/docs/core/decoding).
+For local use, install the server with the [installer](/docs/server/installation), run
+`remedia-server --generate-config-file`, set `REMEDIA_RPC_PASSWORD`, and start `remedia-server`.
+The listener defaults to `127.0.0.1:8787` and accepts WebSocket RPC at `/v1/ws`.
 
 Discord bot identity is sent by each client as the `X-Remedia-Bot-Id` WebSocket handshake header.
 The server configuration contains only server-side accounts and access policy, allowing one
 authenticated account to serve multiple independent bot identities.
+
+Contributors building from source can use `cargo run -p remedia-server` with the repository's
+example configuration; see [CONTRIBUTING.md](https://github.com/twlite/remedia/blob/main/CONTRIBUTING.md).
 
 ## TLS reverse proxy
 

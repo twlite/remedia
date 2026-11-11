@@ -4,12 +4,12 @@ use std::collections::HashSet;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::error::{PluginError, PluginErrorKind};
-use crate::config::PluginHostConfig;
+use crate::PluginHostConfig;
+use crate::error::{PluginError, PluginErrorKind};
 
-pub(crate) const MANIFEST_PATH: &str = "/.well-known/remedia";
-pub(crate) const EXECUTE_PATH: &str = "/remedia/v1/execute";
-pub(crate) const MEDIA_TEMPLATE_PREFIX: &str = "/remedia/v1/media/";
+pub const MANIFEST_PATH: &str = "/.well-known/remedia";
+pub const EXECUTE_PATH: &str = "/remedia/v1/execute";
+pub const MEDIA_TEMPLATE_PREFIX: &str = "/remedia/v1/media/";
 const MAX_DESCRIPTOR_URL_BYTES: usize = 8_192;
 const MAX_ERROR_BODY_BYTES: usize = 4_096;
 
@@ -17,6 +17,8 @@ const MAX_ERROR_BODY_BYTES: usize = 4_096;
 #[serde(rename_all = "camelCase")]
 struct RawManifest {
     protocol_version: u64,
+    #[serde(default)]
+    name: Option<String>,
     #[serde(default)]
     host_id: Option<String>,
     endpoints: RawEndpoints,
@@ -37,18 +39,39 @@ struct RawPlugin {
 
 /// A validated discovery document.
 #[derive(Clone, Debug)]
-pub(crate) struct Manifest {
+pub struct Manifest {
     advertised: HashSet<(String, String)>,
+    name: Option<String>,
+    host_id: Option<String>,
 }
 
 impl Manifest {
-    pub(crate) fn advertises(&self, plugin_id: &str, operation: &str) -> bool {
+    pub fn advertises(&self, plugin_id: &str, operation: &str) -> bool {
         self.advertised
             .contains(&(plugin_id.to_owned(), operation.to_owned()))
     }
 
-    pub(crate) fn operation_count(&self) -> usize {
+    pub fn operation_count(&self) -> usize {
         self.advertised.len()
+    }
+
+    /// Advertised `(pluginId, operation)` pairs, sorted for stable output.
+    pub fn operations(&self) -> Vec<(String, String)> {
+        let mut operations: Vec<_> = self.advertised.iter().cloned().collect();
+
+        operations.sort();
+
+        operations
+    }
+
+    /// The host's display name. Never an identity: use `host_id` or an operator-chosen ID.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// The deployment identifier declared by the host, when it declares one.
+    pub fn host_id(&self) -> Option<&str> {
+        self.host_id.as_deref()
     }
 }
 
@@ -56,10 +79,16 @@ impl Manifest {
 ///
 /// The advertised paths are verified rather than followed: the server only ever
 /// contacts the protocol's fixed v1 routes beneath the configured origin.
-pub(crate) fn validate_manifest(
-    config: &PluginHostConfig,
-    body: &[u8],
-) -> Result<Manifest, PluginError> {
+pub fn validate_manifest(config: &PluginHostConfig, body: &[u8]) -> Result<Manifest, PluginError> {
+    parse_manifest(body, Some(&config.id))
+}
+
+/// Parse and validate a discovery document.
+///
+/// `expected_id` is the configured host ID when one exists. Pass `None` while a host is
+/// still being registered: the document is then validated without an identity check, and
+/// the caller must ensure any declared `hostId` becomes the configured ID.
+pub fn parse_manifest(body: &[u8], expected_id: Option<&str>) -> Result<Manifest, PluginError> {
     let manifest: RawManifest = serde_json::from_slice(body).map_err(|_| {
         PluginError::new(
             PluginErrorKind::Incompatible,
@@ -78,7 +107,8 @@ pub(crate) fn validate_manifest(
     if manifest
         .host_id
         .as_deref()
-        .is_some_and(|host_id| host_id != config.id)
+        .zip(expected_id)
+        .is_some_and(|(declared, expected)| declared != expected)
     {
         return Err(PluginError::new(
             PluginErrorKind::Incompatible,
@@ -97,23 +127,30 @@ pub(crate) fn validate_manifest(
 
     let mut advertised = HashSet::new();
 
+    let name = manifest.name;
+    let host_id = manifest.host_id;
+
     for plugin in manifest.plugins {
         for operation in plugin.operations {
             advertised.insert((plugin.id.clone(), operation));
         }
     }
 
-    Ok(Manifest { advertised })
+    Ok(Manifest {
+        advertised,
+        name,
+        host_id,
+    })
 }
 
 /// Result of a successful execute call.
 #[derive(Debug)]
-pub(crate) enum ExecuteOutcome {
+pub enum ExecuteOutcome {
     Declined,
     Handled(Value),
 }
 
-pub(crate) fn parse_execute_response(body: &[u8]) -> Result<ExecuteOutcome, PluginError> {
+pub fn parse_execute_response(body: &[u8]) -> Result<ExecuteOutcome, PluginError> {
     let invalid = || {
         PluginError::new(
             PluginErrorKind::InvalidResponse,
@@ -136,12 +173,12 @@ pub(crate) fn parse_execute_response(body: &[u8]) -> Result<ExecuteOutcome, Plug
 
 /// A media location returned by an operation.
 #[derive(Debug)]
-pub(crate) struct Descriptor {
-    pub(crate) url: url::Url,
-    pub(crate) expires_at_ms: Option<u64>,
+pub struct Descriptor {
+    pub url: url::Url,
+    pub expires_at_ms: Option<u64>,
 }
 
-pub(crate) fn parse_descriptor(value: &Value) -> Result<Descriptor, PluginError> {
+pub fn parse_descriptor(value: &Value) -> Result<Descriptor, PluginError> {
     let invalid = |detail| PluginError::new(PluginErrorKind::MediaInvalid, detail);
     let object = value
         .as_object()
@@ -177,7 +214,7 @@ pub(crate) fn parse_descriptor(value: &Value) -> Result<Descriptor, PluginError>
 }
 
 /// Map a non-success execute status and optional protocol error code to a failure.
-pub(crate) fn error_from_status(status: u16, code: Option<&str>) -> PluginError {
+pub fn error_from_status(status: u16, code: Option<&str>) -> PluginError {
     use PluginErrorKind as Kind;
 
     let (kind, detail) = match (status, code) {
@@ -219,7 +256,7 @@ pub(crate) fn error_from_status(status: u16, code: Option<&str>) -> PluginError 
 }
 
 /// Extract the stable `error.code` from a bounded error body.
-pub(crate) fn error_code(body: &[u8]) -> Option<String> {
+pub fn error_code(body: &[u8]) -> Option<String> {
     if body.len() > MAX_ERROR_BODY_BYTES {
         return None;
     }
@@ -241,11 +278,16 @@ mod tests {
     fn config() -> PluginHostConfig {
         let json = r#"{"users":[{"username":"u","password":"p"}],"pluginHosts":[{"id":"host-a","endpoint":"https://example.com","operations":[{"pluginId":"p","operation":"o"}]}]}"#;
 
-        crate::config::ServerConfig::from_json_for_tests(json)
-            .plugin_hosts
-            .remove(0)
-            .as_ref()
-            .clone()
+        crate::parse(
+            json,
+            std::path::Path::new("."),
+            &mut crate::Env::strict(|_| None),
+        )
+        .expect("test configuration is valid")
+        .plugin_hosts
+        .remove(0)
+        .as_ref()
+        .clone()
     }
 
     fn manifest(overrides: Value) -> Vec<u8> {

@@ -10,10 +10,10 @@ const MIN_TOKEN_BYTES: usize = 16;
 
 /// A bearer secret which never appears in debug output or error messages.
 #[derive(Clone)]
-pub(crate) struct Secret(String);
+pub struct Secret(String);
 
 impl Secret {
-    pub(crate) fn expose(&self) -> &str {
+    pub fn expose(&self) -> &str {
         &self.0
     }
 }
@@ -26,53 +26,55 @@ impl std::fmt::Debug for Secret {
 
 /// One operation a deployment is permitted to execute.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct AllowedOperation {
-    pub(crate) plugin_id: String,
-    pub(crate) operation: String,
+pub struct AllowedOperation {
+    pub plugin_id: String,
+    pub operation: String,
     /// Whether executing the operation again is free of side effects. Only
     /// replay-safe operations are retried or refreshed automatically.
-    pub(crate) replay_safe: bool,
+    pub replay_safe: bool,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct PluginHostLimits {
-    pub(crate) request_timeout: Duration,
-    pub(crate) discovery_ttl: Duration,
-    pub(crate) max_request_bytes: usize,
-    pub(crate) max_response_bytes: usize,
-    pub(crate) max_pending_operations: usize,
-    pub(crate) max_active_streams: usize,
-    pub(crate) max_media_bytes: u64,
-    pub(crate) media_idle_timeout: Duration,
-    pub(crate) media_buffer_bytes: usize,
-    pub(crate) max_attempts: u32,
+pub struct PluginHostLimits {
+    pub request_timeout: Duration,
+    pub discovery_ttl: Duration,
+    pub max_request_bytes: usize,
+    pub max_response_bytes: usize,
+    pub max_pending_operations: usize,
+    pub max_active_streams: usize,
+    pub max_media_bytes: u64,
+    pub media_idle_timeout: Duration,
+    pub media_buffer_bytes: usize,
+    pub max_attempts: u32,
 }
 
 /// A validated plugin-host deployment.
 #[derive(Clone, Debug)]
-pub(crate) struct PluginHostConfig {
-    pub(crate) id: String,
+pub struct PluginHostConfig {
+    pub id: String,
+    /// Disabled hosts are validated and retained but never registered as executable.
+    pub enabled: bool,
     /// Origin of the execution and discovery endpoint.
-    pub(crate) endpoint: url::Url,
-    pub(crate) token: Option<Secret>,
-    pub(crate) allow_insecure_http: bool,
-    pub(crate) allow_private_network: bool,
+    pub endpoint: url::Url,
+    pub token: Option<Secret>,
+    pub allow_insecure_http: bool,
+    pub allow_private_network: bool,
     /// Origins, including the endpoint origin, whose media is fetched by the server
     /// without credentials.
-    pub(crate) media_origins: Vec<String>,
-    pub(crate) allow_external_media: bool,
-    pub(crate) operations: Vec<AllowedOperation>,
-    pub(crate) limits: PluginHostLimits,
+    pub media_origins: Vec<String>,
+    pub allow_external_media: bool,
+    pub operations: Vec<AllowedOperation>,
+    pub limits: PluginHostLimits,
 }
 
 impl PluginHostConfig {
-    pub(crate) fn operation(&self, plugin_id: &str, operation: &str) -> Option<&AllowedOperation> {
+    pub fn operation(&self, plugin_id: &str, operation: &str) -> Option<&AllowedOperation> {
         self.operations
             .iter()
             .find(|allowed| allowed.plugin_id == plugin_id && allowed.operation == operation)
     }
 
-    pub(crate) fn owns_media_origin(&self, url: &url::Url) -> bool {
+    pub fn owns_media_origin(&self, url: &url::Url) -> bool {
         self.media_origins
             .iter()
             .any(|origin| *origin == url.origin().ascii_serialization())
@@ -84,6 +86,8 @@ impl PluginHostConfig {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(super) struct RawPluginHost {
     id: String,
+    #[serde(default = "default_enabled")]
+    enabled: bool,
     endpoint: String,
     #[serde(default)]
     auth: RawPluginAuth,
@@ -98,6 +102,10 @@ pub(super) struct RawPluginHost {
     operations: Vec<RawAllowedOperation>,
     #[serde(default)]
     limits: RawPluginHostLimits,
+}
+
+const fn default_enabled() -> bool {
+    true
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -155,7 +163,7 @@ impl Default for RawPluginHostLimits {
 }
 
 /// Plugin and operation names use the same grammar as `@remedia/plugin-host`.
-pub(crate) fn valid_identifier(value: &str) -> bool {
+pub fn valid_identifier(value: &str) -> bool {
     let mut bytes = value.bytes();
 
     bytes
@@ -166,10 +174,7 @@ pub(crate) fn valid_identifier(value: &str) -> bool {
 }
 
 /// Parse an origin-only HTTP(S) URL: no credentials, path, query or fragment.
-pub(crate) fn parse_origin(
-    value: &str,
-    allow_insecure_http: bool,
-) -> Result<url::Url, ConfigError> {
+pub fn parse_origin(value: &str, allow_insecure_http: bool) -> Result<url::Url, ConfigError> {
     let url = url::Url::parse(value.trim())
         .map_err(|_| ConfigError::Invalid("pluginHosts URLs must be absolute HTTP(S) origins"))?;
 
@@ -210,7 +215,7 @@ fn ranged<T: PartialOrd + Copy>(
 
 pub(super) fn parse_plugin_hosts(
     raw: Vec<RawPluginHost>,
-    get_env: &mut impl FnMut(&str) -> Option<String>,
+    env: &mut Env,
 ) -> Result<Vec<Arc<PluginHostConfig>>, ConfigError> {
     if raw.len() > MAX_PLUGIN_HOSTS {
         return Err(ConfigError::Invalid(
@@ -233,12 +238,12 @@ pub(super) fn parse_plugin_hosts(
             ));
         }
 
-        let endpoint = resolve_env("pluginHosts[].endpoint", host.endpoint, get_env)?;
+        let endpoint = resolve_env("pluginHosts[].endpoint", host.endpoint, env)?;
         let endpoint = parse_origin(&endpoint, host.allow_insecure_http)?;
         let token = match host.auth {
             RawPluginAuth::None => None,
             RawPluginAuth::Bearer { token } => {
-                let token = resolve_env("pluginHosts[].auth.token", token, get_env)?;
+                let token = resolve_env("pluginHosts[].auth.token", token, env)?;
 
                 if token.len() < MIN_TOKEN_BYTES
                     || token.len() > MAX_TOKEN_BYTES
@@ -269,7 +274,7 @@ pub(super) fn parse_plugin_hosts(
         let mut media_origins = vec![endpoint.origin().ascii_serialization()];
 
         for origin in host.media_origins {
-            let origin = resolve_env("pluginHosts[].mediaOrigins[]", origin, get_env)?;
+            let origin = resolve_env("pluginHosts[].mediaOrigins[]", origin, env)?;
             let origin = parse_origin(&origin, host.allow_insecure_http)?
                 .origin()
                 .ascii_serialization();
@@ -379,6 +384,7 @@ pub(super) fn parse_plugin_hosts(
 
         hosts.push(Arc::new(PluginHostConfig {
             id: host.id,
+            enabled: host.enabled,
             endpoint,
             token,
             allow_insecure_http: host.allow_insecure_http,

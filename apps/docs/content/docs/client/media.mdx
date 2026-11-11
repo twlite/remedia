@@ -1,0 +1,59 @@
+---
+title: Media sources and probing
+description: Which media sources each node type accepts, how to apply filters and volume, and how to inspect media without playing it.
+---
+
+## Media sources
+
+`play()`, `stageNext()` and `probe()` take a `MediaSource`, one of:
+
+| Source                                                       | Embedded node | Remote node                                                              |
+| ------------------------------------------------------------ | ------------- | ------------------------------------------------------------------------ |
+| `{ url }`: an HTTP(S) URL                                    | Yes           | Yes, opened by the server and subject to its URL policy                  |
+| `{ file }`: a local path                                     | Yes           | Yes, a path **on the server**, under its allowed roots                   |
+| `{ buffer }`: a `Buffer` or `Uint8Array`                     | Yes           | No                                                                       |
+| `{ stream }`: a binary `Readable`                            | Yes           | No                                                                       |
+| `{ hostId, pluginId, operation, input }`: a plugin operation | No            | Yes, see [Playing audio through plugins](/docs/server/plugin-operations) |
+
+Buffer and Readable sources are never uploaded to a remote node. If a guild is assigned to a remote
+node, they are rejected with `UnsupportedMediaSourceError`; pin the guild to an embedded node with
+`nodeId` instead.
+
+## Filters and volume
+
+```ts
+await voice.filters.set('bass=gain=6'); // raw FFmpeg audio filtergraph
+await voice.filters.clear();
+await voice.setVolume(0.8); // linear gain from 0 through 2, default 1
+```
+
+Filtergraphs are trusted configuration: they are passed to FFmpeg, so do not accept them from
+untrusted users. Gain and filters are separate and both persist across tracks. An initial `volume`
+and `filterGraph` can be set when creating the session.
+
+## Standalone probing
+
+```ts
+const info = await client.probe(
+  { url: 'https://example.com/audio.mp3' },
+  { nodeId: 'media-1', signal: controller.signal, timeoutMs: 15_000 },
+);
+```
+
+`probe(source: MediaSource, options?: ClientProbeOptions): Promise<AudioStreamInfo>` delegates
+to embedded native probing or remote `media.probe`. It creates no guild assignment, playback
+session or voice transport. Supply `nodeId` when multiple healthy nodes exist; a single healthy
+node is selected automatically. Unknown, unhealthy or ambiguous nodes reject.
+
+Embedded nodes accept all MediaSource variants. Remote nodes accept only server-accessible files
+and HTTP(S) URLs; buffers and Readables reject with `UnsupportedMediaSourceError`. Cancellation
+sends a best-effort remote cancellation request; disconnect and server request deadlines also
+cancel native work. `timeoutMs` defaults to 15000 and is a positive 32-bit unsigned integer.
+Unknown numeric metadata stays `null`. See [native probing](/docs/node/bindings#probe-media-without-playback)
+for stream ownership and [the RPC reference](/docs/server/protocol#media-probing) for server limits.
+
+Metadata probing is independent of playback initialization and platform metadata extraction.
+A source integration can obtain a title or thumbnail directly from its media provider.
+When technical audio metadata is needed, it can resolve a temporary resource, call `probe`, then
+discard that resource. When playback begins, the plugin resolves a completely fresh source.
+Probing does not guarantee later resource availability or duration accuracy. Remedia hosts no source plugins.

@@ -1295,3 +1295,87 @@ async fn a_restarted_host_with_different_operations_is_rediscovered() {
     );
     server.shutdown().await;
 }
+
+#[tokio::test]
+async fn disabled_hosts_are_never_contacted_and_never_replaced_by_another_host() {
+    let disabled = MockHost::start(&[("example.metadata", "catalog.search")]).await;
+    let enabled = MockHost::start(&[("example.metadata", "catalog.search")]).await;
+    let allowed = ops(&[("example.metadata", "catalog.search", true)]);
+    let mut off = host_config("off-host", &disabled, allowed.clone(), json!({}));
+
+    off["enabled"] = json!(false);
+
+    let server = RunningServer::start_with_plugin_hosts(
+        json!([off, host_config("on-host", &enabled, allowed, json!({}))]),
+        json!({}),
+    )
+    .await;
+    let mut socket = session(&server, BOT_A).await;
+    let info = rpc(&mut socket, "info", "node.info", json!({})).await;
+
+    // A disabled host is neither advertised nor discoverable...
+    assert_eq!(
+        info["result"]["capabilities"]["pluginOperations"]["hosts"],
+        json!(["on-host"])
+    );
+
+    let listing = rpc(&mut socket, "list", "plugin.list", json!({})).await;
+
+    assert_eq!(listing["result"]["hosts"].as_array().unwrap().len(), 1);
+    assert_eq!(listing["result"]["hosts"][0]["hostId"], "on-host");
+
+    // ...and requests naming it fail clearly instead of falling back to the other host.
+    let execute = rpc(
+        &mut socket,
+        "execute",
+        "plugin.execute",
+        execute_params("off-host", "catalog.search", json!({})),
+    )
+    .await;
+
+    assert_eq!(
+        execute["error"]["code"], "plugin_host_disabled",
+        "{execute}"
+    );
+
+    let guild = "200000000000000001";
+
+    rpc(
+        &mut socket,
+        "guild",
+        "guild.create",
+        json!({"guildId": guild}),
+    )
+    .await;
+
+    let play = rpc(
+        &mut socket,
+        "play",
+        "player.play",
+        json!({"guildId": guild, "source": {
+            "type": "operation", "hostId": "off-host",
+            "pluginId": "example.metadata", "operation": "catalog.search", "input": {}
+        }}),
+    )
+    .await;
+
+    assert_eq!(play["error"]["code"], "plugin_host_disabled", "{play}");
+
+    let unknown = rpc(
+        &mut socket,
+        "unknown",
+        "plugin.execute",
+        execute_params("never-configured", "catalog.search", json!({})),
+    )
+    .await;
+
+    assert_eq!(unknown["error"]["code"], "plugin_host_not_found");
+    assert_eq!(disabled.count(&disabled.state.manifest_calls), 0);
+    assert_eq!(disabled.count(&disabled.state.execute_calls), 0);
+    assert_eq!(enabled.count(&enabled.state.execute_calls), 0);
+
+    let stats = rpc(&mut socket, "stats", "node.stats", json!({})).await;
+
+    assert_eq!(stats["result"]["pluginHosts"].as_array().unwrap().len(), 1);
+    server.shutdown().await;
+}

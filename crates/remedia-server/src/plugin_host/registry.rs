@@ -1,27 +1,29 @@
 //! Host registry, discovery, authenticated execution and source resolution.
 use std::future::Future;
-use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use remedia_core::InputSource;
 use remedia_observability::ObservabilityHandle;
-use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use serde_json::{Value, json};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::instrument::WithSubscriber;
 
-use super::error::{PluginError, PluginErrorKind};
+use remedia_server_config::error::{PluginError, PluginErrorKind};
+use remedia_server_config::protocol::{
+    EXECUTE_PATH, ExecuteOutcome, Manifest, error_code, error_from_status, parse_descriptor,
+    parse_execute_response,
+};
+use remedia_server_config::transport::{
+    authorize, build_client, endpoint_url, ensure_literal_ip_allowed, fetch_manifest, read_limited,
+    send_cancellable,
+};
+use remedia_server_config::{AllowedOperation, PluginHostConfig};
+
 use super::media::{MediaGuard, open_media};
-use super::protocol::{
-    EXECUTE_PATH, ExecuteOutcome, MANIFEST_PATH, Manifest, error_code, error_from_status,
-    parse_descriptor, parse_execute_response, validate_manifest,
-};
-use crate::config::{
-    AllowedOperation, MediaAccessError, PluginHostConfig, ServerConfig, is_public_ip,
-};
+use crate::config::{MediaAccessError, ServerConfig};
 
 /// Minimum interval between forced rediscovery attempts triggered by a missing operation.
 const REDISCOVERY_FLOOR: Duration = Duration::from_secs(5);
@@ -148,43 +150,6 @@ impl HostListing {
     }
 }
 
-/// Resolves DNS answers once and rejects non-public addresses unless a deployment opts in,
-/// so the validated address set is exactly what the connection uses.
-struct PolicyResolver {
-    allow_private: bool,
-}
-
-impl Resolve for PolicyResolver {
-    fn resolve(&self, name: Name) -> Resolving {
-        let allow_private = self.allow_private;
-
-        Box::pin(async move {
-            let addresses = tokio::net::lookup_host((name.as_str(), 0))
-                .await?
-                .collect::<Vec<SocketAddr>>();
-
-            if addresses.is_empty() {
-                return Err("host did not resolve".into());
-            }
-
-            if !allow_private && addresses.iter().any(|address| !is_public_ip(address.ip())) {
-                return Err("host resolves to a non-public address".into());
-            }
-
-            Ok(Box::new(addresses.into_iter()) as Addrs)
-        })
-    }
-}
-
-fn install_crypto_provider() {
-    static INSTALL: Once = Once::new();
-
-    INSTALL.call_once(|| {
-        // Another component may already have installed a process default; keep it.
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    });
-}
-
 fn unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -195,116 +160,13 @@ fn operation_id() -> String {
     format!("{:032x}", rand::random::<u128>())
 }
 
-/// Await a request under cancellation, shutdown and a deadline. Dropping the future
-/// closes the connection, which is how a pending operation is actually cancelled.
-pub(crate) async fn send_cancellable(
-    request: reqwest::RequestBuilder,
-    cancel: &CancellationToken,
-    shutdown: &CancellationToken,
-    timeout: Duration,
-) -> Result<reqwest::Response, PluginError> {
-    tokio::select! {
-        biased;
-        () = cancel.cancelled() => Err(PluginError::new(PluginErrorKind::Cancelled, "operation was cancelled")),
-        () = shutdown.cancelled() => Err(PluginError::new(PluginErrorKind::ShuttingDown, "server is shutting down")),
-        result = tokio::time::timeout(timeout, request.send()) => match result {
-            Err(_) => Err(PluginError::new(PluginErrorKind::Timeout, "plugin host request timed out")),
-            Ok(Err(error)) => Err(transport_error(&error)),
-            Ok(Ok(response)) => Ok(response),
-        },
-    }
-}
-
-fn transport_error(error: &reqwest::Error) -> PluginError {
-    if error.is_timeout() {
-        PluginError::new(PluginErrorKind::Timeout, "plugin host request timed out")
-    } else if error.is_redirect() {
-        PluginError::new(
-            PluginErrorKind::Incompatible,
-            "plugin host attempted a redirect, which is never followed",
-        )
-    } else {
-        PluginError::new(
-            PluginErrorKind::HostUnavailable,
-            "plugin host connection failed",
-        )
-    }
-}
-
-/// Read at most `limit` bytes, failing rather than truncating.
-async fn read_limited(
-    mut response: reqwest::Response,
-    limit: usize,
-    cancel: &CancellationToken,
-    shutdown: &CancellationToken,
-    timeout: Duration,
-) -> Result<Vec<u8>, PluginError> {
-    if response
-        .content_length()
-        .is_some_and(|length| length > limit as u64)
-    {
-        return Err(PluginError::new(
-            PluginErrorKind::ResponseTooLarge,
-            "plugin host response exceeds the configured limit",
-        ));
-    }
-
-    let read = async move {
-        let mut body = Vec::new();
-
-        loop {
-            match response.chunk().await {
-                Ok(Some(chunk)) => {
-                    if body.len() + chunk.len() > limit {
-                        return Err(PluginError::new(
-                            PluginErrorKind::ResponseTooLarge,
-                            "plugin host response exceeds the configured limit",
-                        ));
-                    }
-
-                    body.extend_from_slice(&chunk);
-                }
-                Ok(None) => return Ok(body),
-                Err(error) => return Err(transport_error(&error)),
-            }
-        }
-    };
-
-    tokio::select! {
-        biased;
-        () = cancel.cancelled() => Err(PluginError::new(PluginErrorKind::Cancelled, "operation was cancelled")),
-        () = shutdown.cancelled() => Err(PluginError::new(PluginErrorKind::ShuttingDown, "server is shutting down")),
-        result = tokio::time::timeout(timeout, read) => match result {
-            Err(_) => Err(PluginError::new(PluginErrorKind::Timeout, "plugin host request timed out")),
-            Ok(result) => result,
-        },
-    }
-}
-
 impl HostState {
     fn new(
         config: Arc<PluginHostConfig>,
         shutdown: CancellationToken,
         observability: ObservabilityHandle,
     ) -> Result<Arc<Self>, PluginError> {
-        install_crypto_provider();
-
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .dns_resolver(Arc::new(PolicyResolver {
-                allow_private: config.allow_private_network,
-            }))
-            .connect_timeout(config.limits.request_timeout)
-            .https_only(!config.allow_insecure_http)
-            .user_agent(concat!("remedia-server/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|_| {
-                PluginError::new(
-                    PluginErrorKind::HostFailed,
-                    "plugin host HTTP client could not be built",
-                )
-            })?;
+        let client = build_client(&config)?;
 
         Ok(Arc::new(Self {
             pending: Arc::new(Semaphore::new(config.limits.max_pending_operations)),
@@ -341,22 +203,7 @@ impl HostState {
 
     /// IP literals bypass the resolver, so they are checked against the same policy here.
     pub(crate) fn ensure_literal_ip_allowed(&self, url: &url::Url) -> Result<(), PluginError> {
-        let literal = match url.host() {
-            Some(url::Host::Ipv4(address)) => Some(IpAddr::V4(address)),
-            Some(url::Host::Ipv6(address)) => Some(IpAddr::V6(address)),
-            _ => None,
-        };
-
-        if literal
-            .is_some_and(|address| !self.config.allow_private_network && !is_public_ip(address))
-        {
-            return Err(PluginError::new(
-                PluginErrorKind::MediaOriginNotAllowed,
-                "address is not permitted for this plugin host",
-            ));
-        }
-
-        Ok(())
+        ensure_literal_ip_allowed(&self.config, url)
     }
 
     fn record(&self, result: &Result<(), &PluginError>) {
@@ -379,22 +226,6 @@ impl HostState {
         }
     }
 
-    fn url(&self, path: &str) -> url::Url {
-        // The configured endpoint is an origin; the path is one of the fixed v1 routes.
-        let mut url = self.config.endpoint.clone();
-
-        url.set_path(path);
-
-        url
-    }
-
-    fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match &self.config.token {
-            Some(token) => request.bearer_auth(token.expose()),
-            None => request,
-        }
-    }
-
     /// Fetch and validate `/.well-known/remedia`. Concurrent callers share one fetch.
     pub(crate) async fn discover(
         &self,
@@ -413,7 +244,7 @@ impl HostState {
 
         self.stats.discoveries.fetch_add(1, Ordering::Relaxed);
 
-        let result = self.fetch_manifest(cancel).await;
+        let result = fetch_manifest(&self.client, &self.config, cancel, &self.shutdown).await;
 
         self.record(&result.as_ref().map(|_| ()));
 
@@ -465,46 +296,6 @@ impl HostState {
                 Err(error)
             }
         }
-    }
-
-    async fn fetch_manifest(&self, cancel: &CancellationToken) -> Result<Manifest, PluginError> {
-        let request = self.authorize(self.client.get(self.url(MANIFEST_PATH)));
-        let response = send_cancellable(
-            request,
-            cancel,
-            &self.shutdown,
-            self.config.limits.request_timeout,
-        )
-        .await?;
-        let status = response.status();
-
-        if !status.is_success() {
-            let body = read_limited(
-                response,
-                4_096,
-                cancel,
-                &self.shutdown,
-                self.config.limits.request_timeout,
-            )
-            .await
-            .unwrap_or_default();
-
-            return Err(error_from_status(
-                status.as_u16(),
-                error_code(&body).as_deref(),
-            ));
-        }
-
-        let body = read_limited(
-            response,
-            self.config.limits.max_response_bytes,
-            cancel,
-            &self.shutdown,
-            self.config.limits.request_timeout,
-        )
-        .await?;
-
-        validate_manifest(&self.config, &body)
     }
 
     /// Verify the operation is allowed and currently advertised, refreshing a stale view once.
@@ -568,12 +359,14 @@ impl HostState {
             ));
         }
 
-        let request = self
-            .authorize(self.client.post(self.url(EXECUTE_PATH)))
-            .header("content-type", "application/json")
-            .header("accept", "application/json")
-            .header("x-remedia-operation-id", operation_id())
-            .body(body);
+        let request = authorize(
+            &self.config,
+            self.client.post(endpoint_url(&self.config, EXECUTE_PATH)),
+        )
+        .header("content-type", "application/json")
+        .header("accept", "application/json")
+        .header("x-remedia-operation-id", operation_id())
+        .body(body);
         let timeout = self.config.limits.request_timeout;
         let response = send_cancellable(request, cancel, &self.shutdown, timeout).await?;
         let status = response.status();
@@ -1030,6 +823,9 @@ impl HostState {
 /// All configured deployments, keyed by their stable host ID.
 pub(crate) struct PluginHostRegistry {
     hosts: Vec<Arc<HostState>>,
+    /// IDs of configured hosts with `enabled: false`. They are never registered as executable
+    /// and requests naming them fail with `plugin_host_disabled` instead of reaching any host.
+    disabled: Vec<String>,
     shutdown: CancellationToken,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
@@ -1041,8 +837,15 @@ impl PluginHostRegistry {
     ) -> Result<Self, PluginError> {
         let shutdown = CancellationToken::new();
         let mut hosts = Vec::with_capacity(configs.len());
+        let mut disabled = Vec::new();
 
         for config in configs {
+            if !config.enabled {
+                disabled.push(config.id.clone());
+
+                continue;
+            }
+
             hosts.push(HostState::new(
                 Arc::clone(config),
                 shutdown.clone(),
@@ -1052,13 +855,29 @@ impl PluginHostRegistry {
 
         Ok(Self {
             hosts,
+            disabled,
             shutdown,
             tasks: Mutex::new(Vec::new()),
         })
     }
 
-    pub(crate) fn host(&self, id: &str) -> Option<&Arc<HostState>> {
-        self.hosts.iter().find(|host| host.config.id == id)
+    /// The executable host with this ID, or why there is none: it is disabled or unknown.
+    pub(crate) fn host(&self, id: &str) -> Result<&Arc<HostState>, PluginError> {
+        if let Some(host) = self.hosts.iter().find(|host| host.config.id == id) {
+            return Ok(host);
+        }
+
+        if self.disabled.iter().any(|disabled| disabled == id) {
+            return Err(PluginError::new(
+                PluginErrorKind::HostDisabled,
+                "this plugin host is disabled in the node's configuration",
+            ));
+        }
+
+        Err(PluginError::new(
+            PluginErrorKind::HostNotFound,
+            "no plugin host with that ID is configured on this node",
+        ))
     }
 
     pub(crate) fn host_ids(&self) -> Vec<&str> {

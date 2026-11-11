@@ -77,11 +77,11 @@ pub(super) struct RawOpus {
 
 impl Default for RawOpus {
     fn default() -> Self {
-        let config = OpusEncoderConfig::default();
+        // Mirrors `remedia_core::OpusEncoderConfig::default()`; the server asserts they agree.
         Self {
-            bitrate: config.bitrate,
-            complexity: config.complexity,
-            vbr: config.vbr,
+            bitrate: 128_000,
+            complexity: 9,
+            vbr: true,
         }
     }
 }

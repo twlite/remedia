@@ -6,6 +6,7 @@
 }
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   margin-bottom: 9px;
 }
@@ -63,4 +64,19 @@
 .command button:hover {
   color: white;
   background: #ffffff12;
+}
+.hint {
+  margin-top: 10px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #9b9da4;
+}
+.hint a {
+  color: #c28aff;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.hint code {
+  font-size: 12px;
+  color: #e6e6e7;
 }

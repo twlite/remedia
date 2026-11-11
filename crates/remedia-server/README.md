@@ -1,123 +1,74 @@
 # remedia-server
 
-`remedia-server` is Remedia's standalone Rust server. It exposes authenticated, versioned JSON RPC
-over WebSocket and owns server-side client sessions, guild players, native playback, and optional
-Discord voice transports. It uses `remedia-core`, `remedia-discord`, and
-`remedia-observability` directly; it does not use N-API or an FFmpeg subprocess.
+A standalone audio server for Remedia. Your Discord bot connects to it with
+[`@remedia/client`](../../packages/remedia-client); the server decodes media and sends audio to Discord
+voice channels, so the bot machine needs no FFmpeg. The package also provides the `remedia-server` /
+`remedia` command line.
 
-The standalone executable now uses a `clap` CLI. Run `remedia-server
---generate-config-file` to create a safe, default-deny starter configuration,
-`remedia-server doctor` to validate the configuration and loaded FFmpeg
-library versions, and `remedia-server --list` to inspect local instances.
-`remedia-server update` / `upgrade` runs the bundled platform installer.
-Required and optional dotenv files are supported through `--env-file` and
-`--optional-env-file`. See the [CLI reference](../../apps/docs/content/docs/server/cli.mdx).
-
-The server starts only with `remedia.config.json` in the current working directory, or with an
-explicit `--config <path>` argument. See [`remedia.config.example.json`](remedia.config.example.json)
-for the complete schema. If the file is missing or a configured media root cannot be resolved, the
-startup error reports the path. Relative media roots are based on the config file's directory, and
-`~`/`~/...` roots expand using the current user's home directory.
+## Install
 
 ```sh
-cp crates/remedia-server/remedia.config.example.json remedia.config.json
-mkdir -p media
-export REMEDIA_RPC_PASSWORD='replace-this'
-export REMEDIA_BOT_USER_ID='100000000000000001'
-cargo run -p remedia-server
+curl -fsSL https://remedia.twlite.dev/install.sh | sh
 ```
 
-The default bind address is `127.0.0.1:8787`. Keep the server on loopback or a private network
-unless a TLS reverse proxy protects WebSocket traffic. Basic authentication credentials and voice
-credentials must never cross an unencrypted public connection.
+On Windows PowerShell: `irm https://remedia.twlite.dev/install.ps1 | iex`. The installer provisions
+`remedia-server` together with FFmpeg 9. No Rust toolchain is required. See the
+[installation guide](https://remedia.twlite.dev/docs/server/installation).
 
-Optional `audio.opus` settings control PCM encoding for all players: `bitrate` defaults to 128000
-**bits per second**, `complexity` to 9, and `vbr` to true. Each player output owns an independent,
-lazy encoder. Compatible Opus passthrough forwards original packets and is unaffected. See the
-[configuration guide](../../apps/docs/content/docs/server/configuration.mdx#opus-encoder-settings)
-for ranges, quality and CPU tradeoffs, and partial configuration examples.
-
-## Connection and ownership
-
-Connect a WebSocket client to `ws://127.0.0.1:8787/v1/ws` and authenticate the handshake with
-`Authorization: Basic ...` and `X-Remedia-Bot-Id: <discord-snowflake>`. The manual integration
-example reads the ID from `REMEDIA_BOT_USER_ID`. The bot ID is sent on each WebSocket connection,
-validated as a positive decimal snowflake, and bound to that connection's
-client session. It is not part of server configuration, so multiple bot identities can use the same
-server account and server instance. Each client session owns guild sessions; each guild session
-owns one `PlaybackSession` and an optional voice transport. Guild IDs are scoped by client session,
-so separate bots can play in the same guild independently.
-
-The bot application still owns its Discord Gateway connection. It supplies `voice.connect` with
-fresh gateway dispatch credentials; the server handles the voice transport, RTP, DAVE, and UDP. The
-server does not send Gateway OP 4 or join channels.
-
-If a WebSocket disappears unexpectedly, its session remains active for the configured resume
-timeout. The same authenticated user can reclaim it with its opaque resume credential. Event
-delivery is bounded and events produced while detached are not replayed; `client.resume` returns a
-snapshot. Explicit `client.close` and expiry stop playback, disconnect transports, and release
-resources. Sessions do not survive a server process restart.
-
-## RPC commands
-
-| Command                                                                         | Purpose                                                                        |
-| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `node.info`, `node.protocol_version`, `node.health`, `node.stats`               | Node identity, protocol, health, and capacity/host metrics                     |
-| `client.create`, `client.list`, `client.resume`, `client.close`                 | Create, inspect, reclaim, and close an authenticated client session            |
-| `guild.create`, `guild.list`, `guild.get`, `guild.destroy`                      | Manage players scoped to the controlled client session                         |
-| `voice.connect`, `voice.state`, `voice.disconnect`                              | Connect supplied Discord voice credentials or inspect/disconnect the transport |
-| `player.play`, `player.pause`, `player.resume`, `player.stop`, `player.seek`    | Play an allowed file or HTTP(S) URL and control it                             |
-| `player.filter.set`, `player.filter.clear`, `player.volume.set`, `player.state` | Set a raw FFmpeg filtergraph, linear gain, and inspect playback                |
-
-`player.play` accepts `{"type":"url","url":"https://..."}` or
-`{"type":"file","path":"/approved/path/file.ogg"}`. File inputs must resolve inside a configured
-`allowedFileRoots` directory. URLs require a configured `allowedUrlHosts` entry; private and special
-IP ranges are rejected by default. FFmpeg may follow remote redirects, so deployments that accept
-untrusted URLs should also enforce outbound network policy at the host or firewall.
-
-With no voice transport, `player.play` decodes to a null output for validation and local server
-workflows; it is not audible. A connected voice transport sends through the native Opus and Discord
-pipeline. A raw graph is trusted application configuration and should not be exposed directly to
-untrusted clients. Master gain is linear from `0.0` through `2.0` and is independent from filters.
-
-RPC requests use `{ "version": 1, "id": "...", "command": "...", "params": {} }`. Responses keep
-the same `id` and contain `ok` plus either `result` or `{ "code", "message" }`. Lifecycle events are
-separate frames and may be lost when a bounded queue overflows; `client.events_lost` reports the
-number dropped. Error codes include `invalid_request`, `authentication_failed`, `unknown_session`,
-`invalid_state`, `resource_exhausted`, `request_timeout`, `unsupported`, `playback_failed`, and
-`transport_failed`.
-
-See the [Fumadocs server guide](../../apps/docs/content/docs/server/overview.mdx),
-[configuration reference](../../apps/docs/content/docs/server/configuration.mdx), and
-[protocol reference](../../apps/docs/content/docs/server/protocol.mdx) for the full schema and wire
-examples.
-
-## Manual Discord example
-
-After the bot application has requested the channel join and collected a fresh
-`VOICE_STATE_UPDATE`/`VOICE_SERVER_UPDATE` pair, the example can exercise playback, live filter
-replacement, and cleanup without printing credentials:
+## Run it
 
 ```sh
-export REMEDIA_SERVER_URL='ws://127.0.0.1:8787/v1/ws'
-export REMEDIA_USERNAME='media-bot'
-export REMEDIA_PASSWORD='replace-this'
-export REMEDIA_BOT_USER_ID='100000000000000001'
-export REMEDIA_GUILD_ID='200000000000000001'
-export REMEDIA_CHANNEL_ID='200000000000000002'
-export REMEDIA_MEDIA_URL='https://media.example.com/audio.ogg'
-export REMEDIA_VOICE_SESSION_ID='value-from-voice-state-update'
-export REMEDIA_VOICE_TOKEN='value-from-voice-server-update'
-export REMEDIA_VOICE_ENDPOINT='endpoint-from-voice-server-update'
-cargo run -p remedia-server --example remote_discord
+remedia-server --generate-config-file   # writes a safe starter remedia.config.json
+export REMEDIA_RPC_PASSWORD='a-long-random-password'
+remedia-server doctor                   # checks FFmpeg libraries and the configuration
+remedia-server                          # starts the server on 127.0.0.1:8787
 ```
 
-The example does not implement Discord Gateway or OP 4. It is a manual integration harness; CI uses
-localhost WebSocket tests and a null output rather than Discord credentials.
+Then connect from your bot:
 
-## Multi-node operation
+```ts
+import { RemediaClient } from '@remedia/client';
 
-Every process is independent and reports a node-local `nodeId`, version, active player count,
-capacity, CPU parallelism/load when available, process RSS when available, and transport/processing
-health. `@remedia/client` uses this information to select a node when creating a guild session and
-routes later commands back to that node. The server never migrates a player.
+const remedia = await RemediaClient.create({
+  botUserId: discord.user.id,
+  nodes: [
+    {
+      type: 'remote',
+      id: 'media-1',
+      url: 'remedia://127.0.0.1:8787',
+      auth: { username: 'media-bot', password: process.env.REMEDIA_RPC_PASSWORD! },
+    },
+  ],
+  send: (guildId, payload) => discord.guilds.cache.get(guildId)?.shard.send(payload),
+});
+```
+
+Keep the server on loopback or a private network unless a TLS reverse proxy protects it.
+
+## Commands
+
+| Command                                 | Purpose                                                                              |
+| --------------------------------------- | ------------------------------------------------------------------------------------ |
+| `remedia-server [serve]`                | Start the server (`--config`, `--env-file`, `--optional-env-file`)                   |
+| `remedia-server doctor`                 | Check FFmpeg libraries, configuration, and plugin hosts                              |
+| `remedia-server --generate-config-file` | Create a starter configuration                                                       |
+| `remedia-server --list [--json]`        | Show running servers                                                                 |
+| `remedia-server plugins ...`            | Register and manage [plugin hosts](https://remedia.twlite.dev/docs/plugins/overview) |
+| `remedia-server update`                 | Install the latest release                                                           |
+
+Run `remedia-server --help` for every option. Everything except `serve` and `doctor` works without
+FFmpeg installed.
+
+## Documentation
+
+- [Server overview](https://remedia.twlite.dev/docs/server/overview) and [remote quickstart](https://remedia.twlite.dev/docs/getting-started/remote)
+- [Configuration](https://remedia.twlite.dev/docs/server/configuration) and [CLI](https://remedia.twlite.dev/docs/server/cli)
+- [Deployment](https://remedia.twlite.dev/docs/server/deployment)
+- [WebSocket RPC protocol](https://remedia.twlite.dev/docs/server/protocol), for writing your own client
+
+## Development
+
+Contributors can build from source with `cargo run -p remedia-server`, which needs the FFmpeg 9
+development libraries; see [CONTRIBUTING.md](../../CONTRIBUTING.md). [`remedia.config.example.json`](remedia.config.example.json)
+shows every configuration key. The FFmpeg-free configuration and plugin-host code is in
+[`remedia-server-config`](../remedia-server-config).

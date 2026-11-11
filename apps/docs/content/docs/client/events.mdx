@@ -1,0 +1,91 @@
+---
+title: Events and hooks
+description: Listen to playback, voice, and node events, attach application metadata to playback, and intercept playback with beforePlay hooks.
+---
+
+`DiscordSession` and `RemediaClient` are typed Node `EventEmitter`s. The package exports
+`PlaybackSessionEvents`, `VoiceSessionEvents`, and `RemediaClientEventNames` as `as const` event
+objects, and exports matching string-union types. Use the constants with `on`, `once`, or `off`:
+
+```ts
+import { PlaybackSessionEvents, RemediaClient } from '@remedia/client';
+
+interface MyMetadata {
+  requestedBy: string;
+  trackId: string;
+}
+
+const client = await RemediaClient.create({ nodes, send });
+const voice = client.createDiscordSession<MyMetadata>({ guildId, channelId, userId });
+
+voice.on(PlaybackSessionEvents.playbackCompleted, (event) => {
+  // The application can advance its own queue using this generation and metadata.
+  queue.emit('trackFinished', event.customMetadata);
+});
+```
+
+Session playback events are `playbackStarted`, `playbackCompleted`, `playbackStopped`,
+`playbackFailed`, `playbackPaused`, `playbackResumed`, `playbackSeeked`, `filterChanged`, and
+`volumeChanged`; sessions also emit `voiceStateChanged`, `voiceFailed`, and `sessionDisposed`.
+The client forwards session events and emits `nodeConnected`, `nodeDisconnected`, `sessionResumed`,
+`sessionLost`, `nodeEvent`, `eventsLost`, `guildAssigned`, and `guildReleased`. Voice and playback
+failures use named events rather than Node's special `error` event. Synchronous listener exceptions
+are isolated and reported through `process.emitWarning` with code `REMEDIA_LISTENER_ERROR`.
+
+`playbackStarted` means the processing pipeline entered playback, not that a Discord listener heard
+audio. `playbackCompleted` means the engine processed natural EOF, not that transport buffers
+drained. Stop and completion are distinct. Payloads include the local session ID, configured node
+ID, guild ID, and source generation. Idempotent controls do not emit duplicate changes. Rejected
+controls do not emit success events.
+
+When a remote terminal event was missed during a socket outage, the client reconciles from the
+server's authoritative snapshot and emits at most one terminal event with `reconstructed: true`.
+It does not invent a historical `playbackStarted`. Generation checks prevent stale completion from
+finishing a replacement source's waiter. The SDK does not emit queue or track-provider events; an
+application or framework maps Remedia lifecycle events to its own queue policy.
+
+Pass arbitrary application metadata on `play()`:
+
+```ts
+interface MyMetadata {
+  requestedBy: string;
+  trackId: string;
+}
+
+await voice.play(
+  { url: 'https://example.net/audio.mp3' },
+  {
+    customMetadata: { requestedBy: interaction.user.id, trackId: 'track-123' },
+  },
+);
+```
+
+The object is retained by reference in the JavaScript process and attached to events for that
+source generation. It is not JSON-serialized to Rust or WebSocket RPC, so functions and class
+instances are allowed. It is released after a terminal event or session disposal and is not
+persisted across client-process restarts. Server snapshots never contain this application metadata.
+
+`voice.hooks.beforePlay()` is ordered, awaited local middleware that runs before native playback or
+RPC. It can inspect the input and metadata, return `{ cancel: true, reason }`, or reject by throwing.
+Cancelled/failed hooks do not initiate playback or emit a start event. An `AbortSignal` cancels a
+pending hook; aborting after startup stops the current generation. Hooks do not replace server-side
+authorization.
+
+## Cached state and waiting
+
+`play`, `pause`, `resume`, `seek`, `stop`, `filters.set`, `filters.clear`, `setVolume`, `refresh`,
+`wait`, `disconnect`, and `dispose` use the same session surface for both adapters. `wait()` returns
+the terminal playback state (`completed`, `failed`, or `stopped`). The remote adapter associates
+completion with the server's source generation; completion from an old track cannot finish a new
+track's waiter. It queries `player.state` after reconnect or event gaps before resolving a waiter.
+
+Remote getters such as `state`, `position`, `durationMs`, and `snapshot` are cached observations,
+updated by lifecycle events and explicit `await voice.refresh()`. They are not real-time audible
+position measurements. The server snapshot distinguishes source media position, submitted output
+position, and optional played position.
+
+Operational RPC failures reject the requested operation as `RemediaRpcError` with a stable error
+code. A command rejection does not mark an otherwise healthy node disconnected. Connection failures
+use `NodeUnavailableError`; expired owner sessions use `SessionLostError`; malformed protocol
+messages use `ProtocolError`. URL userinfo, passwords, authorization headers, voice tokens, and
+resume credentials are not included in errors or logs.

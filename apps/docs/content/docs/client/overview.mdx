@@ -1,38 +1,33 @@
 ---
-title: Hybrid TypeScript client
-description: Control embedded and remote Remedia nodes through one sticky Discord session API.
+title: Using @remedia/client
+description: Create a client, add embedded or remote nodes, join a Discord voice channel, play audio, and clean up.
 ---
 
-# Hybrid TypeScript client
+`@remedia/client` is the one SDK for playing audio into Discord from Node.js. It runs the engine
+inside your process (an **embedded** node), on `remedia-server` processes (**remote** nodes), or a
+mix, behind the same session API. It needs Node.js 22.18 or newer.
 
-`@remedia/client` is the high-level orchestration SDK. It can assign a guild session directly to a
-local `@remedia/node` N-API engine or to a remote authenticated `remedia-server`. Embedded playback
-does not pass through WebSocket or start a local server. Remote-only consumers do not need FFmpeg
-libraries or the native addon; `@remedia/node` is an optional peer dependency used only for embedded
-node configurations.
+If you are starting from scratch, the [embedded](/docs/getting-started/embedded) and
+[remote](/docs/getting-started/remote) quickstarts install everything for you. This page is the
+API walkthrough.
 
-## Installation
-
-Requires Node.js 22.18.0 or newer (ESM).
+## Install
 
 ```sh
 npm install @remedia/client
-# Only embedded configurations also need:
+```
+
+Remote nodes need nothing else on the bot machine. An embedded node also needs `@remedia/node` and
+[FFmpeg 9](/docs/node/ffmpeg-9):
+
+```sh
 npm install @remedia/node
 ```
 
-For remote-only usage, omit all `embedded` entries from the node pool below. The client machine
-needs neither FFmpeg nor the addon; the server host needs FFmpeg 9. An `embedded` node needs FFmpeg 9
-on the Node.js host; install it with the
-[FFmpeg-only installer](/docs/node/ffmpeg-9#install-ffmpeg-with-the-remedia-installer) and
-`@remedia/node` finds it without environment variables. If it cannot be loaded, starting the
-embedded node fails with `embedded @remedia/node could not be loaded:` followed by the native
-package's explanation (paths considered, reasons, install instructions). See
-[native library troubleshooting](/docs/node/troubleshooting),
-[distribution](/docs/node/distribution) and
-[licensing and media responsibility](/docs/licensing).
+## Create a client
 
-## Configure a node pool
+A client needs a list of nodes, a function that sends Discord Gateway payloads, and your bot's user
+ID. Add whichever nodes you use:
 
 ```ts
 import { RemediaClient } from '@remedia/client';
@@ -40,461 +35,100 @@ import { RemediaClient } from '@remedia/client';
 const remedia = await RemediaClient.create({
   botUserId: discord.user.id,
   nodes: [
-    { type: 'embedded', id: 'local', capacity: 8 },
+    // Runs the engine inside this process.
+    { type: 'embedded', id: 'local' },
+    // Runs on a remedia-server process.
     {
       type: 'remote',
-      id: 'media-a',
+      id: 'media-1',
       url: 'remedia://127.0.0.1:8787',
-      auth: { username: 'bot', password: process.env.REMEDIA_PASSWORD! },
-    },
-    {
-      type: 'remote',
-      id: 'media-b',
-      url: 'remedias://media.example.net',
-      auth: { username: 'bot', password: process.env.REMEDIA_PASSWORD! },
+      auth: { username: 'media-bot', password: process.env.REMEDIA_RPC_PASSWORD! },
     },
   ],
   send(guildId, payload) {
-    sendToShard(guildId, payload);
+    discord.guilds.cache.get(guildId)?.shard.send(payload);
   },
 });
 
 discord.on('raw', (packet) => remedia.receive(packet));
-const voice = remedia.createDiscordSession({ guildId, channelId, userId });
-await voice.connect();
-await voice.play({ url: 'https://media.example.net/audio.mp3' });
-await voice.filters.set('bass=gain=8');
-await voice.setVolume(0.8);
 ```
 
-When any remote node is configured, `botUserId` is required and must be the host Discord client's
-positive decimal snowflake. `@remedia/client` sends it as `X-Remedia-Bot-Id` on each WebSocket
-handshake; it is never part of the server's static user configuration. This lets independent bot
-clients use the same server credentials while retaining separate server sessions. For embedded-only
-node pools the option is optional.
+You keep your own Discord Gateway connection. Remedia calls `send` to ask Discord for a voice
+connection and expects every raw Gateway packet through `remedia.receive()`. `botUserId` is required
+when any node is remote; it is sent to the server so several bots can share one server account.
 
-The application owns the Discord Gateway connection. Remedia sends OP 4 through `send`, correlates
-the matching `VOICE_STATE_UPDATE` and `VOICE_SERVER_UPDATE`, and connects the selected node's voice
-transport after both fresh events arrive. Snowflakes are decimal strings. `voice.connect()` resolves
-after the selected backend has connected; remote mode waits for server-side voice and DAVE setup.
-Call `remedia.receive(packet)` for each raw Gateway packet and `await remedia.close()` during
-application shutdown.
+Use `remedia://` for `ws://` and `remedias://` for `wss://`. With more than one node, see
+[Nodes and routing](/docs/client/nodes) for how guilds are assigned.
 
-`remedia://` maps to `ws://`, `remedias://` maps to `wss://`, and a missing path becomes `/v1/ws`.
-Standard `ws://` and `wss://` URLs are also accepted. Configure Basic credentials with `auth`; URL
-userinfo is supported as a convenience, decoded, stripped from the URL, and sent only in the
-WebSocket `Authorization` header. TLS certificate validation remains enabled. Use `remedias://`
-for remote deployment and terminate TLS at a trusted reverse proxy; the server itself does not
-provide TLS.
-
-## Node selection and guild affinity
-
-Healthy nodes are selected by current player allocation divided by the node's reported player
-capacity, with stable ID ordering to break ties. Local assignment reservations prevent concurrent
-guild creation from overfilling a node. Nodes reporting degraded transport or processing health,
-full capacity, or a disconnected state are excluded. An optional `selectNode(nodes, { guildId })`
-callback can choose among the healthy candidates.
-
-Inspect `remedia.nodes` for client IDs, server IDs, status, health statistics, capacity, assignments,
-and the last connection error. `remedia.assignments` and `getAssignment(guildId)` expose the sticky
-guild-to-node mapping. All later playback, filter, volume, and voice operations stay on that node.
-Remote `{ url }` and `{ file }` sources are resolved by the server. `{ buffer }` and `{ stream }`
-sources require an embedded node; pin that guild with `nodeId: 'local'` or Remedia rejects the input
-instead of uploading it or silently moving the guild.
-
-## Plugin operation sources
-
-A remote node can execute an operation on a plugin-host deployment configured in its
-`pluginHosts` and play the audio it returns (see [Plugin operation sources](/docs/server/plugin-operations)).
-The source is a plain object; `input` is opaque JSON which Remedia never interprets:
+## Join a channel and play
 
 ```ts
 const voice = remedia.createDiscordSession({
-  guildId,
-  channelId,
-  userId,
-  // Optional: only assign this guild to nodes which are configured with the host.
-  pluginHosts: ['source-host-1'],
+  guildId: '123456789012345678',
+  channelId: '234567890123456789',
+  userId: discord.user.id,
 });
+
 await voice.connect();
-await voice.play({
-  hostId: 'source-host-1',
-  pluginId: 'example.source',
-  operation: 'source.stream',
-  input: { id: 'opaque to Remedia' },
-});
+
+const info = await voice.play({ url: 'https://media.example.com/audio.mp3' });
+console.log(info.codec, info.durationMs);
+
+console.log(await voice.wait()); // 'completed', 'stopped' or 'failed'
 ```
 
-The same shape works for `stageNext`. Rules:
+- `connect()` resolves once the voice connection is ready, and rejects on timeout or failure.
+- `play()` resolves with stream details as soon as playback starts. It rejects if the source cannot be opened.
+- `wait()` resolves when the current track reaches a terminal state.
+- Snowflakes (guild, channel, user IDs) are decimal strings.
 
-- `hostId` is an operator-assigned deployment ID, not a manifest name, and carries no endpoint or
-  credentials. Store references to it in your own track model; never store the resulting media URL.
-- A node advertises `capabilities.pluginOperations = { available, hosts, forwarding }`. Nodes without it, and
-  embedded nodes, reject operation sources with `UnsupportedMediaSourceError` before anything is sent.
-  The client never retries on another node or host, and a guild is never migrated with an operation
-  source. `pluginHosts` on `createDiscordSession` selects only nodes that advertise every listed host
-  (and rejects a pinned `nodeId` which does not).
-- Resolve audio only at playback time. `probe()` rejects operation sources because grants are single use.
-- Server errors surface as `RemediaRpcError` with codes such as `plugin_host_unavailable`,
-  `plugin_host_unauthorized`, `plugin_operation_declined` and `cancelled` (stop or skip while the
-  operation was pending). Seeking is forward-only for these sources; a backward seek rejects with
-  `unsupported`.
+Sources can be a URL, a file path, or (on embedded nodes) a `Buffer` or `Readable`; see
+[Media sources and probing](/docs/client/media).
 
-## Plugin operation forwarding
-
-`remedia.plugins` discovers and runs **generic JSON operations** on plugin hosts through your
-authenticated Remedia connection. Plugin hosts are configured only on the Remedia servers; your
-application needs no host endpoints or credentials. The server operator allowlists operations in
-`pluginHosts[].operations`, and the client discovers them automatically. Operation names, input and
-results are opaque JSON owned by your application: Remedia does not implement search, lyrics or
-metadata. See [Plugin operation forwarding](/docs/server/plugin-forwarding) for the wire protocol,
-limits and a complete example.
+## Control playback
 
 ```ts
-// Hosts and permitted operations (allowlisted AND advertised), sorted by nodeId then hostId.
-const hosts = await remedia.plugins.list({ nodeId: 'remote' });
-
-const outcome = await remedia.plugins.execute<{ items: unknown[] }>({
-  nodeId: 'remote',
-  hostId: 'source-host-1',
-  pluginId: 'example.metadata',
-  operation: 'catalog.search',
-  input: { query: 'some query' },
-  signal: controller.signal,
-});
-
-if (outcome.handled) use(outcome.result.items);
+await voice.pause();
+await voice.resume();
+await voice.seek(30_000); // milliseconds into the source
+await voice.setVolume(0.8); // 0 to 2, default 1
+await voice.filters.set('bass=gain=6'); // FFmpeg audio filtergraph
+await voice.stop(); // stop the track, stay in the channel
 ```
 
-| Member                     | Behavior                                                                                                                                                                                                                         |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `plugins.list(options?)`   | `{ nodeId?, guildId?, refresh?, signal?, timeoutMs? }`. Returns `PluginHostDescriptor[]` (`nodeId`, `hostId`, `status`, `operations`). Without `nodeId`/`guildId` it combines every healthy remote node that forwards operations |
-| `plugins.execute(options)` | `{ hostId, pluginId, operation, input, nodeId?, guildId?, signal?, timeoutMs? }`. Resolves to `PluginExecuteResult<Result>`, discriminated by `handled`                                                                          |
+`state`, `position` and `durationMs` are updated from events. Call `await voice.refresh()` for a fresh
+snapshot. The position is where the engine is in the source, not proof of what listeners have heard.
 
-- **Handled versus unhandled.** `{ handled: true, result }` carries any JSON value, including `null`,
-  `false`, `0`, `""` and `[]`. `{ handled: false }` means the host did not handle the request and is
-  not an error. Both include the executing `nodeId`, `hostId`, `pluginId` and `operation`.
-- **Typed results.** `execute<Result>` types `result`; Remedia does not validate it. Validate
-  untrusted shapes in your application.
-- **Node selection is deterministic.** An explicit `nodeId` wins. Otherwise a `guildId` with a sticky
-  assignment uses its assigned node (a different `nodeId`, or a lost assignment, throws
-  `NodeSelectionError`). Otherwise exactly one healthy node must advertise `hostId`; none or several
-  throw `NodeSelectionError`, because hosts with the same ID on different nodes may be different
-  deployments. Calls never create guild sessions or assignments and never migrate a guild.
-- **Affinity.** Use the returned `nodeId` (and `hostId`) when you later play an operation source for
-  the result: `createDiscordSession({ nodeId, pluginHosts: [hostId], ... })`.
-- **Cancellation.** Aborting `signal` or reaching `timeoutMs` (default `requestTimeoutMs`) rejects
-  locally and sends `plugin.cancel`, so the server drops the plugin-host request and frees its permit.
-  A signal that is already aborted sends nothing. A lost connection rejects pending calls with
-  `NodeUnavailableError`; calls work again after the node reconnects.
-- **Errors.** `RemediaRpcError` carries server codes such as `plugin_operation_not_allowed`,
-  `plugin_operation_unavailable`, `plugin_host_unauthorized` and `plugin_result_too_large`. A malformed
-  response is a `ProtocolError`. `PluginOperationsUnsupportedError` means the node is embedded, has
-  no plugin hosts, or runs an older server; nothing is sent in that case, and playback on that
-  server is unaffected.
-- **Embedded nodes** run in-process without a plugin-host registry, so
-  `capabilities.pluginOperations.forwarding` is `false`. Embedded integrations keep executing their
-  own locally registered plugins.
-
-## Playback and cached state
-
-`play`, `pause`, `resume`, `seek`, `stop`, `filters.set`, `filters.clear`, `setVolume`, `refresh`,
-`wait`, `disconnect`, and `dispose` use the same session surface for both adapters. `wait()` returns
-the terminal playback state (`completed`, `failed`, or `stopped`). The remote adapter associates
-completion with the server's source generation; completion from an old track cannot finish a new
-track's waiter. It queries `player.state` after reconnect or event gaps before resolving a waiter.
-
-Remote getters such as `state`, `position`, `durationMs`, and `snapshot` are cached observations,
-updated by lifecycle events and explicit `await voice.refresh()`. They are not real-time audible
-position measurements. The server snapshot distinguishes source media position, submitted output
-position, and optional played position.
-
-Operational RPC failures reject the requested operation as `RemediaRpcError` with a stable error
-code. A command rejection does not mark an otherwise healthy node disconnected. Connection failures
-use `NodeUnavailableError`; expired owner sessions use `SessionLostError`; malformed protocol
-messages use `ProtocolError`. URL userinfo, passwords, authorization headers, voice tokens, and
-resume credentials are not included in errors or logs.
-
-## Lifecycle events, metadata, and hooks
-
-`DiscordSession` and `RemediaClient` are typed Node `EventEmitter`s. The package exports
-`PlaybackSessionEvents`, `VoiceSessionEvents`, and `RemediaClientEventNames` as `as const` event
-objects, and exports matching string-union types. Use the constants with `on`, `once`, or `off`:
+## Close resources
 
 ```ts
-import { PlaybackSessionEvents, RemediaClient } from '@remedia/client';
-
-interface MyMetadata {
-  requestedBy: string;
-  trackId: string;
-}
-
-const client = await RemediaClient.create({ nodes, send });
-const voice = client.createDiscordSession<MyMetadata>({ guildId, channelId, userId });
-
-voice.on(PlaybackSessionEvents.playbackCompleted, (event) => {
-  // The application can advance its own queue using this generation and metadata.
-  queue.emit('trackFinished', event.customMetadata);
-});
+await voice.disconnect(); // leave the channel; the session can connect again
+await voice.dispose(); // leave and release the session
+await remedia.close(); // dispose all sessions and close all nodes
 ```
 
-Session playback events are `playbackStarted`, `playbackCompleted`, `playbackStopped`,
-`playbackFailed`, `playbackPaused`, `playbackResumed`, `playbackSeeked`, `filterChanged`, and
-`volumeChanged`; sessions also emit `voiceStateChanged`, `voiceFailed`, and `sessionDisposed`.
-The client forwards session events and emits `nodeConnected`, `nodeDisconnected`, `sessionResumed`,
-`sessionLost`, `nodeEvent`, `eventsLost`, `guildAssigned`, and `guildReleased`. Voice and playback
-failures use named events rather than Node's special `error` event. Synchronous listener exceptions
-are isolated and reported through `process.emitWarning` with code `REMEDIA_LISTENER_ERROR`.
+Call `remedia.close()` when your process shuts down. A client created without calling `close()`
+keeps WebSocket connections and native workers alive.
 
-`playbackStarted` means the processing pipeline entered playback, not that a Discord listener heard
-audio. `playbackCompleted` means the engine processed natural EOF, not that transport buffers
-drained. Stop and completion are distinct. Payloads include the local session ID, configured node
-ID, guild ID, and source generation. Idempotent controls do not emit duplicate changes. Rejected
-controls do not emit success events.
+## Handling errors
 
-When a remote terminal event was missed during a socket outage, the client reconciles from the
-server's authoritative snapshot and emits at most one terminal event with `reconstructed: true`.
-It does not invent a historical `playbackStarted`. Generation checks prevent stale completion from
-finishing a replacement source's waiter. The SDK does not emit queue or track-provider events; an
-application or framework maps Remedia lifecycle events to its own queue policy.
+Failures are typed. The ones you will meet most often:
 
-Pass arbitrary application metadata on `play()`:
+| Error                         | Meaning                                                                                                           |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `RemediaRpcError`             | A remote node rejected a command. Check `error.code`, for example `invalid_request` or `plugin_host_unavailable`. |
+| `NodeUnavailableError`        | The node is not connected. The client reconnects in the background.                                               |
+| `NodeSelectionError`          | No suitable node could be chosen, or a pinned node is full or unhealthy.                                          |
+| `UnsupportedMediaSourceError` | The node cannot accept that source type, for example a `Buffer` on a remote node.                                 |
+| `SessionLostError`            | The server no longer has your session; see [Session lifecycle](/docs/client/sessions).                            |
 
-```ts
-interface MyMetadata {
-  requestedBy: string;
-  trackId: string;
-}
+Messages never include passwords, tokens, or media URLs from other users.
 
-await voice.play(
-  { url: 'https://example.net/audio.mp3' },
-  {
-    customMetadata: { requestedBy: interaction.user.id, trackId: 'track-123' },
-  },
-);
-```
+## Where to go next
 
-The object is retained by reference in the JavaScript process and attached to events for that
-source generation. It is not JSON-serialized to Rust or WebSocket RPC, so functions and class
-instances are allowed. It is released after a terminal event or session disposal and is not
-persisted across client-process restarts. Server snapshots never contain this application metadata.
-
-`voice.hooks.beforePlay()` is ordered, awaited local middleware that runs before native playback or
-RPC. It can inspect the input and metadata, return `{ cancel: true, reason }`, or reject by throwing.
-Cancelled/failed hooks do not initiate playback or emit a start event. An `AbortSignal` cancels a
-pending hook; aborting after startup stops the current generation. Hooks do not replace server-side
-authorization.
-
-## Reconnection and limits
-
-An unexpected remote socket loss makes that node unavailable for new assignments. The client
-reconnects with bounded backoff and attempts `client.resume` using its in-memory credential. On
-success it retains guild affinity and reconciles guild and playback snapshots. If resumption expires
-or the server identity changes, the SDK emits `sessionLost` and marks existing assignments lost.
-Applications can observe `nodeDisconnected`, `sessionResumed`, `sessionLost`, `nodeEvent`, and
-`eventsLost` on the client.
-
-If a guild is disposed while its node is temporarily offline, the client queues its voice and guild
-cleanup and sends it after the same server session resumes. If the whole client is closed while the
-node is unreachable, the server releases those resources when its configured session-resumption
-timeout expires.
-
-### Discord voice server migration
-
-This is distinct from reconnecting the Remedia WebSocket. When the host Discord
-Gateway delivers changed voice server credentials or a new voice session for an
-already connected guild, the same assigned backend replaces its Discord voice
-transport automatically. The old transport is detached and closed, then a new
-voice WebSocket, UDP discovery, transport encryption, and DAVE session are
-established from fresh Gateway dispatches. The existing playback session is
-retained: its source reader, decoder, filtergraph, gain, pause state, generation,
-and JavaScript `customMetadata` are not rebuilt. `voice.connectionState` reports
-`reconnecting` while this happens; successful completion returns it to
-`connected`, while exhausted recovery emits `voiceFailed` and fails the active
-output.
-
-Packets are never sent with stale transport keys. A playback worker waits at the
-bounded output boundary during handoff; packets already accepted by the old
-transport but not delivered may be lost, so brief silence is possible. The
-source is not restarted or sought: local files, HTTP inputs, buffers, and
-Readables keep using the same open decoder, and a one-shot Readable is never
-replayed. This does not promise lossless delivery. Ordinary Voice WebSocket
-Resume continues within `remedia-discord` and does not trigger Gateway OP 4.
-Playback controls remain bound to this existing backend while it is reconnecting;
-in particular, `stop()` cancels playback and transport recovery never restarts
-that source. Calling `disconnect()`, disposing the session, or closing the client
-cancels pending voice recovery. Cross-node migration remains unsupported.
-
-Remote voice operations carry a monotonically increasing transport generation.
-The server rejects late connect, suspend, and failure RPCs from older
-generations, so out-of-order request tasks cannot install stale credentials
-after a newer disconnect or migration has taken effect.
-
-Cross-node migration is a break-before-make operation. A replacement node must reconnect its
-voice transport and restart any active URL source from an approximate media position. A connected session can now use explicit `voice.migrate(targetNodeId)` to restart on another healthy node; see the section below. A lost backend is not automatically recoverable by migration. Session credentials
-are memory-only; restarting the client process cannot resume old sessions. A Remedia server restart
-also destroys its in-memory sessions.
-
-Each server is an independent node. The client does not proxy media between nodes or
-automatically fail over existing guilds. `players.active` is treated as an allocation capacity signal, not a
-measurement of CPU work. For server configuration, authentication, and TLS guidance, see the
-[server guide](/docs/server/overview) and [deployment guide](/docs/server/deployment).
-
-## Explicit cross-node migration
-
-```ts
-const session = remedia.createDiscordSession({
-  guildId,
-  channelId,
-  userId,
-  nodeId: 'media-a',
-});
-await session.connect();
-await session.play({ url: 'https://example.net/song.mp3' });
-
-// Once the media position is available:
-await session.migrate('media-b');
-console.log(session.nodeId); // 'media-b'
-```
-
-`migrate(nodeId)` reserves capacity on a healthy destination node before touching the source.
-It disconnects and disposes the original backend, commits the new sticky assignment, then
-requests fresh Discord Gateway credentials and connects the destination. The logical JavaScript
-`DiscordSession` remains the same object. Volume, filtergraph, channel, self-deaf and self-mute
-settings persist. A `guildMigrated` client event contains `guildId`, `fromNodeId`,
-`toNodeId`, and `nodeType`.
-
-For an active source, the SDK currently supports HTTP(S) URL playback with an observed
-`position.mediaMs`. The destination opens a new decoder and seeks to the last observed source
-position; it also restores the paused state and local `customMetadata`. This starts a new
-backend playback generation and emits a new `playbackStarted`. There may be audible gaps or
-brief playback from the beginning before the seek completes. Exact sample continuity and
-preservation of a pending `wait()` call are not guaranteed. Active `{ file }`, `{ buffer }`,
-`{ stream }`, unknown-position sources, and transitional playback states are rejected
-before cutover. Idle players can migrate without a source.
-
-If the destination is full or unhealthy, the migration fails without touching the source.
-After the source backend is released, a failed destination connection is not rolled back:
-the destination assignment remains and callers can retry `connect()`. This is explicit
-migration, not automatic failover, and cannot resurrect a lost source or a one-shot stream.
-
-## Session configuration and channel movement
-
-A client owns one session per guild. Separate clients (including separate bot users) can use the
-same guild and channel with independent playback, transport generations, and events. `userId` is
-the Discord bot user ID, not a Remedia client session ID. Channel IDs are mutable destinations.
-Duplicate guild registration on the same client throws; dispose the old session before replacing it.
-
-```ts
-const session = remedia.createDiscordSession({
-  guildId,
-  channelId,
-  userId,
-  selfDeaf: true,
-  selfMute: false,
-  volume: 0.75,
-  filterGraph: 'bass=gain=3',
-});
-await session.connect();
-await session.move(otherChannelId);
-await session.setSelfDeaf(false);
-await session.setSelfMute(true);
-await session.dispose();
-```
-
-`selfDeaf` defaults to `true` (previously joins always sent `false`); `selfMute` defaults to
-`false`. These flags affect Discord voice state, independently of playback pause and gain.
-Setters retain values before connection and update Gateway OP 4 after joining. Unchanged values
-send nothing. Joins, credential refreshes, and moves preserve the flags. Keep the library-agnostic
-`send(guildId, payload)` and `receive(payload)` Gateway integration wired throughout the session.
-
-Initial `volume` is finite linear gain from 0 through 2, default 1. `filterGraph` is a trusted raw
-FFmpeg audio filtergraph or `null` (default). Invalid gain and empty/non-string graphs are rejected
-at creation; native FFmpeg validates graph syntax when the backend is allocated/configured, before
-playback is allowed. Configuration is serialized with runtime setters and applied before audio
-starts. Both values persist across tracks and transport replacement; existing `setVolume()` and
-`filters.set()`/`clear()` remain available with their existing change events.
-
-`move(channelId): Promise<void>` requests fresh Gateway credentials and replaces the existing voice
-transport without restarting or seeking playback. Decoder input (including one-shot Readables),
-filters, gain, playback generation, and paused state are retained. A move to the current destination
-shares a pending connection or resolves immediately when connected. A newer destination supersedes
-a pending attempt with an `AbortError`; `connect()` shares the latest attempt. Moving while explicit
-disconnection or disposal is underway rejects. `disconnect()`/`dispose()` cancel a pending move.
-`channelId` reports the latest requested destination, including after a failed move.
-
-Intentional moves do not use the automatic recovery retry policy. A failed move reports a failed
-voice state and leaves playback parked with bounded buffering; call `connect()` to retry the
-requested destination, `move()` to choose another, or `disconnect()`/`dispose()` to release it.
-Ordinary transport recovery retains its existing bounded credential-refresh retries. Transport
-replacement itself does not emit playback stopped/completed/failed events.
-
-Gateway mocks verify orchestration and local native tests verify media lifecycles. Real Discord
-channel movement, same-channel multi-bot voice, credential ordering, and self flags still require
-an application integration test with Discord. Forward only each bot's own Gateway dispatch stream.
-
-## Standalone probing
-
-```ts
-const info = await client.probe(
-  { url: 'https://example.com/audio.mp3' },
-  { nodeId: 'media-1', signal: controller.signal, timeoutMs: 15_000 },
-);
-```
-
-`probe(source: MediaSource, options?: ClientProbeOptions): Promise<AudioStreamInfo>` delegates
-to embedded native probing or remote `media.probe`. It creates no guild assignment, playback
-session or voice transport. Supply `nodeId` when multiple healthy nodes exist; a single healthy
-node is selected automatically. Unknown, unhealthy or ambiguous nodes reject.
-
-Embedded nodes accept all MediaSource variants. Remote nodes accept only server-accessible files
-and HTTP(S) URLs; buffers and Readables reject with `UnsupportedMediaSourceError`. Cancellation
-sends a best-effort remote cancellation request; disconnect and server request deadlines also
-cancel native work. `timeoutMs` defaults to 15000 and is a positive 32-bit unsigned integer.
-Unknown numeric metadata stays `null`. See [native probing](/docs/node/bindings#probe-media-without-playback)
-for stream ownership and [the RPC reference](/docs/server/protocol#media-probing) for server limits.
-
-Metadata probing is independent of playback initialization and platform metadata extraction.
-A source integration can obtain a title or thumbnail directly from its media provider.
-When technical audio metadata is needed, it can resolve a temporary resource, call `probe`, then
-discard that resource. When playback begins, the plugin resolves a completely fresh source.
-Probing does not guarantee later resource availability or duration accuracy. Remedia hosts no source plugins.
-
-## Crossfade sessions
-
-Check `client.nodes` capability snapshots before selecting a remote node for
-crossfade. A remote node must advertise `capabilities.crossfade.available`; server
-policy and explicit session opt-in are both required. Embedded sessions use their
-own configuration without a server config file.
-
-```ts
-const session = client.createDiscordSession({
-  guildId,
-  channelId,
-  userId,
-  crossfade: { enabled: true, durationMs: 5000, prepareBeforeMs: 30000, curve: 'equalPower' },
-});
-session.on('prepareRequested', async ({ generation }) => {
-  await session.stageNext(
-    { url: 'https://media.example.com/fresh-next.wav' },
-    {
-      expectedGeneration: generation,
-      entryId: 'entry-2',
-      queueRevision: 1,
-      sourceRevision: 0,
-    },
-  );
-});
-await session.connect();
-await session.play({ url: 'https://media.example.com/current.wav' });
-```
-
-Applications supply fresh, authorized URLs and queue identities. Remote stages
-accept server-accessible files and HTTP(S) URLs; embedded stages also accept buffers
-and Readables. `stageNext()` returns a preparation snapshot, `stagedSource()` reads
-it, and `clearStage()` cancels it. Optional `expiresAtMs` prevents promotion of an
-expired source. Local custom metadata is never sent to the server.
-
-Use completion `continuation` metadata to reconcile automatic promotion without
-replaying the source. Reconnection uses retained events and guild snapshots;
-queue ownership remains with the application. See [playback lifecycle](/docs/core/playback#crossfade-playback).
+- [Nodes and routing](/docs/client/nodes): several nodes, guild affinity, migration.
+- [Session lifecycle and recovery](/docs/client/sessions): reconnection, channel moves, voice server changes.
+- [Events and hooks](/docs/client/events): react to track endings, attach your own metadata.
+- [Media sources and probing](/docs/client/media), [Crossfading](/docs/client/crossfade).
+- [Executing plugin operations](/docs/server/plugin-forwarding) from your application.
+- [`@remedia/client` reference](/docs/client/reference): options, members, and errors.
