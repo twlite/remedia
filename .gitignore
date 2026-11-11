@@ -37,3 +37,6 @@ packages/remedia-client/THIRD_PARTY_LICENSES.txt
 packages/remedia-plugin-host/LICENSE
 packages/remedia-plugin-host/THIRD_PARTY_NOTICES.md
 packages/remedia-plugin-host/THIRD_PARTY_LICENSES.txt
+
+# Local Docker deployment state (see docker/README.md)
+docker/config/remedia.config.json

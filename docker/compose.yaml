@@ -1,0 +1,72 @@
+# Standalone Remedia server. Run every command from this directory:
+#
+#   cp .env.example .env && cp config/remedia.config.example.json config/remedia.config.json
+#   docker compose up -d --build
+#
+# See docker/README.md and https://remedia.twlite.dev/docs/server/docker.
+name: remedia
+
+services:
+  remedia:
+    image: remedia-server:${REMEDIA_VERSION:-0.1.0-dev.6}
+    build:
+      # The repository root, so the Dockerfile can reuse scripts/install.sh. The root
+      # .dockerignore sends almost nothing else.
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        REMEDIA_VERSION: ${REMEDIA_VERSION:-0.1.0-dev.6}
+      # Optional: a GitHub token file raises the anonymous API rate limit that the
+      # installer's checksum lookup is subject to. Empty (/dev/null) by default.
+      secrets:
+        - github_token
+
+    # The image runs `remedia serve --config /config/remedia.config.json` by default.
+    # `docker compose run --rm remedia plugins list` replaces that command.
+    restart: unless-stopped
+    stop_signal: SIGTERM
+    # Time for a graceful shutdown (active transfers stop, voice connections close)
+    # before Docker sends SIGKILL.
+    stop_grace_period: 30s
+
+    # Runs as an unprivileged numeric account. It needs write access to ./config only.
+    user: '${REMEDIA_UID:-10001}:${REMEDIA_GID:-10001}'
+
+    # Secrets and optional diagnostics. Compose's own .env interpolation does not reach
+    # the container; env_file does. Every variable in .env is passed through.
+    env_file: .env
+
+    ports:
+      # Loopback only: a reverse proxy on this host terminates TLS and forwards to it.
+      # Containers on the same Compose network connect directly to remedia:8787 instead.
+      # Never publish this port on a public interface; the listener is plain ws://.
+      - '127.0.0.1:${REMEDIA_PORT:-8787}:8787'
+
+    volumes:
+      # Mount the directory, not the file. `remedia plugins` replaces the config
+      # atomically (temporary file + rename in the same directory), which a single-file
+      # bind mount cannot support.
+      - ./config:/config
+
+    # Hardening. The server needs no privileges, no device access and no writable image.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+      # `remedia --list` and the health check use a private status socket registry under
+      # $HOME/.remedia/run. It belongs to one process, so keep it out of the image.
+      - /home/remedia:mode=0700,uid=${REMEDIA_UID:-10001},gid=${REMEDIA_GID:-10001}
+
+    # Optional limits. Uncomment and size them for your workload after measuring it.
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '2.0'
+    #       memory: 1g
+
+secrets:
+  github_token:
+    file: ${REMEDIA_GITHUB_TOKEN_FILE:-/dev/null}

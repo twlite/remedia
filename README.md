@@ -18,6 +18,8 @@ Pick how you want to run the engine:
 | Use both from one API                        | `npm install @remedia/client`                                                                                    | [Using `@remedia/client`](https://remedia.twlite.dev/docs/client/overview)      |
 | Resolve audio or data through my own service | `npm install @remedia/plugin-host`                                                                               | [Plugins](https://remedia.twlite.dev/docs/plugins/overview)                     |
 
+To run the server in a container instead, see the [Docker guide](https://remedia.twlite.dev/docs/server/docker) and [`docker/`](docker).
+
 Node.js 22.18 or newer is required. FFmpeg 9 shared libraries are needed on the machine that decodes
 audio; a bot that only talks to remote servers needs none. On Windows, use the PowerShell installer
 from the [server installation guide](https://remedia.twlite.dev/docs/server/installation).

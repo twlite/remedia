@@ -6,6 +6,7 @@
     "configuration",
     "cli",
     "deployment",
+    "docker",
     "protocol",
     "plugins",
     "plugin-operations",

@@ -1,0 +1,6 @@
+# The Remedia image installs a published release, so its build context is
+# only the installer from this checkout. Everything else stays out of the
+# context (sources, node_modules, target/, .env files, local configuration).
+# Add a path below only when docker/Dockerfile needs it.
+*
+!scripts/install.sh

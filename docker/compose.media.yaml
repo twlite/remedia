@@ -1,0 +1,11 @@
+# Optional override: serve local files from a host directory, read-only.
+#
+#   docker compose -f compose.yaml -f compose.media.yaml up -d
+#
+# Set REMEDIA_MEDIA_DIR in .env. The directory appears at /media, which is the
+# media.allowedFileRoots entry in the example configuration. Clients refer to files by
+# their path inside the container, for example /media/song.mp3.
+services:
+  remedia:
+    volumes:
+      - ${REMEDIA_MEDIA_DIR:?Set REMEDIA_MEDIA_DIR in .env}:/media:ro
