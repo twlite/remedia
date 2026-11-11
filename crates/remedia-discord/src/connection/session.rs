@@ -378,6 +378,7 @@ impl DiscordVoiceConnection {
             generation: AtomicU64::new(generation),
             cancelled: AtomicBool::new(false),
             finished: AtomicBool::new(false),
+            played_end_sample: Arc::new(AtomicU64::new(u64::MAX)),
         }
     }
 
