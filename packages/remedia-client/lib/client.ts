@@ -160,6 +160,11 @@ export class RemediaClient
     return assignment ? { ...assignment } : undefined;
   }
 
+  /** Elapsed output time for an existing guild session, or null when no session is registered. */
+  getPlaybackTime(guildId: string): number | null {
+    return this.#sessions.get(guildId)?.getPlaybackTime() ?? null;
+  }
+
   /**
    * Register one guild session with initial playback and voice configuration. Duplicate guild registration throws.
    * @param options - Guild and bot identity, requested channel, initial processing settings, and voice flags.
