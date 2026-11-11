@@ -9,7 +9,13 @@ import type { PlaybackSnapshot, PlaybackState } from './types.js';
 export class PlaybackClock {
   #generation = -1;
   #positionMs = 0;
-  #sampledAtMs = performance.now();
+  #sampledAtMs: number;
+  readonly #now: () => number;
+
+  constructor(now: () => number = () => performance.now()) {
+    this.#now = now;
+    this.#sampledAtMs = now();
+  }
   #state: PlaybackState = 'idle';
   #durationMs: number | null = null;
   #suspended = false;
@@ -22,6 +28,7 @@ export class PlaybackClock {
     if (generation < this.#generation) return;
     if (generation !== this.#generation) {
       this.#positionMs = 0;
+      this.#durationMs = null;
       this.#generation = generation;
     }
     this.transition('playing');
@@ -29,7 +36,7 @@ export class PlaybackClock {
 
   /** Freeze at the current estimate, or resume from it, on lifecycle changes. */
   transition(state: PlaybackState): void {
-    const now = performance.now();
+    const now = this.#now();
     this.#positionMs = this.#readAt(now);
     this.#sampledAtMs = now;
     this.#state = state;
@@ -43,34 +50,36 @@ export class PlaybackClock {
     }
     if (!Number.isFinite(positionMs) || positionMs < 0) return;
     this.#positionMs = positionMs;
-    this.#sampledAtMs = performance.now();
+    this.#sampledAtMs = this.#now();
   }
 
   /** A lost transport must not extrapolate indefinitely without knowing whether audio continued. */
   suspend(): void {
-    this.#positionMs = this.#readAt(performance.now());
-    this.#sampledAtMs = performance.now();
+    const now = this.#now();
+    this.#positionMs = this.#readAt(now);
+    this.#sampledAtMs = now;
     this.#suspended = true;
   }
 
   /** Replace local drift with an authoritative snapshot, including resume/recovery. */
-  reconcile(snapshot: PlaybackSnapshot): void {
-    if (snapshot.generation < this.#generation) return;
+  reconcile(snapshot: PlaybackSnapshot, force = false): void {
+    if (snapshot.generation < this.#generation && !force) return;
     const nextGeneration = snapshot.generation !== this.#generation;
     const observed = snapshot.position.playedMs ?? snapshot.position.mediaMs ??
       (snapshot.position.submittedMs > 0 ? snapshot.position.submittedMs : null);
-    const previousEstimate = this.#readAt(performance.now());
+    const now = this.#now();
+    const previousEstimate = this.#readAt(now);
     this.#generation = snapshot.generation;
     this.#state = snapshot.state;
     this.#durationMs = snapshot.durationMs;
     this.#positionMs = observed ?? (nextGeneration ? 0 : previousEstimate);
-    this.#sampledAtMs = performance.now();
+    this.#sampledAtMs = now;
     this.#suspended = false;
   }
 
   /** Elapsed playback time in ms, never an assertion of listener-audible position. */
   getPlaybackTime(): number {
-    return this.#readAt(performance.now());
+    return this.#readAt(this.#now());
   }
 
   #readAt(now: number): number {
