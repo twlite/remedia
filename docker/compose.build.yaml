@@ -1,0 +1,24 @@
+# Optional override: build the image from this checkout instead of pulling it from GHCR.
+# Useful when changing the Dockerfile or testing a release before it has an image.
+#
+#   docker compose -f compose.yaml -f compose.build.yaml up -d --build
+#
+# The build downloads the published release named by REMEDIA_VERSION and FFmpeg 9.
+services:
+  remedia:
+    image: remedia-server:${REMEDIA_VERSION:-0.1.0-dev.6}
+    build:
+      # The repository root, so the Dockerfile can reuse scripts/install.sh. The root
+      # .dockerignore sends almost nothing else.
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        REMEDIA_VERSION: ${REMEDIA_VERSION:-0.1.0-dev.6}
+      # Optional: a GitHub token file raises the anonymous API rate limit that the
+      # installer's checksum lookup is subject to. Empty (/dev/null) by default.
+      secrets:
+        - github_token
+
+secrets:
+  github_token:
+    file: ${REMEDIA_GITHUB_TOKEN_FILE:-/dev/null}

@@ -1,25 +1,16 @@
 # Standalone Remedia server. Run every command from this directory:
 #
 #   cp .env.example .env && cp config/remedia.config.example.json config/remedia.config.json
-#   docker compose up -d --build
+#   docker compose up -d
 #
 # See docker/README.md and https://remedia.twlite.dev/docs/server/docker.
 name: remedia
 
 services:
   remedia:
-    image: remedia-server:${REMEDIA_VERSION:-0.1.0-dev.6}
-    build:
-      # The repository root, so the Dockerfile can reuse scripts/install.sh. The root
-      # .dockerignore sends almost nothing else.
-      context: ..
-      dockerfile: docker/Dockerfile
-      args:
-        REMEDIA_VERSION: ${REMEDIA_VERSION:-0.1.0-dev.6}
-      # Optional: a GitHub token file raises the anonymous API rate limit that the
-      # installer's checksum lookup is subject to. Empty (/dev/null) by default.
-      secrets:
-        - github_token
+    # Published multi-platform image (linux/amd64, linux/arm64). Pin REMEDIA_VERSION to a
+    # release; to build the image from this checkout instead, add compose.build.yaml.
+    image: ghcr.io/twlite/remedia:${REMEDIA_VERSION:-0.1.0-dev.6}
 
     # The image runs `remedia serve --config /config/remedia.config.json` by default.
     # `docker compose run --rm remedia plugins list` replaces that command.
@@ -66,7 +57,3 @@ services:
     #     limits:
     #       cpus: '2.0'
     #       memory: 1g
-
-secrets:
-  github_token:
-    file: ${REMEDIA_GITHUB_TOKEN_FILE:-/dev/null}

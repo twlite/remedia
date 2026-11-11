@@ -1,7 +1,7 @@
 # Remedia in Docker
 
-A Dockerfile and Docker Compose example for the **standalone `remedia-server`**. The image installs a
-SHA-256-verified release and FFmpeg 9.0.2 shared libraries; it does not compile Remedia and downloads
+A Dockerfile and Docker Compose example for the **standalone `remedia-server`**. The published image
+`ghcr.io/twlite/remedia` bundles a SHA-256-verified release and FFmpeg 9.0.2 shared libraries and downloads
 nothing at startup. It supports `linux/amd64` and `linux/arm64`.
 
 Full guide (TLS proxy, plugin hosts, resources, updates, troubleshooting):
@@ -13,7 +13,7 @@ Full guide (TLS proxy, plugin hosts, resources, updates, troubleshooting):
 cd docker
 cp .env.example .env && chmod 600 .env          # then set REMEDIA_RPC_PASSWORD (openssl rand -hex 32)
 cp config/remedia.config.example.json config/remedia.config.json
-docker compose up -d --build
+docker compose up -d
 docker compose logs -f remedia
 ```
 
@@ -38,7 +38,8 @@ atomically, so the **directory** is mounted, not the file.
 docker compose run --rm remedia doctor
 docker compose run --rm remedia plugins list
 docker compose exec remedia remedia --list --json
-docker compose build && docker compose up -d      # upgrade after changing REMEDIA_VERSION
+docker compose pull && docker compose up -d       # upgrade after changing REMEDIA_VERSION
+docker compose -f compose.yaml -f compose.build.yaml up -d --build   # local build
 ```
 
 Clients on the same Compose network connect to `remedia://remedia:8787`. The published port is

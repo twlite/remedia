@@ -455,3 +455,17 @@ jobs:
           RELEASE_VERSION: ${{ needs.release-detection.outputs.version }}
           GH_TOKEN: ${{ github.token }}
         run: node .github/scripts/github-release.mjs finalize "$RELEASE_VERSION" "$RUNNER_TEMP/release-assets/github-release-assets.json"
+
+  docker:
+    name: Publish container image to GHCR
+    # The Dockerfile installs the published release, so this runs only after the release is
+    # public. It is a separate job: a failure here cannot undo npm or GitHub releases, and
+    # "Re-run failed jobs" retries just this publication.
+    if: needs.release-detection.outputs.is_release == 'true'
+    needs: [release-detection, github-release]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-publish.yaml
+    with:
+      version: ${{ needs.release-detection.outputs.version }}

@@ -1,6 +1,6 @@
 ---
 title: Run the server in Docker
-description: Build and run the standalone Remedia server with Docker Compose, persistent configuration, TLS, plugin hosts, and updates.
+description: Run the published standalone Remedia server with Docker Compose, persistent configuration, TLS, plugin hosts, and updates.
 ---
 
 This guide runs the **standalone `remedia-server`** in a container. It is a deployment of the
@@ -29,16 +29,27 @@ The files live in [`docker/`](https://github.com/twlite/remedia/tree/main/docker
 
 The image is built by running the repository's [installer](/docs/server/installation) inside a build
 stage, so the release lookup, checksum verification and FFmpeg ABI checks are the same code as a
-normal installation. Only the installed result is copied into the final image. A build step also
-resolves every shared library and runs `remedia doctor`. Nothing is downloaded when a container starts.
+normal installation. Nothing is downloaded when a container starts.
+
+## Image and tags
+
+Each release publishes one multi-platform image, `ghcr.io/twlite/remedia`, after the GitHub release is
+public. Docker selects `linux/amd64` or `linux/arm64` automatically.
+
+| Release        | Tags                                     |
+| -------------- | ---------------------------------------- |
+| `v0.1.0-dev.6` | `0.1.0-dev.6`, `dev` (newest prerelease) |
+| `v0.1.0`       | `0.1.0`, `latest` (newest stable)        |
+
+Version tags are immutable. `dev` and `latest` move, `latest` never points at a prerelease, and an
+older release never moves them backwards. Pin a version tag in production.
 
 ## Prerequisites
 
-- Docker Engine with BuildKit and Docker Compose v2 (the files were checked with Docker 20.10 and Compose 2.15).
-- A published Remedia release (`0.1.0-dev.6` or newer for the `remedia plugins` commands); the build downloads it from GitHub.
-- Network access to GitHub and conda-forge during the build.
+- Docker Engine and Docker Compose v2 (checked with Docker 20.10 and Compose 2.15).
+- Network access to `ghcr.io`, and a published image for your tag (`0.1.0-dev.6` or newer for the `remedia plugins` commands).
 
-## 1. Build the image
+## 1. Get the files
 
 ```sh
 git clone https://github.com/twlite/remedia.git
@@ -47,22 +58,17 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-`REMEDIA_VERSION` in `.env` selects the release baked into the image (without the leading `v`). It is
-an explicit pin: `latest` is rejected so that a build is reproducible from its arguments.
+`REMEDIA_VERSION` in `.env` is the image tag to run (without the leading `v`). Compose pulls
+`ghcr.io/twlite/remedia:$REMEDIA_VERSION` when you start the service.
 
-```sh
-docker compose build
-```
-
-The same file builds for another architecture with `docker buildx build --platform linux/arm64 -f docker/Dockerfile ...`
-from the repository root; the Dockerfile maps Docker's `amd64`/`arm64` to the release targets and fails
-if the build machine does not match.
-
-<Callout title="GitHub rate limits during the build">
-  The installer asks the GitHub API for the archive's SHA-256 digest. Anonymous requests are limited
-  to 60 per hour per IP address, so a shared address can fail with `HTTP 403`. Put a GitHub token in
-  a file and set `REMEDIA_GITHUB_TOKEN_FILE=/path/to/token` in `.env`; it is mounted as a BuildKit
-  secret, sent only to `api.github.com`, and not stored in the image.
+<Callout title="Build the image yourself">
+  To build from your checkout instead of pulling, for example while changing the Dockerfile, add the
+  override file: `docker compose -f compose.yaml -f compose.build.yaml up -d --build`. The build
+  downloads the published release and FFmpeg, and `latest` is rejected so a build is reproducible.
+  The installer asks the GitHub API for the archive's SHA-256 digest; anonymous requests are limited
+  to 60 per hour per IP, so a shared address can fail with `HTTP 403`. Put a GitHub token in a file
+  and set `REMEDIA_GITHUB_TOKEN_FILE=/path/to/token` in `.env`; it is mounted as a BuildKit secret,
+  sent only to `api.github.com`, and not stored in the image.
 </Callout>
 
 ## 2. Create the configuration
@@ -251,17 +257,21 @@ recommended values; measure your own workload. Limits need no extra privileges.
 
 ```sh
 # Set REMEDIA_VERSION in .env to the release you want, then:
-docker compose build
+docker compose pull
 docker compose up -d
 ```
 
 Recreating the container restarts the server, which **ends active playback sessions**; clients must
 reconnect and restore their own state. Configuration persists in `./config`. Do not run `remedia update`
-inside a container: an image is immutable, and updates happen by rebuilding.
+inside a container: an image is immutable, and updates happen by pulling a new one. With the local-build
+override, run `docker compose -f compose.yaml -f compose.build.yaml build` instead of `pull`.
 
 ## Troubleshooting
 
-**`HTTP 403` or a checksum error during build.** GitHub's anonymous rate limit or a missing release asset.
+**`manifest unknown` when pulling.** No image exists for that tag. Check `REMEDIA_VERSION` against the release list, or
+build locally with the override above.
+
+**`HTTP 403` or a checksum error during a local build.** GitHub's anonymous rate limit or a missing release asset.
 See the callout above, and check that the release in `REMEDIA_VERSION` is published.
 
 **`remedia doctor` reports a missing or incompatible FFmpeg library.** The image sets
