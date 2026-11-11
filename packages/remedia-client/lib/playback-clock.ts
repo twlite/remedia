@@ -27,9 +27,15 @@ export class PlaybackClock {
   start(generation: number): void {
     if (generation < this.#generation) return;
     if (generation !== this.#generation) {
+      // A new track has its own timeline. Do not carry elapsed time from the
+      // previous generation, including any time spent paused or disconnected.
       this.#positionMs = 0;
       this.#durationMs = null;
       this.#generation = generation;
+      this.#sampledAtMs = this.#now();
+      this.#suspended = false;
+      this.#state = 'playing';
+      return;
     }
     this.transition('playing');
   }
