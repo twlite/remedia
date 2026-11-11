@@ -26,6 +26,7 @@ import type {
 
 interface ManagedDiscordSession {
   readonly guildId: string;
+  getPlaybackTime(): number;
   dispose(): Promise<void>;
   receiveGatewayDispatch(
     event: string,
