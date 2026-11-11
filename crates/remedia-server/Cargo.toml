@@ -12,6 +12,7 @@ path = "src/runtime_main.rs"
 
 [dependencies]
 remedia-resources = { path = "../remedia-resources" }
+remedia-server-config = { path = "../remedia-server-config" }
 clap = { version = "4.5", features = ["derive"] }
 base64 = "0.22"
 futures-util = { version = "0.3", features = ["sink"] }

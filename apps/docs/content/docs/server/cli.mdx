@@ -1,6 +1,6 @@
 ---
 title: Server CLI
-description: Start, diagnose, configure, update, and discover standalone Remedia processes.
+description: Start, diagnose, configure, update, and discover standalone Remedia processes, and manage plugin hosts.
 ---
 
 # Server CLI
@@ -19,6 +19,7 @@ remedia-server --help
 remedia-server --version
 remedia-server --generate-config-file
 remedia-server --list
+remedia-server plugins list
 remedia-server update
 ```
 
@@ -58,6 +59,157 @@ remedia-server --generate-config-file ./server.json
 The optional path defaults to `./remedia.config.json`. Generation refuses to overwrite an existing file. On Unix, the new file is created with mode `0600`.
 
 The generated starter configuration uses loopback binding (`127.0.0.1:8787`), denies media file and URL sources by default, and references a password through `env('REMEDIA_RPC_PASSWORD')`. Supply that secret before starting the server. This intentionally differs from the repository's example configuration, which uses a sample media root and URL host.
+
+## Manage plugin hosts
+
+`plugins` registers remote [plugin hosts](/docs/server/plugins) in the `pluginHosts` section of your
+configuration, so you do not have to edit the JSON by hand. The configuration file stays the only
+source of truth: there is no separate database, lockfile or install directory.
+
+<Callout title="Registering a host does not install code">
+  A plugin host is an independent service built with `@remedia/plugin-host`. These commands only
+  record where it is and which of its operations Remedia may run. Nothing is downloaded, built or
+  executed, and uninstalling a host never touches the remote service.
+</Callout>
+
+The commands only edit configuration, so they work without FFmpeg and never start the server, the
+playback runtime or any Discord connection. They honor `--config` (default `./remedia.config.json`),
+`--env-file` and `--optional-env-file`, and they never create a configuration: if the file is missing
+they point you to `--generate-config-file`.
+
+| Command                                | Purpose                                                   |
+| -------------------------------------- | --------------------------------------------------------- |
+| `plugins install <url>`                | Discover a host and add it with the operations you choose |
+| `plugins uninstall <host-id>`          | Remove the registration                                   |
+| `plugins list [--json]`                | Show configured hosts (offline)                           |
+| `plugins inspect <host-id>`            | Show one host's configuration; `--check` also contacts it |
+| `plugins enable` / `disable <host-id>` | Turn a host on or off without deleting its configuration  |
+| `plugins sync [host-id]`               | Compare the allowlist with what hosts advertise           |
+
+Changes are written to the file, not to a running server. **Restart `remedia-server` to apply them.**
+
+### Install a public host
+
+```sh
+remedia-server plugins install https://plugins.example.com
+```
+
+The command fetches `/.well-known/remedia`, validates it with the same rules the server uses, shows
+the host and every `(pluginId, operation)` pair it advertises, and asks which to allow. The host ID is
+the manifest's `hostId` when it declares one; otherwise it is derived from the display name or
+hostname, or set with `--id`. A declared `hostId` always wins, and a conflicting `--id` is an error.
+Existing registrations with the same ID or the same endpoint are refused.
+
+Choose operations without prompts for scripts:
+
+```sh
+remedia-server plugins install https://plugins.example.com \
+  --id media-host \
+  --operation example.source/source.stream \
+  --operation example.metadata/catalog.search \
+  --yes
+```
+
+- `--operation PLUGIN/OPERATION` (repeatable) allows exactly those operations. The host must advertise them.
+- `--all-operations` acknowledges and allows everything the host advertises.
+- Without one of them a noninteractive session fails, because Remedia never enables advertised operations silently. Without `--yes` a noninteractive session also fails, because nothing is written unconfirmed.
+- `--replay-safe PLUGIN/OPERATION` marks an allowed operation as safe to retry. It is off by default, and the host's own claims are never trusted: this is an operator decision.
+- `--dry-run` prints the entry and validates the result without writing.
+
+### Install an authenticated host
+
+```sh
+export REMEDIA_PLUGIN_TOKEN='a-long-random-token'
+remedia-server plugins install https://plugins.example.com --token-env REMEDIA_PLUGIN_TOKEN
+```
+
+The file receives the reference, never the secret:
+
+```json
+{ "auth": { "type": "bearer", "token": "env('REMEDIA_PLUGIN_TOKEN')" } }
+```
+
+The variable is resolved with the usual precedence (process environment, then `--env-file` files) only
+to authenticate discovery. Remedia does not create or modify `.env` files and never prints tokens. A host
+that requires authentication, or rejects the token, produces an actionable error.
+
+### Local and cleartext hosts
+
+Security restrictions are the same as for a running server, and `--yes` does not relax them. HTTPS is
+required unless you pass `--allow-insecure-http`, and loopback or private-network addresses need
+`--allow-private-network`. Both opt-ins are written to the host's entry. URLs may not contain
+credentials, paths, queries or fragments, redirects are never followed, and responses are size- and
+time-bounded.
+
+### List and inspect
+
+```sh
+remedia-server plugins list
+remedia-server plugins list --json
+remedia-server plugins inspect media-host
+remedia-server plugins inspect media-host --check
+```
+
+`list` and `inspect` read only the file, so they show what is _configured_, not whether a host is
+healthy. `inspect --check` contacts the host and reports protocol compatibility, authentication,
+reachability and allowed operations which are no longer advertised. It exits with `2` when it finds a
+problem. JSON output is stable and contains no credentials: a token appears only as the name of its
+environment variable (`tokenEnv`) or as `"tokenSource": "inline"`.
+
+### Enable and disable
+
+```sh
+remedia-server plugins disable media-host
+remedia-server plugins enable media-host
+```
+
+A disabled host keeps its endpoint, credentials, operations and limits (`"enabled": false`), but the
+server does not register it at startup: it is not discovered or listed, and requests naming it fail
+with `plugin_host_disabled` instead of using another host. Omitting `enabled` means enabled.
+
+### Synchronize
+
+```sh
+remedia-server plugins sync
+remedia-server plugins sync media-host
+remedia-server plugins sync media-host --apply
+```
+
+`sync` fetches each host's manifest and prints a diff: `-` marks allowed operations the host no longer
+advertises, `+` marks newly advertised ones. By default it is read-only and exits with `2` when it
+found differences or could not check a host. A host that is unreachable or incompatible is reported
+and its configuration is left alone.
+
+`--apply` asks about each change in an interactive session. Newly advertised operations are never
+enabled implicitly, are added with `replaySafe: false`, and existing `replaySafe` values, identities
+and authentication are never changed. For automation, name the changes explicitly:
+
+```sh
+remedia-server plugins sync media-host --apply \
+  --add example.metadata/lyrics.search --remove-missing --yes
+```
+
+### Uninstall
+
+```sh
+remedia-server plugins uninstall media-host
+remedia-server plugins uninstall media-host --yes
+```
+
+Shows the host and the operations being removed, then removes only that entry. Unrelated configuration
+is untouched, the remote service is never contacted, and removing a host that is not configured is an
+error. `--dry-run` previews the change.
+
+### How the file is edited
+
+Edits splice text into the file, so unrelated fields (including `$schema`), key order, indentation,
+line endings and the trailing newline are preserved. The complete resulting configuration is validated
+before anything is written; it is then written to a temporary file and renamed over the original. If
+the file changed since it was read, nothing is written. Environment variables used by unrelated
+settings do not need to be set to run these commands; they are checked for shape only.
+
+Exit codes: `0` success, `1` failure, `2` for `sync` and `inspect --check` when they found something
+that needs attention.
 
 ## Load dotenv files
 

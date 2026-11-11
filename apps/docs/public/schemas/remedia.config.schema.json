@@ -211,6 +211,11 @@
             "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
             "description": "Stable, unique deployment ID used by clients."
           },
+          "enabled": {
+            "default": true,
+            "description": "Disabled hosts keep their configuration but are not registered as executable at startup.",
+            "type": "boolean"
+          },
           "endpoint": {
             "anyOf": [
               {

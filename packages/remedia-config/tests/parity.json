@@ -121,7 +121,7 @@
     "config": {
       "users": [
         {
-          "username": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+          "username": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
           "password": "a"
         }
       ]
@@ -1298,5 +1298,108 @@
       ]
     },
     "valid": false
+  },
+  {
+    "name": "plugin host enabled false",
+    "valid": true,
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "h",
+          "endpoint": "https://a.example",
+          "operations": [
+            {
+              "pluginId": "p",
+              "operation": "o"
+            }
+          ],
+          "enabled": false
+        }
+      ]
+    }
+  },
+  {
+    "name": "plugin host enabled true",
+    "valid": true,
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "h",
+          "endpoint": "https://a.example",
+          "operations": [
+            {
+              "pluginId": "p",
+              "operation": "o"
+            }
+          ],
+          "enabled": true
+        }
+      ]
+    }
+  },
+  {
+    "name": "plugin host enabled must be a boolean",
+    "valid": false,
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "h",
+          "endpoint": "https://a.example",
+          "operations": [
+            {
+              "pluginId": "p",
+              "operation": "o"
+            }
+          ],
+          "enabled": "no"
+        }
+      ]
+    }
+  },
+  {
+    "name": "disabled plugin host is still validated",
+    "valid": false,
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "pluginHosts": [
+        {
+          "id": "h",
+          "endpoint": "https://a.example",
+          "operations": [
+            {
+              "pluginId": "p",
+              "operation": "o"
+            }
+          ],
+          "enabled": false,
+          "limits": {
+            "maxAttempts": 9
+          }
+        }
+      ]
+    }
   }
 ]

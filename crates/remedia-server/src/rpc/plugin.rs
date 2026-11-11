@@ -77,12 +77,10 @@ pub(super) async fn execute(
                 }
             }
 
-            let host = server.plugin_hosts.host(&params.host_id).ok_or_else(|| {
-                plugin_error(PluginError::new(
-                    PluginErrorKind::HostNotFound,
-                    "no plugin host with that ID is configured on this node",
-                ))
-            })?;
+            let host = server
+                .plugin_hosts
+                .host(&params.host_id)
+                .map_err(plugin_error)?;
             let cancel = request_scope(&connection, &request.id);
             let outcome = scoped(
                 &session,

@@ -1,10 +1,8 @@
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use super::{
-    ConfigError, ServerConfig, host_allowed, is_public_ip, resolve_env, valid_host_pattern,
-};
+use super::{ConfigError, ServerConfig, host_allowed, is_public_ip};
 
 const JSON: &str = r#"{
       "users": [{"username":"bot","password":"env('BOT_PASSWORD')"}]
@@ -141,45 +139,6 @@ fn rejects_missing_env_unknown_keys_and_bad_values() {
 }
 
 #[test]
-fn env_references_are_exact_and_do_not_execute_content() {
-    let mut lookup = |name: &str| (name == "VALUE").then(|| "literal $(whoami)".to_owned());
-    assert_eq!(
-        resolve_env("field", "env('VALUE')".into(), &mut lookup).unwrap(),
-        "literal $(whoami)"
-    );
-    assert!(matches!(
-        resolve_env("field", "env('VALUE') suffix".into(), &mut lookup),
-        Err(ConfigError::InvalidEnvironmentReference(_))
-    ));
-}
-
-#[test]
-fn home_relative_media_roots_expand_before_resolution() {
-    let home = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE"));
-    if let Some(home) = home {
-        let home = PathBuf::from(home);
-        let json = JSON.replace(
-            "\"users\":",
-            "\"media\":{\"allowedFileRoots\":[\"~\"]},\"users\":",
-        );
-        let parsed = ServerConfig::parse_with(&json, Path::new("."), |_| Some("x".into()))
-            .expect("home directory is a valid media root");
-        assert_eq!(
-            super::expand_home_path("~/Music/Downloads").unwrap(),
-            home.join("Music/Downloads")
-        );
-        assert_eq!(
-            parsed.media.allowed_file_roots,
-            vec![fs::canonicalize(home).unwrap()]
-        );
-    }
-    assert_eq!(
-        super::expand_home_path("media").unwrap(),
-        PathBuf::from("media")
-    );
-}
-
-#[test]
 fn missing_config_error_reports_the_requested_path() {
     let path = env::temp_dir().join(format!(
         "remedia-missing-config-{}.json",
@@ -221,15 +180,6 @@ fn remote_hosts_require_explicit_allowlist_or_explicit_wildcard() {
         "example-attacker.test",
         &["example.test".into()]
     ));
-}
-
-#[test]
-fn rejects_malformed_allowed_host_patterns() {
-    assert!(valid_host_pattern("media.example.com"));
-    assert!(valid_host_pattern("192.0.2.10"));
-    assert!(!valid_host_pattern("https://media.example.com"));
-    assert!(!valid_host_pattern("-media.example.com"));
-    assert!(!valid_host_pattern("media.*.example.com"));
 }
 
 #[test]
@@ -397,17 +347,4 @@ fn shared_zod_validation_corpus_matches_rust() {
             .is_ok();
         assert_eq!(valid, case["valid"].as_bool().unwrap(), "{}", case["name"]);
     }
-}
-
-#[test]
-fn raw_default_expansion_matches_zod() {
-    let expected: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../packages/remedia-config/tests/defaults.json"
-    ))
-    .unwrap();
-    let raw: super::raw::RawConfig =
-        serde_json::from_str(r#"{"users":[{"username":"bot","password":"example"}]}"#).unwrap();
-    let mut actual = serde_json::to_value(raw).unwrap();
-    actual.as_object_mut().unwrap().remove("$schema");
-    assert_eq!(actual, expected);
 }

@@ -171,6 +171,12 @@ const pluginHostLimits = z
 const pluginHost = z
   .strictObject({
     id: identifier.describe('Stable, unique deployment ID used by clients.'),
+    enabled: z
+      .boolean()
+      .default(true)
+      .describe(
+        'Disabled hosts keep their configuration but are not registered as executable at startup.',
+      ),
     endpoint: origin.describe('Discovery and execution origin; https unless allowInsecureHttp.'),
     auth: z
       .discriminatedUnion('type', [

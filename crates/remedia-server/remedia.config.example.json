@@ -32,6 +32,7 @@
   "pluginHosts": [
     {
       "id": "source-host-1",
+      "enabled": true,
       "endpoint": "https://plugins.example.com",
       "auth": {
         "type": "bearer",

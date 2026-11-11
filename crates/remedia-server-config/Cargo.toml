@@ -1,0 +1,24 @@
+[package]
+name = "remedia-server-config"
+description = "FFmpeg-free configuration model, plugin-host protocol and discovery transport shared by the Remedia server and CLI"
+version = "0.1.0"
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.48", features = ["net", "time", "macros", "rt"] }
+tokio-util = "0.7"
+url = "2.5"
+
+[dev-dependencies]
+rand = "0.9"
+tokio = { version = "1.48", features = ["net", "time", "macros", "rt", "io-util"] }
+
+[lints]
+workspace = true

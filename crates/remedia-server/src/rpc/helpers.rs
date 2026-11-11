@@ -167,12 +167,7 @@ async fn resolve_source_inner(
             operation,
             input,
         } => {
-            let host = server.plugin_hosts.host(&host_id).ok_or_else(|| {
-                plugin_error(PluginError::new(
-                    PluginErrorKind::HostNotFound,
-                    "no plugin host with that ID is configured on this node",
-                ))
-            })?;
+            let host = server.plugin_hosts.host(&host_id).map_err(plugin_error)?;
             let media = host
                 .resolve(
                     &server.config,

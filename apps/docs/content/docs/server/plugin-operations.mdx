@@ -26,6 +26,10 @@ remedia-server ◀── GET media (no credentials, no Range) ◀─────
 
 ## Register a host
 
+The quickest way is the CLI, which discovers the host and writes the entry for you:
+`remedia-server plugins install https://plugins.example.com` (see [Manage plugin hosts](/docs/server/cli#manage-plugin-hosts)).
+The entry it creates looks like this, and you can also write it by hand:
+
 Hosts are operator-owned entries in [`remedia.config.json`](/docs/server/configuration#plugin-hosts). A
 host ID is a stable deployment identifier chosen by you; a manifest `name` is only a display name.
 

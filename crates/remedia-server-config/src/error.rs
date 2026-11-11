@@ -3,9 +3,11 @@ use std::fmt;
 
 /// A low-cardinality failure category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PluginErrorKind {
+pub enum PluginErrorKind {
     /// The host ID is not configured on this node.
     HostNotFound,
+    /// The host is configured but disabled with `enabled: false`.
+    HostDisabled,
     /// The operation is not in the host's configured allowlist.
     OperationNotAllowed,
     /// The host does not currently advertise the allowed operation.
@@ -50,20 +52,21 @@ pub(crate) enum PluginErrorKind {
 
 /// A plugin-host failure with a stable machine code and a static, safe description.
 #[derive(Clone, Debug)]
-pub(crate) struct PluginError {
-    pub(crate) kind: PluginErrorKind,
-    pub(crate) detail: &'static str,
+pub struct PluginError {
+    pub kind: PluginErrorKind,
+    pub detail: &'static str,
 }
 
 impl PluginError {
-    pub(crate) const fn new(kind: PluginErrorKind, detail: &'static str) -> Self {
+    pub const fn new(kind: PluginErrorKind, detail: &'static str) -> Self {
         Self { kind, detail }
     }
 
     /// The RPC error code exposed to clients.
-    pub(crate) const fn rpc_code(&self) -> &'static str {
+    pub const fn rpc_code(&self) -> &'static str {
         match self.kind {
             PluginErrorKind::HostNotFound => "plugin_host_not_found",
+            PluginErrorKind::HostDisabled => "plugin_host_disabled",
             PluginErrorKind::OperationNotAllowed => "plugin_operation_not_allowed",
             PluginErrorKind::OperationUnavailable => "plugin_operation_unavailable",
             PluginErrorKind::HostUnavailable => "plugin_host_unavailable",
@@ -88,9 +91,10 @@ impl PluginError {
     }
 
     /// Stable label for diagnostics and statistics.
-    pub(crate) const fn label(&self) -> &'static str {
+    pub const fn label(&self) -> &'static str {
         match self.kind {
             PluginErrorKind::HostNotFound => "host_not_found",
+            PluginErrorKind::HostDisabled => "host_disabled",
             PluginErrorKind::OperationNotAllowed => "operation_not_allowed",
             PluginErrorKind::OperationUnavailable => "operation_unavailable",
             PluginErrorKind::HostUnavailable => "host_unavailable",
@@ -115,7 +119,7 @@ impl PluginError {
     }
 
     /// Whether the failure reflects the host's health rather than the caller's request.
-    pub(crate) const fn affects_health(&self) -> bool {
+    pub const fn affects_health(&self) -> bool {
         matches!(
             self.kind,
             PluginErrorKind::HostUnavailable
@@ -130,7 +134,7 @@ impl PluginError {
 
     /// Whether repeating a replay-safe operation can plausibly succeed. Authentication,
     /// authorization-policy and validation failures are never retried.
-    pub(crate) const fn retriable(&self) -> bool {
+    pub const fn retriable(&self) -> bool {
         matches!(
             self.kind,
             PluginErrorKind::HostUnavailable | PluginErrorKind::Timeout

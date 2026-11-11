@@ -2,6 +2,8 @@
 //! remedia-core, remedia-discord, or remedia-server's native runtime code.
 //! All FFmpeg dependencies live in the separate remedia-server-runtime process.
 mod discovery_client;
+mod environment;
+mod plugins_cli;
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -51,6 +53,11 @@ enum Commands {
     Doctor,
     /// List live Remedia instances for this operating-system user.
     List,
+    /// Register and manage remote plugin hosts in the configuration file.
+    ///
+    /// Registers independent @remedia/plugin-host deployments; it does not install plugin code.
+    #[command(subcommand)]
+    Plugins(plugins_cli::PluginsCommand),
     /// Install the latest published server and compatible FFmpeg runtime.
     #[command(alias = "upgrade")]
     Update {
@@ -62,10 +69,45 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    match run(Cli::parse()).await {
+    let cli = Cli::parse();
+
+    if let Some(Commands::Plugins(command)) = &cli.command {
+        return run_plugins(&cli, command).await;
+    }
+
+    match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("remedia-server: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Plugin management only edits configuration: it never starts the runtime, so it keeps working
+/// without FFmpeg. Global flags which make no sense for it are rejected rather than ignored.
+async fn run_plugins(cli: &Cli, command: &plugins_cli::PluginsCommand) -> ExitCode {
+    let rejected = if cli.shutdown_on_stdin_close {
+        Some("--shutdown-on-stdin-close is only valid with serve")
+    } else if cli.generate_config_file.is_some() || cli.list {
+        Some("--generate-config-file and --list cannot be combined with a command")
+    } else if cli.json {
+        Some("--json belongs after the command, for example: plugins list --json")
+    } else {
+        None
+    };
+
+    if let Some(message) = rejected {
+        eprintln!("remedia-server: {message}");
+
+        return ExitCode::FAILURE;
+    }
+
+    match environment::load_files(&cli.env_files, &cli.optional_env_files) {
+        Ok(dotenv) => plugins_cli::run(command, cli.config.clone(), dotenv).await,
+        Err(error) => {
+            eprintln!("remedia-server: {error}");
+
             ExitCode::FAILURE
         }
     }
@@ -110,6 +152,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Doctor) => launch_runtime(&cli, true),
         Some(Commands::Serve) | None => launch_runtime(&cli, false),
         Some(Commands::List) => unreachable!("handled above"),
+        Some(Commands::Plugins(_)) => unreachable!("handled before run"),
     }
 }
 
@@ -325,6 +368,80 @@ mod tests {
                 .unwrap()
                 .shutdown_on_stdin_close
         );
+    }
+
+    #[test]
+    fn every_plugins_command_and_flag_parses() {
+        use plugins_cli::PluginsCommand as P;
+
+        let parse = |args: &[&str]| {
+            let mut full = vec!["remedia-server"];
+
+            full.extend_from_slice(args);
+
+            Cli::try_parse_from(full).unwrap()
+        };
+        let plugins = |args: &[&str]| match parse(args).command {
+            Some(Commands::Plugins(command)) => command,
+            other => panic!("expected plugins, got {other:?}"),
+        };
+
+        let P::Install(install) = plugins(&[
+            "plugins",
+            "install",
+            "https://p.example",
+            "--id",
+            "x",
+            "--token-env",
+            "T",
+            "--operation",
+            "a/b",
+            "--operation",
+            "c/d",
+            "--all-operations",
+            "--replay-safe",
+            "a/b",
+            "--allow-insecure-http",
+            "--allow-private-network",
+            "--yes",
+            "--dry-run",
+        ]) else {
+            panic!("install")
+        };
+
+        assert_eq!(install.id.as_deref(), Some("x"));
+        assert_eq!(install.token_env.as_deref(), Some("T"));
+        assert_eq!(install.operations, ["a/b", "c/d"]);
+        assert!(install.all_operations && install.yes && install.dry_run);
+        assert!(install.allow_insecure_http && install.allow_private_network);
+        assert!(
+            matches!(plugins(&["plugins", "uninstall", "x", "--yes", "--dry-run"]), P::Uninstall(args) if args.yes && args.dry_run)
+        );
+        assert!(matches!(plugins(&["plugins", "list", "--json"]), P::List(args) if args.json));
+        assert!(
+            matches!(plugins(&["plugins", "inspect", "x", "--check", "--json"]), P::Inspect(args) if args.check && args.json)
+        );
+        assert!(
+            matches!(plugins(&["plugins", "enable", "x", "--dry-run"]), P::Enable(args) if args.dry_run)
+        );
+        assert!(matches!(
+            plugins(&["plugins", "disable", "x"]),
+            P::Disable(_)
+        ));
+        assert!(
+            matches!(plugins(&["plugins", "sync"]), P::Sync(args) if args.host_id.is_none() && !args.apply)
+        );
+        assert!(matches!(
+            plugins(&["plugins", "sync", "x", "--dry-run", "--apply", "--add", "a/b", "--remove-missing", "--yes"]),
+            P::Sync(args) if args.host_id.as_deref() == Some("x") && args.apply && args.remove_missing && args.add == ["a/b"]
+        ));
+
+        // The global options apply to plugin commands in any position.
+        let cli = parse(&["--config", "c.json", "--env-file", "e", "plugins", "list"]);
+
+        assert_eq!(cli.config.as_deref(), Some(Path::new("c.json")));
+        assert!(Cli::try_parse_from(["remedia-server", "plugins", "install"]).is_err());
+        assert!(Cli::try_parse_from(["remedia-server", "plugins", "frobnicate"]).is_err());
     }
 
     #[test]
