@@ -1476,6 +1476,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
             ? null
             : this.#snapshot.lastError,
     };
+    this.#playbackClock.transition(state);
     this.#emitTerminal(state, generation, previousState, data, false);
   }
 
@@ -1645,7 +1646,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
       if (failedGeneration !== undefined && typeof entryId === 'string' && this.#outgoingSnapshot) {
         this.#snapshot = this.#outgoingSnapshot;
         this.#outgoingSnapshot = undefined;
-        this.#playbackClock.reconcile(this.#snapshot);
+        this.#playbackClock.reconcile(this.#snapshot, true);
         this.emit(PlaybackEvent.transitionCancelled, {
           ...this.#playbackIdentity(event.data),
           failedGeneration,
@@ -1801,6 +1802,9 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     if (state === this.#connectionState) return;
     const previousState = this.#connectionState;
     this.#connectionState = state;
+    if (state === 'reconnecting' || state === 'disconnected' || state === 'failed') {
+      this.#playbackClock.suspend();
+    }
     this.emit(VoiceEvent.voiceStateChanged, {
       sessionId: this.#sessionId,
       guildId: this.#options.guildId,
