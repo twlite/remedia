@@ -1,93 +1,67 @@
 # Remedia
 
-Remedia is a Rust-first audio engine with direct Node.js bindings and an optional standalone
-WebSocket server. It uses native FFmpeg libraries for media inspection and decoding, provides
-playback controls and filtering, and supports Discord voice output.
+Remedia is an audio engine for Discord bots. Give it a URL, a file, or audio from your own plugin;
+it decodes the media, applies filters and volume, and plays it into a voice channel over Discord's
+encrypted voice transport. Run it inside your Node.js bot, or on a separate server.
 
-The project is under active development. Remedia handles audio; applications provide media
-sources, platform metadata, and their existing Discord Gateway connection.
+Your application keeps its own Discord Gateway connection and decides what to play. Remedia is not a
+music search service or a Lavalink-compatible server.
 
-## Packages
+## Get started
 
-| Component                                    | Purpose                                                                         |
-| -------------------------------------------- | ------------------------------------------------------------------------------- |
-| [`remedia-core`](crates/remedia-core)        | Media probing, decoding, playback, filters, and generic audio output            |
-| [`@remedia/node`](packages/remedia-node)     | Direct, in-process Node.js bindings with file, URL, buffer, and Readable inputs |
-| [`remedia-server`](crates/remedia-server)    | Authenticated WebSocket RPC for server-accessible URLs and allowed local files  |
-| [`@remedia/client`](packages/remedia-client) | One TypeScript client for embedded and remote nodes                             |
-| [`remedia-discord`](crates/remedia-discord)  | Discord voice transport, encryption, and packet scheduling                      |
+Pick how you want to run the engine:
 
-Embedded execution does not run a local server. Remote execution does not accept byte uploads or
-client-owned Readables. Applications provide source integrations. The independent [`@remedia/plugin-host`](packages/remedia-plugin-host)
-package supplies generic direct dispatch and optional HTTP media delivery. `remedia-server` can register
-such deployments in `pluginHosts`, execute allow-listed operations on them at playback time, and play the
-returned audio as a forward-only stream ([guide](apps/docs/content/docs/server/plugin-operations.mdx)).
-Remedia does not implement the Lavalink API.
+| I want to...                                 | Install                                                                                                          | Guide                                                                           |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Run audio inside my Node.js bot              | `npm install @remedia/node` and [FFmpeg 9](https://remedia.twlite.dev/docs/node/ffmpeg-9)                        | [Embedded quickstart](https://remedia.twlite.dev/docs/getting-started/embedded) |
+| Run audio on a separate server               | `curl -fsSL https://remedia.twlite.dev/install.sh \| sh` on the server, `npm install @remedia/client` in the bot | [Remote quickstart](https://remedia.twlite.dev/docs/getting-started/remote)     |
+| Use both from one API                        | `npm install @remedia/client`                                                                                    | [Using `@remedia/client`](https://remedia.twlite.dev/docs/client/overview)      |
+| Resolve audio or data through my own service | `npm install @remedia/plugin-host`                                                                               | [Plugins](https://remedia.twlite.dev/docs/plugins/overview)                     |
 
-## Installation
-
-Node.js **22.18 or newer** is required. Packages expose ESM entrypoints.
-
-```sh
-# Embedded execution
-npm install @remedia/node
-
-# Remote client
-npm install @remedia/client
-
-# Hybrid execution
-npm install @remedia/client @remedia/node
-```
-
-Install **FFmpeg 9 shared libraries** separately on hosts running the native addon or standalone
-server. They are not bundled. Remote-only clients do not need FFmpeg or the native addon.
-For an embedded `@remedia/node` application, install only FFmpeg (to `~/.remedia/ffmpeg9`, found
-automatically with no environment variables):
-
-```sh
-curl -fsSL https://remedia.twlite.dev/install.sh | sh -s -- --ffmpeg-only
-```
-
-On Windows PowerShell use
-`& ([scriptblock]::Create((irm https://remedia.twlite.dev/install.ps1))) -FFmpegOnly`.
-See [installing FFmpeg 9](apps/docs/content/docs/node/ffmpeg-9.mdx) and the [distribution guide](apps/docs/content/docs/node/distribution.mdx) for supported targets.
+Node.js 22.18 or newer is required. FFmpeg 9 shared libraries are needed on the machine that decodes
+audio; a bot that only talks to remote servers needs none. On Windows, use the PowerShell installer
+from the [server installation guide](https://remedia.twlite.dev/docs/server/installation).
 
 ## Example
 
 ```ts
 import { Remedia } from '@remedia/node';
 
-const remedia = await Remedia.create();
-try {
-  const info = await remedia.probe({ file: './audio.mp3' });
-  console.log(info.durationMs, info.metadata.title);
+const remedia = await Remedia.create({
+  send: (guildId, payload) => discord.guilds.cache.get(guildId)?.shard.send(payload),
+});
+discord.on('raw', (packet) => remedia.receive(packet));
 
-  // Resolve a fresh source for playback; probing retains no reusable input.
-  const playback = remedia.createPlaybackSession();
-  await playback.play({ file: './audio.mp3' });
-  console.log(await playback.wait());
-} finally {
-  await remedia.close();
-}
+const voice = remedia.createDiscordSession({ guildId, channelId, userId: discord.user.id });
+
+await voice.connect();
+await voice.play({ url: 'https://example.com/audio.mp3' });
+await voice.setVolume(0.8);
 ```
 
-This standalone playback session discards audio through a null output. It does not play through
-local speakers. Probing creates no playback session; Readables passed to it may be partially or
-fully consumed and should be discarded. Unknown metadata stays unknown.
+## Packages
+
+| Package                                                | Purpose                                                            |
+| ------------------------------------------------------ | ------------------------------------------------------------------ |
+| [`@remedia/node`](packages/remedia-node)               | Embedded engine for Node.js                                        |
+| [`@remedia/client`](packages/remedia-client)           | One client for embedded and remote nodes                           |
+| [`remedia-server`](crates/remedia-server)              | Standalone audio server and plugin-host management CLI             |
+| [`@remedia/plugin-host`](packages/remedia-plugin-host) | Build plugin services for audio and application-defined operations |
+| [`@remedia/config`](packages/remedia-config)           | Validation and JSON Schema for the server configuration            |
+
+The engine is written in Rust ([`remedia-core`](crates/remedia-core),
+[`remedia-discord`](crates/remedia-discord)); the Rust APIs are documented for contributors and
+embedders.
 
 ## Documentation
 
-- [Core media APIs](apps/docs/content/docs/core/decoding.mdx) and [playback](apps/docs/content/docs/core/playback.mdx)
-- [Node.js bindings](apps/docs/content/docs/node/bindings.mdx)
-- [Hybrid TypeScript client](apps/docs/content/docs/client/overview.mdx)
-- [Server setup](apps/docs/content/docs/server/overview.mdx) and [RPC protocol](apps/docs/content/docs/server/protocol.mdx)
-- [Discord voice integration](apps/docs/content/docs/discord/voice-output.mdx)
-- [Diagnostics and telemetry](apps/docs/content/docs/observability/configuration.mdx)
+Read the documentation at **[remedia.twlite.dev/docs](https://remedia.twlite.dev/docs)**. Its source
+is in [`apps/docs`](apps/docs).
 
-## Development
+## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for toolchains, native dependencies, tests, and release
-workflows. The workspace uses Rust and pnpm; user-facing documentation lives in `apps/docs`.
+workflows. The workspace uses Rust and pnpm.
 
 ## License
 

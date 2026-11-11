@@ -1,0 +1,41 @@
+---
+title: Crossfading
+description: Overlap the end of one track with the start of the next using staged playback.
+---
+
+Check `client.nodes` capability snapshots before selecting a remote node for
+crossfade. A remote node must advertise `capabilities.crossfade.available`; server
+policy and explicit session opt-in are both required. Embedded sessions use their
+own configuration without a server config file.
+
+```ts
+const session = client.createDiscordSession({
+  guildId,
+  channelId,
+  userId,
+  crossfade: { enabled: true, durationMs: 5000, prepareBeforeMs: 30000, curve: 'equalPower' },
+});
+session.on('prepareRequested', async ({ generation }) => {
+  await session.stageNext(
+    { url: 'https://media.example.com/fresh-next.wav' },
+    {
+      expectedGeneration: generation,
+      entryId: 'entry-2',
+      queueRevision: 1,
+      sourceRevision: 0,
+    },
+  );
+});
+await session.connect();
+await session.play({ url: 'https://media.example.com/current.wav' });
+```
+
+Applications supply fresh, authorized URLs and queue identities. Remote stages
+accept server-accessible files and HTTP(S) URLs; embedded stages also accept buffers
+and Readables. `stageNext()` returns a preparation snapshot, `stagedSource()` reads
+it, and `clearStage()` cancels it. Optional `expiresAtMs` prevents promotion of an
+expired source. Local custom metadata is never sent to the server.
+
+Use completion `continuation` metadata to reconcile automatic promotion without
+replaying the source. Reconnection uses retained events and guild snapshots;
+queue ownership remains with the application. See [playback lifecycle](/docs/core/playback#crossfade-playback).

@@ -1,0 +1,81 @@
+---
+title: Permissions and security
+description: Who decides which plugin operations can run, and the network, size, and credential protections Remedia enforces.
+---
+
+## Who decides what can run
+
+The **server operator** decides. Each host entry in `remedia.config.json` lists the
+`(pluginId, operation)` pairs that clients may use:
+
+```json
+{
+  "pluginHosts": [
+    {
+      "id": "source-host-1",
+      "endpoint": "https://plugins.example.com",
+      "auth": { "type": "bearer", "token": "env('REMEDIA_PLUGIN_HOST_TOKEN')" },
+      "operations": [
+        { "pluginId": "example.metadata", "operation": "catalog.search", "replaySafe": true }
+      ]
+    }
+  ]
+}
+```
+
+- An operation a host advertises but the operator did not list **cannot** be called.
+- There is no setting that disables this check.
+- Clients discover what is allowed with `client.plugins.list()`. Discovery only reports; it never grants.
+- Manage entries with [`remedia-server plugins`](/docs/server/cli#manage-plugin-hosts) instead of editing JSON. `install` never enables advertised operations silently, and `sync` only adds operations you approve.
+- `"enabled": false` keeps a host's configuration but removes it from service. Requests naming it fail with `plugin_host_disabled`.
+
+Hosts are always addressed by their configured `id`. Requests never fall back to a different host
+or node.
+
+## Retries and `replaySafe`
+
+`replaySafe: true` tells Remedia that running an operation twice has no side effects, which allows
+automatic retries for transient failures. It defaults to `false` and is never inferred from what a
+host says. Set it only for read-only operations.
+
+## Network protections
+
+For every host, discovery, execution, and media downloads follow the same rules:
+
+- HTTPS by default. Cleartext `http:` needs `allowInsecureHttp: true` on that host.
+- Loopback and private-network addresses need `allowPrivateNetwork: true`. Hostnames are resolved once and the checked address is the one connected to, so DNS rebinding cannot swap in a private address.
+- Redirects are never followed.
+- Proxies are never used.
+- Endpoints are origins only: no credentials, path, query, or fragment.
+- Requests and responses have size limits (`maxRequestBytes`, `maxResponseBytes`) and timeouts, and each host has a cap on concurrent operations.
+
+`remedia-server plugins` applies these same rules when you register a host. `--yes` skips prompts,
+never a restriction.
+
+## Credentials
+
+- The bearer token is sent only to the host's own origin. It is never sent to media URLs or other origins.
+- Store it as an environment reference, `env('NAME')`. The CLI writes only the reference.
+- Tokens are never logged, printed by the CLI, or included in error messages or JSON output.
+- Operation input and results are never logged. They may contain private application data.
+
+## What clients can see
+
+`plugin.list` returns host IDs, status, and permitted operations. It never returns endpoint URLs,
+tokens, media grant URLs, or other deployment details.
+
+## Size limits for forwarded results
+
+A forwarded result must fit in a single WebSocket message (`limits.maxMessageBytes`, default 64 KiB).
+Larger results fail with `plugin_result_too_large` and the connection stays usable.
+
+## Media
+
+Audio resolved through a plugin is fetched by the server from the host's own origin (or listed
+`mediaOrigins`), without credentials. Other origins are rejected unless `allowExternalMedia` is set,
+in which case the ordinary `media.*` URL policy applies. Metadata operations never open media.
+
+## Plugins are not sandboxed
+
+`@remedia/plugin-host` runs plugin code with the permissions of its process. Run hosts you trust,
+with the least privilege they need, and treat their input as untrusted.

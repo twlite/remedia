@@ -3,12 +3,10 @@ title: Native library troubleshooting
 description: Diagnose FFmpeg discovery and native addon loading failures, and inspect which FFmpeg installation Remedia loaded.
 ---
 
-# Native library troubleshooting
-
 `@remedia/node` is two native files plus FFmpeg. The platform package `@remedia/node-<platform>` contains a tiny **bootstrap** addon (`bootstrap.<platform>.node`) that has no FFmpeg dependency, and the **engine** addon (`node.<platform>.node`) that links FFmpeg dynamically. Importing the package runs this sequence once:
 
 1. Load the bootstrap. It can open shared libraries by absolute path and nothing else.
-2. [Select an FFmpeg 9 installation](/docs/node/ffmpeg-9#how-remedianode-finds-ffmpeg) and open its five libraries through the bootstrap, keeping them resident.
+2. [Select an FFmpeg 9 installation](/docs/node/ffmpeg-9#how-remedianode-chooses-an-installation) and open its five libraries through the bootstrap, keeping them resident.
 3. Load the engine addon. The operating system's loader finds FFmpeg already loaded and does not search for it again.
 4. Only then does the package report success; `getFfmpegRuntime()` returns the selected installation.
 
@@ -44,15 +42,15 @@ Install FFmpeg 9 with the Remedia installer:
 To use another FFmpeg 9 prefix, set REMEDIA_FFMPEG_DIR to the directory that contains lib/.
 ```
 
-| Reason                  | Meaning                                                                                                                                     | What to do                                                                                                            |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `not-found`             | The directory does not exist (or no system directory held FFmpeg).                                                                          | Run the [FFmpeg-only installer](/docs/node/ffmpeg-9#install-ffmpeg-with-the-remedia-installer), or fix the path.      |
-| `missing-libraries`     | Some of the five libraries are absent from the directory.                                                                                   | Reinstall FFmpeg; the message names each missing file.                                                                |
-| `abi-mismatch`          | The libraries are a different FFmpeg major (for example FFmpeg 7's `libavcodec.so.61`), or report a different version than their file name. | Install FFmpeg **9.0.2**. Renaming or symlinking other majors does not work.                                          |
-| `architecture-mismatch` | The libraries were built for another CPU (for example x64 libraries under an ARM64 Node.js).                                                | Install libraries matching `node -p process.arch`; on Apple Silicon check you are not running x64 Node under Rosetta. |
-| `unresolved-dependency` | A library needs another shared library that cannot be found (Windows error 126, `cannot open shared object file`, `Library not loaded`).    | Install the missing dependency, or use a self-contained installation such as the installer's prefix.                  |
-| `mixed-installations`   | The five libraries resolved to more than one directory.                                                                                     | Use one installation. Remove stale copies from loader-visible directories.                                            |
-| `load-failed`           | The loader refused a library for another reason, such as an undefined symbol.                                                               | Read the loader message in `detail`.                                                                                  |
+| Reason                  | Meaning                                                                                                                                               | What to do                                                                                                            |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `not-found`             | The directory does not exist (or no system directory held FFmpeg).                                                                                    | Run the [FFmpeg-only installer](/docs/node/ffmpeg-9#recommended-the-remedia-installer), or fix the path.              |
+| `missing-libraries`     | Some of the five libraries are absent from the directory.                                                                                             | Reinstall FFmpeg; the message names each missing file.                                                                |
+| `abi-mismatch`          | The libraries are a different FFmpeg major (for example `libavcodec.so.61` from an older FFmpeg), or report a different version than their file name. | Install FFmpeg **9.0.2**. Renaming or symlinking other majors does not work.                                          |
+| `architecture-mismatch` | The libraries were built for another CPU (for example x64 libraries under an ARM64 Node.js).                                                          | Install libraries matching `node -p process.arch`; on Apple Silicon check you are not running x64 Node under Rosetta. |
+| `unresolved-dependency` | A library needs another shared library that cannot be found (Windows error 126, `cannot open shared object file`, `Library not loaded`).              | Install the missing dependency, or use a self-contained installation such as the installer's prefix.                  |
+| `mixed-installations`   | The five libraries resolved to more than one directory.                                                                                               | Use one installation. Remove stale copies from loader-visible directories.                                            |
+| `load-failed`           | The loader refused a library for another reason, such as an undefined symbol.                                                                         | Read the loader message in `detail`.                                                                                  |
 
 An invalid `REMEDIA_FFMPEG_DIR` always fails: Remedia will not quietly use another installation when you named one explicitly. Unset the variable, or point it at a valid prefix.
 
@@ -61,7 +59,7 @@ An invalid `REMEDIA_FFMPEG_DIR` always fails: Remedia will not quietly use anoth
 If the message says FFmpeg 9 _was loaded from_ a directory but the Remedia native addon could not be loaded, the engine addon itself failed. Common causes:
 
 - **`Cannot find native binding`**: the optional `@remedia/node-<platform>` package was not installed. Reinstall with optional dependencies enabled, and check `node -p "process.platform + ' ' + process.arch"` and, on Linux, glibc versus musl. Packages are provided for the targets listed in [package distribution](/docs/node/distribution).
-- **A dependency on a different FFmpeg major** (for example `libavutil.59.dylib`): the addon was built against FFmpeg 7. Use an `@remedia/node` release built for FFmpeg 9.
+- **A dependency on a different FFmpeg major** (for example `libavutil.59.dylib`): the addon was built against an older FFmpeg. Use an `@remedia/node` release built for FFmpeg 9.
 - **Another module in the same process loaded a different FFmpeg first.** The operating system uses one copy of a library name per process. If a native module loaded an incompatible `libavcodec` before Remedia, Remedia may be bound to it. Load Remedia first, or avoid combining modules that bundle FFmpeg of a different build with the same major.
 - **`NAPI_RS_NATIVE_LIBRARY_PATH`** still works to load a custom engine addon. FFmpeg discovery runs before it, so that addon must link FFmpeg 9 as well.
 

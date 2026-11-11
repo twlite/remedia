@@ -3,8 +3,6 @@ title: Server configuration
 description: Strict configuration, environment references, media access, and observability.
 ---
 
-# Server configuration
-
 `remedia-server` loads a required JSON file from the current working directory. Override the path
 with `--config PATH`. Unknown fields, missing required fields, invalid ranges, duplicate usernames,
 and missing environment variables stop startup with an error.
@@ -155,7 +153,7 @@ environment references.
 ## Plugin hosts
 
 `pluginHosts` registers independent [plugin-host](/docs/server/plugins) deployments whose operations can
-produce playable audio. See [Plugin operation sources](/docs/server/plugin-operations) for behavior,
+produce playable audio. See [Playing audio through plugins](/docs/server/plugin-operations) for behavior,
 lifecycle and security. Every entry is validated at startup; duplicate IDs fail startup. You can manage
 these entries with [`remedia-server plugins`](/docs/server/cli#manage-plugin-hosts) instead of editing the file.
 

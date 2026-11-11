@@ -1,28 +1,51 @@
 ---
-title: Plugin operation sources
-description: Play audio produced by a configured plugin-host deployment through generic operations, with discovery, host affinity, lifecycle and security rules.
+title: Playing audio through plugins
+description: Play audio produced by a configured plugin host, with host affinity, lifecycle, and media rules.
 ---
 
-# Plugin operation sources
+Some audio cannot be played from a fixed URL: it has to be resolved right before playback. For
+those, you can give Remedia an **operation source** instead of a URL. The server calls an operation
+on your [plugin host](/docs/plugins/overview), the host returns a short-lived link to the audio, and
+the server streams it into the decoder like any other input.
 
-This page covers operations whose result is **audio**. To run operations that return ordinary JSON,
-such as catalog or lyrics requests owned by your application, see
-[Plugin operation forwarding](/docs/server/plugin-forwarding); both paths share the registry,
-allowlist, limits, retries and health described here.
-
-A **plugin host** is an independent service built with [`@remedia/plugin-host`](/docs/server/plugins).
-`remedia-server` can execute its operations at playback time and play the encoded audio they return.
-Remedia never interprets operation input: it is opaque JSON owned by your application. The engine
-stays independent of providers, extractors and application models. It speaks only the existing
-Remedia v1 HTTP contract (`GET /.well-known/remedia`, `POST /remedia/v1/execute`, and temporary
-`/remedia/v1/media/:token` grants).
+This page is about **audio playback**. To run an operation and get JSON back (search, metadata,
+lyrics), see [Executing plugin operations](/docs/server/plugin-forwarding).
 
 ```text
-client ── player.play {type:"operation", hostId, pluginId, operation, input} ──▶ remedia-server
+client ── play({hostId, pluginId, operation, input}) ──▶ remedia-server
 remedia-server ── POST /remedia/v1/execute (Bearer) ──▶ plugin host ── {url, expiresAtMs} ─┐
 remedia-server ◀── GET media (no credentials, no Range) ◀───────────────────────────────────┘
           decoder ◀── bounded byte stream ◀── pump thread
 ```
+
+## Play it from your application
+
+```ts
+const voice = remedia.createDiscordSession({
+  guildId,
+  channelId,
+  userId,
+  pluginHosts: ['source-host-1'], // only use nodes that have this host configured
+});
+
+await voice.connect();
+await voice.play({
+  hostId: 'source-host-1',
+  pluginId: 'example.source',
+  operation: 'source.stream',
+  input: { id: 'opaque to Remedia' },
+});
+```
+
+`stageNext()` accepts the same source for [crossfading](/docs/client/crossfade).
+
+- `hostId` is the ID configured on the server, not a display name. It carries no URL or credentials; store it in your own track model, never the resulting media URL.
+- `input` is opaque JSON that Remedia passes through unchanged.
+- Only remote nodes can play operation sources. Embedded nodes and servers without the host reject them with `UnsupportedMediaSourceError` before anything is sent.
+- A guild is never moved to another node, and the call never falls back to another host.
+- Resolve audio at playback time. `probe()` rejects operation sources because their media links are single use.
+- Errors are `RemediaRpcError` with codes such as `plugin_host_unavailable`, `plugin_host_unauthorized` and `cancelled` (stop or skip while the operation was pending).
+- Seeking is forward-only for these sources; a backward seek rejects with `unsupported`.
 
 ## Register a host
 
@@ -71,7 +94,7 @@ availability, authentication, protocol or timeout failures) and `shutting_down`.
 with the same ID and endpoint recovers on its next successful request or discovery; the node does not
 restore old grant URLs.
 
-## Play an operation source
+## Wire format
 
 `player.play` and `player.stage.next` accept a third source type:
 
@@ -142,19 +165,14 @@ Operation requests share the guild's generation and cancellation model:
   (`plugin_host_unauthorized`) and policy or validation failures are never retried. Each attempt
   carries a fresh `X-Remedia-Operation-Id` header so hosts can correlate or deduplicate.
 
-## Security model
+## Security
 
-- Requests use the configured host ID and endpoint; credentials are sent **only** to that origin for
-  discovery and execution, never to media URLs, `mediaOrigins`, or redirect targets. They are
-  redacted from debug output and are never logged.
-- Redirects are never followed for discovery, execution or media. A `3xx` is a protocol failure.
-- DNS answers are checked at connect time, so a rebinding hostname cannot switch to a private address
-  between validation and use. Hostnames resolving to non-public addresses are refused, and IP literals
-  are checked directly, unless the host sets `allowPrivateNetwork` for an internal deployment.
-- Requests, responses, media size (`maxMediaBytes`), pending operations and active streams are
-  bounded per host. Exceeding a concurrency limit returns `resource_exhausted`.
-- Media must not declare a textual or JSON content type.
-- Operation input is limited to `limits.maxRequestBytes` and by the RPC message limit.
+Network, credential and size rules are shared with every plugin feature and are described in
+[Permissions and security](/docs/plugins/security). For media specifically: credentials are sent
+only to the host origin for discovery and execution and never to media URLs, `mediaOrigins`, or
+redirect targets; media must not declare a textual or JSON content type; and `maxMediaBytes`,
+`maxPendingOperations` and `maxActiveStreams` bound each host (exceeding a concurrency limit returns
+`resource_exhausted`).
 
 ## Errors
 

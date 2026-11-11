@@ -25,15 +25,15 @@ function GitHubMark({ size = 24 }: { size?: number }) {
 export const metadata = {
   title: 'Remedia — A modern audio engine for Discord',
   description:
-    'A Rust-first audio engine for embedded and remote playback, with native Discord voice integration and a typed API.',
+    'Play audio into Discord voice channels from Node.js, embedded in your bot or on a separate server.',
 };
 
 const githubUrl = 'https://github.com/twlite/remedia';
 const features = [
   {
     icon: Zap,
-    title: 'High performance',
-    description: 'Native audio processing, built in Rust from the ground up.',
+    title: 'Native engine',
+    description: 'Decoding, filters and Opus encoding run natively, written in Rust.',
   },
   {
     icon: Layers,
@@ -92,8 +92,8 @@ export default function HomePage() {
           </Link>
           <nav className={styles.navigation} aria-label="Main navigation">
             <Link href="/docs">Docs</Link>
-            <Link href="/docs/node/bindings">API</Link>
-            <Link href="/docs/client/overview">Guides</Link>
+            <Link href="/docs/client/reference">API</Link>
+            <Link href="/docs/getting-started/choose">Guides</Link>
             <Link href="/docs/discord/bot-harness">Examples</Link>
           </nav>
           <div className={styles.headerActions}>
@@ -138,8 +138,8 @@ export default function HomePage() {
               </span>
             </h1>
             <p className={styles.description}>
-              High performance, low overhead audio playback with a unified engine for both embedded
-              and remote setups. Built in Rust for embedded and remote audio applications.
+              Play audio into Discord voice channels from Node.js. Run the engine inside your bot or
+              on a separate server, with one typed API for both.
             </p>
             <InstallCommand />
             <div className={styles.buttons}>

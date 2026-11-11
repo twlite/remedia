@@ -3,10 +3,10 @@
   "pages": [
     "overview",
     "installation",
-    "cli",
     "configuration",
-    "protocol",
+    "cli",
     "deployment",
+    "protocol",
     "plugins",
     "plugin-operations",
     "plugin-forwarding"

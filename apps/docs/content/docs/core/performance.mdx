@@ -3,8 +3,6 @@ title: Playback performance
 description: Reproduce concurrent playback measurements and understand worker and buffering limits.
 ---
 
-# Playback performance
-
 Both embedded Node.js playback and the standalone server use the same Rust core.
 Each active playback owns a blocking worker. FFmpeg input acquisition, decoding,
 filtering, encoding, and synchronous output delivery currently share that worker.

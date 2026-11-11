@@ -3,8 +3,6 @@ title: Structured logging and OpenTelemetry
 description: Configure Remedia tracing, bounded diagnostic events, and optional OTLP export.
 ---
 
-# Structured logging and OpenTelemetry
-
 Remedia uses Rust's `tracing` ecosystem for structured diagnostics. `remedia-core` and
 `remedia-discord` emit spans and lifecycle events; they do not install a subscriber or enable a
 network exporter. The shared `remedia-observability` crate provides local subscriber construction,
@@ -163,7 +161,7 @@ every media or network packet.
 `remedia_server::plugin_host`). They carry the configured host ID, plugin ID, operation name, attempt
 number, duration and a low-cardinality error label. They never contain endpoint or media URLs, tokens or
 operation input. Per-host health and counters are also in `node.stats`; see
-[Plugin operation sources](/docs/server/plugin-operations#diagnostics).
+[Playing audio through plugins](/docs/server/plugin-operations#diagnostics).
 
 OTLP metrics use low-cardinality attributes only; they do not include guild IDs, playback IDs,
 voice connection IDs, source paths, or URLs. The current instruments include:

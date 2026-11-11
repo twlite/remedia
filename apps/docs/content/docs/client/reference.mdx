@@ -1,0 +1,94 @@
+---
+title: '@remedia/client reference'
+description: Options, members, events, and errors exported by @remedia/client.
+---
+
+Guides: [Using `@remedia/client`](/docs/client/overview), [Nodes and routing](/docs/client/nodes),
+[Events and hooks](/docs/client/events). Every public export carries JSDoc in the published
+declarations (`dist/index.d.ts`); this page is the overview.
+
+## `RemediaClient`
+
+```ts
+const client = await RemediaClient.create(options: RemediaClientOptions);
+```
+
+| Option               | Type                                          | Description                                                                            |
+| -------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `nodes`              | `RemediaNodeConfig[]`                         | Required, at least one. Node IDs must be unique.                                       |
+| `send`               | `(guildId, payload) => void \| Promise<void>` | Required. Sends a Discord Gateway payload through the shard responsible for the guild. |
+| `botUserId`          | `string`                                      | Bot user snowflake. Required when any node is remote; sent as `X-Remedia-Bot-Id`.      |
+| `requestTimeoutMs`   | `number`                                      | Remote RPC timeout. Default 15000.                                                     |
+| `maxPendingRequests` | `number`                                      | Concurrent RPC requests per remote node. Default 128.                                  |
+| `selectNode`         | `NodeSelection`                               | Optional callback choosing among healthy candidates for a new guild.                   |
+
+| Member                                               | Description                                                                                               |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `createDiscordSession(options)`                      | Register one guild session. Throws if the guild already has one on this client.                           |
+| `receive(packet)`                                    | Forward a raw Gateway packet. Unrelated packets are ignored.                                              |
+| `probe(source, options?)`                            | Inspect media without playing it; see [Media sources and probing](/docs/client/media#standalone-probing). |
+| `plugins.list(options?)`, `plugins.execute(options)` | Discover and run plugin operations; see [Executing plugin operations](/docs/server/plugin-forwarding).    |
+| `nodes`                                              | Read-only `NodeSnapshot[]`: status, health, capacity, capabilities, assigned guilds.                      |
+| `assignments`, `getAssignment(guildId)`              | Sticky guild-to-node mapping.                                                                             |
+| `close()`                                            | Dispose sessions and close nodes. Rejects with an `AggregateError` if cleanup fails.                      |
+
+### Node configuration
+
+| Type                   | Fields                                                                                                                                                           |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{ type: 'embedded' }` | `id`, `capacity?` (default 64). Requires `@remedia/node`.                                                                                                        |
+| `{ type: 'remote' }`   | `id`, `url` (`remedia://`, `remedias://`, `ws://` or `wss://`), `auth?: { username, password }`, `capacity?` (defaults to the server's reported player maximum). |
+
+## `DiscordSession`
+
+Created with `createDiscordSession(options)`.
+
+| Option                           | Description                                                      |
+| -------------------------------- | ---------------------------------------------------------------- |
+| `guildId`, `channelId`, `userId` | Required snowflake strings. `userId` is the bot's user ID.       |
+| `nodeId`                         | Pin the guild to a configured node.                              |
+| `pluginHosts`                    | Only consider nodes that configure all of these plugin host IDs. |
+| `selfDeaf`, `selfMute`           | Discord voice state. Default `true` and `false`.                 |
+| `volume`, `filterGraph`          | Initial gain (0 to 2, default 1) and FFmpeg filtergraph.         |
+| `crossfade`                      | Opt in to [crossfading](/docs/client/crossfade).                 |
+
+| Member                                                                                                                        | Description                                                                                      |
+| ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `connect(options?)`                                                                                                           | Join the channel. `{ signal, timeoutMs }`.                                                       |
+| `play(source, options?)`                                                                                                      | Start a source; resolves with `AudioStreamInfo`. `options`: `customMetadata`, `signal`.          |
+| `pause()`, `resume()`, `stop()`, `seek(ms)`                                                                                   | Playback controls.                                                                               |
+| `setVolume(gain)`, `filters.set(graph)`, `filters.clear()`                                                                    | Gain and filtergraph.                                                                            |
+| `wait()`, `refresh()`                                                                                                         | Wait for a terminal state; fetch a fresh snapshot.                                               |
+| `move(channelId)`, `setSelfDeaf(flag)`, `setSelfMute(flag)`                                                                   | Voice state; see [Session lifecycle](/docs/client/sessions).                                     |
+| `migrate(nodeId)`                                                                                                             | Move to another node; see [Nodes and routing](/docs/client/nodes#explicit-cross-node-migration). |
+| `stageNext(source, options)`, `stagedSource()`, `clearStage()`                                                                | Crossfade staging.                                                                               |
+| `disconnect()`, `dispose()`                                                                                                   | Leave the channel; leave and release.                                                            |
+| `state`, `position`, `durationMs`, `volume`, `error`, `connectionState`, `nodeId`, `nodeType`, `assignmentStatus`, `snapshot` | Cached observations.                                                                             |
+| `hooks.beforePlay(hook)`                                                                                                      | Ordered middleware before playback; see [Events and hooks](/docs/client/events).                 |
+
+## Events
+
+`PlaybackSessionEvents`, `VoiceSessionEvents` and `RemediaClientEventNames` are exported `as const`
+objects. See [Events and hooks](/docs/client/events) for the names and payloads.
+
+## Errors
+
+All extend `RemediaClientError`.
+
+| Class                              | Raised when                                                              |
+| ---------------------------------- | ------------------------------------------------------------------------ |
+| `RemediaRpcError`                  | A remote command failed; `code` is the server's error code.              |
+| `NodeUnavailableError`             | The node is disconnected.                                                |
+| `NodeSelectionError`               | A node cannot be selected, or a selection is ambiguous or contradictory. |
+| `UnsupportedMediaSourceError`      | The node cannot accept the source type.                                  |
+| `PluginOperationsUnsupportedError` | The node is embedded, has no plugin hosts, or predates forwarding.       |
+| `SessionLostError`                 | The server dropped the resumable session.                                |
+| `ProtocolError`                    | A node violated the RPC contract.                                        |
+| `DiscordBotMismatchError`          | A session's `userId` differs from the client's `botUserId`.              |
+
+## Exported types
+
+`MediaSource`, `OperationMediaSource`, `JsonValue`, `AudioStreamInfo`, `PlaybackSnapshot`,
+`NodeSnapshot`, `NodeCapabilities`, `GuildAssignment`, `PluginHostDescriptor`,
+`PluginExecuteOptions`, `PluginExecuteResult` and the option types above are exported from the
+package root.

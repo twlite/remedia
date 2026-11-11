@@ -3,8 +3,6 @@ title: Discord voice output
 description: Send core Opus packets through the outbound Discord voice transport.
 ---
 
-# Discord voice output
-
 `remedia-discord` sends already-encoded Opus packets. It owns the Discord voice
 WebSocket, UDP socket, RTP state, transport encryption, DAVE session, and packet
 scheduler. It does not decode or encode audio. The outer Discord Gateway client

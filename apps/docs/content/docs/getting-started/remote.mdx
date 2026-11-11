@@ -1,0 +1,108 @@
+---
+title: Remote quickstart
+description: Install and start remedia-server, then connect a Discord bot to it with @remedia/client.
+---
+
+This guide runs audio on a separate `remedia-server` process. Your bot only needs `@remedia/client`:
+no FFmpeg and no native addon on the bot machine. Requires Node.js 22.18 or newer in the bot.
+
+## 1. Install the server
+
+On the machine that will play audio:
+
+```sh
+curl -fsSL https://remedia.twlite.dev/install.sh | sh
+```
+
+On Windows PowerShell:
+
+```powershell
+irm https://remedia.twlite.dev/install.ps1 | iex
+```
+
+The installer provisions `remedia-server` and FFmpeg 9 together and puts a `remedia` command on your
+path. Open a new terminal afterwards. No Rust toolchain is needed.
+See [Install the server](/docs/server/installation) for options.
+
+## 2. Create a configuration
+
+```sh
+remedia-server --generate-config-file
+export REMEDIA_RPC_PASSWORD='a-long-random-password'
+```
+
+This writes `remedia.config.json`. It listens on `127.0.0.1:8787`, reads the password from
+`REMEDIA_RPC_PASSWORD`, and allows no media sources until you configure some. Edit
+`media.allowedUrlHosts` to list the hosts your bot may play from, for example
+`["media.example.com"]`. See [Server configuration](/docs/server/configuration).
+
+## 3. Start and check the server
+
+```sh
+remedia-server doctor   # checks FFmpeg and your configuration
+remedia-server          # starts the server
+```
+
+The server prints `remedia-server listening on 127.0.0.1:8787`. In another terminal,
+`remedia-server --list` shows running servers.
+
+## 4. Connect your bot
+
+```sh
+npm install @remedia/client
+```
+
+```ts
+import { Client, Events, GatewayIntentBits } from 'discord.js';
+import { RemediaClient } from '@remedia/client';
+
+const discord = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
+});
+
+discord.once(Events.ClientReady, async (ready) => {
+  const remedia = await RemediaClient.create({
+    botUserId: ready.user.id,
+    nodes: [
+      {
+        type: 'remote',
+        id: 'media-1',
+        url: 'remedia://127.0.0.1:8787',
+        auth: { username: 'media-bot', password: process.env.REMEDIA_RPC_PASSWORD! },
+      },
+    ],
+    send(guildId, payload) {
+      discord.guilds.cache.get(guildId)?.shard.send(payload);
+    },
+  });
+
+  discord.on(Events.Raw, (packet) => remedia.receive(packet));
+
+  const voice = remedia.createDiscordSession({
+    guildId: '123456789012345678',
+    channelId: '234567890123456789',
+    userId: ready.user.id,
+  });
+
+  await voice.connect();
+  await voice.play({ url: 'https://media.example.com/audio.mp3' });
+  await voice.wait();
+  await remedia.close();
+});
+
+await discord.login(process.env.DISCORD_TOKEN);
+```
+
+`media-bot` is the username from the generated configuration. URLs and files are opened **by the
+server**, so a `{ file }` source is a path on the server machine and the URL host must be allowed in
+the server configuration. Buffers and Readables need an embedded node.
+
+Use `remedias://` instead of `remedia://` for a TLS-protected server behind a reverse proxy. Do not
+expose the plain listener to the public internet; see [Deployment](/docs/server/deployment).
+
+## Next steps
+
+- [Using `@remedia/client`](/docs/client/overview): controls, events, and cleanup.
+- [Nodes and routing](/docs/client/nodes): several servers, or embedded plus remote.
+- [Server CLI](/docs/server/cli) and [Server configuration](/docs/server/configuration).
+- [Executing plugin operations](/docs/server/plugin-forwarding) and [Playing audio through plugins](/docs/server/plugin-operations).

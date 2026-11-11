@@ -1,0 +1,44 @@
+---
+title: Plugins overview
+description: What plugin hosts are, the two ways Remedia uses them, and how to set one up.
+---
+
+A **plugin host** is a service you run that exposes named operations over HTTP. Remedia talks to it
+through the server, so your application never needs the host's address or credentials.
+
+Remedia treats operations as opaque. It does not know what a "search" or a "track" is. You decide
+what your operations mean; Remedia delivers the request, enforces permissions, and returns the answer.
+
+## Two ways to use a plugin host
+
+|              | Playing audio through a plugin                                  | Executing a plugin operation                                     |
+| ------------ | --------------------------------------------------------------- | ---------------------------------------------------------------- |
+| What it does | The server asks the host for audio and plays it                 | Your application asks the host a question and gets JSON back     |
+| Typical use  | A source whose audio URL must be resolved right before playback | Catalog, metadata, or lyrics lookups defined by your application |
+| You call     | `voice.play({ hostId, pluginId, operation, input })`            | `client.plugins.execute({ ... })`                                |
+| Result       | Audio decoded and sent to Discord                               | Whatever JSON the operation returns                              |
+| Guide        | [Playing audio through plugins](/docs/server/plugin-operations) | [Executing plugin operations](/docs/server/plugin-forwarding)    |
+
+Both use the same host, the same server-side allowlist, and the same security rules.
+
+## Set one up
+
+1. **Build the host** with `@remedia/plugin-host`: [Creating a plugin host](/docs/server/plugins).
+2. **Register it on the Remedia server** and choose which operations are allowed:
+
+   ```sh
+   remedia-server plugins install https://plugins.example.com --token-env REMEDIA_PLUGIN_TOKEN
+   ```
+
+   See [Server CLI](/docs/server/cli#manage-plugin-hosts). Restart the server afterwards.
+
+3. **Use it** from your application with `@remedia/client`.
+
+Registering a host records where it is and what Remedia may run. It never installs or executes plugin
+code on the Remedia server.
+
+## Where to read next
+
+- [Permissions and security](/docs/plugins/security): what is allowed, who decides, and what is protected.
+- [`@remedia/plugin-host` reference](/docs/plugins/host-reference): HTTP protocol, cancellation, and limits.
+- [Server configuration](/docs/server/configuration#plugin-hosts): every `pluginHosts` field.

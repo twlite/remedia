@@ -3,8 +3,6 @@ title: Discord bot harness
 description: Run the manual discord.js app that exercises Remedia voice playback.
 ---
 
-# Discord bot harness
-
 `apps/discord` is a small manual integration app for testing the Node.js
 Gateway adapter and native Discord voice sender. It uses discord.js for the
 outer bot Gateway and slash commands; `@remedia/node` handles voice joining,
@@ -21,7 +19,7 @@ APPLICATION_ID=your-application-id
 ```
 
 Install the workspace and native dependencies described in the
-[Node.js binding setup](/docs/node/bindings#build-prerequisites), then build the
+[Node.js binding setup](/docs/node/bindings#building-from-source), then build the
 Node addon, register commands, and start the source through `tsx`:
 
 ```sh

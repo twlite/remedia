@@ -3,8 +3,6 @@ title: WebSocket RPC protocol
 description: Authentication, version 1 JSON messages, commands, errors, and lifecycle events.
 ---
 
-# WebSocket RPC protocol
-
 Connect to `ws://<host>:<port>/v1/ws` or `wss://.../v1/ws`. The server accepts standard WebSocket
 URLs. The `@remedia/client` convenience schemes `remedia://` and `remedias://` map to those URLs and
 default to `/v1/ws`. Authenticate and identify the bot in the WebSocket HTTP upgrade:
@@ -21,6 +19,51 @@ bots can use the same server account. Credentials in query parameters are not su
 Authentication and bot identity validation happen before allocating client, player, or voice
 resources. Invalid Basic credentials receive HTTP `401`; a missing or malformed bot header receives
 HTTP `400`.
+
+## Connect by hand
+
+`@remedia/client` does all of this for you. A hand-written client opens a WebSocket with the
+handshake headers above, then creates a client session before anything else:
+
+```ts
+import { WebSocket } from 'ws';
+
+const socket = new WebSocket('ws://127.0.0.1:8787/v1/ws', {
+  headers: {
+    Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`,
+    'X-Remedia-Bot-Id': botUserId,
+  },
+});
+
+socket.on('open', () => {
+  socket.send(
+    JSON.stringify({ version: 1, id: 'create-client-1', command: 'client.create', params: {} }),
+  );
+});
+```
+
+The response carries an opaque `sessionId` and `resumeCredential`. The client session owns its guild
+sessions (`guild.create`), and each guild session owns one player and an optional Discord voice
+transport. After an unexpected disconnect, `client.resume` reclaims the session within the configured
+resumption window; events are not replayed while detached, and a client that falls behind receives
+`client.events_lost`. To play audio, send Gateway voice credentials to `voice.connect`, then
+`player.play`:
+
+```json
+{
+  "version": 1,
+  "id": "play-1",
+  "command": "player.play",
+  "params": {
+    "guildId": "200000000000000001",
+    "source": { "type": "url", "url": "https://media.example.com/audio.ogg" }
+  }
+}
+```
+
+Playback without a voice transport uses a null output for validation and does not produce audible
+sound. Raw FFmpeg graphs (`player.filter.set`) are trusted configuration; do not expose them to
+untrusted users.
 
 ## Request and response
 
@@ -107,11 +150,11 @@ bounded by the host's `maxRequestBytes`; unknown fields are rejected. Clients mu
 `node.info.capabilities.pluginOperations` (`available` and the `hosts` list) first. Older nodes omit it
 and reject the source with `invalid_request`. The failure codes (`plugin_host_not_found`,
 `plugin_host_unavailable`, `plugin_host_unauthorized`, `cancelled`, ...) are listed in
-[Plugin operation sources](/docs/server/plugin-operations#errors). A newer `player.stop` or
+[Playing audio through plugins](/docs/server/plugin-operations#errors). A newer `player.stop` or
 replacement cancels a pending operation, and the request fails with `cancelled`.
 
 `plugin.list`, `plugin.execute` and `plugin.cancel` forward opaque JSON operations to configured plugin
-hosts for the application, independent of any guild; see [Plugin operation forwarding](/docs/server/plugin-forwarding).
+hosts for the application, independent of any guild; see [Executing plugin operations](/docs/server/plugin-forwarding).
 `node.info.capabilities.pluginOperations.forwarding.available` is true when at least one plugin host is configured; servers
 that predate them omit it and reject the commands as unknown. Responses are bounded by
 `limits.maxMessageBytes`; a larger result fails with `plugin_result_too_large`.
@@ -129,20 +172,20 @@ server assigns those operations local generations.
 
 ## Error codes
 
-| Code                    | Meaning                                                                                                                                             |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `invalid_request`       | Malformed JSON/protocol message, unknown command, invalid parameters, or denied media source                                                        |
-| `authentication_failed` | Handshake authentication failed (HTTP 401)                                                                                                          |
-| `unknown_session`       | Session or guild is missing or not owned by this connection                                                                                         |
-| `invalid_state`         | Operation conflicts with the current session/player state                                                                                           |
-| `resource_exhausted`    | Configured connection, session, player, request, or event capacity was reached                                                                      |
-| `request_timeout`       | Operation did not produce a response before its configured deadline; started cleanup/native work may continue safely                                |
-| `unsupported`           | Requested media operation, such as seeking, is unsupported for this source                                                                          |
-| `playback_failed`       | Media open, decoder, resampler, filter, encoder, or playback worker failed                                                                          |
-| `cancelled`             | A pending plugin operation was cancelled by stop, replacement, staging changes, `plugin.cancel`, disconnect, session close, or shutdown             |
-| `stale_generation`      | A staging request or result belongs to a source generation that is no longer current                                                                |
-| `plugin_*`              | Plugin-host failures: see [Plugin operation sources](/docs/server/plugin-operations#errors) and [forwarding](/docs/server/plugin-forwarding#errors) |
-| `transport_failed`      | Discord voice connect, disconnect, or resource cleanup failed                                                                                       |
+| Code                    | Meaning                                                                                                                                                  |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `invalid_request`       | Malformed JSON/protocol message, unknown command, invalid parameters, or denied media source                                                             |
+| `authentication_failed` | Handshake authentication failed (HTTP 401)                                                                                                               |
+| `unknown_session`       | Session or guild is missing or not owned by this connection                                                                                              |
+| `invalid_state`         | Operation conflicts with the current session/player state                                                                                                |
+| `resource_exhausted`    | Configured connection, session, player, request, or event capacity was reached                                                                           |
+| `request_timeout`       | Operation did not produce a response before its configured deadline; started cleanup/native work may continue safely                                     |
+| `unsupported`           | Requested media operation, such as seeking, is unsupported for this source                                                                               |
+| `playback_failed`       | Media open, decoder, resampler, filter, encoder, or playback worker failed                                                                               |
+| `cancelled`             | A pending plugin operation was cancelled by stop, replacement, staging changes, `plugin.cancel`, disconnect, session close, or shutdown                  |
+| `stale_generation`      | A staging request or result belongs to a source generation that is no longer current                                                                     |
+| `plugin_*`              | Plugin-host failures: see [Playing audio through plugins](/docs/server/plugin-operations#errors) and [forwarding](/docs/server/plugin-forwarding#errors) |
+| `transport_failed`      | Discord voice connect, disconnect, or resource cleanup failed                                                                                            |
 
 Messages are safe summaries and do not include raw media URLs, passwords, or voice tokens. Inspect
 server diagnostics for operational context.
@@ -202,7 +245,7 @@ generation. There is no new RPC command or protocol version. Initial gain and fi
 `player.volume.set` and `player.filter.set` commands before `player.play`; configuration persists
 across tracks and transport generations. Self-deaf and self-mute are Gateway OP 4 fields managed
 by the application-side SDK, so they add no server wire fields. See the
-[client session configuration guide](/docs/client/overview#session-configuration-and-channel-movement).
+[client session configuration guide](/docs/client/sessions#session-configuration-and-channel-movement).
 
 ## Media probing
 

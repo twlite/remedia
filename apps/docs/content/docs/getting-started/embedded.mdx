@@ -1,0 +1,103 @@
+---
+title: Embedded quickstart
+description: Install FFmpeg 9 and @remedia/node, then play audio into a Discord voice channel from your Node.js bot.
+---
+
+This guide runs the Remedia engine inside your bot's Node.js process. It takes about five minutes
+once you have a bot that can join voice channels. Requires Node.js 22.18 or newer.
+
+## 1. Install FFmpeg 9
+
+The engine needs FFmpeg 9 shared libraries on this machine. The official installer is the quickest
+way and needs no environment variables afterwards:
+
+```sh
+curl -fsSL https://remedia.twlite.dev/install.sh | sh -s -- --ffmpeg-only
+```
+
+On Windows PowerShell, and for other options, see [Install FFmpeg 9](/docs/node/ffmpeg-9).
+
+## 2. Install the package
+
+```sh
+npm install @remedia/node
+```
+
+## 3. Check that the engine starts
+
+```sh
+node --input-type=module -e "import { Remedia } from '@remedia/node'; const engine = await Remedia.create(); await engine.close(); console.log('Remedia native runtime OK')"
+```
+
+If this prints `Remedia native runtime OK`, FFmpeg was found and the addon loaded. Otherwise the error
+lists every location that was tried; see [native library troubleshooting](/docs/node/troubleshooting).
+
+## 4. Play into a voice channel
+
+Your bot keeps its own Gateway connection. Give Remedia a function that sends a Gateway payload for a
+guild, and forward every raw packet to `remedia.receive()`. This example uses discord.js:
+
+```ts
+import { Client, Events, GatewayIntentBits } from 'discord.js';
+import { Remedia } from '@remedia/node';
+
+const discord = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
+});
+
+const remedia = await Remedia.create({
+  send(guildId, payload) {
+    discord.guilds.cache.get(guildId)?.shard.send(payload);
+  },
+});
+
+discord.on(Events.Raw, (packet) => remedia.receive(packet));
+
+discord.once(Events.ClientReady, async (ready) => {
+  const voice = remedia.createDiscordSession({
+    guildId: '123456789012345678',
+    channelId: '234567890123456789',
+    userId: ready.user.id,
+  });
+
+  await voice.connect();
+  await voice.play({ url: 'https://example.com/audio.mp3' });
+  await voice.wait();
+  await voice.dispose();
+});
+
+await discord.login(process.env.DISCORD_TOKEN);
+```
+
+`connect()` resolves once the voice connection is ready. `play()` resolves once the audio stream is
+open and playback has started, and `wait()` resolves when it ends.
+
+Snowflake IDs are always strings. Replace the guild and channel IDs with real ones, and use a URL or
+file path your bot may read.
+
+## 5. Control playback
+
+```ts
+await voice.pause();
+await voice.resume();
+await voice.seek(30_000); // milliseconds
+await voice.setVolume(0.8); // 0 to 2, default 1
+await voice.filters.set('bass=gain=6'); // FFmpeg audio filtergraph
+await voice.stop(); // stops playback and stays in the channel
+await voice.disconnect(); // leaves the channel
+```
+
+Always call `await remedia.close()` when your process shuts down; it stops playback and releases
+native resources.
+
+<Callout title="Playback without Discord is silent">
+  `remedia.createPlaybackSession()` decodes audio into a null output. It is useful for tests and for
+  checking that a file decodes, but it does not play through speakers. Audio is only audible through
+  a Discord voice session.
+</Callout>
+
+## Next steps
+
+- [`@remedia/node` reference](/docs/node/bindings): Buffer and Readable inputs, events, diagnostics, probing.
+- [Using `@remedia/client`](/docs/client/overview): the same session API with remote nodes and node pools.
+- [Events and hooks](/docs/client/events), [Media sources and probing](/docs/client/media).

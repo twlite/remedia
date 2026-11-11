@@ -3,8 +3,6 @@ title: Playback sessions
 description: Manage playback state, output delivery, position, and worker cleanup.
 ---
 
-# Playback sessions
-
 `PlaybackSession` manages one source and one output instance. It uses a dedicated
 blocking worker for that session, while `AudioDecoder` remains unpaced and
 pull-based. The core also provides a transport-independent Opus output adapter;
