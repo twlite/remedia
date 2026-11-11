@@ -449,6 +449,11 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     return this.#backend?.position ?? emptyPosition();
   }
 
+  /** Current output elapsed time in ms. Remote nodes interpolate from lifecycle events and snapshots. */
+  getPlaybackTime(): number {
+    return this.#backend?.getPlaybackTime() ?? 0;
+  }
+
   /** Source duration in milliseconds, or null when unknown. */
   get durationMs(): number | null {
     return this.#backend?.durationMs ?? null;
