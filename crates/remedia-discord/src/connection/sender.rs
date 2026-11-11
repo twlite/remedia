@@ -208,7 +208,10 @@ impl OpusPacketSink for DiscordOpusSender {
             );
         });
         self.request_barrier(|ack| Control::Flush { generation, ack }, cancellation)
-            .map_err(OutputError::with_source)
+            .map_err(OutputError::with_source)?;
+        // The next dispatched packet belongs to the new seek timeline.
+        self.played_end_sample.store(u64::MAX, Ordering::Release);
+        Ok(())
     }
 
     fn pause(&self, cancellation: &CoreCancellationToken) -> Result<(), OutputError> {
