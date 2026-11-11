@@ -42,6 +42,7 @@ fn mock_packet_barriers_wait_for_target_without_blocking_other_channels() {
                         media_samples_per_channel: 960,
                         start_sample: (id - 1) * 960,
                     },
+                    played_end_sample: Arc::new(AtomicU64::new(u64::MAX)),
                 })
                 .unwrap();
             voice.wait_for_packets(id as usize);
@@ -292,6 +293,7 @@ fn output_cancel_fallback_discards_stale_packets_and_is_idempotent() {
             media_samples_per_channel: 960,
             start_sample: 0,
         },
+        played_end_sample: Arc::new(AtomicU64::new(u64::MAX)),
     }]);
     let mut processed_id = 2;
     let mut barrier = None;
@@ -387,6 +389,7 @@ fn current_cancel_generation_starts_exactly_one_cancel_barrier() {
             media_samples_per_channel: 960,
             start_sample: 0,
         },
+        played_end_sample: Arc::new(AtomicU64::new(u64::MAX)),
     }]);
     let mut processed_id = 3;
     let mut barrier = None;
@@ -535,6 +538,7 @@ fn opus_sender_backpressures_at_its_bounded_queue_and_cancellation_unblocks() {
         generation: AtomicU64::new(0),
         cancelled: AtomicBool::new(false),
         finished: AtomicBool::new(false),
+        played_end_sample: Arc::new(AtomicU64::new(u64::MAX)),
     });
     sender
         .inner
