@@ -261,6 +261,10 @@ class EmbeddedGuildBackend extends RemediaEventEmitter<GuildBackendEvents> imple
   get position(): PlaybackPosition {
     return this.#session.position;
   }
+  getPlaybackTime(): number {
+    const pos = this.#session.position;
+    return pos.playedMs ?? pos.mediaMs ?? pos.submittedMs;
+  }
   get durationMs(): number | null {
     return this.#session.durationMs;
   }
