@@ -1378,7 +1378,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     await this.#node.control(this.#options.guildId, 'player.pause');
     this.#snapshot = { ...this.#snapshot, state: 'paused' };
     this.#playbackClock.transition('paused');
-    await this.refresh();
+    await this.refresh().catch(() => undefined);
   }
 
   async resume(): Promise<void> {
@@ -1386,7 +1386,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     await this.#node.control(this.#options.guildId, 'player.resume');
     this.#snapshot = { ...this.#snapshot, state: 'playing' };
     this.#playbackClock.transition('playing');
-    await this.refresh();
+    await this.refresh().catch(() => undefined);
   }
 
   async seek(positionMs: number): Promise<void> {
