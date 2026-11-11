@@ -26,6 +26,8 @@ pub(crate) enum PluginErrorKind {
     InvalidResponse,
     /// The host response exceeded the configured limit.
     ResponseTooLarge,
+    /// A forwarded result would not fit in one WebSocket RPC message.
+    ResultTooLarge,
     /// The discovery document is incompatible with this node or configuration.
     Incompatible,
     /// The operation result is not a usable media descriptor.
@@ -67,6 +69,7 @@ impl PluginError {
             PluginErrorKind::HostUnavailable => "plugin_host_unavailable",
             PluginErrorKind::Unauthorized => "plugin_host_unauthorized",
             PluginErrorKind::Incompatible => "plugin_host_incompatible",
+            PluginErrorKind::ResultTooLarge => "plugin_result_too_large",
             PluginErrorKind::HostFailed
             | PluginErrorKind::InvalidResponse
             | PluginErrorKind::ResponseTooLarge => "plugin_operation_failed",
@@ -98,6 +101,7 @@ impl PluginError {
             PluginErrorKind::Declined => "declined",
             PluginErrorKind::InvalidResponse => "invalid_response",
             PluginErrorKind::ResponseTooLarge => "response_too_large",
+            PluginErrorKind::ResultTooLarge => "result_too_large",
             PluginErrorKind::Incompatible => "incompatible",
             PluginErrorKind::MediaInvalid => "media_invalid",
             PluginErrorKind::MediaOriginNotAllowed => "media_origin_not_allowed",

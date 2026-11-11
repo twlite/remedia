@@ -338,7 +338,124 @@ export interface PluginOperationsCapability {
   available: boolean;
   /** Configured plugin-host IDs the node can address. */
   hosts: readonly string[];
+  /**
+   * Whether the node forwards generic plugin operations (`client.plugins.list` and
+   * `client.plugins.execute`). False for embedded nodes, for nodes without configured plugin hosts,
+   * and for servers which predate generic forwarding, which remain usable for operation-source playback.
+   */
+  forwarding: boolean;
 }
+
+/**
+ * Availability of a plugin-host deployment as observed by the node that owns it.
+ *
+ * `healthy` hosts were reached recently, `degraded` hosts have had recent failures,
+ * `unavailable` hosts have failed repeatedly, `unknown` hosts have not been contacted yet, and
+ * `shutting_down` hosts belong to a node which is stopping.
+ */
+export type PluginHostStatus = 'healthy' | 'degraded' | 'unavailable' | 'unknown' | 'shutting_down';
+
+/** One operation the node's operator permits and the plugin host currently advertises. */
+export interface PluginOperationDescriptor {
+  /** Plugin registration ID within the host. */
+  readonly pluginId: string;
+  /** Operation name. Its input and result schema are owned by the application, not by Remedia. */
+  readonly operation: string;
+}
+
+/**
+ * A plugin-host deployment reachable through a Remedia node.
+ *
+ * The descriptor never includes the host's endpoint, credentials or any other deployment detail:
+ * the application addresses a host only by its node and operator-assigned ID.
+ */
+export interface PluginHostDescriptor {
+  /** Application-configured ID of the Remedia node which owns this deployment. Pass it as `nodeId` to pin follow-up work. */
+  readonly nodeId: string;
+  /** Stable operator-assigned host ID from the node's `pluginHosts` configuration; never a display name. */
+  readonly hostId: string;
+  /** Current availability of the deployment. */
+  readonly status: PluginHostStatus;
+  /**
+   * Operations which are both allowlisted in the node's configuration and advertised by the host,
+   * sorted by plugin ID and operation. Empty when the host is unavailable or its manifest is stale.
+   */
+  readonly operations: readonly PluginOperationDescriptor[];
+}
+
+/** Options for discovering plugin hosts and their operations. */
+export interface PluginListOptions {
+  /** Restrict discovery to this configured node. Without it (and without `guildId`) every healthy remote node which forwards operations is queried. */
+  nodeId?: string;
+  /** Use this guild's sticky node assignment. Never creates an assignment or session. Conflicts with a different `nodeId`. */
+  guildId?: string;
+  /** Ask the node to refetch host manifests now. The node rate-limits this; cached views are otherwise reused. Defaults to false. */
+  refresh?: boolean;
+  /** Cancels the request on the client and on the server. */
+  signal?: AbortSignal;
+  /** Client deadline in milliseconds; defaults to the client's `requestTimeoutMs`. */
+  timeoutMs?: number;
+}
+
+/**
+ * Request to run one allowlisted operation on a specific plugin host.
+ *
+ * Remedia never interprets `input` or the result. The application owns operation semantics.
+ */
+export interface PluginExecuteOptions {
+  /** Operator-assigned ID of the plugin-host deployment. Exactly this host is used; there is no fallback. */
+  hostId: string;
+  /** Plugin registration ID within the host. */
+  pluginId: string;
+  /** Operation name which the node's configuration allows for this host and plugin. */
+  operation: string;
+  /** Opaque JSON input, bounded by the host's `maxRequestBytes` and the node's message limit. `null` is a valid input. */
+  input: JsonValue;
+  /**
+   * Execute on this configured node. Required when more than one healthy node advertises the host
+   * and no sticky `guildId` assignment applies.
+   */
+  nodeId?: string;
+  /** Use this guild's sticky node assignment. Never creates an assignment, session or migration. Conflicts with a different `nodeId`. */
+  guildId?: string;
+  /** Cancels the request on the client and interrupts the in-flight server and plugin-host work. */
+  signal?: AbortSignal;
+  /** Client deadline in milliseconds; defaults to the client's `requestTimeoutMs`. */
+  timeoutMs?: number;
+}
+
+/** Identity of the node and operation that produced a plugin execution outcome. */
+export interface PluginExecutionOrigin {
+  /** Configured ID of the node that executed the operation. Pin playback of related operation sources to this node. */
+  readonly nodeId: string;
+  /** Host that executed the operation. */
+  readonly hostId: string;
+  /** Plugin registration ID that was invoked. */
+  readonly pluginId: string;
+  /** Operation name that was invoked. */
+  readonly operation: string;
+}
+
+/** The host handled the operation. `result` may be any JSON value, including `null`, `false`, `0`, `""` and `[]`. */
+export interface PluginHandledResult<
+  Result extends JsonValue = JsonValue,
+> extends PluginExecutionOrigin {
+  /** Discriminant: the operation produced a result. */
+  readonly handled: true;
+  /** The operation's JSON result, passed through unchanged. It is not validated against `Result`. */
+  readonly result: Result;
+}
+
+/** The host did not handle the operation. This is an ordinary outcome, not an error. */
+export interface PluginUnhandledResult extends PluginExecutionOrigin {
+  /** Discriminant: the operation declined to handle the request. */
+  readonly handled: false;
+}
+
+/** Outcome of `client.plugins.execute`, discriminated by `handled`. */
+export type PluginExecuteResult<Result extends JsonValue = JsonValue> =
+  | PluginHandledResult<Result>
+  | PluginUnhandledResult;
 
 /** Capabilities advertised by a node's `node.info` response. */
 export interface NodeCapabilities {

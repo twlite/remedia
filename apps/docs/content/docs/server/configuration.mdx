@@ -213,6 +213,12 @@ lifecycle and security. Every entry is validated at startup; duplicate IDs fail 
 `replaySafe` declares that executing the operation again has no side effects, which authorizes
 automatic retries and fresh resolution of expired grants. Leave it `false` for anything else.
 
+`operations[]` is the single authoritative allowlist, for playback **and** for
+[operation forwarding](/docs/server/plugin-forwarding): remote clients can invoke only these pairs, even
+if the host advertises more, and they discover them with `plugin.list` without configuring the host
+themselves. Forwarded results are also bounded by `limits.maxMessageBytes`; set it, and the host's
+`limits.maxResponseBytes`, high enough for the largest result you expect.
+
 The `pluginHosts` fields are part of the generated JSON Schema and `RemediaConfigSchema`. The strict
 Rust loader remains authoritative for resolved values such as environment references.
 

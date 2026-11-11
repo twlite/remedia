@@ -7,6 +7,7 @@ import {
 import {
   DiscordBotMismatchError,
   NodeUnavailableError,
+  PluginOperationsUnsupportedError,
   ProtocolError,
   RemediaRpcError,
   SessionLostError,
@@ -18,6 +19,7 @@ import { RpcClient, type RpcLifecycleEvent } from './rpc.js';
 import type {
   AudioStreamInfo,
   DiscordSessionOptions,
+  JsonValue,
   MediaSource,
   NodeSnapshot,
   NodeStatistics,
@@ -26,6 +28,10 @@ import type {
   PlaybackPosition,
   PlaybackSnapshot,
   PlaybackState,
+  PluginExecuteResult,
+  PluginHostDescriptor,
+  PluginHostStatus,
+  PluginOperationDescriptor,
   RemoteNodeConfig,
   ServerLifecycleEvent,
   VoiceConnectionState,
@@ -447,6 +453,75 @@ export class RemoteNodeAdapter
         { ...options, timeoutMs: timeoutMs + 1000 },
       ),
       this.id,
+    );
+  }
+
+  /**
+   * List the plugin hosts configured on this node and the operations clients may invoke.
+   * @param options - Whether to request fresh manifests, plus cancellation and a client deadline.
+   * @returns Host descriptors in the server's deterministic order.
+   * @throws {PluginOperationsUnsupportedError} If the node does not forward plugin operations.
+   */
+  async listPluginHosts(
+    options: { refresh?: boolean; signal?: AbortSignal; timeoutMs?: number } = {},
+  ): Promise<readonly PluginHostDescriptor[]> {
+    this.#assertHealthy();
+    this.#assertForwarding();
+
+    return parsePluginHosts(
+      await this.#rpc!.request<unknown>(
+        'plugin.list',
+        options.refresh ? { refresh: true } : {},
+        requestOptions(options),
+      ),
+      this.id,
+    );
+  }
+
+  /**
+   * Run one allowlisted operation on one configured host through this node.
+   * @param request - Host, plugin, operation and opaque JSON input.
+   * @param options - Cancellation and a client deadline.
+   * @returns The host's handled result or its unhandled outcome, tagged with this node's ID.
+   * @throws {PluginOperationsUnsupportedError} If the node does not forward plugin operations.
+   */
+  async executePluginOperation(
+    request: { hostId: string; pluginId: string; operation: string; input: JsonValue },
+    options: { signal?: AbortSignal; timeoutMs?: number } = {},
+  ): Promise<PluginExecuteResult> {
+    this.#assertHealthy();
+    this.#assertForwarding();
+
+    const outcome = await this.#rpc!.request<unknown>(
+      'plugin.execute',
+      { ...request },
+      requestOptions(options),
+    );
+    const origin = {
+      nodeId: this.id,
+      hostId: request.hostId,
+      pluginId: request.pluginId,
+      operation: request.operation,
+    };
+
+    if (!isRecord(outcome) || typeof outcome.handled !== 'boolean')
+      throw new ProtocolError(this.id, 'plugin.execute response is malformed');
+    if (!outcome.handled) return { ...origin, handled: false };
+    if (!Object.hasOwn(outcome, 'result'))
+      throw new ProtocolError(this.id, 'plugin.execute response omitted its result');
+
+    return { ...origin, handled: true, result: outcome.result as JsonValue };
+  }
+
+  #assertForwarding(): void {
+    const operations = this.#capabilities?.pluginOperations;
+
+    if (operations?.forwarding) return;
+    throw new PluginOperationsUnsupportedError(
+      this.id,
+      operations?.available
+        ? 'the server does not implement generic plugin forwarding; upgrade remedia-server'
+        : 'no plugin hosts are configured, or the server predates plugin forwarding',
     );
   }
 
@@ -2128,13 +2203,69 @@ function parseNodeCapabilities(input: unknown): import('./types.js').NodeCapabil
   };
 }
 
+function requestOptions(options: { signal?: AbortSignal; timeoutMs?: number }): {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+} {
+  return {
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+  };
+}
+
+const PLUGIN_HOST_STATUSES: ReadonlySet<string> = new Set([
+  'healthy',
+  'degraded',
+  'unavailable',
+  'unknown',
+  'shutting_down',
+]);
+
+/** Validate a `plugin.list` response and tag every host with the node that owns it. */
+function parsePluginHosts(input: unknown, nodeId: string): readonly PluginHostDescriptor[] {
+  const invalid = (): never => {
+    throw new ProtocolError(nodeId, 'plugin.list response is malformed');
+  };
+
+  if (!isRecord(input) || !Array.isArray(input.hosts)) return invalid();
+
+  return input.hosts.map((host: unknown): PluginHostDescriptor => {
+    if (
+      !isRecord(host) ||
+      typeof host.hostId !== 'string' ||
+      typeof host.status !== 'string' ||
+      !PLUGIN_HOST_STATUSES.has(host.status) ||
+      !Array.isArray(host.operations)
+    )
+      return invalid();
+
+    return {
+      nodeId,
+      hostId: host.hostId,
+      status: host.status as PluginHostStatus,
+      operations: host.operations.map((operation: unknown): PluginOperationDescriptor => {
+        if (
+          !isRecord(operation) ||
+          typeof operation.pluginId !== 'string' ||
+          typeof operation.operation !== 'string'
+        )
+          return invalid();
+
+        return { pluginId: operation.pluginId, operation: operation.operation };
+      }),
+    };
+  });
+}
+
 function parsePluginOperations(input: unknown): import('./types.js').PluginOperationsCapability {
   if (!isRecord(input) || input.available !== true || !Array.isArray(input.hosts))
-    return { available: false, hosts: [] };
+    return { available: false, hosts: [], forwarding: false };
 
   return {
     available: true,
     hosts: input.hosts.filter((host): host is string => typeof host === 'string'),
+    // Servers which predate generic forwarding omit the field, so it fails closed.
+    forwarding: isRecord(input.forwarding) && input.forwarding.available === true,
   };
 }
 

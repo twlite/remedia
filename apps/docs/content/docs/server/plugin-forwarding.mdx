@@ -1,0 +1,292 @@
+---
+title: Plugin operation forwarding
+description: Discover and run allowlisted JSON operations on plugin hosts through an authenticated Remedia connection, without configuring plugin-host endpoints in your application.
+---
+
+# Plugin operation forwarding
+
+Applications often need more than audio from a plugin host: catalog lookups, lyrics, related items
+or any other request/response work. `remedia-server` forwards **arbitrary, allowlisted JSON
+operations** to its configured [plugin hosts](/docs/server/plugins) over the same authenticated
+WebSocket connection that controls playback. Your application connects only to Remedia nodes; it
+never needs a plugin host's URL or credentials.
+
+```text
+application ── RemediaClient ──▶ remedia-server ──▶ plugin host
+               plugin.list        discover, authorize   GET  /.well-known/remedia
+               plugin.execute     execute, bound, retry POST /remedia/v1/execute
+```
+
+Remedia owns **transport, authentication, authorization, host discovery and execution**. Your
+application owns **operation semantics**. Remedia does not search for music, resolve lyrics, model
+tracks or transform results. `catalog.search` and `lyrics.search` in these pages are only example
+operation names; any `(pluginId, operation)` pair works without a Remedia release.
+
+Forwarding reuses the same host registry as [operation-source playback](/docs/server/plugin-operations):
+the same HTTP client, bearer authentication, discovery cache, retry policy, limits and health tracking.
+The only difference is what happens to the result. Playback interprets it as a media descriptor and
+opens a stream; forwarding returns the JSON unchanged and never parses media descriptors, redeems
+grants or initializes FFmpeg.
+
+## Server allowlisting and client discovery
+
+These are two different things, and both are required:
+
+| Concern          | Where                                               | Who decides                                                                       |
+| ---------------- | --------------------------------------------------- | --------------------------------------------------------------------------------- |
+| **Allowlisting** | `pluginHosts[].operations` in `remedia.config.json` | The server operator. Authoritative and never bypassed                             |
+| **Discovery**    | `client.plugins.list()` / `plugin.list`             | Automatic. Reports what the operator allows **and** the host currently advertises |
+
+Configure the plugin host **only on the Remedia server**:
+
+```json
+{
+  "pluginHosts": [
+    {
+      "id": "source-host-1",
+      "endpoint": "https://plugins.example.com",
+      "auth": { "type": "bearer", "token": "env('REMEDIA_PLUGIN_HOST_TOKEN')" },
+      "operations": [
+        { "pluginId": "example.metadata", "operation": "catalog.search", "replaySafe": true },
+        { "pluginId": "example.metadata", "operation": "lyrics.search", "replaySafe": true },
+        { "pluginId": "example.metadata", "operation": "source.stream", "replaySafe": true }
+      ]
+    }
+  ]
+}
+```
+
+A host advertising more operations than the operator listed does **not** make them callable. There
+is no option to disable authorization. Existing restrictions still apply: origin and private-network
+policy, TLS (cleartext only with `allowInsecureHttp`), no redirects, pinned DNS, per-host pending
+limits, request and response size limits, timeouts and retry limits. No configuration fields were
+added, so the JSON Schema is unchanged.
+
+## Complete example
+
+```ts
+import { RemediaClient } from '@remedia/client';
+
+const client = await RemediaClient.create({
+  nodes: [
+    {
+      id: 'remote',
+      type: 'remote',
+      url: 'remedia://localhost:8787',
+      auth: { username: 'remedia', password: 'password' },
+    },
+  ],
+  botUserId: '123456789012345678',
+  send: (guildId, payload) => gateway.send(guildId, payload),
+});
+
+// 1. Discover what the operator allows and each host currently advertises.
+const hosts = await client.plugins.list({ nodeId: 'remote' });
+
+for (const host of hosts) {
+  console.log(host.nodeId, host.hostId, host.status);
+
+  for (const { pluginId, operation } of host.operations) {
+    console.log(`  ${pluginId}/${operation}`);
+  }
+}
+
+// 2. Run an operation. The input and result are opaque JSON owned by your application.
+interface SearchResult {
+  items: Array<{ title: string }>;
+}
+
+const controller = new AbortController();
+const outcome = await client.plugins.execute<SearchResult>({
+  nodeId: 'remote',
+  hostId: 'source-host-1',
+  pluginId: 'example.metadata',
+  operation: 'catalog.search',
+  input: { query: 'some query' },
+  signal: controller.signal,
+});
+
+if (outcome.handled) {
+  console.log(outcome.result.items);
+} else {
+  console.log('the host did not handle this request');
+}
+
+// 3. Later, play an operation source on the same node that resolved the metadata.
+const voice = client.createDiscordSession({
+  guildId,
+  channelId,
+  userId,
+  nodeId: outcome.nodeId,
+  pluginHosts: [outcome.hostId],
+});
+await voice.connect();
+await voice.play({
+  hostId: outcome.hostId,
+  pluginId: 'example.metadata',
+  operation: 'source.stream',
+  input: { id: 'opaque to Remedia' },
+});
+```
+
+Aborting the signal while the request is pending cancels it on the client **and** on the server: the
+HTTP request to the plugin host is dropped, the host's own operation signal aborts, and the host's
+concurrency permit is released.
+
+## Commands
+
+All three commands require an authenticated connection with a client session (`client.create` or
+`client.resume`). They do not create guild sessions. See the [protocol reference](/docs/server/protocol)
+for the envelope.
+
+### `plugin.list`
+
+Params: `{ "refresh"?: boolean }`. Returns every configured host, ordered by `hostId`, with its
+operations ordered by `pluginId` then `operation`:
+
+```json
+{
+  "hosts": [
+    {
+      "hostId": "source-host-1",
+      "status": "healthy",
+      "operations": [
+        { "pluginId": "example.metadata", "operation": "catalog.search" },
+        { "pluginId": "example.metadata", "operation": "lyrics.search" },
+        { "pluginId": "example.metadata", "operation": "source.stream" }
+      ]
+    }
+  ]
+}
+```
+
+- `operations` are the operations that are **both** allowlisted by the operator **and** advertised
+  by the host's manifest. Allowed-but-unadvertised and advertised-but-unallowed operations are omitted.
+- `status` is the node's current view: `healthy`, `degraded` (recent failures), `unavailable`
+  (repeated failures), `unknown` (never contacted) or `shutting_down`. A host which cannot be
+  discovered or whose cached manifest cannot be refreshed is reported with **no operations** rather
+  than a stale list. `hostId` is always the configured ID, never a manifest display name.
+- Responses never include endpoint URLs, tokens, media grant URLs or other deployment details.
+- Manifests are cached for `limits.discoveryTtlMs` (default 60 s) and shared with playback. A host
+  that restarts with a different operation set is picked up when the cache expires, when an execution
+  discovers the operation is gone, or on `refresh: true`, which is rate-limited to one refetch per five seconds per host.
+- A plugin host's manifest is public by design, so discovery succeeds even if the node's configured
+  token is wrong. Such a host is listed until an execution fails with `plugin_host_unauthorized`, after
+  which its status degrades.
+
+### `plugin.execute`
+
+Params (unknown fields are rejected; `input` is required but may be `null`):
+
+```json
+{
+  "hostId": "source-host-1",
+  "pluginId": "example.metadata",
+  "operation": "catalog.search",
+  "input": { "query": "some query" }
+}
+```
+
+The server authenticates the connection, validates the identifiers, locates exactly the named host,
+verifies that the operation is allowlisted and currently advertised, executes it through the shared
+HTTP client, and returns the plugin host's semantics unchanged:
+
+```json
+{ "handled": true, "result": { "items": [] } }
+```
+
+```json
+{ "handled": false }
+```
+
+An unhandled operation is an ordinary result, never an error. `null`, `false`, `0`, `""` and `[]`
+are valid handled results and are distinct from `handled: false`.
+
+There is **no fallback**: the request targets one host and never tries another host or node. Fan-out
+across providers is application logic.
+
+The serialized `{ "handled": ..., "result": ... }` envelope must fit in one RPC message
+(`limits.maxMessageBytes`, default 64 KiB). A larger result is not sent; the request fails with
+`plugin_result_too_large` and the connection stays usable. Raise `maxMessageBytes` (and the host's
+`maxResponseBytes`) or return less data.
+
+### `plugin.cancel`
+
+Params: `{ "requestId": "<id of a pending plugin.list or plugin.execute>" }`. Result:
+`{ "cancelled": boolean }`. It is handled even when all request slots are busy and it can only see the
+**calling connection's own** pending requests, so a client can never cancel another client's
+operation. `@remedia/client` sends it automatically when a signal aborts or a deadline passes.
+
+## Cancellation, deadlines and cleanup
+
+A pending operation is cancelled, its HTTP request dropped and its permits released when:
+
+- the client sends `plugin.cancel` (abort or client deadline);
+- the WebSocket closes;
+- the client session closes (`client.close` or expiry);
+- the server's `limits.requestTimeoutMs` elapses (the request fails with `request_timeout`);
+- the server shuts down.
+
+Cancellation registries are per connection, contain only requests currently in flight, and are
+bounded by `limits.maxInFlightRequests`. Nothing is retained after a timeout, reconnect or socket close.
+
+## Retries
+
+Only operations marked `replaySafe` are retried, only for connection failures, timeouts and
+`408`/`425`/`429`/`5xx` responses, up to `limits.maxAttempts` with a short pause between attempts.
+Authentication failures, invalid requests, policy violations, malformed responses and
+non-replay-safe operations are never retried.
+
+## Errors
+
+| Code                           | Meaning                                                                     |
+| ------------------------------ | --------------------------------------------------------------------------- |
+| `plugin_host_not_found`        | `hostId` is not configured on this node                                     |
+| `plugin_operation_not_allowed` | The operation is not in the host's allowlist                                |
+| `plugin_operation_unavailable` | Allowlisted, but the host does not currently advertise it                   |
+| `plugin_host_unauthorized`     | The host rejected the configured credentials                                |
+| `plugin_host_unavailable`      | Connection failure, DNS policy rejection or transient `429`/`5xx`           |
+| `plugin_host_incompatible`     | Wrong protocol version, identity or routes, or a redirect                   |
+| `plugin_operation_failed`      | The plugin failed, or returned a malformed or over-limit response           |
+| `plugin_result_too_large`      | The result does not fit in one RPC message                                  |
+| `invalid_request`              | Bad identifiers or fields, or input over `maxRequestBytes`                  |
+| `resource_exhausted`           | The host's `maxPendingOperations` or the connection's request limit was hit |
+| `unknown_session`              | The connection has no client session                                        |
+| `cancelled`, `request_timeout` | Cancellation and deadline outcomes described above                          |
+
+Messages never contain URLs, tokens or operation input or output.
+
+## Multiple nodes and affinity
+
+Different Remedia nodes can have different plugin hosts, or different deployments under the same
+host ID. `@remedia/client` therefore never guesses:
+
+1. An explicit `nodeId` is used as given.
+2. Otherwise a `guildId` with a sticky assignment uses the assigned node. A different `nodeId` for that guild, or a lost assignment, is an error. Nothing is migrated.
+3. Otherwise the call must be unambiguous: exactly one healthy node must advertise `hostId`. Zero nodes or several nodes reject with `NodeSelectionError`.
+
+Every handled or unhandled result carries the executing `nodeId` and `hostId`. Playing an operation
+source later must use the same deployment, so pass `nodeId` (and `pluginHosts`) when creating the
+Discord session, as in the example above.
+
+## Compatibility
+
+- **Protocol version stays at 1.** The three commands are additive. Existing clients and playback
+  are unaffected.
+- `node.info.capabilities.pluginOperations` gains `forwarding: { available }` (true when at least one
+  host is configured) next to the existing `available` and `hosts`. Servers that predate forwarding omit it; `@remedia/client` reports
+  `PluginOperationsUnsupportedError` instead of sending commands that do not exist, and those servers
+  keep working for operation-source playback.
+- **Embedded nodes** have no plugin-host registry and report forwarding as unavailable. Embedded
+  integrations keep running their own locally registered plugins; no local HTTP server is started
+  to imitate remote forwarding.
+
+## Observability
+
+Executions appear in the existing plugin-host events (`server.plugin_host.operation_completed` and
+`operation_failed`) with `purpose` (`generic` or `media`), host ID, plugin ID, operation, outcome,
+attempts, retries, duration and a safe error category. Inputs and results are never logged.
+`node.stats.pluginHosts[].totals` adds `genericOperations`, `genericFailures` and `genericUnhandled`;
+media-resolution counters (`operations`, `operationFailures`, `grantsOpened`, `mediaBytes`) and
+`resources.activeStreams` are untouched by forwarded operations. `retries`, `unauthorized`, `timeouts`
+and `cancelled` cover both kinds.

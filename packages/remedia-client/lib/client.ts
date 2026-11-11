@@ -4,6 +4,7 @@ import { DiscordBotMismatchError, NodeSelectionError, asError } from './errors.j
 import { RemoteNodeAdapter, RemoteNodeEvent } from './remote-node.js';
 import { DiscordSession, parseGatewayDispatch, type DiscordSessionRuntime } from './discord.js';
 import { RemediaEventEmitter } from './events.js';
+import { PluginOperations } from './plugins.js';
 import {
   PlaybackSessionEvents as PlaybackEvent,
   RemediaClientEventNames as ClientEvent,
@@ -54,6 +55,15 @@ export class RemediaClient
   #closing = false;
   #closePromise: Promise<void> | undefined;
 
+  /**
+   * Discover and execute generic plugin-host operations through configured remote nodes.
+   *
+   * Plugin hosts are configured only on the Remedia servers; the application needs no host
+   * endpoints. The server operator allowlists operations, and this API discovers them. Embedded
+   * nodes have no plugin-host registry and report the capability as unavailable.
+   */
+  readonly plugins: PluginOperations;
+
   private constructor(options: RemediaClientOptions) {
     super();
     this.#send = options.send;
@@ -81,6 +91,11 @@ export class RemediaClient
       if (adapter instanceof RemoteNodeAdapter) this.#wireRemote(adapter);
     }
     if (this.#nodes.size === 0) throw new TypeError('at least one Remedia node must be configured');
+    this.plugins = new PluginOperations({
+      assertOpen: () => this.#assertOpen(),
+      nodes: () => this.#nodes,
+      assignment: (guildId) => this.getAssignment(guildId),
+    });
   }
 
   /**

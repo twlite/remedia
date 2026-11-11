@@ -44,6 +44,33 @@ export interface FakeServerOptions {
   requiredAuthorization?: string;
   /** Advertise plugin-host operation support for these configured host IDs. */
   pluginHosts?: readonly string[];
+  /**
+   * Behave like a server with generic plugin forwarding: advertise `forwarding.available` and answer
+   * `plugin.list`, `plugin.execute` and `plugin.cancel`. Servers without it model older releases.
+   */
+  pluginForwarding?: FakePluginForwarding;
+}
+
+/** Throw from a fake handler to answer with a specific protocol error code. */
+export class FakeRpcFailure extends Error {
+  constructor(
+    readonly code: string,
+    message = code,
+  ) {
+    super(message);
+  }
+}
+
+export interface FakePluginHost {
+  hostId: string;
+  status?: string;
+  operations: ReadonlyArray<{ pluginId: string; operation: string }>;
+}
+
+export interface FakePluginForwarding {
+  hosts: readonly FakePluginHost[];
+  /** Produces the `plugin.execute` result; the default echoes the input as a handled result. */
+  execute?: (params: Record<string, unknown>) => unknown | Promise<unknown>;
 }
 
 /** A local protocol-v1 node fixture used by client integration tests. */
@@ -62,6 +89,16 @@ export class FakeServerNode {
   readonly #dropSessionsOnDisconnect: boolean;
   readonly #requiredAuthorization: string | undefined;
   readonly #pluginHosts: readonly string[] | undefined;
+  readonly #pluginForwarding: FakePluginForwarding | undefined;
+  /** Every `plugin.*` request received, in order, with the connection's request ID. */
+  readonly pluginRequests: Array<{ id: string | null; command: string; params: unknown }> = [];
+  /** Request IDs named by `plugin.cancel`. */
+  readonly pluginCancels: string[] = [];
+  /** Number of `plugin.execute` requests currently awaiting a response. */
+  pluginPending = 0;
+  /** Replaces the `plugin.execute` handler for a single test. */
+  pluginExecute: FakePluginForwarding['execute'];
+  guildCreateRequests = 0;
   /** Wire sources received by `player.play`, in order. */
   readonly playSources: unknown[] = [];
   #sessionSequence = 0;
@@ -97,7 +134,9 @@ export class FakeServerNode {
     this.playersMaximum = options.playersMaximum ?? 8;
     this.#dropSessionsOnDisconnect = options.dropSessionsOnDisconnect ?? false;
     this.#requiredAuthorization = options.requiredAuthorization;
-    this.#pluginHosts = options.pluginHosts;
+    this.#pluginHosts = options.pluginHosts ?? options.pluginForwarding?.hosts.map((h) => h.hostId);
+    this.#pluginForwarding = options.pluginForwarding;
+    this.pluginExecute = options.pluginForwarding?.execute;
     this.#websocketServer = websocketServer;
     websocketServer.on('connection', (socket) => {
       socket.on('message', (message) => {
@@ -225,7 +264,11 @@ export class FakeServerNode {
                       prepareBeforeMs: 30000,
                       curve: 'equalPower',
                     },
-                    pluginOperations: { available: true, hosts: this.#pluginHosts },
+                    pluginOperations: {
+                      available: true,
+                      hosts: this.#pluginHosts,
+                      ...(this.#pluginForwarding ? { forwarding: { available: true } } : {}),
+                    },
                   },
                 }
               : {}),
@@ -311,7 +354,34 @@ export class FakeServerNode {
           };
           break;
         }
+        case 'plugin.list':
+          this.pluginRequests.push({ id, command, params });
+          this.#session(socket);
+          result = {
+            hosts:
+              this.#pluginForwarding?.hosts.map((host) => ({ status: 'healthy', ...host })) ?? [],
+          };
+          break;
+        case 'plugin.cancel':
+          this.pluginRequests.push({ id, command, params });
+          this.pluginCancels.push(String(params.requestId));
+          result = { cancelled: true };
+          break;
+        case 'plugin.execute': {
+          this.pluginRequests.push({ id, command, params });
+          this.#session(socket);
+          this.pluginPending += 1;
+          try {
+            result = this.pluginExecute
+              ? await this.pluginExecute(params)
+              : { handled: true, result: params.input };
+          } finally {
+            this.pluginPending -= 1;
+          }
+          break;
+        }
         case 'guild.create': {
+          this.guildCreateRequests += 1;
           const session = this.#session(socket);
           const guildId = String(params.guildId);
           if (session.guilds.has(guildId)) {
@@ -565,8 +635,11 @@ export class FakeServerNode {
         default:
           error = { code: 'invalid_request', message: 'unknown command' };
       }
-    } catch {
-      error = { code: 'unknown_session', message: 'session or player is missing' };
+    } catch (caught) {
+      error =
+        caught instanceof FakeRpcFailure
+          ? { code: caught.code, message: caught.message }
+          : { code: 'unknown_session', message: 'session or player is missing' };
     }
 
     const response = error

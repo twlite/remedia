@@ -8,6 +8,7 @@
     "protocol",
     "deployment",
     "plugins",
-    "plugin-operations"
+    "plugin-operations",
+    "plugin-forwarding"
   ]
 }

@@ -62,7 +62,7 @@ a guild require an existing guild session owned by the active client session.
 
 | Command                                        | Parameters                                                               | Result / behavior                                                                                                                                                                                                          |
 | ---------------------------------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `node.info`                                    | `{}`                                                                     | `nodeId`, server version, protocol version, and `capabilities` (`crossfade`, `pluginOperations: { available, hosts }`)                                                                                                     |
+| `node.info`                                    | `{}`                                                                     | `nodeId`, server version, protocol version, and `capabilities` (`crossfade`, `pluginOperations: { available, hosts, forwarding? }`)                                                                                        |
 | `node.protocol_version`                        | `{}`                                                                     | Protocol version                                                                                                                                                                                                           |
 | `node.health`                                  | `{}`                                                                     | `ok` or `shutting_down`                                                                                                                                                                                                    |
 | `node.stats`                                   | `{}`                                                                     | Uptime, connections, players, capacity, CPU/memory where available, health, and `pluginHosts` (per-host state, resources and counters)                                                                                     |
@@ -79,6 +79,9 @@ a guild require an existing guild session owned by the active client session.
 | `voice.state`                                  | `{guildId}`                                                              | Returns transport state and a failure flag; never returns credentials                                                                                                                                                      |
 | `voice.disconnect`                             | `{guildId, transportGeneration?}`                                        | Stops the player and disconnects the transport; a newer explicit operation supersedes older in-flight connection attempts                                                                                                  |
 | `voice.fail`                                   | `{guildId, transportGeneration?}`                                        | Internal recovery terminal signal used by SDKs after bounded retries; parks output as failed and closes a failed transport; ordinary clients should not call it                                                            |
+| `plugin.list`                                  | `{refresh?}`                                                             | Lists configured plugin hosts with status and allowlisted-and-advertised operations; see [forwarding](/docs/server/plugin-forwarding)                                                                                      |
+| `plugin.execute`                               | `{hostId, pluginId, operation, input}`                                   | Runs one allowlisted operation on exactly one host; returns `{handled: false}` or `{handled: true, result}`                                                                                                                |
+| `plugin.cancel`                                | `{requestId}`                                                            | Cancels this connection's pending `plugin.list` or `plugin.execute`; returns `{cancelled}`                                                                                                                                 |
 | `player.play`                                  | `{guildId, source}`                                                      | Starts a server-accessible file, URL or plugin operation; returns selected audio stream metadata and source `generation`                                                                                                   |
 | `player.pause`, `player.resume`, `player.stop` | `{guildId}`                                                              | Controls the current source; stop keeps the voice transport connected                                                                                                                                                      |
 | `player.seek`                                  | `{guildId, positionMs}`                                                  | Seeks in the source media timeline when supported                                                                                                                                                                          |
@@ -107,6 +110,12 @@ and reject the source with `invalid_request`. The failure codes (`plugin_host_no
 [Plugin operation sources](/docs/server/plugin-operations#errors). A newer `player.stop` or
 replacement cancels a pending operation, and the request fails with `cancelled`.
 
+`plugin.list`, `plugin.execute` and `plugin.cancel` forward opaque JSON operations to configured plugin
+hosts for the application, independent of any guild; see [Plugin operation forwarding](/docs/server/plugin-forwarding).
+`node.info.capabilities.pluginOperations.forwarding.available` is true when at least one plugin host is configured; servers
+that predate them omit it and reject the commands as unknown. Responses are bounded by
+`limits.maxMessageBytes`; a larger result fails with `plugin_result_too_large`.
+
 To connect voice, the bot application first performs Discord Gateway channel joining and collects
 the `VOICE_STATE_UPDATE` and `VOICE_SERVER_UPDATE` dispatch values. It then sends them to
 `voice.connect`. The server does not send OP 4 and does not expose received credentials in responses
@@ -120,20 +129,20 @@ server assigns those operations local generations.
 
 ## Error codes
 
-| Code                    | Meaning                                                                                                              |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `invalid_request`       | Malformed JSON/protocol message, unknown command, invalid parameters, or denied media source                         |
-| `authentication_failed` | Handshake authentication failed (HTTP 401)                                                                           |
-| `unknown_session`       | Session or guild is missing or not owned by this connection                                                          |
-| `invalid_state`         | Operation conflicts with the current session/player state                                                            |
-| `resource_exhausted`    | Configured connection, session, player, request, or event capacity was reached                                       |
-| `request_timeout`       | Operation did not produce a response before its configured deadline; started cleanup/native work may continue safely |
-| `unsupported`           | Requested media operation, such as seeking, is unsupported for this source                                           |
-| `playback_failed`       | Media open, decoder, resampler, filter, encoder, or playback worker failed                                           |
-| `cancelled`             | A pending plugin operation was cancelled by stop, replacement, staging changes, disconnect, or shutdown              |
-| `stale_generation`      | A staging request or result belongs to a source generation that is no longer current                                 |
-| `plugin_*`              | Plugin-host failures: see [Plugin operation sources](/docs/server/plugin-operations#errors)                          |
-| `transport_failed`      | Discord voice connect, disconnect, or resource cleanup failed                                                        |
+| Code                    | Meaning                                                                                                                                             |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `invalid_request`       | Malformed JSON/protocol message, unknown command, invalid parameters, or denied media source                                                        |
+| `authentication_failed` | Handshake authentication failed (HTTP 401)                                                                                                          |
+| `unknown_session`       | Session or guild is missing or not owned by this connection                                                                                         |
+| `invalid_state`         | Operation conflicts with the current session/player state                                                                                           |
+| `resource_exhausted`    | Configured connection, session, player, request, or event capacity was reached                                                                      |
+| `request_timeout`       | Operation did not produce a response before its configured deadline; started cleanup/native work may continue safely                                |
+| `unsupported`           | Requested media operation, such as seeking, is unsupported for this source                                                                          |
+| `playback_failed`       | Media open, decoder, resampler, filter, encoder, or playback worker failed                                                                          |
+| `cancelled`             | A pending plugin operation was cancelled by stop, replacement, staging changes, `plugin.cancel`, disconnect, session close, or shutdown             |
+| `stale_generation`      | A staging request or result belongs to a source generation that is no longer current                                                                |
+| `plugin_*`              | Plugin-host failures: see [Plugin operation sources](/docs/server/plugin-operations#errors) and [forwarding](/docs/server/plugin-forwarding#errors) |
+| `transport_failed`      | Discord voice connect, disconnect, or resource cleanup failed                                                                                       |
 
 Messages are safe summaries and do not include raw media URLs, passwords, or voice tokens. Inspect
 server diagnostics for operational context.

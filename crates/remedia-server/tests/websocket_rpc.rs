@@ -31,6 +31,28 @@ impl RunningServer {
         max_players_per_client: usize,
         block_private_networks: bool,
     ) -> Self {
+        Self::start_configured(
+            resume_seconds,
+            max_players_per_client,
+            block_private_networks,
+            json!([]),
+            json!({}),
+        )
+        .await
+    }
+
+    /// Start with configured plugin hosts and optional overrides merged into `limits`.
+    async fn start_with_plugin_hosts(plugin_hosts: Value, limits: Value) -> Self {
+        Self::start_configured(2, 2, true, plugin_hosts, limits).await
+    }
+
+    async fn start_configured(
+        resume_seconds: u64,
+        max_players_per_client: usize,
+        block_private_networks: bool,
+        plugin_hosts: Value,
+        limit_overrides: Value,
+    ) -> Self {
         let id = NEXT_CONFIG.fetch_add(1, Ordering::Relaxed);
         let config_dir =
             std::env::temp_dir().join(format!("remedia-server-test-{}-{id}", std::process::id()));
@@ -39,6 +61,21 @@ impl RunningServer {
             .join("../remedia-core/tests/fixtures")
             .canonicalize()
             .unwrap();
+        let mut limits = json!({
+            "maxConnections": 16,
+            "maxClientSessions": 8,
+            "maxTotalPlayers": 8,
+            "maxPlayersPerClient": max_players_per_client,
+            "maxMessageBytes": 65536,
+            "requestTimeoutMs": 5000,
+            "maxInFlightRequests": 8,
+            "maxRequestsPerSecond": 60,
+            "eventBuffer": 8
+        });
+        limits
+            .as_object_mut()
+            .unwrap()
+            .extend(limit_overrides.as_object().unwrap().clone());
         let json = json!({
             "bind": {"host": "127.0.0.1", "port": 0},
             "users": [
@@ -46,17 +83,7 @@ impl RunningServer {
                 {"username": "bot-b", "password": "password-b"}
             ],
             "sessionResumptionTimeoutSeconds": resume_seconds,
-            "limits": {
-                "maxConnections": 16,
-                "maxClientSessions": 8,
-                "maxTotalPlayers": 8,
-                "maxPlayersPerClient": max_players_per_client,
-                "maxMessageBytes": 65536,
-                "requestTimeoutMs": 5000,
-                "maxInFlightRequests": 8,
-                "maxRequestsPerSecond": 60,
-                "eventBuffer": 8
-            },
+            "limits": limits,
             "media": {
                 "allowedFileRoots": [fixture_root],
                 "allowedUrlHosts": ["*"],
@@ -64,6 +91,7 @@ impl RunningServer {
                 "allowHttps": true,
                 "blockPrivateNetworks": block_private_networks
             },
+            "pluginHosts": plugin_hosts,
             "audio": {"opus": {"bitrate": 96000, "complexity": 5, "vbr": false}},
             "observability": {"console": false}
         });
@@ -212,6 +240,8 @@ mod authentication;
 mod ownership;
 #[path = "websocket_rpc/playback.rs"]
 mod playback;
+#[path = "websocket_rpc/plugin_forwarding.rs"]
+mod plugin_forwarding;
 #[path = "websocket_rpc/probe.rs"]
 mod probe;
 #[path = "websocket_rpc/sessions.rs"]
