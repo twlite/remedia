@@ -1,5 +1,6 @@
 import { WebSocket } from 'ws';
 import { RemediaEventEmitter } from './events.js';
+import { PlaybackClock } from './playback-clock.js';
 import {
   PlaybackSessionEvents as PlaybackEvent,
   VoiceSessionEvents as VoiceEvent,
@@ -1094,6 +1095,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
   readonly #lifecycleListener: (event: ServerLifecycleEvent) => void;
   readonly #statusListener: (event: { snapshot: NodeSnapshot; error: Error | null }) => void;
   #snapshot = emptyPlaybackSnapshot();
+  readonly #playbackClock = new PlaybackClock();
   #outgoingSnapshot: PlaybackSnapshot | undefined;
   #connectionState: VoiceConnectionState = 'disconnected';
   #connectionError: string | null = null;
@@ -1115,8 +1117,9 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     this.#onDispose = onDispose;
     this.#lifecycleListener = (event) => this.#handleEvent(event);
     this.#statusListener = ({ snapshot }) => {
-      if (snapshot.status === 'disconnected' && this.#connectionState === 'connected') {
-        this.#connectionState = 'reconnecting';
+      if (snapshot.status === 'disconnected') {
+        this.#playbackClock.suspend();
+        if (this.#connectionState === 'connected') this.#connectionState = 'reconnecting';
       }
     };
     node.on(RemoteNodeEvent.lifecycle, this.#lifecycleListener);
@@ -1131,6 +1134,9 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
   }
   get position(): PlaybackPosition {
     return this.#snapshot.position;
+  }
+  getPlaybackTime(): number {
+    return this.#playbackClock.getPlaybackTime();
   }
   get durationMs(): number | null {
     return this.#snapshot.durationMs;
@@ -1187,6 +1193,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
       this.#guildCreated = true;
       this.#sessionId = guild.guildSessionId;
       this.#snapshot = parsePlaybackSnapshot(guild.playback, this.#node.id);
+      this.#playbackClock.reconcile(this.#snapshot);
       this.#hasSnapshot = true;
       this.#snapshot = {
         ...this.#snapshot,
@@ -1324,6 +1331,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
       durationMs: result.info.durationMs,
       lastError: terminalBeforeResponse ? this.#snapshot.lastError : null,
     };
+    if (!terminalBeforeResponse) this.#playbackClock.start(result.generation);
     return result;
   }
 
@@ -1369,12 +1377,16 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     this.#assertGuildReady();
     await this.#node.control(this.#options.guildId, 'player.pause');
     this.#snapshot = { ...this.#snapshot, state: 'paused' };
+    this.#playbackClock.transition('paused');
+    await this.refresh();
   }
 
   async resume(): Promise<void> {
     this.#assertGuildReady();
     await this.#node.control(this.#options.guildId, 'player.resume');
     this.#snapshot = { ...this.#snapshot, state: 'playing' };
+    this.#playbackClock.transition('playing');
+    await this.refresh();
   }
 
   async seek(positionMs: number): Promise<void> {
@@ -1387,6 +1399,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     this.#assertGuildReady();
     await this.#node.control(this.#options.guildId, 'player.stop');
     this.#snapshot = { ...this.#snapshot, state: 'stopped' };
+    this.#playbackClock.transition('stopped');
   }
 
   async wait(): Promise<PlaybackCompletion> {
@@ -1477,6 +1490,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
       state: 'failed',
       lastError: { code: 'unknown_session', message: 'The remote server session was lost.' },
     };
+    this.#playbackClock.transition('failed');
     const error = new SessionLostError(this.#node.id, [this.#options.guildId], reason);
     this.#setVoiceState('failed');
     this.#emitVoiceFailure(error);
@@ -1533,6 +1547,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
           lastError: null,
         };
         this.#hasSnapshot = true;
+        this.#playbackClock.start(generation);
         if (source && !this.#startedGenerations.has(generation)) {
           this.#startedGenerations.add(generation);
           this.emit(PlaybackEvent.playbackStarted, {
@@ -1584,6 +1599,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
                 ? null
                 : this.#snapshot.lastError,
         };
+        this.#playbackClock.transition(state);
         this.#emitTerminal(state, generation, previousState, event.data, false);
       }
     } else if (event.event === RemoteProtocolEvents.playerPrepareRequested) {
@@ -1629,6 +1645,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
       if (failedGeneration !== undefined && typeof entryId === 'string' && this.#outgoingSnapshot) {
         this.#snapshot = this.#outgoingSnapshot;
         this.#outgoingSnapshot = undefined;
+        this.#playbackClock.reconcile(this.#snapshot);
         this.emit(PlaybackEvent.transitionCancelled, {
           ...this.#playbackIdentity(event.data),
           failedGeneration,
@@ -1638,6 +1655,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     } else if (event.event === RemoteProtocolEvents.playerPaused) {
       const previousState = this.#snapshot.state;
       this.#snapshot = { ...this.#snapshot, state: 'paused' };
+      this.#playbackClock.transition('paused');
       if (previousState !== 'paused') {
         this.emit(PlaybackEvent.playbackPaused, {
           ...this.#playbackIdentity(event.data),
@@ -1648,6 +1666,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     } else if (event.event === RemoteProtocolEvents.playerResumed) {
       const previousState = this.#snapshot.state;
       this.#snapshot = { ...this.#snapshot, state: 'playing' };
+      this.#playbackClock.transition('playing');
       if (previousState !== 'playing') {
         this.emit(PlaybackEvent.playbackResumed, {
           ...this.#playbackIdentity(event.data),
@@ -1665,6 +1684,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
       }
       const positionMs = asNonnegativeInteger(event.data.positionMs);
       if (positionMs !== undefined) {
+        this.#playbackClock.seek(positionMs, eventGeneration);
         this.emit(PlaybackEvent.playbackSeeked, {
           ...this.#playbackIdentity(event.data),
           positionMs,
@@ -1702,6 +1722,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
   #replaceSnapshot(snapshot: PlaybackSnapshot, reconcile: boolean): void {
     const previous = this.#snapshot;
     this.#snapshot = snapshot;
+    this.#playbackClock.reconcile(snapshot);
     if (reconcile && this.#hasSnapshot && isTerminalState(snapshot.state)) {
       if (isActiveState(previous.state) || snapshot.generation > previous.generation) {
         this.#emitTerminal(snapshot.state, snapshot.generation, previous.state, {}, true);
