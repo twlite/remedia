@@ -551,9 +551,14 @@ fn opus_sender_backpressures_at_its_bounded_queue_and_cancellation_unblocks() {
         start_sample: 0,
     };
     let token = CancellationToken::new();
+    assert_eq!(sender.played_position(), None);
     for _ in 0..QUEUE_CAPACITY {
         sender.send_packet(packet(), &token).unwrap();
     }
+    // The bounded queue has accepted packets, but the RTP actor has not dispatched them.
+    assert_eq!(sender.played_position(), None);
+    sender.played_end_sample.store(960, Ordering::Release);
+    assert_eq!(sender.played_position(), Some(Duration::from_millis(20)));
 
     let (result_tx, result_rx) = mpsc::sync_channel(1);
     let blocked_sender = Arc::clone(&sender);
