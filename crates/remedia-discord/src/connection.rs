@@ -143,6 +143,8 @@ struct QueuedPacket {
     generation: u64,
     id: u64,
     packet: EncodedOpusPacket,
+    /// Playback-scoped packet dispatch cursor, not the RTP transport's continuous clock.
+    played_end_sample: Arc<AtomicU64>,
 }
 
 enum Control {
