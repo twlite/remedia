@@ -31,6 +31,9 @@ pub(crate) async fn execute(
         "media.probe" | "media.probe.cancel" => {
             crate::probe::execute(server, connection, request).await
         }
+        "plugin.list" | "plugin.execute" | "plugin.cancel" => {
+            plugin::execute(server, connection, request).await
+        }
         "node.info" => {
             decode_params::<EmptyParams>(request.params)?;
             Ok(json!({
@@ -495,6 +498,8 @@ pub(crate) use statistics::node_stats;
 
 mod params;
 pub(crate) use params::*;
+
+mod plugin;
 
 mod voice;
 

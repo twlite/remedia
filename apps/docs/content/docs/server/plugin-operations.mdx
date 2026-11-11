@@ -5,6 +5,11 @@ description: Play audio produced by a configured plugin-host deployment through 
 
 # Plugin operation sources
 
+This page covers operations whose result is **audio**. To run operations that return ordinary JSON,
+such as catalog or lyrics requests owned by your application, see
+[Plugin operation forwarding](/docs/server/plugin-forwarding); both paths share the registry,
+allowlist, limits, retries and health described here.
+
 A **plugin host** is an independent service built with [`@remedia/plugin-host`](/docs/server/plugins).
 `remedia-server` can execute its operations at playback time and play the encoded audio they return.
 Remedia never interprets operation input: it is opaque JSON owned by your application. The engine
@@ -149,32 +154,34 @@ Operation requests share the guild's generation and cancellation model:
 
 ## Errors
 
-| Code                                                                | Meaning                                                                   |
-| ------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `plugin_host_not_found`                                             | The host ID is not configured on this node                                |
-| `plugin_operation_not_allowed`                                      | The operation is not in the host's allowlist                              |
-| `plugin_operation_unavailable`                                      | The host does not advertise the operation                                 |
-| `plugin_host_unavailable`                                           | Connection failure, DNS policy rejection, or transient `429`/`5xx`        |
-| `plugin_host_unauthorized`                                          | The host rejected the configured credentials                              |
-| `plugin_host_incompatible`                                          | Wrong protocol version, identity or routes, or a redirect                 |
-| `plugin_operation_failed`                                           | The plugin failed or returned an invalid response                         |
-| `plugin_operation_declined`                                         | The operation returned no result (`handled: false`)                       |
-| `plugin_media_invalid`                                              | Bad descriptor, disallowed origin, redirect, oversized or non-audio media |
-| `plugin_media_expired`                                              | The grant was expired or consumed and could not be refreshed              |
-| `plugin_media_failed`                                               | The media origin could not be reached or transferred                      |
-| `resource_exhausted`                                                | Pending-operation or active-stream limit reached                          |
-| `cancelled`, `request_timeout`, `stale_generation`, `invalid_state` | Lifecycle outcomes described above                                        |
+| Code                                                                | Meaning                                                                            |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `plugin_host_not_found`                                             | The host ID is not configured on this node                                         |
+| `plugin_operation_not_allowed`                                      | The operation is not in the host's allowlist                                       |
+| `plugin_operation_unavailable`                                      | The host does not advertise the operation                                          |
+| `plugin_host_unavailable`                                           | Connection failure, DNS policy rejection, or transient `429`/`5xx`                 |
+| `plugin_host_unauthorized`                                          | The host rejected the configured credentials                                       |
+| `plugin_host_incompatible`                                          | Wrong protocol version, identity or routes, or a redirect                          |
+| `plugin_operation_failed`                                           | The plugin failed or returned an invalid response                                  |
+| `plugin_operation_declined`                                         | The operation returned no result (`handled: false`) while resolving media          |
+| `plugin_result_too_large`                                           | A [forwarded](/docs/server/plugin-forwarding) result exceeds the RPC message limit |
+| `plugin_media_invalid`                                              | Bad descriptor, disallowed origin, redirect, oversized or non-audio media          |
+| `plugin_media_expired`                                              | The grant was expired or consumed and could not be refreshed                       |
+| `plugin_media_failed`                                               | The media origin could not be reached or transferred                               |
+| `resource_exhausted`                                                | Pending-operation or active-stream limit reached                                   |
+| `cancelled`, `request_timeout`, `stale_generation`, `invalid_state` | Lifecycle outcomes described above                                                 |
 
 Messages never contain URLs, tokens, or operation input.
 
 ## Diagnostics
 
-- `node.info.capabilities.pluginOperations` is `{ available, hosts }`. Older nodes omit it, and
-  clients treat that as unsupported.
+- `node.info.capabilities.pluginOperations` is `{ available, hosts, forwarding?: { available } }`. Older
+  nodes omit it (or `forwarding`), and clients treat that as unsupported.
 - `node.stats.pluginHosts` and `remedia-server --list --json` report each host's state, consecutive
   failures, last error label, pending and active-stream counts, and cumulative counters (operations,
   failures, retries, declined, unauthorized, timeouts, cancelled, grants opened and expired, media
-  bytes and failures, discoveries).
+  bytes and failures, discoveries, and the forwarded `genericOperations`, `genericFailures` and
+  `genericUnhandled`).
 - `remedia-server doctor` performs a live discovery for each host. See the [CLI guide](/docs/server/cli).
 - Structured events `server.plugin_host.discovered`, `discovery_failed`, `operation_completed` and
   `operation_failed` (target `remedia_server::plugin_host`) carry the host ID, plugin, operation,

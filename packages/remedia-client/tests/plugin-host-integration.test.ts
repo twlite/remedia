@@ -18,6 +18,7 @@ import {
 import { createNodeMiddleware } from '@remedia/plugin-host/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
+import { RemediaClient } from '../lib/client.js';
 import { RemediaRpcError } from '../lib/errors.js';
 import { RemoteNodeAdapter, RemoteNodeEvent } from '../lib/remote-node.js';
 
@@ -29,6 +30,9 @@ const opusFixture = resolve(fixtures, 'generated-opus-passthrough.ogg');
 const PLUGIN_ID = 'example.source';
 const OPERATION = 'source.stream';
 const NON_REPLAY_OPERATION = 'source.once';
+/** Application-owned metadata operations. Remedia treats their input and results as opaque JSON. */
+const METADATA_PLUGIN_ID = 'example.metadata';
+const METADATA_OPERATIONS = ['catalog.search', 'lyrics.search', 'catalog.hang', 'catalog.flaky'];
 const BOT_ID = '100000000000000001';
 
 /** Credentials are random per run so a leaked value cannot be mistaken for a fixture. */
@@ -112,6 +116,18 @@ async function startHost(options: {
   host.register({
     id: PLUGIN_ID,
     operations: { [OPERATION]: handle, [NON_REPLAY_OPERATION]: handle },
+  });
+
+  // `catalog.private` is advertised by the host but deliberately absent from every allowlist.
+  host.register({
+    id: METADATA_PLUGIN_ID,
+    operations: Object.fromEntries(
+      [...METADATA_OPERATIONS, 'catalog.private'].map((operation) => [
+        operation,
+        (input: unknown, { signal }: { signal: AbortSignal }) =>
+          metadataOperation(harness, operation, input, signal),
+      ]),
+    ),
   });
 
   const middleware = createNodeMiddleware(host);
@@ -210,6 +226,57 @@ function wavStream(seconds: number, stats: StreamStats): Readable {
   });
 
   return stream;
+}
+
+/** A generic JSON operation: no media descriptor, no grant, no stream. */
+async function metadataOperation(
+  harness: Harness,
+  operation: string,
+  input: unknown,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const spec = input as { query?: string; mode?: string };
+  const { behaviour } = harness;
+
+  behaviour.calls.set(operation, (behaviour.calls.get(operation) ?? 0) + 1);
+
+  switch (spec.mode) {
+    case 'null':
+      return null;
+    case 'false':
+      return false;
+    case 'zero':
+      return 0;
+    case 'empty-string':
+      return '';
+    case 'empty-array':
+      return [];
+    case 'unhandled':
+      return undefined;
+    case 'hang':
+      await new Promise<void>((_, reject) => {
+        signal.addEventListener(
+          'abort',
+          () => {
+            behaviour.aborted += 1;
+            reject(signal.reason);
+          },
+          { once: true },
+        );
+      });
+
+      return undefined;
+    case 'flaky':
+      if (behaviour.calls.get(operation) === 1) throw new PluginHostError('host_closed', 503);
+
+      return { recovered: true };
+    default:
+      return {
+        operation,
+        items: [{ title: `result for ${spec.query ?? ''}` }],
+        origin: harness.origin,
+      };
+  }
 }
 
 async function produce(harness: Harness, input: unknown, signal: AbortSignal): Promise<unknown> {
@@ -317,6 +384,7 @@ describe('Rust server with generic plugin hosts', () => {
   let configDirectory: string;
   let server: ChildProcess;
   let node: RemoteNodeAdapter;
+  let client: RemediaClient;
   let wsUrl = '';
   let hostA: Harness;
   let hostB: Harness;
@@ -397,6 +465,13 @@ describe('Rust server with generic plugin hosts', () => {
     const operations = [
       { pluginId: PLUGIN_ID, operation: OPERATION, replaySafe: true },
       { pluginId: PLUGIN_ID, operation: NON_REPLAY_OPERATION },
+      ...METADATA_OPERATIONS.map((operation) => ({
+        pluginId: METADATA_PLUGIN_ID,
+        operation,
+        replaySafe: operation !== 'catalog.hang',
+      })),
+      // Allowed by the operator but never registered on the host.
+      { pluginId: METADATA_PLUGIN_ID, operation: 'catalog.ghost', replaySafe: true },
     ];
     const base = { allowInsecureHttp: true, allowPrivateNetwork: true, operations };
 
@@ -510,6 +585,21 @@ describe('Rust server with generic plugin hosts', () => {
     });
     node.on(RemoteNodeEvent.lifecycle, (event) => lifecycle.push(event));
     await node.start();
+
+    // Applications configure only the Remedia node. They never see a plugin-host endpoint.
+    client = await RemediaClient.create({
+      botUserId: BOT_ID,
+      nodes: [
+        {
+          type: 'remote',
+          id: 'plugin-host-server',
+          url: url.replace('ws://', 'remedia://'),
+          auth: { username: 'sdk-test', password: 'sdk-test-password' },
+        },
+      ],
+      send: () => undefined,
+      requestTimeoutMs: 15_000,
+    });
   }, 180_000);
 
   afterEach(async ({ task }) => {
@@ -541,6 +631,7 @@ describe('Rust server with generic plugin hosts', () => {
   });
 
   afterAll(async () => {
+    await client?.close();
     await node?.close();
 
     if (server && server.exitCode === null) {
@@ -574,6 +665,193 @@ describe('Rust server with generic plugin hosts', () => {
     const discovery = hostA.requests.find((request) => request.path === '/.well-known/remedia');
 
     expect(discovery?.headers.authorization).toBe(`Bearer ${tokens.a}`);
+  });
+
+  it('discovers allowlisted operations through Remedia without exposing plugin-host details', async () => {
+    const hosts = await client.plugins.list({ nodeId: 'plugin-host-server', refresh: true });
+    const byId = new Map(hosts.map((host) => [host.hostId, host]));
+    const hostAOperations = byId.get('host-a')?.operations.map((item) => item.operation) ?? [];
+
+    // Allowlisted AND advertised: `catalog.private` is advertised only, `catalog.ghost` allowed only.
+    expect(hostAOperations).toEqual(
+      expect.arrayContaining(['catalog.search', 'lyrics.search', OPERATION]),
+    );
+    expect(hostAOperations).not.toContain('catalog.private');
+    expect(hostAOperations).not.toContain('catalog.ghost');
+    expect(hosts.map((host) => host.hostId)).toEqual([...hosts.map((host) => host.hostId)].sort());
+    expect(byId.get('host-a')?.status).toBe('healthy');
+
+    // A host which cannot be reached advertises nothing rather than a stale view.
+    expect(byId.get('host-down')?.operations).toEqual([]);
+    expect(byId.get('host-down')?.status).not.toBe('healthy');
+
+    const serialized = JSON.stringify(hosts);
+
+    for (const secret of [...Object.values(tokens), hostA.origin, String(hostA.port)]) {
+      expect(serialized).not.toContain(secret);
+    }
+  });
+
+  it('forwards generic JSON operations and preserves handled and unhandled outcomes', async () => {
+    const search = await client.plugins.execute<{ items: Array<{ title: string }> }>({
+      nodeId: 'plugin-host-server',
+      hostId: 'host-a',
+      pluginId: METADATA_PLUGIN_ID,
+      operation: 'catalog.search',
+      input: { query: 'some query' },
+    });
+
+    expect(search.handled).toBe(true);
+    if (search.handled) expect(search.result.items[0]?.title).toBe('result for some query');
+    expect(search.nodeId).toBe('plugin-host-server');
+
+    for (const [mode, expected] of [
+      ['null', null],
+      ['false', false],
+      ['zero', 0],
+      ['empty-string', ''],
+      ['empty-array', []],
+    ] as const) {
+      expect(
+        await client.plugins.execute({
+          hostId: 'host-a',
+          pluginId: METADATA_PLUGIN_ID,
+          operation: 'lyrics.search',
+          input: { mode },
+        }),
+      ).toMatchObject({ handled: true, result: expected });
+    }
+
+    const unhandled = await client.plugins.execute({
+      hostId: 'host-a',
+      pluginId: METADATA_PLUGIN_ID,
+      operation: 'lyrics.search',
+      input: { mode: 'unhandled' },
+    });
+
+    expect(unhandled.handled).toBe(false);
+
+    // Operator policy applies: advertised-only and allowed-only operations are refused.
+    const refused = (operation: string) =>
+      codeOf(
+        client.plugins.execute({
+          hostId: 'host-a',
+          pluginId: METADATA_PLUGIN_ID,
+          operation,
+          input: {},
+        }),
+      );
+
+    expect(await refused('catalog.private')).toBe('plugin_operation_not_allowed');
+    expect(await refused('catalog.ghost')).toBe('plugin_operation_unavailable');
+    // Without a node ID the client refuses to guess a node for a host nobody advertises...
+    await expect(
+      client.plugins.execute({
+        hostId: 'host-unknown',
+        pluginId: METADATA_PLUGIN_ID,
+        operation: 'catalog.search',
+        input: {},
+      }),
+    ).rejects.toThrow(/no healthy Remedia node forwards plugin operations for host host-unknown/);
+    // ...and with one, the server still enforces its own configuration.
+    expect(
+      await codeOf(
+        client.plugins.execute({
+          nodeId: 'plugin-host-server',
+          hostId: 'host-unknown',
+          pluginId: METADATA_PLUGIN_ID,
+          operation: 'catalog.search',
+          input: {},
+        }),
+      ),
+    ).toBe('plugin_host_not_found');
+    expect(
+      await codeOf(
+        client.plugins.execute({
+          hostId: 'host-bad-auth',
+          pluginId: METADATA_PLUGIN_ID,
+          operation: 'catalog.search',
+          input: {},
+        }),
+      ),
+    ).toBe('plugin_host_unauthorized');
+    // Rejected credentials are reflected in the host's reported status afterwards.
+    const afterRejection = await client.plugins.list({ nodeId: 'plugin-host-server' });
+
+    expect(afterRejection.find((host) => host.hostId === 'host-bad-auth')?.status).not.toBe(
+      'healthy',
+    );
+    // No guild session came into existence for any of this.
+    expect(client.assignments).toEqual([]);
+  });
+
+  it('keeps metadata operations away from media resources and leaves playback working', async () => {
+    const before = await pluginStats('host-a');
+    const mediaRequests = hostA.requests.filter((request) =>
+      request.path.startsWith('/remedia/v1/media/'),
+    ).length;
+
+    for (let index = 0; index < 5; index += 1) {
+      await client.plugins.execute({
+        hostId: 'host-a',
+        pluginId: METADATA_PLUGIN_ID,
+        operation: 'catalog.search',
+        input: { query: `q${index}` },
+      });
+    }
+
+    const after = await pluginStats('host-a');
+
+    expect(after.totals.genericOperations - before.totals.genericOperations).toBe(5);
+    expect(after.totals.operations).toBe(before.totals.operations);
+    expect(after.totals.grantsOpened).toBe(before.totals.grantsOpened);
+    expect(after.resources.activeStreams).toBe(0);
+    expect(
+      hostA.requests.filter((request) => request.path.startsWith('/remedia/v1/media/')).length,
+    ).toBe(mediaRequests);
+
+    // The same host still resolves and plays an operation source afterwards.
+    const guildId = guild();
+
+    await node.createGuild(guildId);
+
+    const started = await node.play(guildId, op('host-a', { track: 'mp3' }));
+
+    expect(started.info.codec).toMatch(/^mp3/);
+    expect((await node.waitForCompletion(guildId, started.generation)).state).toBe('completed');
+    await stopAll(guildId);
+  });
+
+  it('cancels an in-flight metadata operation at the plugin host and releases its permit', async () => {
+    const controller = new AbortController();
+    const aborted = hostA.behaviour.aborted;
+    const pending = client.plugins.execute({
+      hostId: 'host-a',
+      pluginId: METADATA_PLUGIN_ID,
+      operation: 'catalog.hang',
+      input: { mode: 'hang' },
+      signal: controller.signal,
+    });
+    const settled = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+
+    await expect.poll(async () => (await pluginStats('host-a')).resources.pending).toBe(1);
+    controller.abort();
+    await settled;
+    // The host's own operation signal fired, so the work really stopped.
+    await expect.poll(() => hostA.behaviour.aborted).toBe(aborted + 1);
+    await expect.poll(async () => (await pluginStats('host-a')).resources.pending).toBe(0);
+  });
+
+  it('retries replay-safe metadata operations only', async () => {
+    const flaky = await client.plugins.execute({
+      hostId: 'host-a',
+      pluginId: METADATA_PLUGIN_ID,
+      operation: 'catalog.flaky',
+      input: { mode: 'flaky' },
+    });
+
+    expect(flaky).toMatchObject({ handled: true, result: { recovered: true } });
+    expect((await pluginStats('host-a')).totals.retries).toBeGreaterThanOrEqual(1);
   });
 
   it('plays an MP3 operation source with the default configuration and no Range request', async () => {

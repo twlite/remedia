@@ -129,7 +129,7 @@ The same shape works for `stageNext`. Rules:
 
 - `hostId` is an operator-assigned deployment ID, not a manifest name, and carries no endpoint or
   credentials. Store references to it in your own track model; never store the resulting media URL.
-- A node advertises `capabilities.pluginOperations = { available, hosts }`. Nodes without it, and
+- A node advertises `capabilities.pluginOperations = { available, hosts, forwarding }`. Nodes without it, and
   embedded nodes, reject operation sources with `UnsupportedMediaSourceError` before anything is sent.
   The client never retries on another node or host, and a guild is never migrated with an operation
   source. `pluginHosts` on `createDiscordSession` selects only nodes that advertise every listed host
@@ -139,6 +139,62 @@ The same shape works for `stageNext`. Rules:
   `plugin_host_unauthorized`, `plugin_operation_declined` and `cancelled` (stop or skip while the
   operation was pending). Seeking is forward-only for these sources; a backward seek rejects with
   `unsupported`.
+
+## Plugin operation forwarding
+
+`remedia.plugins` discovers and runs **generic JSON operations** on plugin hosts through your
+authenticated Remedia connection. Plugin hosts are configured only on the Remedia servers; your
+application needs no host endpoints or credentials. The server operator allowlists operations in
+`pluginHosts[].operations`, and the client discovers them automatically. Operation names, input and
+results are opaque JSON owned by your application: Remedia does not implement search, lyrics or
+metadata. See [Plugin operation forwarding](/docs/server/plugin-forwarding) for the wire protocol,
+limits and a complete example.
+
+```ts
+// Hosts and permitted operations (allowlisted AND advertised), sorted by nodeId then hostId.
+const hosts = await remedia.plugins.list({ nodeId: 'remote' });
+
+const outcome = await remedia.plugins.execute<{ items: unknown[] }>({
+  nodeId: 'remote',
+  hostId: 'source-host-1',
+  pluginId: 'example.metadata',
+  operation: 'catalog.search',
+  input: { query: 'some query' },
+  signal: controller.signal,
+});
+
+if (outcome.handled) use(outcome.result.items);
+```
+
+| Member                     | Behavior                                                                                                                                                                                                                         |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plugins.list(options?)`   | `{ nodeId?, guildId?, refresh?, signal?, timeoutMs? }`. Returns `PluginHostDescriptor[]` (`nodeId`, `hostId`, `status`, `operations`). Without `nodeId`/`guildId` it combines every healthy remote node that forwards operations |
+| `plugins.execute(options)` | `{ hostId, pluginId, operation, input, nodeId?, guildId?, signal?, timeoutMs? }`. Resolves to `PluginExecuteResult<Result>`, discriminated by `handled`                                                                          |
+
+- **Handled versus unhandled.** `{ handled: true, result }` carries any JSON value, including `null`,
+  `false`, `0`, `""` and `[]`. `{ handled: false }` means the host did not handle the request and is
+  not an error. Both include the executing `nodeId`, `hostId`, `pluginId` and `operation`.
+- **Typed results.** `execute<Result>` types `result`; Remedia does not validate it. Validate
+  untrusted shapes in your application.
+- **Node selection is deterministic.** An explicit `nodeId` wins. Otherwise a `guildId` with a sticky
+  assignment uses its assigned node (a different `nodeId`, or a lost assignment, throws
+  `NodeSelectionError`). Otherwise exactly one healthy node must advertise `hostId`; none or several
+  throw `NodeSelectionError`, because hosts with the same ID on different nodes may be different
+  deployments. Calls never create guild sessions or assignments and never migrate a guild.
+- **Affinity.** Use the returned `nodeId` (and `hostId`) when you later play an operation source for
+  the result: `createDiscordSession({ nodeId, pluginHosts: [hostId], ... })`.
+- **Cancellation.** Aborting `signal` or reaching `timeoutMs` (default `requestTimeoutMs`) rejects
+  locally and sends `plugin.cancel`, so the server drops the plugin-host request and frees its permit.
+  A signal that is already aborted sends nothing. A lost connection rejects pending calls with
+  `NodeUnavailableError`; calls work again after the node reconnects.
+- **Errors.** `RemediaRpcError` carries server codes such as `plugin_operation_not_allowed`,
+  `plugin_operation_unavailable`, `plugin_host_unauthorized` and `plugin_result_too_large`. A malformed
+  response is a `ProtocolError`. `PluginOperationsUnsupportedError` means the node is embedded, has
+  no plugin hosts, or runs an older server; nothing is sent in that case, and playback on that
+  server is unaffected.
+- **Embedded nodes** run in-process without a plugin-host registry, so
+  `capabilities.pluginOperations.forwarding` is `false`. Embedded integrations keep executing their
+  own locally registered plugins.
 
 ## Playback and cached state
 

@@ -70,6 +70,25 @@ export class SessionLostError extends RemediaClientError {
 /** No suitable node could be selected, or the selected assignment is unavailable. */
 export class NodeSelectionError extends RemediaClientError {}
 
+/**
+ * The selected node cannot forward plugin operations: it is embedded, has no plugin hosts
+ * configured, or runs a server which predates generic operation forwarding.
+ */
+export class PluginOperationsUnsupportedError extends RemediaClientError {
+  /** Configured node identifier associated with this resource; null when no node has been assigned. */
+  readonly nodeId: string;
+
+  /**
+   * Create a PluginOperationsUnsupportedError with its failure context.
+   * @param nodeId - Application-configured identifier of the node that cannot forward operations.
+   * @param reason - Human-readable explanation of why forwarding is unavailable.
+   */
+  constructor(nodeId: string, reason: string) {
+    super(`Remedia node ${nodeId} cannot forward plugin operations: ${reason}`);
+    this.nodeId = nodeId;
+  }
+}
+
 /** The chosen node cannot accept the requested media input type. */
 export class UnsupportedMediaSourceError extends RemediaClientError {}
 

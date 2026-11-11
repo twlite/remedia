@@ -1,4 +1,5 @@
 //! Host registry, discovery, authenticated execution and source resolution.
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Once};
@@ -18,7 +19,9 @@ use super::protocol::{
     EXECUTE_PATH, ExecuteOutcome, MANIFEST_PATH, Manifest, error_code, error_from_status,
     parse_descriptor, parse_execute_response, validate_manifest,
 };
-use crate::config::{MediaAccessError, PluginHostConfig, ServerConfig, is_public_ip};
+use crate::config::{
+    AllowedOperation, MediaAccessError, PluginHostConfig, ServerConfig, is_public_ip,
+};
 
 /// Minimum interval between forced rediscovery attempts triggered by a missing operation.
 const REDISCOVERY_FLOOR: Duration = Duration::from_secs(5);
@@ -52,6 +55,13 @@ pub(crate) struct HostStats {
     pub(crate) media_failures: AtomicU64,
     pub(crate) discoveries: AtomicU64,
     pub(crate) discovery_failures: AtomicU64,
+    /// Generic (non-media) operations started. Media resolution is counted in `operations`.
+    pub(crate) generic_operations: AtomicU64,
+    /// Generic operations which failed for a reason other than the shared timeout,
+    /// authorization and cancellation categories.
+    pub(crate) generic_failures: AtomicU64,
+    /// Generic operations the host answered with `handled: false`.
+    pub(crate) generic_unhandled: AtomicU64,
 }
 
 struct CachedManifest {
@@ -92,6 +102,50 @@ pub(crate) struct OperationRef<'a> {
 pub(crate) struct ResolvedMedia {
     pub(crate) source: InputSource,
     pub(crate) guard: Option<MediaGuard>,
+}
+
+/// What an operation's handled result is used for. Both purposes share discovery, the
+/// allowlist, concurrency limits, retries and health tracking; they differ in how the result
+/// is interpreted and which counters record it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Purpose {
+    /// The result is a media descriptor which is opened for playback.
+    Media,
+    /// The result is opaque JSON returned to the caller unchanged.
+    Generic,
+}
+
+impl Purpose {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Media => "media",
+            Self::Generic => "generic",
+        }
+    }
+}
+
+/// A host as exposed by `plugin.list`: its stable ID, availability and usable operations.
+///
+/// Never carries the endpoint, credentials or any other deployment detail.
+pub(crate) struct HostListing {
+    pub(crate) host_id: String,
+    pub(crate) status: &'static str,
+    /// Operations which are both allowlisted by the operator and advertised by the host,
+    /// sorted by plugin ID and operation name.
+    pub(crate) operations: Vec<(String, String)>,
+}
+
+impl HostListing {
+    pub(crate) fn to_json(&self) -> Value {
+        json!({
+            "hostId": self.host_id,
+            "status": self.status,
+            "operations": self.operations.iter().map(|(plugin_id, operation)| json!({
+                "pluginId": plugin_id,
+                "operation": operation,
+            })).collect::<Vec<_>>(),
+        })
+    }
 }
 
 /// Resolves DNS answers once and rejects non-public addresses unless a deployment opts in,
@@ -556,6 +610,56 @@ impl HostState {
         })
     }
 
+    /// The allowlist entry for an operation, or a policy failure.
+    fn allowed(&self, operation: &OperationRef<'_>) -> Result<&AllowedOperation, PluginError> {
+        self.config
+            .operation(operation.plugin_id, operation.operation)
+            .ok_or_else(|| {
+                PluginError::new(
+                    PluginErrorKind::OperationNotAllowed,
+                    "operation is not allowed for this plugin host",
+                )
+            })
+    }
+
+    /// Run the operation on this deployment and return its JSON outcome without interpreting it.
+    ///
+    /// This is the generic forwarding path. `handled: false` is an ordinary outcome, not an
+    /// error, and any JSON value (including `null`) is a valid handled result. The operation
+    /// is never run on another host. Replay-safe operations are retried within `maxAttempts`
+    /// for transient failures; authentication failures and non-replay-safe operations are
+    /// never retried.
+    pub(crate) async fn execute(
+        &self,
+        operation: &OperationRef<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<ExecuteOutcome, PluginError> {
+        let replay_safe = self.allowed(operation)?.replay_safe;
+        let started = Instant::now();
+        let (outcome, attempts) = self
+            .run(Purpose::Generic, operation, replay_safe, cancel, || {
+                self.invoke(operation, cancel)
+            })
+            .await?;
+
+        if matches!(outcome, ExecuteOutcome::Declined) {
+            self.stats.generic_unhandled.fetch_add(1, Ordering::Relaxed);
+        }
+
+        self.log_completed(
+            Purpose::Generic,
+            operation,
+            attempts,
+            started,
+            match outcome {
+                ExecuteOutcome::Declined => "unhandled",
+                ExecuteOutcome::Handled(_) => "handled",
+            },
+        );
+
+        Ok(outcome)
+    }
+
     /// Execute the operation on this deployment and return a decoder input for the result.
     ///
     /// The operation is never run on another host. Replay-safe operations are retried
@@ -567,16 +671,35 @@ impl HostState {
         operation: &OperationRef<'_>,
         cancel: &CancellationToken,
     ) -> Result<ResolvedMedia, PluginError> {
-        let allowed = self
-            .config
-            .operation(operation.plugin_id, operation.operation)
-            .ok_or_else(|| {
-                PluginError::new(
-                    PluginErrorKind::OperationNotAllowed,
-                    "operation is not allowed for this plugin host",
-                )
-            })?;
+        let replay_safe = self.allowed(operation)?.replay_safe;
+        let started = Instant::now();
+        let (media, attempts) = self
+            .run(Purpose::Media, operation, replay_safe, cancel, || {
+                self.attempt(server, operation, cancel)
+            })
+            .await?;
 
+        self.log_completed(Purpose::Media, operation, attempts, started, "resolved");
+
+        Ok(media)
+    }
+
+    /// Shared admission, counting, health and retry policy for one logical operation.
+    ///
+    /// `attempt` performs one try and is repeated only for failures that can plausibly
+    /// succeed again. Returns the value together with the number of attempts used.
+    async fn run<T, F, Fut>(
+        &self,
+        purpose: Purpose,
+        operation: &OperationRef<'_>,
+        replay_safe: bool,
+        cancel: &CancellationToken,
+        mut attempt: F,
+    ) -> Result<(T, u32), PluginError>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<T, PluginError>>,
+    {
         if self.shutdown.is_cancelled() {
             return Err(PluginError::new(
                 PluginErrorKind::ShuttingDown,
@@ -584,43 +707,32 @@ impl HostState {
             ));
         }
 
+        // Held until every attempt finishes, and released on any exit including cancellation.
         let _pending = self.acquire(&self.pending)?;
 
-        self.stats.operations.fetch_add(1, Ordering::Relaxed);
+        match purpose {
+            Purpose::Media => &self.stats.operations,
+            Purpose::Generic => &self.stats.generic_operations,
+        }
+        .fetch_add(1, Ordering::Relaxed);
 
-        let started = Instant::now();
-        let mut attempt = 1;
+        let mut tries = 1;
 
         loop {
-            let result = self.attempt(server, operation, cancel).await;
+            let result = attempt().await;
 
             self.record(&result.as_ref().map(|_| ()));
 
             let error = match result {
-                Ok(media) => {
-                    with_dispatch(&self.observability, || {
-                        tracing::info!(
-                            name: "server.plugin_host.operation_completed",
-                            target: "remedia_server::plugin_host",
-                            host_id = %self.config.id,
-                            plugin_id = operation.plugin_id,
-                            operation = operation.operation,
-                            attempts = u64::from(attempt),
-                            duration_ms = started.elapsed().as_millis() as u64,
-                            "plugin operation resolved media"
-                        );
-                    });
-
-                    return Ok(media);
-                }
+                Ok(value) => return Ok((value, tries)),
                 Err(error) => error,
             };
 
-            self.count_failure(&error);
+            self.count_failure(purpose, &error);
 
             let refreshable = error.kind == PluginErrorKind::MediaExpired;
-            let retry = allowed.replay_safe
-                && attempt < self.config.limits.max_attempts
+            let retry = replay_safe
+                && tries < self.config.limits.max_attempts
                 && (error.retriable() || refreshable);
 
             with_dispatch(&self.observability, || {
@@ -630,8 +742,9 @@ impl HostState {
                     host_id = %self.config.id,
                     plugin_id = operation.plugin_id,
                     operation = operation.operation,
+                    purpose = purpose.label(),
                     error_kind = error.label(),
-                    attempt = u64::from(attempt),
+                    attempt = u64::from(tries),
                     will_retry = retry,
                     "plugin operation failed"
                 );
@@ -642,7 +755,7 @@ impl HostState {
             }
 
             self.stats.retries.fetch_add(1, Ordering::Relaxed);
-            attempt += 1;
+            tries += 1;
 
             if !refreshable {
                 tokio::select! {
@@ -654,17 +767,78 @@ impl HostState {
         }
     }
 
-    fn count_failure(&self, error: &PluginError) {
+    /// Operation payloads and results are never logged; only low-cardinality identifiers.
+    fn log_completed(
+        &self,
+        purpose: Purpose,
+        operation: &OperationRef<'_>,
+        attempts: u32,
+        started: Instant,
+        outcome: &'static str,
+    ) {
+        with_dispatch(&self.observability, || {
+            tracing::info!(
+                name: "server.plugin_host.operation_completed",
+                target: "remedia_server::plugin_host",
+                host_id = %self.config.id,
+                plugin_id = operation.plugin_id,
+                operation = operation.operation,
+                purpose = purpose.label(),
+                outcome,
+                attempts = u64::from(attempts),
+                retries = u64::from(attempts - 1),
+                duration_ms = started.elapsed().as_millis() as u64,
+                "plugin operation completed"
+            );
+        });
+    }
+
+    fn count_failure(&self, purpose: Purpose, error: &PluginError) {
         let counter = match error.kind {
             PluginErrorKind::Declined => &self.stats.declined,
             PluginErrorKind::Unauthorized => &self.stats.unauthorized,
             PluginErrorKind::Timeout => &self.stats.timeouts,
             PluginErrorKind::Cancelled | PluginErrorKind::ShuttingDown => &self.stats.cancelled,
             PluginErrorKind::MediaExpired => &self.stats.grants_expired,
-            _ => &self.stats.operation_failures,
+            _ => match purpose {
+                Purpose::Media => &self.stats.operation_failures,
+                Purpose::Generic => &self.stats.generic_failures,
+            },
         };
 
         counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Confirm the operation is advertised, then run it once. A host which no longer knows
+    /// an advertised operation has changed, so its cached manifest is allowed to expire early.
+    async fn invoke(
+        &self,
+        operation: &OperationRef<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<ExecuteOutcome, PluginError> {
+        self.ensure_operation(operation.plugin_id, operation.operation, cancel)
+            .await?;
+
+        let result = self.execute_once(operation, cancel).await;
+
+        if matches!(&result, Err(error) if error.kind == PluginErrorKind::OperationUnavailable) {
+            self.expire_manifest().await;
+        }
+
+        result
+    }
+
+    /// Drop a cached manifest which is older than the rediscovery floor so that the next
+    /// request refetches it. Bounded: a manifest fetched moments ago is kept.
+    async fn expire_manifest(&self) {
+        let mut cached = self.manifest.lock().await;
+
+        if cached
+            .as_ref()
+            .is_some_and(|entry| entry.fetched_at.elapsed() >= REDISCOVERY_FLOOR)
+        {
+            *cached = None;
+        }
     }
 
     async fn attempt(
@@ -673,10 +847,7 @@ impl HostState {
         operation: &OperationRef<'_>,
         cancel: &CancellationToken,
     ) -> Result<ResolvedMedia, PluginError> {
-        self.ensure_operation(operation.plugin_id, operation.operation, cancel)
-            .await?;
-
-        let value = match self.execute_once(operation, cancel).await? {
+        let value = match self.invoke(operation, cancel).await? {
             ExecuteOutcome::Declined => {
                 return Err(PluginError::new(
                     PluginErrorKind::Declined,
@@ -772,6 +943,9 @@ impl HostState {
                 "mediaFailures": load(&stats.media_failures),
                 "discoveries": load(&stats.discoveries),
                 "discoveryFailures": load(&stats.discovery_failures),
+                "genericOperations": load(&stats.generic_operations),
+                "genericFailures": load(&stats.generic_failures),
+                "genericUnhandled": load(&stats.generic_unhandled),
             },
         })
     }
@@ -788,6 +962,64 @@ impl HostState {
         } else {
             "unknown"
         }
+    }
+
+    /// Current availability label, derived from recent request outcomes.
+    fn status(&self) -> &'static str {
+        let health = self
+            .health
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        self.status_locked(&health)
+    }
+
+    /// Describe the operations a client may currently invoke on this host.
+    ///
+    /// Uses the cached manifest while it is fresh and refetches it once it is older than
+    /// `discoveryTtlMs`, so a restarted host or changed operation set is picked up without
+    /// a request per call. `refresh` additionally forces a refetch, but never more often
+    /// than the rediscovery floor. If the manifest cannot be validated or refreshed the host
+    /// is reported with its degraded or unavailable status and no operations: a stale view
+    /// is never advertised as available. Only cancellation and shutdown are returned as errors.
+    pub(crate) async fn describe(
+        &self,
+        refresh: bool,
+        cancel: &CancellationToken,
+    ) -> Result<HostListing, PluginError> {
+        let force = refresh && {
+            let cached = self.manifest.lock().await;
+
+            cached
+                .as_ref()
+                .is_none_or(|entry| entry.fetched_at.elapsed() >= REDISCOVERY_FLOOR)
+        };
+        let mut operations = match self.discover(force, cancel).await {
+            Ok(manifest) => self
+                .config
+                .operations
+                .iter()
+                .filter(|allowed| manifest.advertises(&allowed.plugin_id, &allowed.operation))
+                .map(|allowed| (allowed.plugin_id.clone(), allowed.operation.clone()))
+                .collect(),
+            Err(error)
+                if matches!(
+                    error.kind,
+                    PluginErrorKind::Cancelled | PluginErrorKind::ShuttingDown
+                ) =>
+            {
+                return Err(error);
+            }
+            Err(_) => Vec::new(),
+        };
+
+        operations.sort();
+
+        Ok(HostListing {
+            host_id: self.config.id.clone(),
+            status: self.status(),
+            operations,
+        })
     }
 
     pub(crate) fn active_streams(&self) -> usize {
@@ -881,11 +1113,32 @@ impl PluginHostRegistry {
     }
 
     /// Capability advertised through `node.info`.
+    ///
+    /// `forwarding.available` tells clients that `plugin.list`, `plugin.execute` and
+    /// `plugin.cancel` can be used on this node. Servers which predate generic forwarding
+    /// omit the field. It carries no endpoint, credential or operation details.
     pub(crate) fn capability(&self) -> Value {
         json!({
             "available": !self.hosts.is_empty(),
             "hosts": self.host_ids(),
+            "forwarding": { "available": !self.hosts.is_empty() },
         })
+    }
+
+    /// Every configured host with its status and usable operations, ordered by host ID.
+    pub(crate) async fn list(
+        &self,
+        refresh: bool,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<HostListing>, PluginError> {
+        let mut listings = futures_util::future::try_join_all(
+            self.hosts.iter().map(|host| host.describe(refresh, cancel)),
+        )
+        .await?;
+
+        listings.sort_by(|left, right| left.host_id.cmp(&right.host_id));
+
+        Ok(listings)
     }
 
     /// Cancel pending operations and media transfers, then wait briefly for them to unwind.

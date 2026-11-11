@@ -58,7 +58,12 @@ and diagnostics APIs. `@remedia/client` orchestrates direct embedded and remote 
   bearer authentication under per-host pending-operation limits, and plays the returned media grant
   through its own pinned, redirect-free HTTP client and a bounded forward-only byte stream, so
   FFmpeg never issues a `Range` request to a single-use grant. Operation preparation shares the
-  guild's cancellation and generation model, including staged playback. The server does not
+  guild's cancellation and generation model, including staged playback. The same registry also
+  forwards arbitrary allow-listed JSON operations (`plugin.list`, `plugin.execute`, `plugin.cancel`)
+  to authenticated clients without interpreting them: it returns the host's handled/unhandled
+  result unchanged, bounded by the RPC message limit, and never parses media descriptors for
+  them. Applications discover permitted operations through the node instead of configuring host
+  endpoints themselves. The server does not
   use N-API, perform Discord Gateway OP 4, or implement Lavalink. Each
   authenticated client session owns guild sessions; each guild session owns one playback session
   and an optional Discord transport. Session state is

@@ -3,6 +3,17 @@ import { Buffer } from 'node:buffer';
 import type { RawData, WebSocket } from 'ws';
 import { NodeUnavailableError, ProtocolError, RemediaRpcError } from './errors.js';
 
+/**
+ * Commands whose server-side work can be interrupted. A client-side timeout or abort sends the
+ * matching cancel command (with this request's ID) so the server stops work instead of
+ * continuing after nobody is waiting for the result.
+ */
+const CANCEL_COMMANDS: Readonly<Record<string, string>> = {
+  'media.probe': 'media.probe.cancel',
+  'plugin.list': 'plugin.cancel',
+  'plugin.execute': 'plugin.cancel',
+};
+
 export interface RpcLifecycleEvent {
   version: 1;
   event: string;
@@ -79,8 +90,7 @@ export class RpcClient {
         reject,
         timer: setTimeout(() => {
           this.#remove(id);
-          if (command === 'media.probe')
-            void this.request('media.probe.cancel', { requestId: id }).catch(() => {});
+          this.#cancelRemote(command, id);
           reject(
             new RemediaRpcError(
               this.#options.nodeId,
@@ -95,8 +105,7 @@ export class RpcClient {
       if (options.signal) {
         pending.abort = () => {
           this.#remove(id);
-          if (command === 'media.probe')
-            void this.request('media.probe.cancel', { requestId: id }).catch(() => {});
+          this.#cancelRemote(command, id);
           reject(abortError());
         };
         options.signal.addEventListener('abort', pending.abort, { once: true });
@@ -189,6 +198,12 @@ export class RpcClient {
         );
       }
     }
+  }
+
+  /** Best effort: the request already failed locally, so a lost cancel only delays cleanup. */
+  #cancelRemote(command: string, requestId: string): void {
+    const cancel = CANCEL_COMMANDS[command];
+    if (cancel) void this.request(cancel, { requestId }).catch(() => {});
   }
 
   #remove(id: string): void {

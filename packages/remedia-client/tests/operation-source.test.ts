@@ -227,7 +227,11 @@ describe('plugin operation media sources', () => {
 
     try {
       await node.start();
-      expect(node.snapshot.capabilities?.pluginOperations).toEqual({ available: false, hosts: [] });
+      expect(node.snapshot.capabilities?.pluginOperations).toEqual({
+        available: false,
+        hosts: [],
+        forwarding: false,
+      });
     } finally {
       await node.close();
       await server.close();

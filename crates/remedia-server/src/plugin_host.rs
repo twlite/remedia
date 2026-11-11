@@ -3,6 +3,10 @@
 //!
 //! Remedia treats operation input as opaque JSON and never interprets application-specific
 //! provider references. A host is addressed only by its operator-assigned ID.
+//!
+//! Two consumers share one execution path (discovery, allowlist, concurrency, retries, health):
+//! generic forwarding returns the operation's JSON verbatim, and media resolution additionally
+//! interprets the result as a media descriptor and opens the encoded stream.
 mod error;
 mod media;
 mod protocol;
@@ -10,8 +14,9 @@ mod registry;
 
 pub(crate) use error::{PluginError, PluginErrorKind};
 pub(crate) use media::MediaGuard;
+pub(crate) use protocol::ExecuteOutcome;
 pub use registry::HostDiagnostic;
-pub(crate) use registry::{OperationRef, PluginHostRegistry};
+pub(crate) use registry::{HostListing, OperationRef, PluginHostRegistry};
 
 use crate::config::ServerConfig;
 

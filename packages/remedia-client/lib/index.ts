@@ -2,11 +2,13 @@ export { RemediaClient } from './client.js';
 export { DiscordSession } from './discord.js';
 export { FilterControls } from './filters.js';
 export { PlaybackHooks } from './hooks.js';
+export { PluginOperations } from './plugins.js';
 export { PlaybackSessionEvents, RemediaClientEventNames, VoiceSessionEvents } from './types.js';
 export {
   DiscordBotMismatchError,
   NodeSelectionError,
   NodeUnavailableError,
+  PluginOperationsUnsupportedError,
   ProtocolError,
   RemediaClientError,
   RemediaRpcError,
@@ -30,7 +32,16 @@ export type {
   JsonValue,
   MediaSource,
   OperationMediaSource,
+  PluginExecuteOptions,
+  PluginExecuteResult,
+  PluginExecutionOrigin,
+  PluginHandledResult,
+  PluginHostDescriptor,
+  PluginHostStatus,
+  PluginListOptions,
+  PluginOperationDescriptor,
   PluginOperationsCapability,
+  PluginUnhandledResult,
   StageNextOptions,
   StageSnapshot,
   CrossfadeContinuation,

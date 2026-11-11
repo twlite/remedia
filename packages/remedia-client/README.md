@@ -75,6 +75,29 @@ reconnection reconciliation, and metadata lifetime.
 See the [Fumadocs client guide](https://github.com/twlite/remedia/blob/main/apps/docs/content/docs/client/overview.mdx) for connection
 strings, configuration, lifecycle, and recovery semantics.
 
+## Plugin operations
+
+Remote nodes forward generic, operator-allowlisted JSON operations to their configured plugin hosts,
+so your application only configures Remedia nodes:
+
+```ts
+const hosts = await client.plugins.list({ nodeId: 'remote' });
+const outcome = await client.plugins.execute({
+  nodeId: 'remote',
+  hostId: 'source-host-1',
+  pluginId: 'example.metadata',
+  operation: 'catalog.search',
+  input: { query: 'some query' },
+  signal: controller.signal,
+});
+
+if (outcome.handled) console.log(outcome.result);
+```
+
+Results are `{ handled: true, result }` (any JSON value) or `{ handled: false }`. Operation semantics
+belong to your application. Embedded nodes and older servers report
+`PluginOperationsUnsupportedError`. See the documentation for node selection and cancellation.
+
 ## Cross-node migration
 
 `await voice.migrate('media-b')` moves an already connected guild between configured healthy

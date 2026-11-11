@@ -43,6 +43,8 @@ pub(crate) struct ClientSession {
     pub(crate) guilds: Mutex<HashMap<String, Arc<GuildSession>>>,
     pub(crate) event_sequence: AtomicU64,
     pub(crate) event_tx: broadcast::Sender<serde_json::Value>,
+    /// Cancelled when the session closes, so its pending forwarded plugin operations end with it.
+    pub(crate) scope: TokioCancellationToken,
     initial_event_rx: Mutex<Option<broadcast::Receiver<serde_json::Value>>>,
     pub(crate) closed: AtomicBool,
 }
@@ -111,6 +113,10 @@ pub(crate) struct ConnectionContext {
     /// Cancelled when the WebSocket closes; pending plugin operations observe it.
     pub(crate) closed: TokioCancellationToken,
     pub(crate) probes: Mutex<std::collections::HashMap<String, remedia_core::CancellationToken>>,
+    /// Pending `plugin.list` and `plugin.execute` requests of this connection, by request ID.
+    /// Each token is a child of `closed`. Entries exist only while a request is in flight, so
+    /// the map is bounded by `maxInFlightRequests`, and only this connection can cancel them.
+    pub(crate) plugin_requests: Mutex<std::collections::HashMap<String, TokioCancellationToken>>,
     request_window: Mutex<(Instant, usize)>,
 }
 
@@ -196,6 +202,7 @@ impl ServerInner {
             guilds: Mutex::new(HashMap::new()),
             event_sequence: AtomicU64::new(0),
             event_tx,
+            scope: TokioCancellationToken::new(),
             initial_event_rx: Mutex::new(Some(event_rx)),
             closed: AtomicBool::new(false),
         });
@@ -316,6 +323,7 @@ impl ServerInner {
             return Ok(());
         }
         session.expiry_generation.fetch_add(1, Ordering::AcqRel);
+        session.scope.cancel();
         *lock(&session.attached_connection) = None;
         *lock(&session.detached_deadline) = None;
         let guilds = std::mem::take(&mut *lock(&session.guilds));
