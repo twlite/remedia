@@ -164,7 +164,9 @@ impl PacketScheduler {
                     )
                     .await?;
                     // Report transmitted media, not queued, dropped, or synthetic silence packets.
-                    let end = packet.packet.start_sample
+                    let end = packet
+                        .packet
+                        .start_sample
                         .saturating_add(u64::from(packet.packet.media_samples_per_channel));
                     packet.played_end_sample.store(end, Ordering::Release);
                     self.processed_id = self.processed_id.max(packet.id);
