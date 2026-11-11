@@ -14,7 +14,12 @@ function snapshot(
     generation,
     state,
     processingMode: null,
-    position: { mediaMs, playedMs, submittedMs, mediaPositionAccuracy: mediaMs === null ? null : 'estimated' },
+    position: {
+      mediaMs,
+      playedMs,
+      submittedMs,
+      mediaPositionAccuracy: mediaMs === null ? null : 'estimated',
+    },
     durationMs,
     source: null,
     filterGraph: null,
@@ -48,7 +53,7 @@ describe('remote playback clock', () => {
     expect(clock.getPlaybackTime()).toBe(2_500);
   });
 
-  it('reconciles with output, media, then submitted position and clamps finite sources', () => {
+  it('reconciles output position without capping it to source duration', () => {
     let now = 0;
     const clock = new PlaybackClock(() => now);
     clock.reconcile(snapshot(2, 'playing', 800, 1200, 1400, 1800));
@@ -56,7 +61,8 @@ describe('remote playback clock', () => {
     now = 600;
     expect(clock.getPlaybackTime()).toBe(1400);
     now = 2000;
-    expect(clock.getPlaybackTime()).toBe(1800);
+    // Playback can outlast the source duration when tempo-changing filters slow it down.
+    expect(clock.getPlaybackTime()).toBe(2800);
     clock.reconcile(snapshot(2, 'playing', null, 1100, 1300));
     expect(clock.getPlaybackTime()).toBe(1100);
     clock.reconcile(snapshot(2, 'playing', null, null, 1500));
