@@ -7,6 +7,8 @@ pub struct DiscordOpusSender {
     pub(super) generation: AtomicU64,
     pub(super) cancelled: AtomicBool,
     pub(super) finished: AtomicBool,
+    /// End sample of the last successfully dispatched audio packet; MAX means unknown.
+    pub(super) played_end_sample: Arc<AtomicU64>,
 }
 
 impl DiscordOpusSender {
@@ -129,6 +131,7 @@ impl OpusPacketSink for DiscordOpusSender {
             generation,
             id,
             packet,
+            played_end_sample: Arc::clone(&self.played_end_sample),
         };
         loop {
             if cancellation.is_cancelled() || self.cancelled.load(Ordering::Acquire) {
@@ -158,6 +161,15 @@ impl OpusPacketSink for DiscordOpusSender {
 
     fn supports_passthrough_packet(&self, packet: &EncodedOpusPacket) -> bool {
         Self::supports_passthrough_packet(packet)
+    }
+
+    fn played_position(&self) -> Option<Duration> {
+        let end_sample = self.played_end_sample.load(Ordering::Acquire);
+        (end_sample != u64::MAX).then(|| {
+            let rate = u64::from(PACKET_RATE);
+            Duration::from_secs(end_sample / rate)
+                + Duration::from_nanos((end_sample % rate) * 1_000_000_000 / rate)
+        })
     }
 
     fn flush(
@@ -196,7 +208,10 @@ impl OpusPacketSink for DiscordOpusSender {
             );
         });
         self.request_barrier(|ack| Control::Flush { generation, ack }, cancellation)
-            .map_err(OutputError::with_source)
+            .map_err(OutputError::with_source)?;
+        // The next dispatched packet belongs to the new seek timeline.
+        self.played_end_sample.store(u64::MAX, Ordering::Release);
+        Ok(())
     }
 
     fn pause(&self, cancellation: &CoreCancellationToken) -> Result<(), OutputError> {

@@ -48,6 +48,7 @@ const voice = remedia.createDiscordSession({ guildId, channelId, userId: discord
 
 await voice.connect();
 await voice.play({ url: 'https://media.example.net/audio.mp3' });
+console.log(voice.getPlaybackTime()); // elapsed output ms; interpolated for remote playback
 await voice.setVolume(0.8);
 
 await remedia.close();

@@ -26,6 +26,7 @@ import type {
 
 interface ManagedDiscordSession {
   readonly guildId: string;
+  getPlaybackTime(): number;
   dispose(): Promise<void>;
   receiveGatewayDispatch(
     event: string,
@@ -158,6 +159,11 @@ export class RemediaClient
   getAssignment(guildId: string): GuildAssignment | undefined {
     const assignment = this.#assignments.get(guildId);
     return assignment ? { ...assignment } : undefined;
+  }
+
+  /** Elapsed output time for an existing guild session, or null when no session is registered. */
+  getPlaybackTime(guildId: string): number | null {
+    return this.#sessions.get(guildId)?.getPlaybackTime() ?? null;
   }
 
   /**

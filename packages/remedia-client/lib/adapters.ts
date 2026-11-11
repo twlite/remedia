@@ -34,6 +34,8 @@ export interface GuildBackend extends EventEmitter<GuildBackendEvents> {
   readonly state: PlaybackState;
   /** Latest source and output timeline measurements in milliseconds. */
   readonly position: PlaybackPosition;
+  /** Locally estimated output elapsed time in ms, reconciled with authoritative native snapshots. */
+  getPlaybackTime(): number;
   /** Source duration in milliseconds, or null when unknown. */
   readonly durationMs: number | null;
   /** Most recent playback or voice failure message, or null when no error is available. */
