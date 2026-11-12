@@ -220,12 +220,6 @@ impl DaveProtocol {
     }
 
     fn prepare_epoch(&mut self, data: &Value) -> Result<Vec<OutgoingGatewayMessage>, VoiceError> {
-        let transition_id = data
-            .get("transition_id")
-            .ok_or_else(|| {
-                VoiceError::Protocol("DAVE prepare-epoch omitted `transition_id`".into())
-            })
-            .and_then(|value| parse_u16(value, "transition_id"))?;
         let epoch = data
             .get("epoch")
             .ok_or_else(|| VoiceError::Protocol("DAVE prepare-epoch omitted `epoch`".into()))
@@ -247,6 +241,12 @@ impl DaveProtocol {
                 self.create_key_package()?,
             )]);
         }
+        let transition_id = data
+            .get("transition_id")
+            .ok_or_else(|| {
+                VoiceError::Protocol("DAVE prepare-epoch omitted `transition_id`".into())
+            })
+            .and_then(|value| parse_u16(value, "transition_id"))?;
         let current_epoch = self
             .session
             .epoch()

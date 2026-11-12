@@ -51,7 +51,6 @@ fn prepare_epoch_starts_mls_and_prepares_later_epoch_transitions() {
         .handle(&GatewayMessage::Json {
             opcode: 24,
             data: json!({
-                "transition_id": 0,
                 "epoch": 1,
                 "protocol_version": davey::DAVE_PROTOCOL_VERSION,
             }),
