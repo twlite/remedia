@@ -215,6 +215,16 @@ function Save-InstallDownload {
   }
 }
 
+# Git for Windows may put GNU tar ahead of System32 on PATH. GNU tar can treat
+# drive-letter archive paths as remote hosts; Windows' bundled bsdtar accepts them.
+function Get-RemediaTar {
+  if ($env:SystemRoot) {
+    $nativeTar = Join-Path $env:SystemRoot 'System32\tar.exe'
+    if (Test-Path -LiteralPath $nativeTar -PathType Leaf) { return $nativeTar }
+  }
+  return (Get-Command tar -CommandType Application -ErrorAction Stop).Source
+}
+
 # Resolve micromamba. A micromamba on PATH or in the install directory is reused. A missing one is
 # downloaded to $BinaryDirectory, which is the server bin directory for server installs and a
 # temporary directory for -FFmpegOnly so that no server directories are created.
@@ -229,7 +239,7 @@ function Get-RemediaMicromamba {
   $mambaArchive = Join-Path $WorkDirectory 'micromamba.tar.bz2'
   Save-InstallDownload -Url 'https://micro.mamba.pm/api/micromamba/win-64/latest' -Destination $mambaArchive -Label 'micromamba'
   Write-InstallStatus 'Extracting micromamba...'
-  & tar -xf $mambaArchive -C $WorkDirectory 'Library/bin/micromamba.exe' | Out-Host
+  & (Get-RemediaTar) -xf $mambaArchive -C $WorkDirectory 'Library/bin/micromamba.exe' | Out-Host
   if ($LASTEXITCODE -ne 0) { throw 'Failed to extract micromamba executable.' }
   $downloaded = Join-Path $WorkDirectory 'Library/bin/micromamba.exe'
   if (!(Test-Path -LiteralPath $downloaded)) { throw 'Unable to locate downloaded micromamba.exe.' }
@@ -339,7 +349,7 @@ try {
   $actual = (Get-FileHash $archive -Algorithm SHA256).Hash
   if ($actual -ine $asset.digest.Substring(7)) { throw 'Release SHA-256 checksum mismatch.' }
   Write-InstallStatus 'Extracting server archive...'
-  & tar -xzf $archive -C $tmp
+  & (Get-RemediaTar) -xzf $archive -C $tmp
   if ($LASTEXITCODE -ne 0) { throw 'Failed to extract server archive.' }
   $binDir = Join-Path $InstallDir 'bin'
   $libexec = Join-Path $InstallDir 'libexec'

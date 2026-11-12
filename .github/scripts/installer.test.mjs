@@ -26,6 +26,19 @@ const installPs1 = join(root, 'scripts/install.ps1');
 const windows = process.platform === 'win32';
 const unixInstallerPlatform = process.platform === 'linux' || process.platform === 'darwin';
 
+// Match the Windows installer: avoid Git's GNU tar interpreting C:\... as a remote archive.
+const windowsTar = process.env.SystemRoot && join(process.env.SystemRoot, 'System32', 'tar.exe');
+const archiveTar = windows && windowsTar && existsSync(windowsTar) ? windowsTar : 'tar';
+
+/** Build fixture archives with platform-native tar and retain diagnostics on failure. */
+function packArchive(archive, payload, entries, compression = 'z') {
+  const result = spawnSync(archiveTar, [`-c${compression}f`, archive, '-C', payload, ...entries], {
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, `${archiveTar}: ${result.error ?? ''}\n${result.stderr}`);
+}
+
 /** Library files the real FFmpeg 9 conda package provides on this platform. */
 function libraryFiles() {
   return [...ffmpegAbi].map(([library, major]) => {
@@ -292,9 +305,7 @@ test(
       rmSync(join(payload, 'bin/curl'), { force: true });
 
       const archive = join(box.base, 'micromamba.tar.bz2');
-      const packed = spawnSync('tar', ['-cjf', archive, '-C', payload, 'bin/micromamba']);
-
-      assert.equal(packed.status, 0, packed.stderr?.toString());
+      packArchive(archive, payload, ['bin/micromamba'], 'j');
 
       const curl = join(box.fakeBin, 'curl');
 
@@ -465,10 +476,7 @@ function fakeRelease(box, version, { failDownload = false, badChecksum = false }
   for (const name of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt'])
     writeFileSync(join(payload, name), name);
   const archive = join(box.base, 'release.tar.gz');
-  assert.equal(
-    spawnSync('tar', ['-czf', archive, '-C', payload, ...readdirSync(payload)]).status,
-    0,
-  );
+  packArchive(archive, payload, readdirSync(payload));
   const digest = badChecksum
     ? '0'.repeat(64)
     : createHash('sha256').update(readFileSync(archive)).digest('hex');
@@ -595,6 +603,22 @@ test('PowerShell installation skips current versions and keeps its pointer on do
     return t.skip('pwsh unavailable');
   const box = sandbox();
   try {
+    // Reproduce the runner's PATH shadowing. On Unix, emulate the native Windows tar
+    // location with a launcher so the same selection and extraction are exercised locally.
+    let systemRoot = process.env.SystemRoot;
+    if (windows) {
+      writeFileSync(join(box.fakeBin, 'tar.cmd'), '@echo off\r\nexit /b 99\r\n');
+    } else {
+      systemRoot = join(box.base, 'Windows');
+      const nativeTar = join(systemRoot, 'System32', 'tar.exe');
+      mkdirSync(dirname(nativeTar), { recursive: true });
+      writeFileSync(nativeTar, '#!/bin/sh\nexec /usr/bin/tar "$@"\n');
+      chmodSync(nativeTar, 0o755);
+      const shadowTar = join(box.fakeBin, 'tar');
+      writeFileSync(shadowTar, '#!/bin/sh\necho "wrong tar from PATH" >&2\nexit 99\n');
+      chmodSync(shadowTar, 0o755);
+    }
+
     const source = readFileSync(installPs1, 'utf8');
     const functions = source.slice(
       source.indexOf('function Write-InstallStatus'),
@@ -614,10 +638,7 @@ test('PowerShell installation skips current versions and keeps its pointer on do
     ])
       writeFileSync(join(payload, file), file);
     const archive = join(box.base, 'archive.tar.gz');
-    assert.equal(
-      spawnSync('tar', ['-czf', archive, '-C', payload, ...readdirSync(payload)]).status,
-      0,
-    );
+    packArchive(archive, payload, readdirSync(payload));
     const digest = createHash('sha256').update(readFileSync(archive)).digest('hex');
     const script = join(box.base, 'workflow.ps1');
     const pointer = join(box.installDir, 'libexec/current.txt');
@@ -635,6 +656,11 @@ test('PowerShell installation skips current versions and keeps its pointer on do
       );
       const result = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-File', script], {
         encoding: 'utf8',
+        env: {
+          ...process.env,
+          SystemRoot: systemRoot,
+          PATH: `${box.fakeBin}${windows ? ';' : ':'}${process.env.PATH}`,
+        },
       });
       if (failure === 'download' || failure === 'checksum') {
         assert.notEqual(result.status, 0);

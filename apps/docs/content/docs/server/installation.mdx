@@ -35,7 +35,7 @@ irm https://remedia.twlite.dev/install.ps1 | iex
 
 `-InstallDir <path>` (or `REMEDIA_INSTALL_DIR`) selects another prefix; paths with spaces are supported.
 
-Windows x64 (MSVC) is the only supported standalone Windows target. The installer places command wrappers in `$HOME\.remedia\bin`, adds that directory to the user PATH (without admin rights), and updates the current PowerShell session PATH. It stores versioned executables separately, so a running server executable does not need to be overwritten. The PowerShell installer needs `tar` and access to GitHub, `micro.mamba.pm`, and conda-forge.
+Windows x64 (MSVC) is the only supported standalone Windows target. The installer places command wrappers in `$HOME\.remedia\bin`, adds that directory to the user PATH (without admin rights), and updates the current PowerShell session PATH. It stores versioned executables separately, so a running server executable does not need to be overwritten. The PowerShell installer needs `tar` and access to GitHub, `micro.mamba.pm`, and conda-forge. It prefers Windows’ built-in `System32\tar.exe` when present, so Git’s GNU tar earlier on PATH cannot misinterpret drive-letter archive paths; otherwise it uses `tar` from PATH.
 
 If the GitHub release archive returns an HTTP 504 in PowerShell, the installer also tries GitHub's release-asset API. If both download routes fail but the release downloads in your browser, download the **Windows x64 `.tar.gz` archive** from [GitHub Releases](https://github.com/twlite/remedia/releases), not the standalone `.exe`, and run:
 
