@@ -12,8 +12,10 @@ use clap::Parser;
 use remedia_server::{ServerConfig, ServerHandle};
 
 #[derive(Debug, Parser)]
-#[command(name = "remedia-server-runtime", version, hide = true)]
+#[command(name = "remedia-server-runtime", version = concat!(env!("REMEDIA_BUILD_VERSION"), " (commit ", env!("REMEDIA_BUILD_COMMIT"), ")"), hide = true)]
 struct RuntimeCli {
+    #[arg(long, hide = true)]
+    library_versions: bool,
     #[arg(long)]
     config: Option<PathBuf>,
     #[arg(long = "env-file", value_name = "PATH")]
@@ -28,7 +30,21 @@ struct RuntimeCli {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    match run(RuntimeCli::parse()).await {
+    let cli = match RuntimeCli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) if error.kind() == clap::error::ErrorKind::DisplayVersion => {
+            println!(
+                "remedia-server-runtime {} (commit {})",
+                env!("REMEDIA_BUILD_VERSION"),
+                env!("REMEDIA_BUILD_COMMIT")
+            );
+            print_library_versions();
+            return ExitCode::SUCCESS;
+        }
+        Err(error) => error.exit(),
+    };
+
+    match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("remedia-server: {error}");
@@ -38,6 +54,10 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: RuntimeCli) -> Result<(), Box<dyn std::error::Error>> {
+    if cli.library_versions {
+        print_library_versions();
+        return Ok(());
+    }
     let values = environment::load_files(&cli.env_files, &cli.optional_env_files)?;
     let config_path = cli
         .config
@@ -80,11 +100,22 @@ async fn run(cli: RuntimeCli) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn print_library_versions() {
+    for (name, packed) in remedia_core::ffmpeg_runtime_versions() {
+        println!(
+            "lib{name}: {}.{}.{}",
+            packed >> 16,
+            (packed >> 8) & 0xff,
+            packed & 0xff
+        );
+    }
+}
+
 async fn doctor(
     path: &Path,
     variables: &HashMap<String, String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Remedia server {}", env!("CARGO_PKG_VERSION"));
+    println!("Remedia server {}", env!("REMEDIA_BUILD_VERSION"));
     println!(
         "Platform: {} / {}",
         std::env::consts::OS,

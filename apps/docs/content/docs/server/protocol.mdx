@@ -312,3 +312,9 @@ and source revisions. Incoming `player.started` includes
 `player.completed` includes `continuation: { type: 'promoted', generation, entryId }`
 after the fade. The final source completes normally. Clients must reconcile the
 promotion without sending a second `player.play`.
+
+### Server build identity
+
+`node.info` and `node.stats` report `version` from the release metadata embedded at build time
+(including prerelease suffixes), and `commit` with the Git SHA or `unknown` for a source archive
+without supplied metadata. These match the [CLI build identity](/docs/server/cli#build-identity-and-updates).

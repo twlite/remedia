@@ -83,6 +83,9 @@ function Save-InstallDownload {
 
   # Write-Host works even when PowerShell's progress renderer is hidden by a host or preference.
   $interactive = -not [Console]::IsOutputRedirected
+  # Windows PowerShell 5.1 does not automatically load this framework assembly.
+  Add-Type -AssemblyName System.Net.Http
+  [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
   $client = [System.Net.Http.HttpClient]::new()
   $client.DefaultRequestHeaders.UserAgent.ParseAdd('remedia-installer')
   $client.DefaultRequestHeaders.Accept.ParseAdd('application/octet-stream')
@@ -292,6 +295,22 @@ if ($Version -eq 'latest') {
   $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/tags/$tag" -Headers $headers
 }
 Write-InstallStatus "Selected Remedia $($release.tag_name) for Windows x64."
+$currentFile = Join-Path $InstallDir 'libexec\current.txt'
+if (Test-Path -LiteralPath $currentFile) {
+  $currentTag = (Get-Content -LiteralPath $currentFile -Raw).Trim()
+  $currentDir = Join-Path (Join-Path $InstallDir 'libexec') $currentTag
+  $installedTag = $currentTag
+  $versionFile = Join-Path $currentDir 'version.txt'
+  if (Test-Path -LiteralPath $versionFile) {
+    $installedTag = (Get-Content -LiteralPath $versionFile -Raw).Trim()
+  }
+  if ($installedTag -ceq $release.tag_name -and
+      (Test-Path -LiteralPath (Join-Path $currentDir 'remedia-server.exe')) -and
+      (Test-Path -LiteralPath (Join-Path $currentDir 'remedia-server-runtime.exe'))) {
+    Write-InstallStatus "Remedia $($release.tag_name) is already current; nothing to download or replace."
+    return
+  }
+}
 $assetName = 'remedia-server-x86_64-pc-windows-msvc.tar.gz'
 $asset = $release.assets | Where-Object name -eq $assetName | Select-Object -First 1
 if (-not $asset -or $asset.digest -notmatch '^sha256:[a-fA-F0-9]{64}$') { throw "Missing release asset or checksum: $assetName" }
@@ -339,14 +358,14 @@ try {
   Write-InstallStatus 'Installing Remedia binaries and commands...'
   # Windows cannot replace a running executable. Place it in a versioned directory and
   # let the command wrapper discover the new version on the next invocation.
-  $versionDir = Join-Path $libexec $release.tag_name
+  $versionDir = Join-Path $libexec ($release.tag_name + '-' + [guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path $versionDir -Force | Out-Null
   Copy-Item $serverExe (Join-Path $versionDir 'remedia-server.exe') -Force
   Copy-Item $runtimeExe (Join-Path $versionDir 'remedia-server-runtime.exe') -Force
+  Set-Content -LiteralPath (Join-Path $versionDir 'version.txt') -Value $release.tag_name -NoNewline -Encoding Ascii
   foreach ($name in @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt')) {
     Copy-Item (Join-Path $tmp $name) (Join-Path $licenseDir $name) -Force
   }
-  Set-Content -LiteralPath (Join-Path $libexec 'current.txt') -Value $release.tag_name -NoNewline
   $wrapper = @'
 @echo off
 setlocal
@@ -359,6 +378,14 @@ exit /b %ERRORLEVEL%
   Set-Content -LiteralPath (Join-Path $binDir 'remedia.cmd') -Value $wrapper -Encoding Ascii
   Set-Content -LiteralPath (Join-Path $binDir 'remedia-server.cmd') -Value $wrapper -Encoding Ascii
   Add-RemediaToPath -Directory $binDir
+  $pointer = Join-Path $libexec 'current.txt'
+  $stagedPointer = Join-Path $libexec 'current.new'
+  Set-Content -LiteralPath $stagedPointer -Value (Split-Path $versionDir -Leaf) -NoNewline -Encoding Ascii
+  if (Test-Path -LiteralPath $pointer) {
+    [IO.File]::Replace($stagedPointer, $pointer, (Join-Path $versionDir 'previous.txt'))
+  } else {
+    [IO.File]::Move($stagedPointer, $pointer)
+  }
   Write-Host "Installed Remedia $($release.tag_name) to $InstallDir"
   Write-Host 'Run: remedia --version'
 } finally {

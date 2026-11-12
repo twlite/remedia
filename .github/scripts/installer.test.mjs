@@ -1,5 +1,7 @@
+import { createHash } from 'node:crypto';
+
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -10,6 +12,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -446,3 +449,213 @@ test(
     assert.match(`${result.stdout}${result.stderr}`, /Conflicting options: -FFmpegOnly/);
   },
 );
+
+/** A generated release archive and fake GitHub responses exercise real installer file operations. */
+function fakeRelease(box, version, { failDownload = false, badChecksum = false } = {}) {
+  const target =
+    process.platform === 'darwin'
+      ? `${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}-apple-darwin`
+      : `${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}-unknown-linux-gnu`;
+  const payload = join(box.base, 'release');
+  mkdirSync(payload, { recursive: true });
+  const binary = join(payload, `remedia-server-${target}`);
+  writeFileSync(binary, `#!/bin/sh\necho 'remedia-server ${version} (commit fixture)'\n`);
+  chmodSync(binary, 0o755);
+  writeFileSync(join(payload, `remedia-server-runtime-${target}`), 'runtime');
+  for (const name of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt'])
+    writeFileSync(join(payload, name), name);
+  const archive = join(box.base, 'release.tar.gz');
+  assert.equal(
+    spawnSync('tar', ['-czf', archive, '-C', payload, ...readdirSync(payload)]).status,
+    0,
+  );
+  const digest = badChecksum
+    ? '0'.repeat(64)
+    : createHash('sha256').update(readFileSync(archive)).digest('hex');
+  const metadata = join(box.base, 'release.json');
+  writeFileSync(
+    metadata,
+    JSON.stringify(
+      {
+        tag_name: `v${version}`,
+        assets: [{ name: `remedia-server-${target}.tar.gz`, digest: `sha256:${digest}` }],
+      },
+      null,
+      2,
+    ),
+  );
+  const curl = join(box.fakeBin, 'curl');
+  writeFileSync(
+    curl,
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> '${box.log}'\nout=''\nurl=''\nwhile [ $# -gt 0 ]; do\n case "$1" in -o) shift; out="$1" ;; https:*) url="$1" ;; esac\n shift\ndone\ncase "$url" in\n *api.github.com*) cp '${metadata}' "$out"; printf 200 ;;\n *) ${failDownload ? 'exit 22' : `cp '${archive}' "$out"`} ;;\nesac\n`,
+  );
+  chmodSync(curl, 0o755);
+}
+
+test(
+  'Bash installs, skips identical full versions, updates between dev and stable, and retains the active pair on failure',
+  { skip: !unixInstallerPlatform },
+  () => {
+    const box = sandbox();
+    try {
+      for (const version of ['0.1.0-dev.7', '0.1.0-dev.8', '0.1.0', '0.2.0-dev.1']) {
+        fakeRelease(box, version);
+        let result = runSh(box, ['--no-ffmpeg']);
+        assert.equal(result.status, 0, result.stderr);
+        const pointer = readFileSync(join(box.installDir, 'libexec/current.txt'), 'utf8');
+        const command = join(box.installDir, 'bin/remedia');
+        assert.match(
+          spawnSync(command, ['--version'], { encoding: 'utf8' }).stdout,
+          new RegExp(version.replaceAll('.', '\\.')),
+        );
+        writeFileSync(box.log, '');
+        result = runSh(box, []);
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /already current/);
+        assert.equal(calls(box).length, 1, 'only release metadata is requested');
+        assert.equal(readFileSync(join(box.installDir, 'libexec/current.txt'), 'utf8'), pointer);
+      }
+      const pointer = readFileSync(join(box.installDir, 'libexec/current.txt'), 'utf8');
+      for (const options of [{ failDownload: true }, { badChecksum: true }]) {
+        fakeRelease(box, '0.3.0', options);
+        const result = runSh(box, ['--no-ffmpeg']);
+        assert.notEqual(result.status, 0);
+        assert.equal(readFileSync(join(box.installDir, 'libexec/current.txt'), 'utf8'), pointer);
+      }
+      fakeRelease(box, '0.3.0');
+      installFakeMicromamba(box, { omit: ['avfilter'] });
+      assert.notEqual(runSh(box, []).status, 0);
+      assert.equal(readFileSync(join(box.installDir, 'libexec/current.txt'), 'utf8'), pointer);
+    } finally {
+      box.cleanup();
+    }
+  },
+);
+
+for (const shell of windows ? ['powershell.exe', 'pwsh'] : ['pwsh']) {
+  test(`${shell} downloader supports direct downloads and release-asset API fallback`, async (t) => {
+    if (spawnSync(shell, ['-NoProfile', '-Command', 'exit 0']).error)
+      return t.skip(`${shell} unavailable`);
+    const box = sandbox();
+    const requests = [];
+    const server = createServer((request, response) => {
+      requests.push([request.url, request.headers.accept]);
+      if (request.url === '/failed') {
+        response.writeHead(404).end();
+        return;
+      }
+      response.writeHead(200, { 'Content-Length': 7 });
+      response.end('archive');
+    });
+    await new Promise((finish) => server.listen(0, '127.0.0.1', finish));
+    try {
+      const source = readFileSync(installPs1, 'utf8');
+      const functions = source.slice(
+        source.indexOf('function Write-InstallStatus'),
+        source.indexOf('# Resolve micromamba.'),
+      );
+      const download = source.slice(
+        source.indexOf('    try {\n      Save-InstallDownload -Url $asset.browser_download_url'),
+        source.indexOf("  Write-InstallStatus 'Verifying server archive"),
+      );
+      const script = join(box.base, 'download.ps1');
+      const base = `http://127.0.0.1:${server.address().port}`;
+      // Execute the production fallback block, including the same HttpClient constructor.
+      writeFileSync(
+        script,
+        `$ErrorActionPreference = 'Stop'\n${functions}\n$archive = '${join(box.base, 'download')}'\nSave-InstallDownload -Url '${base}/direct' -Destination $archive -Label direct -Attempts 1\n$asset = @{ browser_download_url = '${base}/failed'; url = '${base}/asset'; size = 7 }\n${download.slice(0, download.lastIndexOf('\n  }'))}\nif ((Get-Content -Raw $archive) -ne 'archive') { throw 'Bad download' }\n`,
+      );
+      const result = await new Promise((finish) => {
+        const child = spawn(shell, ['-NoProfile', '-NonInteractive', '-File', script]);
+        let output = '';
+        child.stdout.on('data', (data) => {
+          output += data;
+        });
+        child.stderr.on('data', (data) => {
+          output += data;
+        });
+        child.on('close', (status) => finish({ status, output }));
+      });
+      assert.equal(result.status, 0, result.output);
+      assert.deepEqual(
+        requests.map(([url]) => url),
+        ['/direct', '/failed', '/asset'],
+      );
+      assert.ok(requests.every(([, accept]) => accept === 'application/octet-stream'));
+    } finally {
+      server.closeAllConnections();
+      await new Promise((finish) => server.close(finish));
+      box.cleanup();
+    }
+  });
+}
+
+test('PowerShell installation skips current versions and keeps its pointer on download or checksum failure', async (t) => {
+  if (spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).error)
+    return t.skip('pwsh unavailable');
+  const box = sandbox();
+  try {
+    const source = readFileSync(installPs1, 'utf8');
+    const functions = source.slice(
+      source.indexOf('function Write-InstallStatus'),
+      source.indexOf('# -FFmpegOnly never'),
+    );
+    const workflow = source.slice(
+      source.indexOf('Write-InstallStatus "Checking GitHub releases..."'),
+    );
+    const payload = join(box.base, 'payload');
+    mkdirSync(payload);
+    for (const file of [
+      'remedia-server-x86_64-pc-windows-msvc.exe',
+      'remedia-server-runtime-x86_64-pc-windows-msvc.exe',
+      'LICENSE',
+      'THIRD_PARTY_NOTICES.md',
+      'THIRD_PARTY_LICENSES.txt',
+    ])
+      writeFileSync(join(payload, file), file);
+    const archive = join(box.base, 'archive.tar.gz');
+    assert.equal(
+      spawnSync('tar', ['-czf', archive, '-C', payload, ...readdirSync(payload)]).status,
+      0,
+    );
+    const digest = createHash('sha256').update(readFileSync(archive)).digest('hex');
+    const script = join(box.base, 'workflow.ps1');
+    const pointer = join(box.installDir, 'libexec/current.txt');
+    for (const [version, failure] of [
+      ['0.1.0-dev.7', ''],
+      ['0.1.0-dev.7', 'skip'],
+      ['0.1.0', ''],
+      ['0.2.0', 'download'],
+      ['0.2.0', 'checksum'],
+    ]) {
+      const previous = existsSync(pointer) ? readFileSync(pointer, 'utf8') : null;
+      writeFileSync(
+        script,
+        `$ErrorActionPreference = 'Stop'\n$InstallDir = '${box.installDir}'\n$Version = 'latest'\n$repo = 'fixture'\n$NoFFmpeg = $true\n${functions}\nfunction Add-RemediaToPath {}\nfunction Invoke-RestMethod { return @{ tag_name = 'v${version}'; assets = @(@{ name = 'remedia-server-x86_64-pc-windows-msvc.tar.gz'; digest = 'sha256:${failure === 'checksum' ? '0'.repeat(64) : digest}'; browser_download_url = 'direct'; url = 'api'; size = 7 }) } }\nfunction Save-InstallDownload { param($Url, $Destination, $Label, $ExpectedBytes, $Attempts) ${failure === 'download' || failure === 'skip' ? "throw 'unexpected download'" : `Copy-Item -LiteralPath '${archive}' -Destination $Destination`} }\n${workflow}`,
+      );
+      const result = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-File', script], {
+        encoding: 'utf8',
+      });
+      if (failure === 'download' || failure === 'checksum') {
+        assert.notEqual(result.status, 0);
+        assert.equal(readFileSync(pointer, 'utf8'), previous);
+      } else {
+        assert.equal(result.status, 0, result.stdout + result.stderr);
+        if (failure === 'skip') assert.match(result.stdout, /already current/);
+        else {
+          assert.match(result.stdout, /Installed Remedia/);
+          assert.notEqual(readFileSync(pointer, 'utf8'), previous);
+          assert.equal(
+            readFileSync(
+              join(box.installDir, 'libexec', readFileSync(pointer, 'utf8'), 'version.txt'),
+              'utf8',
+            ),
+            `v${version}`,
+          );
+        }
+      }
+    }
+  } finally {
+    box.cleanup();
+  }
+});

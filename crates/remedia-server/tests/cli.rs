@@ -203,3 +203,70 @@ fn list_reads_live_server_stats_without_rpc_credentials() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn version_identity_survives_a_missing_native_runtime() {
+    let root = temp_root();
+    let output = cli(&root)
+        .env("REMEDIA_SERVER_RUNTIME", root.join("missing-runtime"))
+        .arg("--version")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.starts_with(&format!(
+        "remedia-server {} (commit {})",
+        env!("REMEDIA_BUILD_VERSION"),
+        env!("REMEDIA_BUILD_COMMIT")
+    )));
+    assert!(stdout.contains("FFmpeg libraries: unavailable"));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn update_reuses_installer_version_check_and_infers_custom_prefix() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = temp_root();
+    let libexec = root.join("libexec");
+    let version_dir = libexec.join("fixture");
+    let fake_bin = root.join("fake-bin");
+    fs::create_dir_all(&version_dir).unwrap();
+    fs::create_dir_all(&fake_bin).unwrap();
+    let executable = version_dir.join("remedia-server");
+    fs::copy(env!("CARGO_BIN_EXE_remedia-server"), &executable).unwrap();
+    fs::copy(&executable, version_dir.join("remedia-server-runtime")).unwrap();
+    fs::write(libexec.join("current.txt"), "fixture").unwrap();
+    let curl = fake_bin.join("curl");
+    fs::write(&curl, format!(
+        "#!/bin/sh\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) shift; out=\"$1\" ;; https:*) url=\"$1\" ;; esac; shift; done\ncase \"$url\" in */releases/latest) printf '{{\"tag_name\":\"v{}\"}}' > \"$out\"; printf 200 ;; *) exit 22 ;; esac\n",
+        env!("REMEDIA_BUILD_VERSION")
+    )).unwrap();
+    fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = Command::new(executable)
+        .args(["update", "--no-ffmpeg"])
+        .env_remove("REMEDIA_INSTALL_DIR")
+        .env_remove("REMEDIA_VERSION")
+        .env(
+            "PATH",
+            format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("already current"));
+    assert_eq!(
+        fs::read_to_string(libexec.join("current.txt")).unwrap(),
+        "fixture"
+    );
+    fs::remove_dir_all(root).unwrap();
+}

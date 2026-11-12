@@ -33,7 +33,8 @@ pub(crate) fn node_stats(server: &ServerInner) -> Value {
     let resources = remedia_resources::cached_snapshot();
     json!({
         "nodeId": server.node_id,
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": env!("REMEDIA_BUILD_VERSION"),
+        "commit": env!("REMEDIA_BUILD_COMMIT"),
         "protocolVersion": crate::protocol::PROTOCOL_VERSION,
         "uptimeMs": server.started_at.elapsed().as_millis(),
         "connections": {"active": server.active_connections.load(Ordering::Acquire), "maximum": server.config.limits.max_connections},

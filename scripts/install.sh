@@ -153,11 +153,24 @@ install_server() {
       *[!a-zA-Z0-9.+-]*|'') echo "Invalid version" >&2; exit 2 ;;
     esac
     tag="v${VERSION#v}"
+    curl -fsSL --retry 3 "https://api.github.com/repos/$REPO/releases/tags/$tag" -o "$tmp/release.json"
   fi
   asset="remedia-server-$target.tar.gz"
   runtime_asset="remedia-server-runtime-$target"
   url="https://github.com/$REPO/releases/download/$tag/$asset"
   log "Selected Remedia $tag for $target."
+  installed=""
+  installed_binary="$INSTALL_DIR/libexec/remedia-server"
+  if [ -f "$INSTALL_DIR/libexec/current.txt" ]; then
+    installed_binary="$INSTALL_DIR/libexec/$(cat "$INSTALL_DIR/libexec/current.txt")/remedia-server"
+  fi
+  if [ -x "$installed_binary" ]; then
+    installed="$("$installed_binary" --version 2>/dev/null | head -n 1 | awk '{print $2}')"
+  fi
+  if [ "$installed" = "${tag#v}" ] && [ -x "$(dirname "$installed_binary")/remedia-server-runtime" ]; then
+    log "Remedia $tag is already current; nothing to download or replace."
+    exit 0
+  fi
   log "Downloading server archive..."
   download_file "$url" "$tmp/server.tar.gz"
   log "Verifying server archive SHA-256..."
@@ -197,14 +210,12 @@ install_server() {
   log "Extracting server archive..."
   mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/libexec" "$INSTALL_DIR/licenses"
   tar -xzf "$tmp/server.tar.gz" -C "$tmp"
-  log "Installing Remedia binaries and commands..."
-  # Never truncate a currently running executable. Rename a fully written binary instead.
-  staged="$INSTALL_DIR/libexec/.remedia-server-$.new"
-  runtime_staged="$INSTALL_DIR/libexec/.remedia-server-runtime-$.new"
-  install -m 755 "$tmp/remedia-server-$target" "$staged"
-  install -m 755 "$tmp/$runtime_asset" "$runtime_staged"
-  mv -f "$runtime_staged" "$INSTALL_DIR/libexec/remedia-server-runtime"
-  mv -f "$staged" "$INSTALL_DIR/libexec/remedia-server"
+  # Stage both binaries and all licenses before publishing the new installation.
+  version_name="$tag-$(basename "$tmp")"
+  version_dir="$INSTALL_DIR/libexec/$version_name"
+  mkdir -p "$version_dir"
+  install -m 755 "$tmp/remedia-server-$target" "$version_dir/remedia-server"
+  install -m 755 "$tmp/$runtime_asset" "$version_dir/remedia-server-runtime"
   for item in LICENSE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.txt; do
     cp "$tmp/$item" "$INSTALL_DIR/licenses/$item"
   done
@@ -220,6 +231,10 @@ if [ -d "$root/ffmpeg9/lib" ]; then
     Darwin) export DYLD_LIBRARY_PATH="$root/ffmpeg9/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" ;;
     *) export LD_LIBRARY_PATH="$root/ffmpeg9/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
   esac
+fi
+if [ -f "$root/libexec/current.txt" ]; then
+  current="$(cat "$root/libexec/current.txt")"
+  exec "$root/libexec/$current/remedia-server" "$@"
 fi
 exec "$root/libexec/remedia-server" "$@"
 EOF
@@ -286,5 +301,8 @@ fi
 
 write_server_commands
 configure_shell_path
+# Atomic pointer replacement: failures above leave the previous pair active.
+printf '%s' "$version_name" > "$INSTALL_DIR/libexec/.current-$$.new"
+mv -f "$INSTALL_DIR/libexec/.current-$$.new" "$INSTALL_DIR/libexec/current.txt"
 log "Installed: $INSTALL_DIR/bin/remedia"
 log "Open a new terminal to use: remedia --version"

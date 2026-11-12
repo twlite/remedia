@@ -21,7 +21,7 @@ remedia-server plugins list
 remedia-server update
 ```
 
-The CLI starts the native runtime only for `serve` (including bare `remedia-server`) and `doctor`. On Unix, `serve` replaces the CLI process with the runtime so systemd, signals, and exit codes refer to the real server. On Windows, the CLI launches and waits for the runtime process.
+The CLI starts the native runtime for `serve` (including bare `remedia-server`) and `doctor`. On Unix, `serve` replaces the CLI process with the runtime so systemd, signals, and exit codes refer to the real server. On Windows, the CLI launches and waits for the runtime process.
 
 `doctor` can run when FFmpeg is missing: the CLI starts and reports the native loader failure with installation guidance, rather than preventing all commands from starting. It still exits nonzero when the required runtime libraries are unavailable.
 
@@ -280,3 +280,24 @@ remedia-server update --no-ffmpeg
 `upgrade` is an alias of `update`. It runs the verified platform installer embedded in the binary and defaults to the latest stable GitHub release, or the newest published prerelease if no stable release exists. Set `REMEDIA_VERSION` for an explicit release and `REMEDIA_INSTALL_DIR` for a custom install location.
 
 The installer does not restart running server processes or manage services. Restart your service manually when ready. See [installation](/docs/server/installation) for the supported targets, FFmpeg requirements, checksums, and path setup.
+
+## Build identity and updates
+
+`remedia --version` and `remedia-server --version` show the embedded release version and Git
+commit SHA. They also probe the separate native runtime for libavcodec, libavformat, libavutil,
+libavfilter and libswresample versions. If the runtime or FFmpeg is missing, the build identity
+still prints and the command succeeds with an unavailable-libraries message.
+The server uses the same embedded version in `node.info` and `node.stats`, with an additional
+`commit` field. Existing protocol fields are unchanged.
+
+Release CI embeds the selected release version and checkout SHA. Local Cargo builds use the
+nearest `v` release tag and current commit, falling back to the Cargo package version and
+`unknown` outside Git. Source archive builders can set `REMEDIA_BUILD_VERSION` and
+`REMEDIA_BUILD_COMMIT` at build time.
+
+`remedia update` runs the bundled platform installer. Both installers compare the full selected
+version, including prerelease identifiers, before downloading any artifacts. An identical version
+prints “already current” and succeeds without replacing files or provisioning FFmpeg. Different
+selected versions are installed, including dev-to-stable transitions and explicitly selected
+older versions. `latest` selects GitHub's stable release, falling back to a prerelease only when
+no stable release exists. Use the installer's FFmpeg-only mode to repair dependencies separately.

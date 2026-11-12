@@ -38,7 +38,8 @@ pub(crate) async fn execute(
             decode_params::<EmptyParams>(request.params)?;
             Ok(json!({
                 "nodeId": server.node_id,
-                "version": env!("CARGO_PKG_VERSION"),
+                "version": env!("REMEDIA_BUILD_VERSION"),
+                "commit": env!("REMEDIA_BUILD_COMMIT"),
                 "protocolVersion": crate::protocol::PROTOCOL_VERSION,
                 "capabilities": {
                     "pluginOperations": server.plugin_hosts.capability(),

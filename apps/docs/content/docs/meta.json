@@ -22,6 +22,7 @@
     "server/configuration",
     "server/cli",
     "server/deployment",
+    "server/docker",
     "---Plugins---",
     "plugins/overview",
     "server/plugins",

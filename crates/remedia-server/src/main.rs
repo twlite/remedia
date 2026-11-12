@@ -15,7 +15,7 @@ use clap::{Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(
     name = "remedia-server",
-    version,
+    version = env!("REMEDIA_BUILD_VERSION"),
     about = "Remedia standalone Rust audio server",
     long_about = None
 )]
@@ -69,7 +69,14 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) if error.kind() == clap::error::ErrorKind::DisplayVersion => {
+            print_version();
+            return ExitCode::SUCCESS;
+        }
+        Err(error) => error.exit(),
+    };
 
     if let Some(Commands::Plugins(command)) = &cli.command {
         return run_plugins(&cli, command).await;
@@ -156,6 +163,28 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+fn print_version() {
+    println!(
+        "remedia-server {} (commit {})",
+        env!("REMEDIA_BUILD_VERSION"),
+        env!("REMEDIA_BUILD_COMMIT")
+    );
+
+    // Probe in a separate process: a missing native library must never stop the CLI.
+    let output = native_executable().ok().and_then(|runtime| {
+        Command::new(runtime)
+            .arg("--library-versions")
+            .output()
+            .ok()
+    });
+    match output {
+        Some(output) if output.status.success() => {
+            print!("{}", String::from_utf8_lossy(&output.stdout))
+        }
+        _ => println!("FFmpeg libraries: unavailable (native runtime could not be loaded)"),
+    }
+}
+
 fn native_executable() -> io::Result<PathBuf> {
     if let Some(override_path) = std::env::var_os("REMEDIA_SERVER_RUNTIME") {
         let path = PathBuf::from(override_path);
@@ -212,7 +241,7 @@ fn launch_runtime(cli: &Cli, doctor: bool) -> Result<(), Box<dyn std::error::Err
     }
     if doctor {
         command.arg("--doctor");
-        println!("Remedia CLI {}", env!("CARGO_PKG_VERSION"));
+        println!("Remedia CLI {}", env!("REMEDIA_BUILD_VERSION"));
         println!(
             "Platform: {} / {}",
             std::env::consts::OS,
@@ -314,6 +343,22 @@ fn update(no_ffmpeg: bool) -> Result<(), Box<dyn std::error::Error>> {
         }
         command
     };
+    // Updates target this installation even when the original installer used a custom prefix.
+    if std::env::var_os("REMEDIA_INSTALL_DIR").is_none()
+        && let Ok(executable) = std::env::current_exe()
+        && let Some(parent) = executable.parent()
+    {
+        let libexec = if parent.file_name().is_some_and(|name| name == "libexec") {
+            Some(parent)
+        } else {
+            parent
+                .parent()
+                .filter(|path| path.file_name().is_some_and(|name| name == "libexec"))
+        };
+        if let Some(prefix) = libexec.and_then(Path::parent) {
+            process.env("REMEDIA_INSTALL_DIR", prefix);
+        }
+    }
     let status = process.status();
     let _ = fs::remove_file(script_path);
     if !status?.success() {

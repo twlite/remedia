@@ -1,290 +1,146 @@
 ---
 title: Run the server in Docker
-description: Run the published standalone Remedia server with Docker Compose, persistent configuration, TLS, plugin hosts, and updates.
+description: Deploy the published ghcr.io/twlite/remedia image using Docker or Docker Compose.
 ---
 
-This guide runs the **standalone `remedia-server`** in a container. It is a deployment of the
-[remote server](/docs/server/overview); it is not a way to run `@remedia/node`, and it does not
-include a [plugin host](/docs/server/plugins).
+The published `ghcr.io/twlite/remedia` image includes the standalone server and FFmpeg 9
+shared libraries for Linux AMD64 and ARM64. Docker selects your architecture automatically.
+You only need Docker and a configuration file; no repository checkout or build tools are required.
 
-| You want                                    | Use                                                                                                    |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Audio on a separate machine, in a container | This guide                                                                                             |
-| Audio inside your Node.js bot               | [`@remedia/node`](/docs/getting-started/embedded): your own application image installs FFmpeg 9 itself |
-| A service that resolves audio or data       | A separate `@remedia/plugin-host` deployment, [registered](#manage-plugin-hosts) with this server      |
+## Choose a tag
 
-The files live in [`docker/`](https://github.com/twlite/remedia/tree/main/docker): a `Dockerfile`,
-`compose.yaml`, an optional `compose.media.yaml`, `.env.example` and an example configuration.
+- `dev` follows the newest prerelease.
+- `latest` follows the newest stable release. It is unavailable until a stable release is published.
+- Exact release tags such as `0.1.0-dev.7` (without `v`) pin a version. Use these for reproducible deployments.
 
-## What the image contains
+## Create the configuration
 
-- A Debian 13 (trixie) slim base. The release binaries are built against glibc 2.39 or newer, so an older glibc
-  (such as Debian 12) and Alpine/musl are not supported.
-- `remedia-server` (the FFmpeg-independent CLI, also available as `remedia`) and
-  `remedia-server-runtime`, from the SHA-256-verified release archive for `linux/amd64` or `linux/arm64`.
-- FFmpeg 9.0.2 shared libraries and their dependencies in `/opt/remedia/ffmpeg9`, with
-  `LD_LIBRARY_PATH` set. No `ffmpeg` executable, Node.js, pnpm or Rust toolchain.
-- The Remedia licence and third-party notices in `/opt/remedia/licenses`.
-- A non-root `remedia` account (UID/GID `10001`).
+Create a `config` directory and save this as `config/remedia.config.json`:
 
-The image is built by running the repository's [installer](/docs/server/installation) inside a build
-stage, so the release lookup, checksum verification and FFmpeg ABI checks are the same code as a
-normal installation. Nothing is downloaded when a container starts.
+```json
+{
+  "bind": { "host": "0.0.0.0", "port": 8787 },
+  "users": [{ "username": "media-bot", "password": "env('REMEDIA_RPC_PASSWORD')" }],
+  "media": {
+    "allowedFileRoots": ["/media"],
+    "allowedUrlHosts": ["media.example.com"],
+    "allowHttp": false,
+    "allowHttps": true,
+    "blockPrivateNetworks": true
+  }
+}
+```
 
-## Image and tags
+Replace `media.example.com` with your media provider's hostname. An empty host list denies URL
+playback. See [configuration](/docs/server/configuration) for other options and limits.
 
-Each release publishes one multi-platform image, `ghcr.io/twlite/remedia`, after the GitHub release is
-public. Docker selects `linux/amd64` or `linux/arm64` automatically.
+Create `.env` beside the directory, using a long random password (for example, `openssl rand -hex 32`):
 
-| Release        | Tags                                     |
-| -------------- | ---------------------------------------- |
-| `v0.1.0-dev.6` | `0.1.0-dev.6`, `dev` (newest prerelease) |
-| `v0.1.0`       | `0.1.0`, `latest` (newest stable)        |
+```dotenv
+REMEDIA_RPC_PASSWORD=replace-with-your-random-password
+```
 
-Version tags are immutable. `dev` and `latest` move, `latest` never points at a prerelease, and an
-older release never moves them backwards. Pin a version tag in production.
+The image runs as UID/GID `10001`. On Linux, grant that user access with
+`sudo chown -R 10001:10001 config && sudo chmod 750 config`. Docker Desktop usually handles
+bind-mount permissions automatically. Keep `.env` private and out of version control.
 
-## Prerequisites
+## Run with Docker
 
-- Docker Engine and Docker Compose v2 (checked with Docker 20.10 and Compose 2.15).
-- Network access to `ghcr.io`, and a published image for your tag (`0.1.0-dev.6` or newer for the `remedia plugins` commands).
-
-## 1. Get the files
+Run these commands from the directory containing `config` and `.env`:
 
 ```sh
-git clone https://github.com/twlite/remedia.git
-cd remedia/docker
-cp .env.example .env
-chmod 600 .env
+docker pull ghcr.io/twlite/remedia:dev
+docker run -d --name remedia --restart unless-stopped \
+  --env-file .env \
+  -p 127.0.0.1:8787:8787 \
+  -v "$PWD/config:/config" \
+  ghcr.io/twlite/remedia:dev
+docker logs -f remedia
 ```
 
-`REMEDIA_VERSION` in `.env` is the image tag to run (without the leading `v`). Compose pulls
-`ghcr.io/twlite/remedia:$REMEDIA_VERSION` when you start the service.
+The default command is `remedia serve --config /config/remedia.config.json`.
+The directory mount persists configuration and permits atomic configuration edits by
+[plugin commands](/docs/server/cli#manage-plugin-hosts).
 
-<Callout title="Build the image yourself">
-  To build from your checkout instead of pulling, for example while changing the Dockerfile, add the
-  override file: `docker compose -f compose.yaml -f compose.build.yaml up -d --build`. The build
-  downloads the published release and FFmpeg, and `latest` is rejected so a build is reproducible.
-  The installer asks the GitHub API for the archive's SHA-256 digest; anonymous requests are limited
-  to 60 per hour per IP, so a shared address can fail with `HTTP 403`. Put a GitHub token in a file
-  and set `REMEDIA_GITHUB_TOKEN_FILE=/path/to/token` in `.env`; it is mounted as a BuildKit secret,
-  sent only to `api.github.com`, and not stored in the image.
-</Callout>
+## Run with Docker Compose
 
-## 2. Create the configuration
-
-```sh
-cp config/remedia.config.example.json config/remedia.config.json
-```
-
-The example binds `0.0.0.0:8787` **inside the container** (the published port decides who can reach
-it), defines the account `media-bot`, keeps conservative connection and player limits, logs to the
-console, registers no plugin hosts and allows no remote media:
-
-- `media.allowedUrlHosts` is empty, so URL playback is denied. Add the hosts your media comes from,
-  for example `["media.example.com"]`; this must match your own providers. Keep `blockPrivateNetworks` on.
-- `media.allowedFileRoots` is `["/media"]`, an empty directory unless you mount one
-  ([local files](#local-media-files)).
-
-The field names and limits are those of the [server configuration](/docs/server/configuration) and its JSON Schema.
-
-## 3. Set credentials
-
-```sh
-openssl rand -hex 32
-```
-
-Put the output in `.env` as `REMEDIA_RPC_PASSWORD=<value>`, replacing the placeholder. The configuration refers to it as
-`env('REMEDIA_RPC_PASSWORD')`, and Compose passes it to the container through `env_file`. Compose's
-own `.env` interpolation does not reach the container, which is why `compose.yaml` uses `env_file`.
-Every variable in `.env` becomes an environment variable of the container, so plugin-host tokens go there too.
-Do not commit `.env` (it is gitignored), and avoid quotes and `$` in values; hexadecimal secrets are safe.
-
-## 4. Start
-
-```sh
-docker compose up -d
-docker compose ps
-docker compose logs -f remedia
-```
-
-The container runs `remedia serve --config /config/remedia.config.json` as PID 1 (the CLI replaces
-itself with the runtime, so signals reach the server) and logs to stdout/stderr.
-`docker compose stop` sends `SIGTERM` for a graceful shutdown, with up to 30 seconds before `SIGKILL`.
-`--shutdown-on-stdin-close` is deliberately not used because container stdin is usually closed.
-
-### Configuration persistence and permissions
-
-`./config` is bind-mounted as a **directory**, not a file. `remedia plugins` replaces the configuration
-atomically with a temporary file and a rename in the same directory, which a single-file mount cannot
-support. Changes survive restarts, recreation, rebuilds and upgrades because they live on the host.
-
-The container user must be able to create files in that directory:
-
-- **Docker Desktop (macOS/Windows):** nothing to do.
-- **Linux, default user:** `sudo chown 10001:10001 config && chmod 750 config`.
-- **Linux, your own account:** set `REMEDIA_UID=$(id -u)` and `REMEDIA_GID=$(id -g)` in `.env`.
-
-Grant no broader access than that: the configuration contains no secrets (only `env('…')` references),
-but it controls what the server may play.
-
-### Hardening in the Compose file
-
-The service drops all capabilities, sets `no-new-privileges`, uses a read-only root filesystem with
-`tmpfs` for `/tmp` and the home directory, runs unprivileged and publishes one port. It needs no
-`privileged`, host networking or Docker socket.
-
-## Connect a client
-
-Remedia opens Discord voice connections itself. The container needs **outbound** access to the media it
-plays and to Discord's voice servers (HTTPS and UDP); no inbound UDP port is published or needed.
-If you filter container egress, allow UDP to Discord's voice endpoints.
-
-**A bot in the same Compose project or network** connects directly to the service name:
-
-```ts
-{ type: 'remote', id: 'media-1', url: 'remedia://remedia:8787',
-  auth: { username: 'media-bot', password: process.env.REMEDIA_RPC_PASSWORD! } }
-```
-
-**A bot on the Docker host** can use `remedia://127.0.0.1:8787`, because the default port mapping is
-`127.0.0.1:8787:8787`.
-
-**A bot on another machine** must use TLS:
-
-```ts
-{ type: 'remote', id: 'media-1', url: 'remedias://media.example.com',
-  auth: { username: 'media-bot', password: process.env.REMEDIA_RPC_PASSWORD! } }
-```
-
-### TLS reverse proxy
-
-Remedia does not terminate TLS, and the Compose file publishes the plain listener to the host's
-loopback interface only, for a reverse proxy on the same host. Use the Nginx location from
-[Deployment](/docs/server/deployment#tls-reverse-proxy) with `proxy_pass http://127.0.0.1:8787/v1/ws;`.
-Do not change the mapping to `0.0.0.0` or open the port in a firewall: that exposes an unencrypted
-service. To change the host port, set `REMEDIA_PORT` in `.env`.
-
-## Local media files
-
-```sh
-echo 'REMEDIA_MEDIA_DIR=/srv/media' >> .env
-docker compose -f compose.yaml -f compose.media.yaml up -d
-```
-
-The directory is mounted **read-only** at `/media`. Clients name files by their path in the container,
-such as `/media/song.mp3`. Only that directory is visible; the host filesystem is not.
-
-## Manage plugin hosts
-
-The image's entrypoint is `remedia`, so the [plugin commands](/docs/server/cli#manage-plugin-hosts)
-run as one-off containers against the same mounted configuration:
-
-```sh
-docker compose run --rm remedia plugins list
-docker compose run --rm remedia plugins install https://plugins.example.com
-docker compose run --rm remedia plugins disable example-host
-docker compose run --rm remedia plugins enable example-host
-docker compose run --rm remedia plugins uninstall example-host
-docker compose restart remedia
-```
-
-The working directory is `/config`, so the default `./remedia.config.json` is the mounted file. Pass
-`--config` to use another path. The commands edit the file only; **restart the server** to apply changes.
-
-- **Authenticated hosts.** Add the token to `.env` (for example `REMEDIA_PLUGIN_TOKEN=…`) and install with
-  `--token-env REMEDIA_PLUGIN_TOKEN`. The file stores `env('REMEDIA_PLUGIN_TOKEN')`, never the token.
-  Recreate the service after changing `.env` so the container sees the new value.
-- **Choosing operations.** A one-off `docker compose run` has a terminal, so `install` prompts for operations.
-  For scripts and CI add `--operation PLUGIN/OPERATION` (repeatable) or `--all-operations`, plus `--yes`
-  (or `-T` on `docker compose run`, which disables the pseudo-terminal).
-- **Reachability.** `localhost` inside the container is the container itself. A hostname that works on the
-  Docker host does not necessarily work in the container. Put the plugin host on the same Compose network and use its service name:
+Alternatively, save this as `compose.yaml` beside `.env`:
 
 ```yaml
 services:
-  plugin-host:
-    image: my-plugin-host # your @remedia/plugin-host deployment
+  remedia:
+    image: ghcr.io/twlite/remedia:dev
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file: .env
+    ports:
+      - '127.0.0.1:8787:8787'
+    volumes:
+      - ./config:/config
 ```
 
 ```sh
-docker compose run --rm remedia plugins install http://plugin-host:3000 \
-  --allow-insecure-http --allow-private-network
+docker compose pull
+docker compose up -d
+docker compose logs -f remedia
 ```
 
-`--allow-insecure-http` permits cleartext HTTP and `--allow-private-network` permits private-range
-addresses, which a Compose service name resolves to. Both are written to that host's entry and
-weaken protections for it: traffic, including the bearer token, is unencrypted and the host is trusted
-with access to your internal network. Use them only for a host on a network you control, and prefer an HTTPS
-endpoint. Neither flag is ever applied implicitly.
+A bot on the host connects to `remedia://127.0.0.1:8787`; a bot on the same Compose network
+connects to `remedia://remedia:8787`, using the configured account. For connections from
+another machine, use a [TLS reverse proxy](/docs/server/deployment#tls-reverse-proxy).
+The server binds all container interfaces, while the host port is restricted to loopback.
+Change the first `8787` in the port mapping to choose another host port.
 
-## Logs and diagnostics
+Discord voice needs outbound HTTPS and UDP. No inbound UDP port is required.
+
+## Volumes and diagnostics
+
+To play local files, add `-v /srv/media:/media:ro` to `docker run`, or add
+`- /srv/media:/media:ro` under Compose's `volumes`. Clients use container paths such as
+`/media/song.mp3`; a remote path always refers to the server's filesystem.
 
 ```sh
-docker compose logs -f remedia          # stdout/stderr
-docker compose run --rm remedia doctor  # FFmpeg ABI versions, configuration, plugin hosts
-docker compose exec remedia remedia --list --json   # live statistics of the running server
-docker compose run --rm remedia --version
+docker exec remedia remedia --version
+docker exec remedia remedia doctor
+docker exec remedia remedia --list --json
 ```
 
-Set `REMEDIA_LOG` and `REMEDIA_LOG_FORMAT` in `.env` ([observability](/docs/observability/configuration)).
-`doctor` also contacts configured plugin hosts, so run it on demand rather than as a health check.
+The image health check queries the local server status. It does not verify external media,
+Discord connectivity or published-port reachability. Logs go to stdout/stderr.
 
-### Health check
-
-The image defines a health check that runs `remedia --list --json` every 30 seconds. The server
-registers a private loopback status endpoint after its WebSocket listener is bound, and `--list`
-reports only records which answer an authenticated query from a live process. The container is
-healthy when the server answers, which is a bounded, FFmpeg-free local check.
-
-It does not prove that Discord, a plugin host or the published port is reachable. It also needs the
-runtime registry (`~/.remedia/run`, a `tmpfs` in the Compose file); a server which could not create it
-reports unhealthy even though it is serving. Docker marks a container unhealthy but does not restart it.
-
-### CPU and memory
-
-Process figures in `node.stats` and `--list` describe the Remedia process only. RSS, USS-style
-private memory and PSS are read from `/proc/self` and are **not** the container's memory usage (which
-also includes page cache and other cgroup accounting) and **not** your memory limit. For those use
-`docker stats` or the cgroup files. `cpu.processPercent` is the process's CPU time, where 100% is one
-logical CPU; `loadAverage1m` is the host's load average and `availableParallelism` is Rust's estimate,
-which respects cgroup CPU quotas on Linux.
-
-To set limits, uncomment `deploy.resources.limits` in `compose.yaml`. The Compose file ships no
-recommended values; measure your own workload. Limits need no extra privileges.
-
-## Update the image
+Plugin commands edit the mounted configuration; restart afterward:
 
 ```sh
-# Set REMEDIA_VERSION in .env to the release you want, then:
+docker compose run --rm remedia plugins list
+docker compose restart remedia
+```
+
+## Updates
+
+For Compose, change the image tag when pinning a release, then run:
+
+```sh
 docker compose pull
 docker compose up -d
 ```
 
-Recreating the container restarts the server, which **ends active playback sessions**; clients must
-reconnect and restore their own state. Configuration persists in `./config`. Do not run `remedia update`
-inside a container: an image is immutable, and updates happen by pulling a new one. With the local-build
-override, run `docker compose -f compose.yaml -f compose.build.yaml build` instead of `pull`.
+For `docker run`, pull the desired tag, run `docker stop remedia && docker rm remedia`, and
+repeat the run command with that tag and the same mounts and environment file.
+Configuration persists on the host. Recreating the container ends active playback sessions;
+clients must reconnect and restore state. Update the image instead of running `remedia update`
+inside the container.
 
-## Troubleshooting
+## Advanced: build the image yourself
 
-**`manifest unknown` when pulling.** No image exists for that tag. Check `REMEDIA_VERSION` against the release list, or
-build locally with the override above.
+The optional repository Dockerfile packages a published release; it does not compile Rust:
 
-**`HTTP 403` or a checksum error during a local build.** GitHub's anonymous rate limit or a missing release asset.
-See the callout above, and check that the release in `REMEDIA_VERSION` is published.
+```sh
+git clone https://github.com/twlite/remedia.git
+cd remedia
+docker build -f docker/Dockerfile --build-arg REMEDIA_VERSION=0.1.0-dev.7 -t remedia-local .
+```
 
-**`remedia doctor` reports a missing or incompatible FFmpeg library.** The image sets
-`LD_LIBRARY_PATH=/opt/remedia/ffmpeg9/lib`. If you override the container environment or entrypoint, keep it.
-`docker compose run --rm --entrypoint ldd remedia /opt/remedia/libexec/remedia-server-runtime` lists unresolved libraries.
-
-**Permission denied writing the configuration.** The container user cannot write `./config`; see the
-[permissions](#configuration-persistence-and-permissions) section.
-
-**`missing environment variable` at start.** The variable is not in `.env`, or the container was not recreated after editing it.
-
-**A client cannot connect.** Check `docker compose ps` for the published port. Containers on the same network use
-`remedia:8787`; the host uses `127.0.0.1:8787`; remote clients need the TLS proxy. HTTP `401` means wrong credentials.
-
-**Plugin host unreachable from the container.** Use a hostname resolvable on the Compose network, not `localhost`;
-see [Manage plugin hosts](#manage-plugin-hosts).
+Use a fixed published version. For compiling the binaries from source, see
+[installation](/docs/server/installation). The repository's `docker/compose.build.yaml`
+provides an optional local image build override. GitHub API rate limits can affect builds;
+see `docker/README.md` for the supported BuildKit token secret.

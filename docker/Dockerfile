@@ -101,7 +101,12 @@ COPY --from=installer /opt/remedia/licenses /opt/remedia/licenses
 
 # `remedia` is the documented command; `remedia-server` is the same lightweight CLI. The
 # CLI finds remedia-server-runtime next to its real (symlink-resolved) path.
-RUN ln -s /opt/remedia/libexec/remedia-server /usr/local/bin/remedia \
+RUN if [ -f /opt/remedia/libexec/current.txt ]; then \
+      current="$(cat /opt/remedia/libexec/current.txt)"; \
+      ln -s "$current/remedia-server" /opt/remedia/libexec/remedia-server; \
+      ln -s "$current/remedia-server-runtime" /opt/remedia/libexec/remedia-server-runtime; \
+    fi \
+    && ln -s /opt/remedia/libexec/remedia-server /usr/local/bin/remedia \
     && ln -s /opt/remedia/libexec/remedia-server /usr/local/bin/remedia-server \
     && ln -s /opt/remedia/licenses /usr/share/doc/remedia-licenses
 

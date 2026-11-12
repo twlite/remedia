@@ -112,11 +112,11 @@ remedia update
 remedia upgrade
 ```
 
-Both commands reinstall the latest stable release, or the newest published prerelease if no stable release exists, using the installer embedded in your currently installed server. An update restarts neither the running process nor a service manager. Restart your server after updating. Active playback sessions do not survive the restart.
+Both commands select the latest stable release, or the newest published prerelease if no stable release exists, using the installer embedded in your currently installed server. If the full installed version matches, they print “already current” and exit successfully before downloading artifacts or changing the installation. Otherwise, they verify the archive checksum and stage the new binary pair before switching the active version. Download, verification or staging failures leave the previous pair active. An update restarts neither the running process nor a service manager. Restart your server after updating. Active playback sessions do not survive the restart.
 
 If you manage FFmpeg independently, use `remedia update --no-ffmpeg`. `REMEDIA_INSTALL_DIR` and `REMEDIA_VERSION` can be supplied to the installers to select another install directory or release tag. Set `REMEDIA_VERSION` before running `remedia update` to select an explicit release.
 
-On Windows, use the `remedia.cmd` wrapper for updates. A directly launched versioned executable cannot change its own file, and a running instance will continue using its previous binary until restarted.
+Installers keep versioned binary pairs and switch them through an atomic pointer file. A running instance continues using its previous binary until restarted. Updates infer the installation prefix from the executable unless `REMEDIA_INSTALL_DIR` is set. Windows supports Windows PowerShell 5.1 and PowerShell 7+, including direct GitHub downloads and release-asset API fallback.
 
 ## Security and troubleshooting
 
