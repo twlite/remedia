@@ -3,13 +3,12 @@
 mod discovery;
 mod environment;
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::Parser;
-use remedia_server::{ServerConfig, ServerHandle};
+use remedia_server::{ConfigError, ServerConfig, ServerHandle};
 
 #[derive(Debug, Parser)]
 #[command(name = "remedia-server-runtime", version = concat!(env!("REMEDIA_BUILD_VERSION"), " (commit ", env!("REMEDIA_BUILD_COMMIT"), ")"), hide = true)]
@@ -44,6 +43,10 @@ async fn main() -> ExitCode {
         Err(error) => error.exit(),
     };
 
+    if cli.doctor {
+        return doctor(&cli).await;
+    }
+
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -62,9 +65,6 @@ async fn run(cli: RuntimeCli) -> Result<(), Box<dyn std::error::Error>> {
     let config_path = cli
         .config
         .unwrap_or(std::env::current_dir()?.join("remedia.config.json"));
-    if cli.doctor {
-        return doctor(&config_path, &values).await;
-    }
     let config = ServerConfig::from_file_with_env(&config_path, &values)?;
     let server = Arc::new(ServerHandle::start(config).await?);
     let instance = match discovery::register(Arc::clone(&server)).await {
@@ -111,17 +111,21 @@ fn print_library_versions() {
     }
 }
 
-async fn doctor(
-    path: &Path,
-    variables: &HashMap<String, String>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Remedia server {}", env!("REMEDIA_BUILD_VERSION"));
+async fn doctor(cli: &RuntimeCli) -> ExitCode {
+    println!(
+        "Remedia server {} (commit {})",
+        env!("REMEDIA_BUILD_VERSION"),
+        env!("REMEDIA_BUILD_COMMIT")
+    );
+    println!("Runtime: PASS (native libraries loaded)");
     println!(
         "Platform: {} / {}",
         std::env::consts::OS,
         std::env::consts::ARCH
     );
-    println!("Executable: {}", std::env::current_exe()?.display());
+    if let Ok(executable) = std::env::current_exe() {
+        println!("Executable: {}", executable.display());
+    }
     println!("FFmpeg libraries loaded by the native runtime:");
     let expected = [63, 63, 61, 12, 7];
     let mut abi_ok = true;
@@ -147,41 +151,110 @@ async fn doctor(
             println!("{key}: set");
         }
     }
-    println!(
-        "Environment file variables available for config interpolation: {}",
-        variables.len()
-    );
     if !abi_ok {
-        return Err("FFmpeg runtime ABI versions do not match the required FFmpeg 9 majors".into());
+        eprintln!(
+            "FFmpeg: FAIL (loaded library ABI majors do not match FFmpeg 9). Select matching libraries through your OS loader search paths."
+        );
     }
-    match ServerConfig::from_file_with_env(path, variables) {
-        Ok(config) => {
-            println!("Config: {} (valid)", path.display());
-            println!("Local discovery: ~/.remedia/run (authenticated loopback)");
-            report_plugin_hosts(&config).await;
-            Ok(())
+
+    let variables = environment::load_files(&cli.env_files, &cli.optional_env_files);
+    match &variables {
+        Ok(values) => println!(
+            "Environment: PASS ({} file variables available for configuration)",
+            values.len()
+        ),
+        Err(error) => eprintln!(
+            "Environment: FAIL ({error}). Correct the --env-file path or contents; use --optional-env-file for files that may be absent."
+        ),
+    }
+
+    let mut config_status = "SKIPPED";
+    let mut plugin_status = "SKIPPED";
+    let config_path = cli
+        .config
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(|| std::env::current_dir().map(|dir| dir.join("remedia.config.json")));
+    match (config_path, &variables) {
+        (Err(error), _) => {
+            config_status = "FAIL";
+            eprintln!(
+                "Configuration: FAIL (cannot resolve default configuration path: {error}). Pass --config PATH."
+            );
         }
-        Err(error) => {
-            eprintln!("Config: {} (invalid: {error})", path.display());
-            Err("doctor found configuration errors".into())
-        }
+        (Ok(path), Ok(values)) => match ServerConfig::from_file_with_env(&path, values) {
+            Ok(config) => {
+                config_status = "PASS";
+                println!("Configuration: PASS ({} is valid)", path.display());
+                println!("Local discovery: ~/.remedia/run (authenticated loopback)");
+                plugin_status = if report_plugin_hosts(&config).await {
+                    "PASS"
+                } else {
+                    "WARN"
+                };
+            }
+            Err(ConfigError::Io { source, .. })
+                if cli.config.is_none() && source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                println!(
+                    "Configuration: SKIPPED (default {} is absent; not required for native checks). Use remedia --generate-config-file to create it before serving.",
+                    path.display()
+                );
+            }
+            Err(error) => {
+                config_status = "FAIL";
+                eprintln!("Configuration: FAIL ({error})");
+                match error {
+                    ConfigError::Io { source, .. }
+                        if source.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        eprintln!(
+                            "Create the requested file with remedia --generate-config-file \"{}\", or correct --config PATH.",
+                            path.display()
+                        )
+                    }
+                    ConfigError::MissingEnvironment { variable, .. } => eprintln!(
+                        "Set {variable} in the process environment or a file supplied with --env-file."
+                    ),
+                    _ => eprintln!(
+                        "Correct the configuration at {} using the error above, then run doctor again.",
+                        path.display()
+                    ),
+                }
+            }
+        },
+        (Ok(_), Err(_)) => println!("Configuration: SKIPPED (environment file loading failed)"),
+    }
+
+    println!(
+        "Summary: runtime PASS; FFmpeg {}; environment {}; configuration {config_status}; plugin hosts {plugin_status}",
+        if abi_ok { "PASS" } else { "FAIL" },
+        if variables.is_ok() { "PASS" } else { "FAIL" }
+    );
+
+    if abi_ok && variables.is_ok() && config_status != "FAIL" {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }
 
 /// Probe each configured plugin host. Unreachable hosts are reported, not fatal: a host may
 /// legitimately start after this node, and its health is also available from `node.stats`.
-async fn report_plugin_hosts(config: &ServerConfig) {
+async fn report_plugin_hosts(config: &ServerConfig) -> bool {
     let diagnostics = remedia_server::diagnose_plugin_hosts(config).await;
 
     if diagnostics.is_empty() {
         println!("Plugin hosts: none configured");
 
-        return;
+        return true;
     }
 
     println!("Plugin hosts:");
+    let mut healthy = true;
 
     for host in diagnostics {
+        healthy &= matches!(host.state, "healthy" | "disabled");
         println!(
             "  {:<24} {:<12} {} ({} operations advertised)",
             host.id, host.state, host.origin, host.advertised_operations
@@ -195,6 +268,8 @@ async fn report_plugin_hosts(config: &ServerConfig) {
             println!("    allowed operation not advertised: {missing}");
         }
     }
+
+    healthy
 }
 
 async fn shutdown_signal() -> std::io::Result<()> {

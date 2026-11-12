@@ -270,3 +270,150 @@ fn update_reuses_installer_version_check_and_infers_custom_prefix() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn doctor_keeps_ffmpeg_success_separate_from_configuration_results() {
+    let cases = [
+        (None, false, 0, "SKIPPED", "default"),
+        (None, true, 1, "FAIL", "Create the requested file"),
+        (Some("{"), false, 1, "FAIL", "configuration JSON is invalid"),
+        (Some("{"), true, 1, "FAIL", "configuration JSON is invalid"),
+        (
+            Some(
+                r#"{"users":[{"username":"bot","password":"env('REMEDIA_DOCTOR_TEST_MISSING_SECRET')"}]}"#,
+            ),
+            true,
+            1,
+            "FAIL",
+            "Set REMEDIA_DOCTOR_TEST_MISSING_SECRET",
+        ),
+        (
+            Some(
+                r#"{"users":[{"username":"bot","password":"test-only"}],"media":{"allowedFileRoots":["missing-media"]}}"#,
+            ),
+            true,
+            1,
+            "FAIL",
+            "media.allowedFileRoots",
+        ),
+        (
+            Some(r#"{"users":[{"username":"bot","password":"test-only"}]}"#),
+            false,
+            0,
+            "PASS",
+            "is valid",
+        ),
+    ];
+
+    for (contents, explicit, code, config_status, detail) in cases {
+        let root = temp_root();
+        let path = root.join("remedia.config.json");
+        if let Some(contents) = contents {
+            fs::write(&path, contents).unwrap();
+        }
+
+        let mut command = cli(&root);
+        command
+            .current_dir(&root)
+            .arg("doctor")
+            .env_remove("REMEDIA_DOCTOR_TEST_MISSING_SECRET");
+        if explicit {
+            command.arg("--config").arg(&path);
+        }
+        let output = command.output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let report = format!("{stdout}\n{stderr}");
+
+        assert_eq!(output.status.code(), Some(code), "{report}");
+        for major in [63, 63, 61, 12, 7] {
+            assert!(
+                stdout.contains(&format!("(expected ABI {major}) OK")),
+                "{report}"
+            );
+        }
+        assert!(stdout.contains(&format!("Summary: runtime PASS; FFmpeg PASS; environment PASS; configuration {config_status}")), "{report}");
+        assert!(stdout.contains(&format!(
+            "Remedia CLI {} (commit {})",
+            env!("REMEDIA_BUILD_VERSION"),
+            env!("REMEDIA_BUILD_COMMIT")
+        )));
+        assert!(stdout.contains(&format!(
+            "Remedia server {} (commit {})",
+            env!("REMEDIA_BUILD_VERSION"),
+            env!("REMEDIA_BUILD_COMMIT")
+        )));
+        assert!(report.contains(detail), "{report}");
+        assert!(!report.contains("Install FFmpeg"), "{report}");
+        assert!(!report.contains("reinstall"), "{report}");
+        assert!(
+            !report.contains("native FFmpeg runtime checks failed"),
+            "{report}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn doctor_reports_environment_file_failures_without_hiding_ffmpeg_results() {
+    let root = temp_root();
+    let env_file = root.join(".env");
+
+    for contents in [None, Some("not-an-assignment")] {
+        if let Some(contents) = contents {
+            fs::write(&env_file, contents).unwrap();
+        }
+        let output = cli(&root)
+            .current_dir(&root)
+            .arg("doctor")
+            .arg("--env-file")
+            .arg(&env_file)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            stdout.contains("FFmpeg PASS; environment FAIL; configuration SKIPPED"),
+            "{stdout}"
+        );
+        assert!(stderr.contains("Environment: FAIL"), "{stderr}");
+        assert!(stderr.contains("--optional-env-file"), "{stderr}");
+        assert!(!stderr.contains("Install FFmpeg"), "{stderr}");
+    }
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_preserves_unexpected_runtime_exit_codes_and_signals() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = temp_root();
+    let runtime = root.join("runtime");
+    for (failure, code) in [("exit 37", 37), ("kill -TERM $$", 143)] {
+        fs::write(
+            &runtime,
+            format!("#!/bin/sh\necho 'unrelated runtime failure' >&2\n{failure}\n"),
+        )
+        .unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
+        let output = cli(&root)
+            .env("REMEDIA_SERVER_RUNTIME", &runtime)
+            .arg("doctor")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert_eq!(output.status.code(), Some(code));
+        assert!(stdout.contains("runtime FAIL"), "{stdout}");
+        assert!(stdout.contains("FFmpeg NOT CHECKED"), "{stdout}");
+        assert!(stderr.contains("unrelated runtime failure"), "{stderr}");
+        assert!(!stderr.contains("Install FFmpeg"), "{stderr}");
+    }
+
+    fs::remove_dir_all(root).unwrap();
+}

@@ -8,7 +8,7 @@ mod plugins_cli;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, ExitStatus};
 
 use clap::{Parser, Subcommand};
 
@@ -67,6 +67,28 @@ enum Commands {
     },
 }
 
+/// A completed runtime owns its diagnostics and exit status; do not relabel its errors.
+#[derive(Debug, thiserror::Error)]
+#[error("native runtime exited with {0}")]
+struct RuntimeExit(ExitStatus);
+
+fn runtime_exit_code(status: ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+
+        if let Some(signal) = status.signal() {
+            return 128 + signal;
+        }
+    }
+
+    1
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
@@ -85,6 +107,11 @@ async fn main() -> ExitCode {
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
+            if let Some(exit) = error.downcast_ref::<RuntimeExit>() {
+                // Preserve native Windows status codes as well as ordinary Unix exit codes.
+                std::process::exit(runtime_exit_code(exit.0));
+            }
+
             eprintln!("remedia-server: {error}");
             ExitCode::FAILURE
         }
@@ -225,7 +252,11 @@ fn native_executable() -> io::Result<PathBuf> {
 }
 
 fn launch_runtime(cli: &Cli, doctor: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let runtime = native_executable()?;
+    let runtime = native_executable().inspect_err(|_| {
+        if doctor {
+            println!("Summary: runtime FAIL; FFmpeg NOT CHECKED; environment NOT CHECKED; configuration NOT CHECKED; plugin hosts NOT CHECKED");
+        }
+    })?;
     let mut command = Command::new(runtime);
     if let Some(path) = &cli.config {
         command.arg("--config").arg(path);
@@ -241,24 +272,33 @@ fn launch_runtime(cli: &Cli, doctor: bool) -> Result<(), Box<dyn std::error::Err
     }
     if doctor {
         command.arg("--doctor");
-        println!("Remedia CLI {}", env!("REMEDIA_BUILD_VERSION"));
         println!(
-            "Platform: {} / {}",
-            std::env::consts::OS,
-            std::env::consts::ARCH
+            "Remedia CLI {} (commit {})",
+            env!("REMEDIA_BUILD_VERSION"),
+            env!("REMEDIA_BUILD_COMMIT")
         );
         let output = command.output().map_err(|error| {
-            format!("failed to start the native runtime: {error}. Install the required FFmpeg 9 shared libraries")
+            println!("Summary: runtime FAIL; FFmpeg NOT CHECKED; environment NOT CHECKED; configuration NOT CHECKED; plugin hosts NOT CHECKED");
+            format!("failed to start the native runtime: {error}. Check the runtime executable path, permissions, and OS loader diagnostics")
         })?;
         io::stdout().write_all(&output.stdout)?;
         io::stderr().write_all(&output.stderr)?;
         if output.status.success() {
             return Ok(());
         }
-        return Err(
-            "native FFmpeg runtime checks failed. Install FFmpeg 9 shared libraries (or reinstall with the Remedia installer) and retry"
-                .into(),
-        );
+        if output.stdout.is_empty() {
+            // The doctor always prints its identity before running checks. No output means
+            // it could not report results, for example because the OS loader rejected it.
+            println!(
+                "Summary: runtime FAIL ({}); FFmpeg NOT CHECKED; environment NOT CHECKED; configuration NOT CHECKED; plugin hosts NOT CHECKED",
+                output.status
+            );
+            eprintln!(
+                "The native runtime produced no diagnostic report. Check the process error above, the runtime executable, and OS library search paths."
+            );
+        }
+
+        return Err(Box::new(RuntimeExit(output.status)));
     }
     // On Unix, replacing our process ensures SIGTERM, signals, exit codes, and
     // service-manager PID tracking belong to the real runtime, not a wrapper.
@@ -274,7 +314,7 @@ fn launch_runtime(cli: &Cli, doctor: bool) -> Result<(), Box<dyn std::error::Err
         if status.success() {
             Ok(())
         } else {
-            Err(format!("native Remedia runtime exited with {status}. Verify FFmpeg 9 shared libraries with remedia-server doctor").into())
+            Err(Box::new(RuntimeExit(status)))
         }
     }
 }
