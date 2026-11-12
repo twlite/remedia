@@ -240,6 +240,17 @@ fn update_reuses_installer_version_check_and_infers_custom_prefix() {
     fs::copy(env!("CARGO_BIN_EXE_remedia-server"), &executable).unwrap();
     fs::copy(&executable, version_dir.join("remedia-server-runtime")).unwrap();
     fs::write(libexec.join("current.txt"), "fixture").unwrap();
+
+    // The installer publishes Linux/macOS server archives; Rust tests also run on
+    // FreeBSD. Keep this installation fixture independent of the CI host's platform.
+    let uname = fake_bin.join("uname");
+    fs::write(
+        &uname,
+        "#!/bin/sh\ncase \"$1\" in -s) echo Linux ;; -m) echo x86_64 ;; *) exit 2 ;; esac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&uname, fs::Permissions::from_mode(0o755)).unwrap();
+
     let curl = fake_bin.join("curl");
     fs::write(&curl, format!(
         "#!/bin/sh\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) shift; out=\"$1\" ;; https:*) url=\"$1\" ;; esac; shift; done\ncase \"$url\" in */releases/latest) printf '{{\"tag_name\":\"v{}\"}}' > \"$out\"; printf 200 ;; *) exit 22 ;; esac\n",
@@ -247,16 +258,16 @@ fn update_reuses_installer_version_check_and_infers_custom_prefix() {
     )).unwrap();
     fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
 
-    let output = Command::new(executable)
+    let mut update = Command::new(executable);
+    update
         .args(["update", "--no-ffmpeg"])
         .env_remove("REMEDIA_INSTALL_DIR")
         .env_remove("REMEDIA_VERSION")
         .env(
             "PATH",
             format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap()),
-        )
-        .output()
-        .unwrap();
+        );
+    let output = update.output().unwrap();
 
     assert!(
         output.status.success(),
@@ -268,6 +279,26 @@ fn update_reuses_installer_version_check_and_infers_custom_prefix() {
         fs::read_to_string(libexec.join("current.txt")).unwrap(),
         "fixture"
     );
+
+    // Unsupported hosts must still fail before release lookup or installation changes.
+    fs::write(
+        &uname,
+        "#!/bin/sh\ncase \"$1\" in -s) echo FreeBSD ;; -m) echo amd64 ;; *) exit 2 ;; esac\n",
+    )
+    .unwrap();
+    let unsupported = update.output().unwrap();
+
+    assert_eq!(unsupported.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&unsupported.stderr)
+            .contains("Unsupported remedia-server platform: FreeBSD/amd64")
+    );
+    assert!(!String::from_utf8_lossy(&unsupported.stdout).contains("Checking GitHub releases"));
+    assert_eq!(
+        fs::read_to_string(libexec.join("current.txt")).unwrap(),
+        "fixture"
+    );
+
     fs::remove_dir_all(root).unwrap();
 }
 
