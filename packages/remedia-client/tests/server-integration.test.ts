@@ -118,8 +118,18 @@ describe('SDK against the Rust WebSocket server', () => {
       if (!crossfade) {
         await expect(node.createGuild(guildId, { enabled: true })).rejects.toThrow();
       }
-      await node.createGuild(guildId, crossfade ? { enabled: true, durationMs: 1000 } : undefined);
       if (crossfade) {
+        expect(node.snapshot.capabilities?.crossfade).toMatchObject({
+          curve: 'equalPower',
+          curves: ['equalPower', 'adaptive'],
+        });
+      }
+      const guild = await node.createGuild(
+        guildId,
+        crossfade ? { enabled: true, durationMs: 1000, curve: 'adaptive' } : undefined,
+      );
+      if (crossfade) {
+        expect(guild.playback.crossfade).toMatchObject({ enabled: true, curve: 'adaptive' });
         const wave = silentWave(20);
         const incoming = resolve(mediaDirectory, 'next.wav');
         await writeFile(incoming, wave);

@@ -75,8 +75,11 @@ export declare class NativeRemedia {
   createPlaybackSession(): string
   /** Start decoding into the null output or the associated Discord Opus sender. */
   play(playbackId: string, source: NativeMediaSource): Promise<NativeStreamInfo>
-  /** Configure the optional continuous PCM transition worker before playback. */
-  playbackConfigureCrossfade(playbackId: string, enabled: boolean, durationMs: number, prepareBeforeMs: number): void
+  /**
+   * Configure the optional continuous PCM transition worker before playback.
+   * `curve` is `equalPower` (the default when omitted) or `adaptive`.
+   */
+  playbackConfigureCrossfade(playbackId: string, enabled: boolean, durationMs: number, prepareBeforeMs: number, curve?: string | undefined | null): void
   /**
    * Open an independent decoder and stage a queue occurrence without
    * interrupting current playback.

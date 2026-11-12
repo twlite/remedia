@@ -3,8 +3,8 @@ use std::sync::Arc;
 use napi::bindgen_prelude::Status;
 use napi_derive::napi;
 use remedia_core::{
-    CrossfadeConfig, CrossfadeEvent, MediaPositionAccuracy, NullOutput, OpusEncoderOutput,
-    PlaybackError, PlaybackSession, StageIdentity, StageSnapshot, StageState,
+    CrossfadeConfig, CrossfadeCurve, CrossfadeEvent, MediaPositionAccuracy, NullOutput,
+    OpusEncoderOutput, PlaybackError, PlaybackSession, StageIdentity, StageSnapshot, StageState,
 };
 use remedia_discord::ConnectionState;
 
@@ -100,6 +100,7 @@ impl NativeRemedia {
     }
 
     /// Configure the optional continuous PCM transition worker before playback.
+    /// `curve` is `equalPower` (the default when omitted) or `adaptive`.
     #[napi]
     pub fn playback_configure_crossfade(
         &self,
@@ -107,17 +108,29 @@ impl NativeRemedia {
         enabled: bool,
         duration_ms: u32,
         prepare_before_ms: u32,
+        curve: Option<String>,
     ) -> napi::Result<()> {
         self.inner.ensure_open()?;
         let session = self.inner.playback(&playback_id)?.session;
+        let curve = match curve.as_deref() {
+            None => CrossfadeCurve::EqualPower,
+            Some(name) => CrossfadeCurve::from_name(name).ok_or_else(|| {
+                napi_error(
+                    Status::InvalidArg,
+                    "unsupported crossfade curve; use equalPower or adaptive",
+                )
+            })?,
+        };
         let config = if enabled {
             Some(
-                CrossfadeConfig::new(duration_ms, prepare_before_ms).ok_or_else(|| {
-                    napi_error(
-                        Status::InvalidArg,
-                        "invalid crossfade duration or preparation lead",
-                    )
-                })?,
+                CrossfadeConfig::new(duration_ms, prepare_before_ms)
+                    .ok_or_else(|| {
+                        napi_error(
+                            Status::InvalidArg,
+                            "invalid crossfade duration or preparation lead",
+                        )
+                    })?
+                    .with_curve(curve),
             )
         } else {
             None

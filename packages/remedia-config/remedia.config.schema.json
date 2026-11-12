@@ -471,9 +471,9 @@
             },
             "curve": {
               "default": "equalPower",
-              "description": "Sample-accurate equal-power overlap curve.",
+              "description": "Default overlap curve. equalPower applies fixed equal-power gains; adaptive adds a bounded, smoothed loudness-matching gain that only attenuates. Sessions may choose their own.",
               "type": "string",
-              "const": "equalPower"
+              "enum": ["equalPower", "adaptive"]
             }
           },
           "additionalProperties": false

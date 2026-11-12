@@ -64,6 +64,30 @@ includes source opening and teardown, without attributing time to individual aud
 stages. The short fixtures are regression probes, not sustained load qualification.
 The repository's `benchmarks/` report records the measured environment and results.
 
+## Crossfade curves
+
+The mixer cost of `adaptive` against `equalPower` was measured with
+`cargo run --release -p remedia-core --example crossfade_adaptive -- bench`. The example mixes 5 s of
+48 kHz stereo in 960-frame blocks, counts heap allocations with a counting global allocator, and takes the
+median of nine repeats on an Apple M5 (single thread, Rust 1.99.1).
+
+| Case                                      | ns per frame | One stream, real time | Allocations |
+| ----------------------------------------- | -----------: | --------------------: | ----------: |
+| `equalPower`, limiter idle                |          2.8 |               0.013 % |           0 |
+| `adaptive`, limiter idle                  |          3.6 |               0.017 % |           0 |
+| `equalPower`, loud masters (limiter busy) |          3.1 |               0.015 % |           0 |
+| `adaptive`, loud masters (limiter busy)   |          3.8 |               0.018 % |           0 |
+
+Adaptive adds about 0.7 ns per frame (roughly 25%), which is under 0.005% of one core for a stream.
+Neither curve allocates while mixing, and the adaptive state is a fixed-size struct inside the crossfade.
+These figures cover the mixer only, not decoding, Opus encoding, or the playback worker.
+
+`-- render <directory>` writes a 16-bit stereo WAV per scenario and curve, plus a loudness summary, from
+deterministic synthetic programme material, so the same audio can be regenerated and auditioned on any
+machine. The checked-in [report](https://github.com/twlite/remedia/blob/main/benchmarks/adaptive-crossfade.md)
+lists the metrics. The metrics compare the output with a smoothstep glide between the two tracks' own levels;
+they check that the controller does what it is designed to do and are not a listening test.
+
 ## Remaining architecture limits
 
 A shared CPU scheduler has not replaced playback workers. Moving the current loop

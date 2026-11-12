@@ -1,14 +1,20 @@
 use super::*;
+use crate::CrossfadeCurve;
 
-#[test]
-fn opted_in_crossfade_promotes_staged_decoder_without_restarting_output() {
+fn opted_in_crossfade_promotes_staged_decoder_without_restarting_output_with(
+    curve: CrossfadeCurve,
+) {
     use super::super::{CrossfadeConfig, CrossfadeEvent, StageIdentity, StageState};
 
     let outgoing = TempWave::constant(480_000, 8_000);
     let incoming = TempWave::constant(480_000, -8_000);
     let session = PlaybackSession::new();
     session
-        .configure_crossfade(Some(CrossfadeConfig::new(5_000, 30_000).unwrap()))
+        .configure_crossfade(Some(
+            CrossfadeConfig::new(5_000, 30_000)
+                .unwrap()
+                .with_curve(curve),
+        ))
         .expect("crossfade options accepted while idle");
     let (output, gate) = GateOutput::new();
     let initial = session
@@ -101,6 +107,20 @@ fn opted_in_crossfade_promotes_staged_decoder_without_restarting_output() {
 }
 
 #[test]
+fn opted_in_crossfade_promotes_staged_decoder_without_restarting_output() {
+    opted_in_crossfade_promotes_staged_decoder_without_restarting_output_with(
+        CrossfadeCurve::EqualPower,
+    );
+}
+
+#[test]
+fn opted_in_crossfade_promotes_staged_decoder_without_restarting_output_with_the_adaptive_curve() {
+    opted_in_crossfade_promotes_staged_decoder_without_restarting_output_with(
+        CrossfadeCurve::Adaptive,
+    );
+}
+
+#[test]
 fn normal_playback_cannot_stage_without_crossfade_opt_in() {
     use super::super::StageIdentity;
     let source = TempWave::constant(48_000, 4_096);
@@ -123,13 +143,18 @@ fn normal_playback_cannot_stage_without_crossfade_opt_in() {
     session.stop().unwrap();
 }
 
-#[test]
-fn crossfade_supports_consecutive_promotions_and_rejects_stale_revisions() {
+fn crossfade_supports_consecutive_promotions_and_rejects_stale_revisions_with(
+    curve: CrossfadeCurve,
+) {
     use super::super::{CrossfadeConfig, CrossfadeEvent, StageIdentity, StageState};
     let source = TempWave::constant(480_000, 4_000);
     let session = PlaybackSession::new();
     session
-        .configure_crossfade(Some(CrossfadeConfig::new(5_000, 30_000).unwrap()))
+        .configure_crossfade(Some(
+            CrossfadeConfig::new(5_000, 30_000)
+                .unwrap()
+                .with_curve(curve),
+        ))
         .unwrap();
     let (output, gate) = GateOutput::new();
     session.play(source.source(), output).unwrap();
@@ -181,6 +206,20 @@ fn crossfade_supports_consecutive_promotions_and_rejects_stale_revisions() {
         2
     );
     session.stop().unwrap();
+}
+
+#[test]
+fn crossfade_supports_consecutive_promotions_and_rejects_stale_revisions() {
+    crossfade_supports_consecutive_promotions_and_rejects_stale_revisions_with(
+        CrossfadeCurve::EqualPower,
+    );
+}
+
+#[test]
+fn crossfade_supports_consecutive_promotions_and_rejects_stale_revisions_with_the_adaptive_curve() {
+    crossfade_supports_consecutive_promotions_and_rejects_stale_revisions_with(
+        CrossfadeCurve::Adaptive,
+    );
 }
 
 #[test]
@@ -264,13 +303,16 @@ fn unavailable_preparation_never_stalls_or_promotes() {
     }
 }
 
-#[test]
-fn crossfade_pause_processing_seek_and_stop_preserve_control_semantics() {
+fn crossfade_pause_processing_seek_and_stop_preserve_control_semantics_with(curve: CrossfadeCurve) {
     use super::super::{CrossfadeConfig, StageIdentity};
     let source = TempWave::constant(480_000, 4_000);
     let session = Arc::new(PlaybackSession::new());
     session
-        .configure_crossfade(Some(CrossfadeConfig::new(5_000, 30_000).unwrap()))
+        .configure_crossfade(Some(
+            CrossfadeConfig::new(5_000, 30_000)
+                .unwrap()
+                .with_curve(curve),
+        ))
         .unwrap();
     let (output, gate) = GateOutput::new();
     session.play(source.source(), output).unwrap();
@@ -312,6 +354,20 @@ fn crossfade_pause_processing_seek_and_stop_preserve_control_semantics() {
     assert!(gate.wait_for_calls(2));
     session.stop().unwrap();
     assert_eq!(session.state(), PlaybackState::Stopped);
+}
+
+#[test]
+fn crossfade_pause_processing_seek_and_stop_preserve_control_semantics() {
+    crossfade_pause_processing_seek_and_stop_preserve_control_semantics_with(
+        CrossfadeCurve::EqualPower,
+    );
+}
+
+#[test]
+fn crossfade_pause_processing_seek_and_stop_preserve_control_semantics_with_the_adaptive_curve() {
+    crossfade_pause_processing_seek_and_stop_preserve_control_semantics_with(
+        CrossfadeCurve::Adaptive,
+    );
 }
 
 #[test]
@@ -380,13 +436,18 @@ fn advance_buffered_fade(
     }
 }
 
-#[test]
-fn interrupted_fade_continues_outgoing_without_waiting_for_incoming_pcm() {
+fn interrupted_fade_continues_outgoing_without_waiting_for_incoming_pcm_with(
+    curve: CrossfadeCurve,
+) {
     use super::super::{CrossfadeConfig, CrossfadeEvent, StageIdentity, StageState};
     let source = TempWave::constant(480_000, 4_000);
     let session = PlaybackSession::new();
     session
-        .configure_crossfade(Some(CrossfadeConfig::new(5_000, 30_000).unwrap()))
+        .configure_crossfade(Some(
+            CrossfadeConfig::new(5_000, 30_000)
+                .unwrap()
+                .with_curve(curve),
+        ))
         .unwrap();
     let (output, gate) = GateOutput::new();
     session.play(source.source(), output).unwrap();
@@ -436,6 +497,20 @@ fn interrupted_fade_continues_outgoing_without_waiting_for_incoming_pcm() {
             .any(|event| matches!(event, CrossfadeEvent::TransitionCompleted { .. }))
     );
     session.stop().unwrap();
+}
+
+#[test]
+fn interrupted_fade_continues_outgoing_without_waiting_for_incoming_pcm() {
+    interrupted_fade_continues_outgoing_without_waiting_for_incoming_pcm_with(
+        CrossfadeCurve::EqualPower,
+    );
+}
+
+#[test]
+fn interrupted_fade_continues_outgoing_without_waiting_for_incoming_pcm_with_the_adaptive_curve() {
+    interrupted_fade_continues_outgoing_without_waiting_for_incoming_pcm_with(
+        CrossfadeCurve::Adaptive,
+    );
 }
 
 #[test]
@@ -624,4 +699,206 @@ fn cancelling_http_preparation_preserves_unrelated_playback_and_joins_every_work
     assert!(lock(&session.worker).is_none());
     assert!(gate.snapshot().cancelled);
     server.join().unwrap();
+}
+
+/// Wait until the staged source has fully buffered and reports ready.
+fn wait_for_ready_stage(session: &PlaybackSession) -> Arc<super::super::PreparedStage> {
+    use super::super::StageState;
+
+    let stage = lock(&session.stage).as_ref().cloned().unwrap();
+    let deadline = Instant::now() + TEST_TIMEOUT;
+
+    while stage.snapshot().state != StageState::Ready {
+        assert!(Instant::now() < deadline, "stage did not become ready");
+        thread::yield_now();
+    }
+
+    stage
+}
+
+fn adaptive_session(
+    outgoing: &TempWave,
+    entry: &str,
+) -> (
+    Arc<PlaybackSession>,
+    GateHandle,
+    Arc<super::super::PreparedStage>,
+) {
+    use super::super::{CrossfadeConfig, StageIdentity};
+
+    let session = Arc::new(PlaybackSession::new());
+
+    session
+        .configure_crossfade(Some(
+            CrossfadeConfig::new(5_000, 30_000)
+                .unwrap()
+                .with_curve(CrossfadeCurve::Adaptive),
+        ))
+        .unwrap();
+
+    let (output, gate) = GateOutput::new();
+
+    session.play(outgoing.source(), output).unwrap();
+    assert!(gate.wait_for_calls(1));
+    session
+        .stage_next(
+            outgoing.source(),
+            StageIdentity {
+                expected_generation: 1,
+                entry_id: entry.into(),
+                queue_revision: 1,
+                source_revision: 0,
+            },
+        )
+        .unwrap();
+
+    let stage = wait_for_ready_stage(&session);
+
+    (session, gate, stage)
+}
+
+#[test]
+fn adaptive_overlap_survives_pause_and_resume_with_continuous_output() {
+    use super::super::CrossfadeEvent;
+
+    let source = TempWave::constant(480_000, 8_000);
+    let (session, gate, stage) = adaptive_session(&source, "paused-fade");
+
+    gate.release(250);
+    assert!(gate.wait_for_calls(251));
+    assert_eq!(session.source_generation(), 2, "the overlap has begun");
+
+    // Pause with a mixed frame in flight, then resume in the middle of the fade.
+    let pausing = Arc::clone(&session);
+    let pause_thread = thread::spawn(move || pausing.pause());
+
+    assert!(wait_for_state(&session, PlaybackState::Pausing));
+    gate.release(1);
+    assert!(pause_thread.join().unwrap().is_ok());
+    assert_eq!(session.state(), PlaybackState::Paused);
+    assert_eq!(session.staged_source().map(|stage| stage.state), None);
+
+    session.resume().unwrap();
+    advance_buffered_fade(&gate, &stage, 252, 500);
+    gate.release(1_000);
+
+    assert_eq!(session.wait(), PlaybackState::Completed);
+    assert_eq!(session.source_generation(), 2);
+
+    let frames = gate.snapshot();
+
+    assert!(frames.finished);
+    assert!(frames.accepted.windows(2).all(|w| w[0].0 + 960 == w[1].0));
+    assert!(frames.accepted.iter().all(|(_, sample)| sample.is_finite()));
+    assert!(
+        session
+            .take_crossfade_events()
+            .iter()
+            .any(|event| matches!(event, CrossfadeEvent::TransitionCompleted { .. }))
+    );
+}
+
+#[test]
+fn seeking_during_an_adaptive_overlap_cancels_it_and_restores_outgoing_playback() {
+    use super::super::CrossfadeEvent;
+
+    let source = TempWave::constant(480_000, 8_000);
+    let (session, gate, _stage) = adaptive_session(&source, "seeked-fade");
+
+    gate.release(250);
+    assert!(gate.wait_for_calls(251));
+    assert_eq!(session.source_generation(), 2);
+
+    let seeking = Arc::clone(&session);
+    let seek_thread = thread::spawn(move || seeking.seek(Duration::from_secs(1)));
+
+    // The request must be queued before the blocked frame is released, or the
+    // worker would wait on the gate for a frame the seek has not yet replaced.
+    assert!(wait_for_pending_seek(&session));
+    gate.release(1);
+    assert!(seek_thread.join().unwrap().is_ok());
+    assert!(session.staged_source().is_none());
+    assert_eq!(
+        session.source_generation(),
+        3,
+        "a seek starts a new timeline"
+    );
+
+    gate.release(1_000);
+    assert_eq!(session.wait(), PlaybackState::Completed);
+
+    let events = session.take_crossfade_events();
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        CrossfadeEvent::TransitionCancelled {
+            outgoing_generation: 1,
+            incoming_generation: 2,
+            ..
+        }
+    )));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, CrossfadeEvent::TransitionCompleted { .. }))
+    );
+    assert!(gate.snapshot().finished);
+}
+
+#[test]
+fn adaptive_overlap_of_opposed_sources_never_boosts_the_cancellation() {
+    // Opposite-sign constants cancel at the midpoint under equal-power; the
+    // adaptive curve must not amplify that dip back up.
+    let outgoing = TempWave::constant(480_000, 8_000);
+    let incoming = TempWave::constant(480_000, -8_000);
+    let (session, gate, stage) = {
+        use super::super::{CrossfadeConfig, StageIdentity};
+
+        let session = Arc::new(PlaybackSession::new());
+
+        session
+            .configure_crossfade(Some(
+                CrossfadeConfig::new(5_000, 30_000)
+                    .unwrap()
+                    .with_curve(CrossfadeCurve::Adaptive),
+            ))
+            .unwrap();
+
+        let (output, gate) = GateOutput::new();
+
+        session.play(outgoing.source(), output).unwrap();
+        assert!(gate.wait_for_calls(1));
+        session
+            .stage_next(
+                incoming.source(),
+                StageIdentity {
+                    expected_generation: 1,
+                    entry_id: "opposed".into(),
+                    queue_revision: 1,
+                    source_revision: 0,
+                },
+            )
+            .unwrap();
+
+        let stage = wait_for_ready_stage(&session);
+
+        (session, gate, stage)
+    };
+
+    gate.release(250);
+    advance_buffered_fade(&gate, &stage, 251, 500);
+    gate.release(1_000);
+
+    assert_eq!(session.wait(), PlaybackState::Completed);
+
+    let ceiling = 8_000.0 / 32_768.0 + 1.0e-4;
+    let frames = gate.snapshot();
+
+    assert!(
+        frames
+            .accepted
+            .iter()
+            .all(|(_, sample)| sample.abs() <= ceiling),
+        "adaptive output must stay within the loudest source"
+    );
 }

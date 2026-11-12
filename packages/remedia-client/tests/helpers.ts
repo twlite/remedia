@@ -49,6 +49,8 @@ export interface FakeServerOptions {
    * `plugin.list`, `plugin.execute` and `plugin.cancel`. Servers without it model older releases.
    */
   pluginForwarding?: FakePluginForwarding;
+  /** Advertise exactly this `capabilities.crossfade` object, including legacy shapes without `curves`. */
+  crossfadeCapability?: Record<string, unknown>;
 }
 
 /** Throw from a fake handler to answer with a specific protocol error code. */
@@ -90,6 +92,7 @@ export class FakeServerNode {
   readonly #requiredAuthorization: string | undefined;
   readonly #pluginHosts: readonly string[] | undefined;
   readonly #pluginForwarding: FakePluginForwarding | undefined;
+  readonly #crossfadeCapability: Record<string, unknown> | undefined;
   /** Every `plugin.*` request received, in order, with the connection's request ID. */
   readonly pluginRequests: Array<{ id: string | null; command: string; params: unknown }> = [];
   /** Request IDs named by `plugin.cancel`. */
@@ -136,6 +139,7 @@ export class FakeServerNode {
     this.#requiredAuthorization = options.requiredAuthorization;
     this.#pluginHosts = options.pluginHosts ?? options.pluginForwarding?.hosts.map((h) => h.hostId);
     this.#pluginForwarding = options.pluginForwarding;
+    this.#crossfadeCapability = options.crossfadeCapability;
     this.pluginExecute = options.pluginForwarding?.execute;
     this.#websocketServer = websocketServer;
     websocketServer.on('connection', (socket) => {
@@ -254,21 +258,26 @@ export class FakeServerNode {
             nodeId: this.nodeIdentity,
             version: 'test',
             protocolVersion: this.protocolVersion,
-            ...(this.#pluginHosts
+            ...(this.#pluginHosts || this.#crossfadeCapability
               ? {
                   capabilities: {
-                    crossfade: {
+                    crossfade: this.#crossfadeCapability ?? {
                       configured: false,
                       available: false,
                       durationMs: 5000,
                       prepareBeforeMs: 30000,
                       curve: 'equalPower',
+                      curves: ['equalPower', 'adaptive'],
                     },
-                    pluginOperations: {
-                      available: true,
-                      hosts: this.#pluginHosts,
-                      ...(this.#pluginForwarding ? { forwarding: { available: true } } : {}),
-                    },
+                    ...(this.#pluginHosts
+                      ? {
+                          pluginOperations: {
+                            available: true,
+                            hosts: this.#pluginHosts,
+                            ...(this.#pluginForwarding ? { forwarding: { available: true } } : {}),
+                          },
+                        }
+                      : {}),
                   },
                 }
               : {}),

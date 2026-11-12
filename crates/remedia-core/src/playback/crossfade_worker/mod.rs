@@ -223,7 +223,7 @@ fn worker_loop(
                             next: Arc::clone(&next),
                             info,
                             identity: next.identity.clone(),
-                            fading: PcmCrossfade::new(fade_samples),
+                            fading: PcmCrossfade::with_curve(fade_samples, config.curve),
                             previous_generation: source_generation,
                             incoming_generation,
                             incoming_consumed: 0,
@@ -383,6 +383,16 @@ fn worker_loop(
             let outgoing_generation = finished.previous_generation;
             let incoming_generation = finished.incoming_generation;
             let identity = finished.identity.clone();
+            let mix = finished.fading.stats();
+
+            tracing::debug!(
+                curve = config.curve.as_str(),
+                deepest_adaptive_gain_db = mix.deepest_adaptive_gain_db,
+                limited_frames = mix.limited_frames,
+                peak_reduction_db = mix.peak_reduction_db,
+                "crossfade transition mixed",
+            );
+
             current = ActiveSource::prepared(
                 Arc::clone(&finished.next),
                 finished.incoming_consumed,

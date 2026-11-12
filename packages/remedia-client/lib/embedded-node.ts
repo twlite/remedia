@@ -145,6 +145,7 @@ export class EmbeddedNodeAdapter implements NodeAdapter {
           durationMs: 5000,
           prepareBeforeMs: 30000,
           curve: 'equalPower',
+          curves: ['equalPower', 'adaptive'],
         },
         // Embedded nodes run in-process and do not talk to configured plugin hosts.
         pluginOperations: { available: false, hosts: [], forwarding: false },

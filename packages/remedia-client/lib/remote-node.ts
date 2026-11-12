@@ -1189,6 +1189,15 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
           `node ${this.#node.id} does not support crossfading; disable the option or use a capable node`,
         );
       }
+      const requestedCurve = this.#options.crossfade ? this.#options.crossfade.curve : undefined;
+      if (
+        requestedCurve !== undefined &&
+        !this.#node.snapshot.capabilities?.crossfade.curves.includes(requestedCurve)
+      ) {
+        throw new Error(
+          `node ${this.#node.id} does not support the ${requestedCurve} crossfade curve; use equalPower or a newer node`,
+        );
+      }
       const guild = await this.#node.createGuild(this.#options.guildId, this.#options.crossfade);
       this.#guildCreated = true;
       this.#sessionId = guild.guildSessionId;
@@ -2024,7 +2033,7 @@ function parsePlaybackSnapshot(value: Record<string, unknown>, nodeId: string): 
             enabled: true as const,
             durationMs: value.crossfade.durationMs as number,
             prepareBeforeMs: value.crossfade.prepareBeforeMs as number,
-            curve: 'equalPower' as const,
+            curve: parseCrossfadeCurve(value.crossfade.curve) ?? ('equalPower' as const),
           },
         }
       : { crossfade: null }),
@@ -2192,6 +2201,7 @@ function parseNodeCapabilities(input: unknown): import('./types.js').NodeCapabil
     durationMs: 5000,
     prepareBeforeMs: 30000,
     curve: 'equalPower',
+    curves: ['equalPower'],
   };
   const pluginOperations = parsePluginOperations(
     isRecord(input) ? input.pluginOperations : undefined,
@@ -2216,16 +2226,29 @@ function parseNodeCapabilities(input: unknown): import('./types.js').NodeCapabil
     fade.prepareBeforeMs <= 120000
       ? fade.prepareBeforeMs
       : fallback.prepareBeforeMs;
+  // Nodes that predate the adaptive curve omit `curves` and only mix equal-power.
+  const curves = Array.isArray(fade.curves)
+    ? CROSSFADE_CURVES.filter((curve) => (fade.curves as unknown[]).includes(curve))
+    : fallback.curves;
+  const curve = parseCrossfadeCurve(fade.curve);
   return {
     crossfade: {
       configured,
-      available: available && fade.curve === 'equalPower',
+      available: available && curve !== undefined && curves.includes(curve),
       durationMs,
       prepareBeforeMs,
-      curve: 'equalPower',
+      curve: curve ?? fallback.curve,
+      curves,
     },
     pluginOperations,
   };
+}
+
+const CROSSFADE_CURVES: readonly import('./types.js').CrossfadeCurve[] = ['equalPower', 'adaptive'];
+
+/** Narrow an untrusted wire value to a curve this client knows. */
+function parseCrossfadeCurve(value: unknown): import('./types.js').CrossfadeCurve | undefined {
+  return CROSSFADE_CURVES.find((curve) => curve === value);
 }
 
 function requestOptions(options: { signal?: AbortSignal; timeoutMs?: number }): {

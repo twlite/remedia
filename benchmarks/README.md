@@ -5,6 +5,9 @@ It fixes native filter pool multiplication, reuses native resampling output,
 and shrinks owned Opus packet allocations. It does **not** implement the full
 requested scheduler or adaptive crossfade redesign.
 
+See [adaptive-crossfade.md](adaptive-crossfade.md) for the crossfade curve comparison and mixer cost, which
+has its own example and does not use the runner below.
+
 ## Reproduction
 
 ```sh

@@ -34,6 +34,7 @@ export type {
   VoiceConnectionState,
 } from './types.js';
 export type {
+  CrossfadeCurve,
   CrossfadeOptions,
   CrossfadeContinuation,
   CrossfadeTransition,

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use remedia_observability::{ObservabilityHandle, next_correlation_id};
 use thiserror::Error;
 
+use crate::crossfade::CrossfadeCurve;
 use crate::decoder::{
     AudioDecoder, AudioStreamInfo, DecodedPcmFrame, DecoderOptions, DemuxedAudioPacket, PcmFrame,
     SourcePosition,
@@ -243,21 +244,37 @@ pub use staging::{StageIdentity, StageSnapshot, StageState};
 /// Session-scoped transition settings, validated before configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CrossfadeConfig {
+    /// Overlap duration in milliseconds, 1000 through 30000.
     pub duration_ms: u32,
+    /// Lead before the overlap at which the next source is requested, in
+    /// milliseconds, 5000 through 120000.
     pub prepare_before_ms: u32,
+    /// How the two sources are weighted across the overlap.
+    pub curve: CrossfadeCurve,
 }
 
 impl CrossfadeConfig {
+    /// Validate a fade duration and preparation lead. The curve is
+    /// [`CrossfadeCurve::EqualPower`]; choose another with [`Self::with_curve`].
     pub fn new(duration_ms: u32, prepare_before_ms: u32) -> Option<Self> {
         if !(1_000..=30_000).contains(&duration_ms)
             || !(5_000..=120_000).contains(&prepare_before_ms)
         {
             return None;
         }
+
         Some(Self {
             duration_ms,
             prepare_before_ms,
+            curve: CrossfadeCurve::EqualPower,
         })
+    }
+
+    /// Use `curve` for the overlap.
+    pub const fn with_curve(mut self, curve: CrossfadeCurve) -> Self {
+        self.curve = curve;
+
+        self
     }
 }
 

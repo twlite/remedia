@@ -55,10 +55,14 @@ bytes and estimate durations. It does not establish future playback availability
 
 ## Staged playback RPC
 
-`node.info.capabilities.crossfade` reports policy, availability, defaults and the
-`equalPower` curve. `guild.create` accepts optional
-`crossfade: { enabled: true, durationMs: 5000, prepareBeforeMs: 30000, curve: 'equalPower' }`.
-Server policy must allow it. Omitted session options preserve ordinary playback.
+`node.info.capabilities.crossfade` reports policy, availability, defaults, the default `curve`
+(`equalPower` unless the operator configured `adaptive`) and `curves`, the list of curves the server can mix:
+`["equalPower", "adaptive"]`. Servers that predate the adaptive curve omit `curves`; clients treat that as
+`["equalPower"]`. `guild.create` accepts optional
+`crossfade: { enabled: true, durationMs: 5000, prepareBeforeMs: 30000, curve: 'adaptive' }`.
+Server policy must allow it. `curve` is `equalPower` or `adaptive` (case sensitive) and defaults to the server's
+configured curve; any other value fails with `invalid_request`. The guild snapshot's `crossfade.curve` reports
+the curve in use. Omitted session options preserve ordinary playback.
 
 `player.stage.next` accepts `guildId`, a file, URL or operation `source`,
 `expectedGeneration`, `entryId`, `queueRevision`, `sourceRevision`, and optional
