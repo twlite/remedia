@@ -25,7 +25,7 @@ impl ServerConfig {
         }
         let scheme_allowed = match url.scheme() {
             "http" => self.media.allow_http,
-            "https" => self.media.allow_https,
+            "https" => true,
             _ => false,
         };
         if !scheme_allowed {

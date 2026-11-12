@@ -19,7 +19,7 @@ it('applies native defaults without expanding environment references', () => {
   const result = RemediaConfigSchema.parse({
     users: [{ username: 'bot', password: "env('SECRET')" }],
   });
-  expect(result.bind).toEqual({ host: '127.0.0.1', port: 8787 });
+  expect(result.listen).toBe('127.0.0.1:8787');
   expect(result.audio.opus).toEqual({ bitrate: 128000, complexity: 9, vbr: true });
   expect(result.audio.crossfade).toEqual({
     enabled: false,
@@ -27,14 +27,14 @@ it('applies native defaults without expanding environment references', () => {
     prepareBeforeMs: 30000,
     curve: 'equalPower',
   });
-  expect(result.users[0]?.password).toBe("env('SECRET')");
+  expect(result.users![0]?.password).toBe("env('SECRET')");
 });
 
 it('generates strict objects and editor metadata with current defaults', () => {
   const schema = generateJsonSchema();
   expect(schema.$schema).toBe('https://json-schema.org/draft/2020-12/schema');
   expect(schema.additionalProperties).toBe(false);
-  expect(schema.required).toEqual(['users']);
+  expect(schema.oneOf).toEqual([{ required: ['auth'] }, { required: ['users'] }]);
   expect(JSON.stringify(schema)).toContain('128000');
 });
 

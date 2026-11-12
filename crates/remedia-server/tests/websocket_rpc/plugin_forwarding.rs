@@ -286,10 +286,10 @@ async fn respond(
 fn host_config(id: &str, host: &MockHost, operations: Value, limits: Value) -> Value {
     json!({
         "id": id,
-        "endpoint": host.origin(),
+        "url": host.origin(),
         "auth": {"type": "bearer", "token": TOKEN},
-        "allowInsecureHttp": true,
-        "allowPrivateNetwork": true,
+        "allowHttp": true,
+
         "operations": operations,
         "limits": limits,
     })

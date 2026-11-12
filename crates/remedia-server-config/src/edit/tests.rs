@@ -6,12 +6,12 @@ const PRETTY: &str = r#"{
   "pluginHosts": [
     {
       "id": "first",
-      "endpoint": "https://first.example",
+      "url": "https://first.example",
       "operations": [{ "pluginId": "p", "operation": "o" }]
     },
     {
       "id": "second",
-      "endpoint": "https://second.example",
+      "url": "https://second.example",
       "operations": [
         { "pluginId": "p", "operation": "a", "replaySafe": true },
         { "pluginId": "p", "operation": "b" }
@@ -25,7 +25,7 @@ const PRETTY: &str = r#"{
 fn entry(id: &str) -> Json {
     Json::object([
         ("id", Json::str(id)),
-        ("endpoint", Json::str(format!("https://{id}.example"))),
+        ("url", Json::str(format!("https://{id}.example"))),
         (
             "operations",
             Json::Array(vec![Json::object([
@@ -72,7 +72,7 @@ fn appending_a_host_matches_the_documents_style_and_keeps_everything_else() {
     assert!(
         edited
             .as_str()
-            .contains("    {\n      \"id\": \"third\",\n      \"endpoint\"")
+            .contains("    {\n      \"id\": \"third\",\n      \"url\"")
     );
 }
 
@@ -175,7 +175,7 @@ fn enabled_is_inserted_toggled_and_never_duplicated() {
     assert!(
         disabled
             .as_str()
-            .contains("\"id\": \"first\",\n      \"endpoint\"")
+            .contains("\"id\": \"first\",\n      \"url\"")
     );
 
     let again = disabled.set_host_enabled("second", false).unwrap();
@@ -310,4 +310,21 @@ fn write_failures_preserve_the_original_and_permissions_are_kept() {
     }
 
     fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn compact_operation_entries_can_be_removed_without_changing_advanced_permissions() {
+    let source = r#"{"pluginHosts":[{"id":"h","operations":["p/a",{"pluginId":"p","operation":"b","replaySafe":true}]}]}"#;
+    let edited = ConfigText::new(source.to_owned())
+        .unwrap()
+        .change_host_operations("h", &[("p".into(), "a".into())], &[Json::str("p/c")])
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_str(edited.as_str()).unwrap();
+
+    assert_eq!(
+        value["pluginHosts"][0]["operations"],
+        serde_json::json!([
+            {"pluginId":"p","operation":"b","replaySafe":true}, "p/c"
+        ])
+    );
 }

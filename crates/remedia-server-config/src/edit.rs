@@ -552,8 +552,9 @@ impl ConfigText {
             let (elements, close) = current.scanner().elements(array.value_start)?;
             let found = elements.iter().position(|(from, to)| {
                 serde_json::from_str::<Value>(&current.source[*from..*to]).is_ok_and(|value| {
-                    value.get("pluginId").and_then(Value::as_str) == Some(plugin_id)
-                        && value.get("operation").and_then(Value::as_str) == Some(operation)
+                    value.as_str() == Some(format!("{plugin_id}/{operation}").as_str())
+                        || value.get("pluginId").and_then(Value::as_str) == Some(plugin_id)
+                            && value.get("operation").and_then(Value::as_str) == Some(operation)
                 })
             });
 

@@ -6,9 +6,15 @@ use super::*;
 pub(super) struct RawConfig {
     #[serde(default, rename = "$schema")]
     pub(super) _schema: Option<String>,
+    #[serde(default = "default_listen")]
+    pub(super) listen: String,
     #[serde(default)]
-    pub(super) bind: RawBind,
-    pub(super) users: Vec<RawUser>,
+    #[cfg_attr(test, serde(skip_serializing_if = "Option::is_none"))]
+    #[serde(deserialize_with = "non_null_option")]
+    pub(super) auth: Option<RawAuth>,
+    #[serde(default)]
+    #[serde(deserialize_with = "non_null_option")]
+    pub(super) users: Option<Vec<RawUser>>,
     #[serde(default = "default_resume_timeout")]
     pub(super) session_resumption_timeout_seconds: u64,
     #[serde(default)]
@@ -25,12 +31,11 @@ pub(super) struct RawConfig {
 
 #[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub(super) struct RawBind {
-    #[serde(default = "default_host")]
-    pub(super) host: String,
-    #[serde(default = "default_port")]
-    pub(super) port: u16,
+#[serde(deny_unknown_fields)]
+pub(super) struct RawAuth {
+    #[serde(default = "default_username")]
+    pub(super) username: String,
+    pub(super) password: String,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -107,15 +112,6 @@ pub(super) fn deserialize_vbr<'de, D: serde::Deserializer<'de>>(
         .map_err(|error| serde::de::Error::custom(format!("audio.opus.vbr: {error}")))
 }
 
-impl Default for RawBind {
-    fn default() -> Self {
-        Self {
-            host: default_host(),
-            port: default_port(),
-        }
-    }
-}
-
 #[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -162,7 +158,6 @@ pub(super) struct RawMedia {
     pub(super) allowed_file_roots: Vec<String>,
     pub(super) allowed_url_hosts: Vec<String>,
     pub(super) allow_http: bool,
-    pub(super) allow_https: bool,
     pub(super) block_private_networks: bool,
 }
 
@@ -172,7 +167,6 @@ impl Default for RawMedia {
             allowed_file_roots: Vec::new(),
             allowed_url_hosts: Vec::new(),
             allow_http: true,
-            allow_https: true,
             block_private_networks: true,
         }
     }
@@ -189,4 +183,11 @@ impl Default for RawObservability {
     fn default() -> Self {
         Self { console: true }
     }
+}
+
+// Missing optional sections use defaults; explicit null is never a configuration section.
+fn non_null_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }

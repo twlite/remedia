@@ -77,7 +77,7 @@ impl RunningServer {
             .unwrap()
             .extend(limit_overrides.as_object().unwrap().clone());
         let json = json!({
-            "bind": {"host": "127.0.0.1", "port": 0},
+            "listen": "127.0.0.1:0",
             "users": [
                 {"username": "bot-a", "password": "password-a"},
                 {"username": "bot-b", "password": "password-b"}
@@ -88,7 +88,7 @@ impl RunningServer {
                 "allowedFileRoots": [fixture_root],
                 "allowedUrlHosts": ["*"],
                 "allowHttp": true,
-                "allowHttps": true,
+
                 "blockPrivateNetworks": block_private_networks
             },
             "pluginHosts": plugin_hosts,

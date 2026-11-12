@@ -45,7 +45,7 @@ describe('SDK against the Rust WebSocket server', () => {
       await writeFile(
         configPath,
         JSON.stringify({
-          bind: { host: '127.0.0.1', port: 0 },
+          listen: '127.0.0.1:0',
           users: [
             {
               username: 'sdk-test',
@@ -71,7 +71,7 @@ describe('SDK against the Rust WebSocket server', () => {
             ],
             allowedUrlHosts: ['127.0.0.1'],
             allowHttp: true,
-            allowHttps: true,
+
             blockPrivateNetworks: false,
           },
           audio: { crossfade: { enabled: crossfade } },

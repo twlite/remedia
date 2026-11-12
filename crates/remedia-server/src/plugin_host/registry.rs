@@ -1016,7 +1016,7 @@ impl PluginHostRegistry {
 
             results.push(HostDiagnostic {
                 id: host.config.id.clone(),
-                origin: host.config.endpoint.origin().ascii_serialization(),
+                origin: host.config.url.origin().ascii_serialization(),
                 state,
                 detail,
                 advertised_operations: discovery

@@ -1,5 +1,4 @@
 //! Operator-owned registrations for generic Remedia plugin hosts.
-use std::net::IpAddr;
 
 use super::*;
 
@@ -54,12 +53,11 @@ pub struct PluginHostConfig {
     pub id: String,
     /// Disabled hosts are validated and retained but never registered as executable.
     pub enabled: bool,
-    /// Origin of the execution and discovery endpoint.
-    pub endpoint: url::Url,
+    /// Origin of the execution and discovery URL.
+    pub url: url::Url,
     pub token: Option<Secret>,
-    pub allow_insecure_http: bool,
-    pub allow_private_network: bool,
-    /// Origins, including the endpoint origin, whose media is fetched by the server
+    pub allow_http: bool,
+    /// Origins, including the configured URL origin, whose media is fetched by the server
     /// without credentials.
     pub media_origins: Vec<String>,
     pub allow_external_media: bool,
@@ -88,13 +86,11 @@ pub(super) struct RawPluginHost {
     id: String,
     #[serde(default = "default_enabled")]
     enabled: bool,
-    endpoint: String,
+    url: String,
     #[serde(default)]
     auth: RawPluginAuth,
     #[serde(default)]
-    allow_insecure_http: bool,
-    #[serde(default)]
-    allow_private_network: bool,
+    allow_http: bool,
     #[serde(default)]
     media_origins: Vec<String>,
     #[serde(default)]
@@ -121,8 +117,16 @@ enum RawPluginAuth {
 
 #[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Deserialize)]
+#[serde(untagged)]
+enum RawAllowedOperation {
+    Name(String),
+    Details(OperationDetails),
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct RawAllowedOperation {
+struct OperationDetails {
     plugin_id: String,
     operation: String,
     #[serde(default)]
@@ -174,7 +178,7 @@ pub fn valid_identifier(value: &str) -> bool {
 }
 
 /// Parse an origin-only HTTP(S) URL: no credentials, path, query or fragment.
-pub fn parse_origin(value: &str, allow_insecure_http: bool) -> Result<url::Url, ConfigError> {
+pub fn parse_origin(value: &str, allow_http: bool) -> Result<url::Url, ConfigError> {
     let url = url::Url::parse(value.trim())
         .map_err(|_| ConfigError::Invalid("pluginHosts URLs must be absolute HTTP(S) origins"))?;
 
@@ -191,9 +195,9 @@ pub fn parse_origin(value: &str, allow_insecure_http: bool) -> Result<url::Url, 
         ));
     }
 
-    if url.scheme() == "http" && !allow_insecure_http {
+    if url.scheme() == "http" && !allow_http {
         return Err(ConfigError::Invalid(
-            "pluginHosts endpoints must use https unless allowInsecureHttp is true",
+            "pluginHosts endpoints must use https unless allowHttp is true",
         ));
     }
 
@@ -238,8 +242,8 @@ pub(super) fn parse_plugin_hosts(
             ));
         }
 
-        let endpoint = resolve_env("pluginHosts[].endpoint", host.endpoint, env)?;
-        let endpoint = parse_origin(&endpoint, host.allow_insecure_http)?;
+        let url = resolve_env("pluginHosts[].url", host.url, env)?;
+        let url = parse_origin(&url, host.allow_http)?;
         let token = match host.auth {
             RawPluginAuth::None => None,
             RawPluginAuth::Bearer { token } => {
@@ -259,23 +263,11 @@ pub(super) fn parse_plugin_hosts(
                 Some(Secret(token))
             }
         };
-        if let Some(address) = match endpoint.host() {
-            Some(url::Host::Ipv4(address)) => Some(IpAddr::V4(address)),
-            Some(url::Host::Ipv6(address)) => Some(IpAddr::V6(address)),
-            _ => None,
-        } && !host.allow_private_network
-            && !is_public_ip(address)
-        {
-            return Err(ConfigError::Invalid(
-                "pluginHosts endpoints with private or loopback addresses require allowPrivateNetwork",
-            ));
-        }
-
-        let mut media_origins = vec![endpoint.origin().ascii_serialization()];
+        let mut media_origins = vec![url.origin().ascii_serialization()];
 
         for origin in host.media_origins {
             let origin = resolve_env("pluginHosts[].mediaOrigins[]", origin, env)?;
-            let origin = parse_origin(&origin, host.allow_insecure_http)?
+            let origin = parse_origin(&origin, host.allow_http)?
                 .origin()
                 .ascii_serialization();
 
@@ -293,6 +285,20 @@ pub(super) fn parse_plugin_hosts(
         let mut operations: Vec<AllowedOperation> = Vec::with_capacity(host.operations.len());
 
         for operation in host.operations {
+            let operation = match operation {
+                RawAllowedOperation::Details(details) => details,
+                RawAllowedOperation::Name(name) => {
+                    let (plugin, operation) = name.split_once('/').ok_or(ConfigError::Invalid(
+                        "pluginHosts operations must use PLUGIN/OPERATION",
+                    ))?;
+
+                    OperationDetails {
+                        plugin_id: plugin.into(),
+                        operation: operation.into(),
+                        replay_safe: false,
+                    }
+                }
+            };
             if !valid_identifier(&operation.plugin_id) || !valid_identifier(&operation.operation) {
                 return Err(ConfigError::Invalid(
                     "pluginHosts[].operations[] pluginId and operation must be valid identifiers",
@@ -385,10 +391,9 @@ pub(super) fn parse_plugin_hosts(
         hosts.push(Arc::new(PluginHostConfig {
             id: host.id,
             enabled: host.enabled,
-            endpoint,
+            url,
             token,
-            allow_insecure_http: host.allow_insecure_http,
-            allow_private_network: host.allow_private_network,
+            allow_http: host.allow_http,
             media_origins,
             allow_external_media: host.allow_external_media,
             operations,

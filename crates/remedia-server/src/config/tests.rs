@@ -225,7 +225,7 @@ fn parse_hosts(hosts: &str) -> Result<ServerConfig, ConfigError> {
     })
 }
 
-const HOST: &str = r#"{"id":"source-host-1","endpoint":"https://sources.example.com",
+const HOST: &str = r#"{"id":"source-host-1","url":"https://sources.example.com",
     "operations":[{"pluginId":"example.source","operation":"source.stream"}]}"#;
 
 #[test]
@@ -242,8 +242,7 @@ fn plugin_hosts_are_optional_and_use_conservative_defaults() {
 
     assert_eq!(host.id, "source-host-1");
     assert!(host.token.is_none());
-    assert!(!host.allow_insecure_http);
-    assert!(!host.allow_private_network);
+    assert!(!host.allow_http);
     assert!(!host.allow_external_media);
     assert_eq!(host.media_origins, ["https://sources.example.com"]);
     assert_eq!(host.limits.max_request_bytes, 65_536);
@@ -255,7 +254,7 @@ fn plugin_hosts_are_optional_and_use_conservative_defaults() {
 #[test]
 fn plugin_host_secrets_and_endpoints_support_environment_references_and_stay_redacted() {
     let config = parse_hosts(
-        r#"[{"id":"h","endpoint":"env('HOST_URL')",
+        r#"[{"id":"h","url":"env('HOST_URL')",
             "auth":{"type":"bearer","token":"env('HOST_TOKEN')"},
             "mediaOrigins":["https://cdn.internal.example"],
             "operations":[{"pluginId":"p","operation":"o","replaySafe":true}]}]"#,
@@ -263,7 +262,7 @@ fn plugin_host_secrets_and_endpoints_support_environment_references_and_stay_red
     .unwrap();
     let host = &config.plugin_hosts[0];
 
-    assert_eq!(host.endpoint.as_str(), "https://sources.internal.example/");
+    assert_eq!(host.url.as_str(), "https://sources.internal.example/");
     assert_eq!(
         host.token.as_ref().unwrap().expose(),
         "0123456789abcdef-token"
@@ -279,7 +278,7 @@ fn plugin_host_secrets_and_endpoints_support_environment_references_and_stay_red
     assert!(!format!("{host:?}").contains("0123456789abcdef-token"));
     assert!(matches!(
         parse_hosts(
-            r#"[{"id":"h","endpoint":"env('MISSING')","operations":[{"pluginId":"p","operation":"o"}]}]"#
+            r#"[{"id":"h","url":"env('MISSING')","operations":[{"pluginId":"p","operation":"o"}]}]"#
         ),
         Err(ConfigError::MissingEnvironment { .. })
     ));
@@ -292,26 +291,25 @@ fn plugin_host_registrations_are_strictly_validated() {
         // Duplicate host IDs fail startup.
         format!("[{HOST},{HOST}]"),
         // Unknown fields, bad IDs and endpoints.
-        format!(r#"[{{"id":"h","endpoint":"https://a.example","extra":1,{operation}}}]"#),
-        format!(r#"[{{"id":"bad id","endpoint":"https://a.example",{operation}}}]"#),
-        format!(r#"[{{"id":"h","endpoint":"ftp://a.example",{operation}}}]"#),
-        format!(r#"[{{"id":"h","endpoint":"https://a.example/v1",{operation}}}]"#),
-        format!(r#"[{{"id":"h","endpoint":"https://u:p@a.example",{operation}}}]"#),
-        format!(r#"[{{"id":"h","endpoint":"https://a.example/?q=1",{operation}}}]"#),
+        format!(r#"[{{"id":"h","url":"https://a.example","extra":1,{operation}}}]"#),
+        format!(r#"[{{"id":"bad id","url":"https://a.example",{operation}}}]"#),
+        format!(r#"[{{"id":"h","url":"ftp://a.example",{operation}}}]"#),
+        format!(r#"[{{"id":"h","url":"https://a.example/v1",{operation}}}]"#),
+        format!(r#"[{{"id":"h","url":"https://u:p@a.example",{operation}}}]"#),
+        format!(r#"[{{"id":"h","url":"https://a.example/?q=1",{operation}}}]"#),
         // Cleartext HTTP and private literals require explicit opt-ins.
-        format!(r#"[{{"id":"h","endpoint":"http://a.example",{operation}}}]"#),
-        format!(r#"[{{"id":"h","endpoint":"https://127.0.0.1:9",{operation}}}]"#),
+        format!(r#"[{{"id":"h","url":"http://a.example",{operation}}}]"#),
         // Credentials and operations.
-        format!(r#"[{{"id":"h","endpoint":"https://a.example","auth":{{"type":"bearer","token":"short"}},{operation}}}]"#),
-        format!(r#"[{{"id":"h","endpoint":"https://a.example","auth":{{"type":"basic"}},{operation}}}]"#),
-        r#"[{"id":"h","endpoint":"https://a.example","operations":[]}]"#.to_owned(),
-        r#"[{"id":"h","endpoint":"https://a.example"}]"#.to_owned(),
-        r#"[{"id":"h","endpoint":"https://a.example","operations":[{"pluginId":"p","operation":"o"},{"pluginId":"p","operation":"o"}]}]"#.to_owned(),
-        r#"[{"id":"h","endpoint":"https://a.example","operations":[{"pluginId":"p/x","operation":"o"}]}]"#.to_owned(),
+        format!(r#"[{{"id":"h","url":"https://a.example","auth":{{"type":"bearer","token":"short"}},{operation}}}]"#),
+        format!(r#"[{{"id":"h","url":"https://a.example","auth":{{"type":"basic"}},{operation}}}]"#),
+        r#"[{"id":"h","url":"https://a.example","operations":[]}]"#.to_owned(),
+        r#"[{"id":"h","url":"https://a.example"}]"#.to_owned(),
+        r#"[{"id":"h","url":"https://a.example","operations":[{"pluginId":"p","operation":"o"},{"pluginId":"p","operation":"o"}]}]"#.to_owned(),
+        r#"[{"id":"h","url":"https://a.example","operations":[{"pluginId":"p/x","operation":"o"}]}]"#.to_owned(),
         // Limits.
-        format!(r#"[{{"id":"h","endpoint":"https://a.example","limits":{{"maxAttempts":9}},{operation}}}]"#),
-        format!(r#"[{{"id":"h","endpoint":"https://a.example","limits":{{"maxActiveStreams":0}},{operation}}}]"#),
-        format!(r#"[{{"id":"h","endpoint":"https://a.example","limits":{{"requestTimeoutMs":0}},{operation}}}]"#),
+        format!(r#"[{{"id":"h","url":"https://a.example","limits":{{"maxAttempts":9}},{operation}}}]"#),
+        format!(r#"[{{"id":"h","url":"https://a.example","limits":{{"maxActiveStreams":0}},{operation}}}]"#),
+        format!(r#"[{{"id":"h","url":"https://a.example","limits":{{"requestTimeoutMs":0}},{operation}}}]"#),
     ];
 
     for hosts in invalid {
@@ -319,12 +317,11 @@ fn plugin_host_registrations_are_strictly_validated() {
     }
 
     let allowed = parse_hosts(&format!(
-        r#"[{{"id":"h","endpoint":"http://127.0.0.1:9","allowInsecureHttp":true,"allowPrivateNetwork":true,{operation}}}]"#
+        r#"[{{"id":"h","url":"http://127.0.0.1:9","allowHttp":true,{operation}}}]"#
     ))
     .unwrap();
 
-    assert!(allowed.plugin_hosts[0].allow_insecure_http);
-    assert!(allowed.plugin_hosts[0].allow_private_network);
+    assert!(allowed.plugin_hosts[0].allow_http);
 }
 
 #[test]

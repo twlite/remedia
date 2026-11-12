@@ -33,7 +33,7 @@ fn env_references_are_exact_and_do_not_execute_content() {
 #[test]
 fn lenient_resolution_validates_structure_without_unrelated_secrets() {
     let json = r#"{"users":[{"username":"bot","password":"env('NOT_SET')"}],
-        "pluginHosts":[{"id":"h","endpoint":"env('ALSO_NOT_SET')",
+        "pluginHosts":[{"id":"h","url":"env('ALSO_NOT_SET')",
         "auth":{"type":"bearer","token":"env('TOKEN_NOT_SET')"},
         "operations":[{"pluginId":"p","operation":"o"}]}]}"#;
     let mut env = Env::lenient(|_| None);
@@ -59,7 +59,7 @@ fn lenient_resolution_validates_structure_without_unrelated_secrets() {
 fn hosts_are_enabled_unless_explicitly_disabled_and_disabled_hosts_are_still_validated() {
     let host = |extra: &str| {
         format!(
-            r#"{{"users":[{{"username":"bot","password":"x"}}],"pluginHosts":[{{"id":"h","endpoint":"https://a.example",{extra}"operations":[{{"pluginId":"p","operation":"o"}}]}}]}}"#
+            r#"{{"users":[{{"username":"bot","password":"x"}}],"pluginHosts":[{{"id":"h","url":"https://a.example",{extra}"operations":[{{"pluginId":"p","operation":"o"}}]}}]}}"#
         )
     };
 
@@ -124,4 +124,52 @@ fn raw_default_expansion_matches_zod() {
 #[test]
 fn minimal_configuration_is_valid() {
     assert!(strict(MINIMAL).is_ok());
+}
+
+#[test]
+fn single_user_auth_defaults_and_conflicts() {
+    let settings =
+        strict(r#"{"auth":{"password":"env('BOT_PASSWORD')"},"listen":"[::1]:0"}"#).unwrap();
+
+    assert_eq!(settings.users[0].username, "remedia");
+    assert_eq!(settings.users[0].password, "secret");
+    assert_eq!(settings.bind_host, "::1");
+    assert_eq!(settings.port, 0);
+    assert!(strict(r#"{"auth":{"password":"x"},"users":[]}"#).is_err());
+    assert!(strict(r#"{"auth":{"password":""}}"#).is_err());
+}
+
+#[test]
+fn explicit_local_origins_are_trusted_without_authorizing_other_destinations() {
+    let settings = strict(
+        r#"{"auth":{"password":"x"},"pluginHosts":[{
+        "id":"local","url":"http://localhost:5678","allowHttp":true,
+        "mediaOrigins":["https://192.168.1.2"],"operations":["p/o"]
+    }]}"#,
+    )
+    .unwrap();
+    let host = &settings.plugin_hosts[0];
+
+    assert!(host.owns_media_origin(&url::Url::parse("http://localhost:5678/audio").unwrap()));
+    assert!(!host.owns_media_origin(&url::Url::parse("http://localhost:5679/audio").unwrap()));
+    assert!(
+        transport::ensure_literal_ip_allowed(
+            host,
+            &url::Url::parse("https://192.168.1.2/audio").unwrap()
+        )
+        .is_ok()
+    );
+    assert!(
+        transport::ensure_literal_ip_allowed(
+            host,
+            &url::Url::parse("https://192.168.1.3/audio").unwrap()
+        )
+        .is_err()
+    );
+    assert!(
+        host.operation("p", "o")
+            .is_some_and(|operation| !operation.replay_safe)
+    );
+    assert!(host.operation("p", "unlisted").is_none());
+    assert!(settings.media.block_private_networks);
 }

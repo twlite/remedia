@@ -260,15 +260,9 @@ fn standard_host() -> Host {
 }
 
 fn install_args<'a>(host: &'a Host, extra: &[&'a str]) -> Vec<String> {
-    let mut args: Vec<String> = [
-        "plugins",
-        "install",
-        &host.url(),
-        "--allow-insecure-http",
-        "--allow-private-network",
-    ]
-    .map(String::from)
-    .to_vec();
+    let mut args: Vec<String> = ["plugins", "install", &host.url()]
+        .map(String::from)
+        .to_vec();
 
     args.extend(extra.iter().map(|value| (*value).to_owned()));
 
@@ -305,15 +299,14 @@ fn install_registers_only_the_selected_operations_with_conservative_defaults() {
 
     // The display name became the stable ID; nothing was enabled implicitly.
     assert_eq!(entry["id"], "example-host");
-    assert_eq!(entry["endpoint"], host.url());
-    assert_eq!(entry["allowInsecureHttp"], true);
-    assert_eq!(entry["allowPrivateNetwork"], true);
+    assert_eq!(entry["url"], host.url());
+    assert_eq!(entry["allowHttp"], true);
     assert!(entry.get("auth").is_none());
     assert_eq!(
         entry["operations"],
         json!([
-            {"pluginId": "example.metadata", "operation": "catalog.search", "replaySafe": false},
-            {"pluginId": "example.source", "operation": "source.stream", "replaySafe": false},
+            "example.metadata/catalog.search",
+            "example.source/source.stream",
         ])
     );
     // Unrelated content is untouched, including `$schema` and formatting.
@@ -349,8 +342,11 @@ fn replay_safety_is_an_explicit_operator_decision() {
 
     for operation in operations.as_array().unwrap() {
         assert_eq!(
-            operation["replaySafe"],
-            operation["operation"] == "catalog.search",
+            operation
+                .get("replaySafe")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            operation.get("operation").and_then(Value::as_str) == Some("catalog.search"),
             "{operation}"
         );
     }
@@ -455,7 +451,7 @@ fn a_declared_host_id_wins_and_conflicts_are_detected() {
     assert_eq!(code(&installed), 0, "{}", text(&installed));
     assert_eq!(workspace.json()["pluginHosts"][0]["id"], "declared-id");
 
-    // The same host again, and the same ID on another endpoint, are both refused.
+    // The same host again, and the same ID on another url, are both refused.
     let again = run_install(&workspace, &host, &["--all-operations", "--yes"]);
 
     assert_eq!(code(&again), 1);
@@ -467,15 +463,15 @@ fn a_declared_host_id_wins_and_conflicts_are_detected() {
     assert_eq!(code(&clash), 1);
     assert!(text(&clash).contains("different host"));
 
-    let same_endpoint = Host::start(manifest(None, None, &[("p", "o")]));
+    let same_url = Host::start(manifest(None, None, &[("p", "o")]));
     let first = run_install(
         &workspace,
-        &same_endpoint,
+        &same_url,
         &["--id", "one", "--all-operations", "--yes"],
     );
     let second = run_install(
         &workspace,
-        &same_endpoint,
+        &same_url,
         &["--id", "two", "--all-operations", "--yes"],
     );
 
@@ -564,27 +560,12 @@ fn authenticated_hosts_use_environment_references_and_never_leak_the_token() {
 }
 
 #[test]
-fn unsafe_endpoints_and_hostile_hosts_are_rejected_and_yes_does_not_relax_them() {
+fn unsafe_urls_and_hostile_hosts_are_rejected_and_yes_does_not_relax_them() {
     let host = standard_host();
     let workspace = Workspace::with_config(BASE);
 
-    // Cleartext and loopback need explicit opt-ins; `--yes` is not one of them.
+    // Credentials, paths and queries are never allowed in configured origins.
     for args in [
-        vec![
-            "plugins",
-            "install",
-            &host.url(),
-            "--all-operations",
-            "--yes",
-        ],
-        vec![
-            "plugins",
-            "install",
-            &host.url(),
-            "--allow-insecure-http",
-            "--all-operations",
-            "--yes",
-        ],
         vec![
             "plugins",
             "install",
@@ -658,18 +639,10 @@ fn network_failures_and_timeouts_are_reported_without_changes() {
 
     drop(dead);
 
-    let refused = workspace.run(&[
-        "plugins",
-        "install",
-        &url,
-        "--allow-insecure-http",
-        "--allow-private-network",
-        "--all-operations",
-        "--yes",
-    ]);
+    let refused = workspace.run(&["plugins", "install", &url, "--all-operations", "--yes"]);
 
     assert_eq!(code(&refused), 1);
-    assert!(text(&refused).contains("connection failed"));
+    assert!(text(&refused).contains("refused the connection"));
     assert_eq!(workspace.read(), BASE);
 }
 
@@ -713,7 +686,7 @@ fn missing_and_invalid_configurations_are_never_created_or_repaired() {
 
 fn with_hosts(host: &Host, extra: &str) -> String {
     format!(
-        "{{\n  \"users\": [{{ \"username\": \"bot\", \"password\": \"x\" }}],\n  \"pluginHosts\": [\n    {{\n      \"id\": \"alpha\",\n      \"endpoint\": \"{url}\",\n      \"allowInsecureHttp\": true,\n      \"allowPrivateNetwork\": true,\n      {extra}\n      \"operations\": [\n        {{ \"pluginId\": \"example.metadata\", \"operation\": \"catalog.search\", \"replaySafe\": true }},\n        {{ \"pluginId\": \"example.metadata\", \"operation\": \"retired.operation\" }}\n      ]\n    }},\n    {{\n      \"id\": \"beta\",\n      \"endpoint\": \"https://beta.example.com\",\n      \"operations\": [{{ \"pluginId\": \"p\", \"operation\": \"o\" }}]\n    }}\n  ]\n}}\n",
+        "{{\n  \"users\": [{{ \"username\": \"bot\", \"password\": \"x\" }}],\n  \"pluginHosts\": [\n    {{\n      \"id\": \"alpha\",\n      \"url\": \"{url}\",\n      \"allowHttp\": true,\n      \n      {extra}\n      \"operations\": [\n        {{ \"pluginId\": \"example.metadata\", \"operation\": \"catalog.search\", \"replaySafe\": true }},\n        {{ \"pluginId\": \"example.metadata\", \"operation\": \"retired.operation\" }}\n      ]\n    }},\n    {{\n      \"id\": \"beta\",\n      \"url\": \"https://beta.example.com\",\n      \"operations\": [{{ \"pluginId\": \"p\", \"operation\": \"o\" }}]\n    }}\n  ]\n}}\n",
         url = host.url()
     )
 }
@@ -898,7 +871,7 @@ fn sync_reports_differences_read_only_by_default() {
         &[("example.metadata", "catalog.search")],
     ));
     let clean = Workspace::with_config(&format!(
-        "{{\"users\":[{{\"username\":\"b\",\"password\":\"x\"}}],\"pluginHosts\":[{{\"id\":\"c\",\"endpoint\":\"{}\",\"allowInsecureHttp\":true,\"allowPrivateNetwork\":true,\"operations\":[{{\"pluginId\":\"example.metadata\",\"operation\":\"catalog.search\"}}]}}]}}",
+        "{{\"users\":[{{\"username\":\"b\",\"password\":\"x\"}}],\"pluginHosts\":[{{\"id\":\"c\",\"url\":\"{}\",\"allowHttp\":true,\"operations\":[{{\"pluginId\":\"example.metadata\",\"operation\":\"catalog.search\"}}]}}]}}",
         in_sync.url()
     ));
 
@@ -961,14 +934,19 @@ fn sync_applies_only_approved_changes_and_never_enables_or_changes_anything_else
         .as_array()
         .unwrap()
         .iter()
-        .map(|operation| operation["operation"].as_str().unwrap())
+        .map(|operation| {
+            operation
+                .as_str()
+                .and_then(|name| name.split_once('/').map(|(_, op)| op))
+                .unwrap_or_else(|| operation["operation"].as_str().unwrap())
+        })
         .collect();
 
     // The retired operation is gone, one operation was added (replay-safe off), `source.stream`
     // was not enabled, and an existing replaySafe value is untouched.
     assert_eq!(names, ["catalog.search", "lyrics.search"]);
     assert_eq!(operations[0]["replaySafe"], true);
-    assert_eq!(operations[1]["replaySafe"], false);
+    assert_eq!(operations[1], "example.metadata/lyrics.search");
     assert_eq!(workspace.json()["pluginHosts"][1]["id"], "beta");
 }
 
@@ -988,7 +966,13 @@ fn sync_prompts_for_each_change_and_ignores_declined_ones() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|operation| operation["operation"].as_str().unwrap().to_owned())
+        .map(|operation| {
+            operation
+                .as_str()
+                .and_then(|name| name.split_once('/').map(|(_, op)| op))
+                .unwrap_or_else(|| operation["operation"].as_str().unwrap())
+                .to_owned()
+        })
         .collect();
 
     // retired.operation kept (n), lyrics.search added (y), source.stream skipped (n).
@@ -1006,7 +990,7 @@ fn an_unreachable_host_never_loses_its_configuration() {
     drop(dead);
 
     let config = format!(
-        "{{\"users\":[{{\"username\":\"b\",\"password\":\"x\"}}],\"pluginHosts\":[{{\"id\":\"gone\",\"endpoint\":\"{url}\",\"allowInsecureHttp\":true,\"allowPrivateNetwork\":true,\"operations\":[{{\"pluginId\":\"p\",\"operation\":\"o\"}}]}}]}}"
+        "{{\"users\":[{{\"username\":\"b\",\"password\":\"x\"}}],\"pluginHosts\":[{{\"id\":\"gone\",\"url\":\"{url}\",\"allowHttp\":true,\"operations\":[{{\"pluginId\":\"p\",\"operation\":\"o\"}}]}}]}}"
     );
     let workspace = Workspace::with_config(&config);
     let output = workspace.run(&["plugins", "sync", "--apply", "--remove-missing", "--yes"]);

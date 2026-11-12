@@ -276,7 +276,7 @@ mod tests {
     use super::*;
 
     fn config() -> PluginHostConfig {
-        let json = r#"{"users":[{"username":"u","password":"p"}],"pluginHosts":[{"id":"host-a","endpoint":"https://example.com","operations":[{"pluginId":"p","operation":"o"}]}]}"#;
+        let json = r#"{"users":[{"username":"u","password":"p"}],"pluginHosts":[{"id":"host-a","url":"https://example.com","operations":[{"pluginId":"p","operation":"o"}]}]}"#;
 
         crate::parse(
             json,

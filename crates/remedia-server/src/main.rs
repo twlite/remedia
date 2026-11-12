@@ -49,6 +49,8 @@ struct Cli {
 enum Commands {
     /// Start the FFmpeg-enabled server (default).
     Serve,
+    /// Create a minimal configuration with a random local password.
+    Init,
     /// Check native FFmpeg libraries and validate configuration.
     Doctor,
     /// List live Remedia instances for this operating-system user.
@@ -182,6 +184,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         return Err("--json requires --list or the list subcommand".into());
     }
     match cli.command.as_ref() {
+        Some(Commands::Init) => generate_config_file(
+            cli.config
+                .as_deref()
+                .unwrap_or(Path::new("remedia.config.json")),
+        ),
         Some(Commands::Update { no_ffmpeg }) => update(*no_ffmpeg),
         Some(Commands::Doctor) => launch_runtime(&cli, true),
         Some(Commands::Serve) | None => launch_runtime(&cli, false),
@@ -320,17 +327,16 @@ fn launch_runtime(cli: &Cli, doctor: bool) -> Result<(), Box<dyn std::error::Err
 }
 
 fn generate_config_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use rand::Rng;
+
+    let password: String = rand::rng()
+        .sample_iter(rand::distr::Alphanumeric)
+        .take(48)
+        .map(char::from)
+        .collect();
     let config = serde_json::json!({
-        "$schema": "https://twlite.github.io/remedia/schemas/remedia.config.schema.json",
-        "bind": {"host": "127.0.0.1", "port": 8787},
-        "users": [{"username": "media-bot", "password": "env('REMEDIA_RPC_PASSWORD')"}],
-        "media": {
-            "allowedFileRoots": [],
-            "allowedUrlHosts": [],
-            "allowHttp": false,
-            "allowHttps": true,
-            "blockPrivateNetworks": true
-        }
+        "$schema": "https://remedia.twlite.dev/schemas/remedia.config.schema.json",
+        "auth": {"password": password}
     });
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -346,7 +352,7 @@ fn generate_config_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     file.sync_all()?;
     println!("Generated {}", path.display());
     println!(
-        "Set REMEDIA_RPC_PASSWORD, then run: remedia-server --config {}",
+        "Credentials are stored in the configuration. Run: remedia-server --config {}",
         path.display()
     );
     Ok(())
@@ -486,8 +492,6 @@ mod tests {
             "--all-operations",
             "--replay-safe",
             "a/b",
-            "--allow-insecure-http",
-            "--allow-private-network",
             "--yes",
             "--dry-run",
         ]) else {
@@ -498,7 +502,6 @@ mod tests {
         assert_eq!(install.token_env.as_deref(), Some("T"));
         assert_eq!(install.operations, ["a/b", "c/d"]);
         assert!(install.all_operations && install.yes && install.dry_run);
-        assert!(install.allow_insecure_http && install.allow_private_network);
         assert!(
             matches!(plugins(&["plugins", "uninstall", "x", "--yes", "--dry-run"]), P::Uninstall(args) if args.yes && args.dry_run)
         );

@@ -19,7 +19,7 @@ The published `ghcr.io/twlite/remedia` image and Compose example run the standal
 ## Local development
 
 For local use, install the server with the [installer](/docs/server/installation), run
-`remedia-server --generate-config-file`, set `REMEDIA_RPC_PASSWORD`, and start `remedia-server`.
+`remedia init`, read the generated credentials from `remedia.config.json`, and start `remedia-server`.
 The listener defaults to `127.0.0.1:8787` and accepts WebSocket RPC at `/v1/ws`.
 
 Discord bot identity is sent by each client as the `X-Remedia-Bot-Id` WebSocket handshake header.

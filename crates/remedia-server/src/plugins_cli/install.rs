@@ -11,14 +11,8 @@ pub async fn run(session: &Session, args: &InstallArgs) -> Result<u8, Failure> {
     let loaded = session.load()?;
 
     loaded.note_unresolved();
-    let config = candidate(
-        session,
-        &args.url,
-        args.token_env.as_deref(),
-        args.allow_insecure_http,
-        args.allow_private_network,
-    )?;
-    let origin = config.endpoint.origin().ascii_serialization();
+    let config = candidate(session, &args.url, args.token_env.as_deref())?;
+    let origin = config.url.origin().ascii_serialization();
 
     // An explicit ID must be valid before anything is contacted.
     if let Some(id) = &args.id
@@ -51,7 +45,7 @@ pub async fn run(session: &Session, args: &InstallArgs) -> Result<u8, Failure> {
         }
         (Some(declared), _) => declared.to_owned(),
         (None, Some(requested)) => requested.to_owned(),
-        (None, None) => derive_id(manifest.name(), &config.endpoint),
+        (None, None) => derive_id(manifest.name(), &config.url),
     };
 
     if !remedia_server_config::valid_identifier(&id) {
@@ -60,7 +54,7 @@ pub async fn run(session: &Session, args: &InstallArgs) -> Result<u8, Failure> {
         )));
     }
 
-    // Conflicts: same ID, or same endpoint under another ID.
+    // Conflicts: same ID, or same url under another ID.
     for existing in raw_hosts(loaded.text.as_str()) {
         let existing_id = existing
             .get("id")
@@ -71,7 +65,7 @@ pub async fn run(session: &Session, args: &InstallArgs) -> Result<u8, Failure> {
             .plugin_hosts
             .iter()
             .find(|host| host.id == existing_id)
-            .is_some_and(|host| host.endpoint.origin() == config.endpoint.origin());
+            .is_some_and(|host| host.url.origin() == config.url.origin());
 
         if existing_id == id {
             return Err(Failure::new(if same_endpoint {
@@ -148,7 +142,7 @@ pub async fn run(session: &Session, args: &InstallArgs) -> Result<u8, Failure> {
 
     let mut members = vec![
         ("id".to_owned(), Json::str(&id)),
-        ("endpoint".to_owned(), Json::str(&origin)),
+        ("url".to_owned(), Json::str(&origin)),
     ];
 
     if let Some(variable) = &args.token_env {
@@ -161,12 +155,8 @@ pub async fn run(session: &Session, args: &InstallArgs) -> Result<u8, Failure> {
         ));
     }
 
-    if args.allow_insecure_http {
-        members.push(("allowInsecureHttp".to_owned(), Json::Bool(true)));
-    }
-
-    if args.allow_private_network {
-        members.push(("allowPrivateNetwork".to_owned(), Json::Bool(true)));
+    if config.url.scheme() == "http" {
+        members.push(("allowHttp".to_owned(), Json::Bool(true)));
     }
 
     members.push((
@@ -304,7 +294,7 @@ fn select_operations(
 }
 
 /// A valid ID from the display name, falling back to the hostname.
-fn derive_id(name: Option<&str>, endpoint: &url::Url) -> String {
+fn derive_id(name: Option<&str>, url: &url::Url) -> String {
     let slug = |text: &str| {
         let mut slug = String::new();
 
@@ -324,7 +314,7 @@ fn derive_id(name: Option<&str>, endpoint: &url::Url) -> String {
         return from_name;
     }
 
-    let host = slug(endpoint.host_str().unwrap_or("plugin-host"));
+    let host = slug(url.host_str().unwrap_or("plugin-host"));
 
     if host.is_empty() {
         "plugin-host".to_owned()

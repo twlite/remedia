@@ -6,10 +6,23 @@ description: Strict configuration, environment references, media access, and obs
 Create a JSON configuration before starting the server. The default path is `./remedia.config.json`; `--config PATH` selects another file. Unknown fields, invalid ranges, duplicate accounts, and unresolved environment values fail startup.
 
 ```sh
-remedia --generate-config-file
+remedia init
 ```
 
 The generated file listens on loopback and denies media access until you allow sources. For secret loading, see [Environment and secrets](/docs/server/environment). For all listener, account, media, and capacity defaults, use the [field reference](/docs/server/configuration-reference).
+
+`auth.password` is the only required single-user setting. Its username defaults to `remedia`;
+optionally set `auth.username`. For multiple accounts use `users: [{ username, password }]` instead.
+Exactly one of `auth` or nonempty `users` is required. Credentials support environment references.
+`listen` defaults to `127.0.0.1:8787`; use an IP and port, such as `[::1]:8787` for IPv6.
+Audio, limits, observability and media policy are optional and retain their defaults.
+
+`remedia init` and `--generate-config-file [PATH]` create only schema metadata and `auth.password`
+with a cryptographically random password. Existing files are never overwritten. On Unix the file
+is created with mode `0600`. Read credentials from the file; the CLI never prints them.
+
+This configuration format is breaking: `bind`, `media.allowHttps`, plugin-host `endpoint`,
+`allowInsecureHttp` and `allowPrivateNetwork` are rejected. There are no aliases or fallback parsers.
 
 ## Crossfade capability
 
@@ -51,7 +64,7 @@ The same artifact is distributed as `@remedia/config/schema.json`.
 ```json
 {
   "$schema": "https://remedia.twlite.dev/schemas/remedia.config.schema.json",
-  "users": [{ "username": "bot", "password": "env('REMEDIA_RPC_PASSWORD')" }]
+  "auth": { "password": "env('REMEDIA_PASSWORD')" }
 }
 ```
 
@@ -118,7 +131,7 @@ See [Opus encoding output](/docs/core/outputs#opus-encoding-output) for the Rust
 File paths are canonicalized before use and must be regular files beneath one of the configured
 roots. Use narrowly scoped roots containing only media the server should serve.
 
-Remote inputs accept only HTTP(S), according to `allowHttp` and `allowHttps`. `allowedUrlHosts` is an
+Remote inputs accept only HTTP(S), according to `allowHttp` for HTTP; HTTPS is always permitted by scheme. `allowedUrlHosts` is an
 explicit host allowlist. An empty list denies all hosts. A listed parent domain also matches its
 subdomains. `"*"` opts in to any public hostname. Private, loopback, link-local, multicast, reserved,
 and documentation IP ranges are rejected by default after DNS resolution.

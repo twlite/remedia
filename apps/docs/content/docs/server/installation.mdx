@@ -91,17 +91,17 @@ To manage FFmpeg yourself, download and review the script before running it, the
 
 ## First-run configuration and diagnostics
 
-After installation, generate a default-deny configuration and supply credentials:
+After installation, generate a minimal configuration with secure local credentials:
 
 ```sh
-remedia-server --generate-config-file
-remedia-server doctor --config ./remedia.config.json --env-file .env
-remedia-server serve --config ./remedia.config.json --env-file .env
+remedia init
+remedia doctor --config ./remedia.config.json
+remedia serve --config ./remedia.config.json
 ```
 
 A generated file binds only to loopback and does not allow remote URLs or
-local file playback until explicitly configured. Set `REMEDIA_RPC_PASSWORD`
-in the required `.env` file or the process environment before starting.
+local file playback until explicitly configured. A random password is stored in `auth.password`;
+the username defaults to `remedia`. The CLI never prints credentials or overwrites an existing file.
 
 `remedia-server --list` shows running servers from the same operating-system
 user with their listener address, port, player counts, connections, memory (where

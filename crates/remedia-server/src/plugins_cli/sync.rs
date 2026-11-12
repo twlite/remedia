@@ -75,14 +75,14 @@ pub async fn run(session: &Session, args: &SyncArgs) -> Result<u8, Failure> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        let endpoint = entry.get("endpoint").and_then(Value::as_str).unwrap_or("?");
+        let url = entry.get("url").and_then(Value::as_str).unwrap_or("?");
         let enabled = entry
             .get("enabled")
             .and_then(Value::as_bool)
             .unwrap_or(true);
         let label = if enabled { "" } else { " (disabled)" };
 
-        println!("{id}  {endpoint}{label}");
+        println!("{id}  {url}{label}");
 
         match check_host(session, entry, &id).await {
             Check::NotChecked(reason) => {

@@ -28,7 +28,6 @@ pub use plugin_hosts::{
 };
 use raw::RawConfig;
 
-const DEFAULT_PORT: u16 = 8787;
 const MAX_MESSAGE_BYTES: usize = 1_048_576;
 const MAX_CONNECTIONS: usize = 65_536;
 const MAX_CLIENT_SESSIONS: usize = 10_000;
@@ -117,9 +116,10 @@ impl<'a> Env<'a> {
 
         Some(
             match field {
-                "pluginHosts[].endpoint" | "pluginHosts[].mediaOrigins[]" => {
+                "pluginHosts[].url" | "pluginHosts[].mediaOrigins[]" => {
                     "https://placeholder.invalid"
                 }
+                "listen" => "127.0.0.1:8787",
                 "media.allowedFileRoots[]" => ".",
                 "media.allowedUrlHosts[]" => "placeholder.invalid",
                 _ => "placeholder-value-0123456789abcdef",
@@ -153,7 +153,6 @@ pub struct MediaAccess {
     pub allowed_file_roots: Vec<PathBuf>,
     pub allowed_url_hosts: Vec<String>,
     pub allow_http: bool,
-    pub allow_https: bool,
     pub block_private_networks: bool,
 }
 
@@ -192,7 +191,7 @@ pub struct Settings {
 ///
 /// Relative media roots resolve against `base`.
 pub fn parse(json: &str, base: &Path, env: &mut Env) -> Result<Settings, ConfigError> {
-    let raw: RawConfig = serde_json::from_str(json)?;
+    let mut raw: RawConfig = serde_json::from_str(json)?;
     let opus = OpusSettings {
         bitrate: raw.audio.opus.bitrate,
         complexity: raw.audio.opus.complexity,
@@ -236,10 +235,23 @@ pub fn parse(json: &str, base: &Path, env: &mut Env) -> Result<Settings, ConfigE
         duration_ms: fade.duration_ms,
         prepare_before_ms: fade.prepare_before_ms,
     };
-    let bind_host = resolve_env("bind.host", raw.bind.host, env)?;
+    let listen = resolve_env("listen", raw.listen, env)?;
+    let address: std::net::SocketAddr = listen.parse().map_err(|_| {
+        ConfigError::Invalid("listen must be an IP address and port, for example 127.0.0.1:8787")
+    })?;
+    let bind_host = address.ip().to_string();
 
-    if bind_host.trim().is_empty() {
-        return Err(ConfigError::Invalid("bind.host must not be empty"));
+    if let Some(auth) = raw.auth {
+        if raw.users.is_some() {
+            return Err(ConfigError::Invalid(
+                "configure either auth or users, not both",
+            ));
+        }
+
+        raw.users = Some(vec![raw::RawUser {
+            username: auth.username,
+            password: auth.password,
+        }]);
     }
 
     let resume_timeout_seconds = raw.session_resumption_timeout_seconds;
@@ -250,9 +262,10 @@ pub fn parse(json: &str, base: &Path, env: &mut Env) -> Result<Settings, ConfigE
         ));
     }
 
-    let mut users = Vec::with_capacity(raw.users.len());
+    let raw_users = raw.users.unwrap_or_default();
+    let mut users = Vec::with_capacity(raw_users.len());
 
-    for raw_user in raw.users {
+    for raw_user in raw_users {
         let username = resolve_env("users[].username", raw_user.username, env)?;
         let password = resolve_env("users[].password", raw_user.password, env)?;
 
@@ -358,7 +371,7 @@ pub fn parse(json: &str, base: &Path, env: &mut Env) -> Result<Settings, ConfigE
 
     Ok(Settings {
         bind_host,
-        port: raw.bind.port,
+        port: address.port(),
         users,
         resume_timeout_seconds,
         limits,
@@ -366,7 +379,6 @@ pub fn parse(json: &str, base: &Path, env: &mut Env) -> Result<Settings, ConfigE
             allowed_file_roots,
             allowed_url_hosts,
             allow_http: raw.media.allow_http,
-            allow_https: raw.media.allow_https,
             block_private_networks: raw.media.block_private_networks,
         },
         plugin_hosts,
@@ -432,12 +444,12 @@ fn validate_limits(limits: &Limits) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn default_host() -> String {
-    "127.0.0.1".to_owned()
+fn default_listen() -> String {
+    "127.0.0.1:8787".to_owned()
 }
 
-const fn default_port() -> u16 {
-    DEFAULT_PORT
+fn default_username() -> String {
+    "remedia".to_owned()
 }
 
 const fn default_resume_timeout() -> u64 {

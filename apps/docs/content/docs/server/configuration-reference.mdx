@@ -7,10 +7,9 @@ The tables below describe the JSON file consumed by `remedia-server`. Defaults a
 
 ## Listener
 
-| Field       | Default       | Constraints                                          |
-| ----------- | ------------- | ---------------------------------------------------- |
-| `bind.host` | `"127.0.0.1"` | Bind host. Literal or runtime environment reference. |
-| `bind.port` | `8787`        | 0–65535                                              |
+| Field    | Default            | Constraints                                                                           |
+| -------- | ------------------ | ------------------------------------------------------------------------------------- |
+| `listen` | `"127.0.0.1:8787"` | IP address and TCP port 0–65535; IPv6 uses brackets. Supports environment references. |
 
 ## Connection and request limits
 
@@ -33,7 +32,6 @@ The tables below describe the JSON file consumed by `remedia-server`. Defaults a
 | `media.allowedFileRoots`     | `[]`    | Server-local directories. Relative to the config file. ~ expands at startup. Roots must exist and be directories. Empty denies file playback. |
 | `media.allowedUrlHosts`      | `[]`    | Allowed DNS hosts and subdomains. Empty denies URL playback. Wildcard cannot be mixed with specific resolved hosts.                           |
 | `media.allowHttp`            | `true`  | Permit HTTP media URLs, subject to host and network policy.                                                                                   |
-| `media.allowHttps`           | `true`  | Permit HTTPS media URLs, subject to host and network policy.                                                                                  |
 | `media.blockPrivateNetworks` | `true`  | Reject media URLs resolving to private or reserved network addresses.                                                                         |
 
 ## Console output
@@ -44,14 +42,15 @@ The tables below describe the JSON file consumed by `remedia-server`. Defaults a
 
 ## Account and session settings
 
-| Field                             | Default  | Constraints |
-| --------------------------------- | -------- | ----------- |
-| `users`                           | Required | min items 1 |
-| `sessionResumptionTimeoutSeconds` | `60`     | 1–86400     |
+| Field                             | Default                       | Constraints                                           |
+| --------------------------------- | ----------------------------- | ----------------------------------------------------- |
+| `auth`                            | Required unless using `users` | `password` required; `username` defaults to `remedia` |
+| `users`                           | Required unless using `auth`  | min items 1                                           |
+| `sessionResumptionTimeoutSeconds` | `60`                          | 1–86400                                               |
 
 `limits.maxPlayersPerClient` cannot exceed `limits.maxTotalPlayers`. `limits.maxClientSessions` applies per authenticated username.
 
-`users` must contain at least one account. Usernames are unique, nonempty, and cannot contain a colon or control characters. Passwords are nonempty. Both values support [environment references](/docs/server/environment#environment-references).
+Configure exactly one of `auth` or `users`. `users` must contain at least one account. Usernames are unique, nonempty, and cannot contain a colon or control characters. Passwords are nonempty. Both values support [environment references](/docs/server/environment#environment-references).
 
 ## Audio and plugins
 

@@ -1,8 +1,5 @@
 {
-  "bind": {
-    "host": "127.0.0.1",
-    "port": 8787
-  },
+  "listen": "127.0.0.1:8787",
   "users": [
     {
       "username": "bot",
@@ -25,7 +22,7 @@
     "allowedFileRoots": [],
     "allowedUrlHosts": [],
     "allowHttp": true,
-    "allowHttps": true,
+
     "blockPrivateNetworks": true
   },
   "audio": {

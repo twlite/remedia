@@ -473,7 +473,7 @@ describe('Rust server with generic plugin hosts', () => {
       // Allowed by the operator but never registered on the host.
       { pluginId: METADATA_PLUGIN_ID, operation: 'catalog.ghost', replaySafe: true },
     ];
-    const base = { allowInsecureHttp: true, allowPrivateNetwork: true, operations };
+    const base = { allowHttp: true, operations };
 
     configDirectory = await mkdtemp(resolve(tmpdir(), 'remedia-plugin-host-'));
 
@@ -482,7 +482,7 @@ describe('Rust server with generic plugin hosts', () => {
     await writeFile(
       configPath,
       JSON.stringify({
-        bind: { host: '127.0.0.1', port: 0 },
+        listen: '127.0.0.1:0',
         users: [{ username: 'sdk-test', password: 'sdk-test-password' }],
         sessionResumptionTimeoutSeconds: 10,
         limits: {
@@ -501,45 +501,45 @@ describe('Rust server with generic plugin hosts', () => {
         pluginHosts: [
           {
             id: 'host-a',
-            endpoint: hostA.origin,
+            url: hostA.origin,
             auth: { type: 'bearer', token: tokens.a },
             ...base,
           },
           {
             id: 'host-b',
-            endpoint: hostB.origin,
+            url: hostB.origin,
             auth: { type: 'bearer', token: tokens.b },
             ...base,
           },
           {
             id: 'host-bad-auth',
-            endpoint: hostC.origin,
+            url: hostC.origin,
             auth: { type: 'bearer', token: tokens.wrong },
             ...base,
           },
           {
             id: 'host-down',
-            endpoint: 'http://127.0.0.1:9',
+            url: 'http://127.0.0.1:9',
             ...base,
             limits: { requestTimeoutMs: 1_500 },
           },
           {
             id: 'host-localhost',
-            endpoint: `http://localhost:${hostLocalhost.port}`,
-            allowInsecureHttp: true,
+            url: `http://localhost:${hostLocalhost.port}`,
+            allowHttp: true,
             operations,
             limits: { requestTimeoutMs: 1_500 },
           },
           {
             id: 'host-small',
-            endpoint: hostSmall.origin,
+            url: hostSmall.origin,
             auth: { type: 'bearer', token: tokens.small },
             ...base,
             limits: { maxMediaBytes: 2_048 },
           },
           {
             id: 'host-tight',
-            endpoint: hostTight.origin,
+            url: hostTight.origin,
             auth: { type: 'bearer', token: tokens.tight },
             ...base,
             limits: { maxPendingOperations: 1, maxActiveStreams: 1 },
@@ -966,14 +966,14 @@ describe('Rust server with generic plugin hosts', () => {
     await stopAll(guildId);
   });
 
-  it('applies DNS policy to hostnames which resolve to private addresses', async () => {
+  it('accepts an explicit private hostname while blocking a different media origin', async () => {
     const guildId = guild();
 
     await node.createGuild(guildId);
     expect(await codeOf(node.play(guildId, op('host-localhost', { track: 'mp3' })))).toBe(
-      'plugin_host_unavailable',
+      'plugin_media_invalid',
     );
-    expect(hostLocalhost.requests).toHaveLength(0);
+    expect(hostLocalhost.requests.length).toBeGreaterThan(0);
     await stopAll(guildId);
   });
 

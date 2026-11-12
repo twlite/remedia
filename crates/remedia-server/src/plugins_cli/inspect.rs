@@ -10,7 +10,7 @@ use super::session::{Loaded, Session};
 use super::{Failure, InspectArgs, ListArgs, host_ids, raw_hosts};
 
 fn endpoint_of(host: &Value) -> String {
-    host.get("endpoint")
+    host.get("url")
         .and_then(Value::as_str)
         .unwrap_or("?")
         .to_owned()
@@ -27,6 +27,12 @@ fn operations_of(host: &Value) -> Vec<(String, String, bool)> {
             operations
                 .iter()
                 .map(|operation| {
+                    if let Some(name) = operation.as_str() {
+                        let (plugin, operation) =
+                            name.split_once('/').expect("validated operation");
+                        return (plugin.to_owned(), operation.to_owned(), false);
+                    }
+
                     (
                         operation
                             .get("pluginId")
@@ -89,7 +95,7 @@ pub fn list(session: &Session, args: &ListArgs) -> Result<u8, Failure> {
             .map(|host| {
                 json!({
                     "id": host.get("id"),
-                    "endpoint": endpoint_of(host),
+                    "url": endpoint_of(host),
                     "enabled": is_enabled(host),
                     "auth": auth_of(host),
                     "operations": operations_of(host).len(),
@@ -230,12 +236,11 @@ pub async fn run(session: &Session, args: &InspectArgs) -> Result<u8, Failure> {
     let limits = &settings.limits;
     let configuration = json!({
         "id": args.host_id,
-        "endpoint": endpoint_of(&entry),
+        "url": endpoint_of(&entry),
         "enabled": is_enabled(&entry),
         "auth": auth_of(&entry),
         "security": {
-            "allowInsecureHttp": settings.allow_insecure_http,
-            "allowPrivateNetwork": settings.allow_private_network,
+            "allowHttp": settings.allow_http,
             "allowExternalMedia": settings.allow_external_media,
             "mediaOrigins": settings.media_origins,
         },
@@ -309,16 +314,15 @@ pub async fn run(session: &Session, args: &InspectArgs) -> Result<u8, Failure> {
     let config = &report["config"];
 
     println!("Host:      {}", args.host_id);
-    println!("Endpoint:  {}", config["endpoint"].as_str().unwrap_or("?"));
+    println!("Endpoint:  {}", config["url"].as_str().unwrap_or("?"));
     println!(
         "Enabled:   {}",
         if is_enabled(&entry) { "yes" } else { "no" }
     );
     println!("Auth:      {}", auth_label(&config["auth"]));
     println!(
-        "Security:  insecure HTTP {}, private network {}, external media {}",
-        yes_no(settings.allow_insecure_http),
-        yes_no(settings.allow_private_network),
+        "Security:  HTTP {}, external media {}",
+        yes_no(settings.allow_http),
         yes_no(settings.allow_external_media)
     );
     println!(

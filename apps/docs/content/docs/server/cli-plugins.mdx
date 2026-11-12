@@ -80,11 +80,23 @@ that requires authentication, or rejects the token, produces an actionable error
 
 ### Local and cleartext hosts
 
-Security restrictions are the same as for a running server, and `--yes` does not relax them. HTTPS is
-required unless you pass `--allow-insecure-http`, and loopback or private-network addresses need
-`--allow-private-network`. Both opt-ins are written to the host's entry. URLs may not contain
-credentials, paths, queries or fragments, redirects are never followed, and responses are size- and
-time-bounded.
+Install local hosts directly:
+
+```sh
+remedia plugins install http://localhost:5678
+```
+
+The CLI discovers the manifest, infers the host ID, asks which operations to authorize and confirms
+the write. HTTP URLs automatically produce `allowHttp: true`; explicitly configured localhost and
+LAN hosts need no additional flags. Noninteractive installs require `--operation PLUGIN/OPERATION`
+(repeatable) or `--all-operations`, plus `--yes`. Replay safety defaults to false.
+URLs may not contain credentials, paths, queries or fragments. Redirects are never followed;
+requests remain bounded in size and time.
+
+Connection diagnostics distinguish refusal, DNS failure, likely scheme mismatch, TLS validation,
+timeout, blocked destination, authentication failure and incompatible manifests where detectable.
+No raw transport error or media grant URL is printed. Check `plugins inspect HOST --check` and
+`doctor` for live status; an advertised operation still needs explicit authorization.
 
 ### List and inspect
 

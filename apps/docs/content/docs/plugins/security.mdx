@@ -13,7 +13,7 @@ The **server operator** decides. Each host entry in `remedia.config.json` lists 
   "pluginHosts": [
     {
       "id": "source-host-1",
-      "endpoint": "https://plugins.example.com",
+      "url": "https://plugins.example.com",
       "auth": { "type": "bearer", "token": "env('REMEDIA_PLUGIN_HOST_TOKEN')" },
       "operations": [
         { "pluginId": "example.metadata", "operation": "catalog.search", "replaySafe": true }
@@ -42,8 +42,8 @@ host says. Set it only for read-only operations.
 
 For every host, discovery, execution, and media downloads follow the same rules:
 
-- HTTPS by default. Cleartext `http:` needs `allowInsecureHttp: true` on that host.
-- Loopback and private-network addresses need `allowPrivateNetwork: true`. Hostnames are resolved once and the checked address is the one connected to, so DNS rebinding cannot swap in a private address.
+- HTTPS by default. Cleartext `http:` needs `allowHttp: true` on that host.
+- Explicitly configured host and media origins may use localhost or LAN addresses. DNS is resolved once per connection and that checked address set is used by the connection. Arbitrary media URLs still follow the ordinary media policy and block private destinations by default.
 - Redirects are never followed.
 - Proxies are never used.
 - Endpoints are origins only: no credentials, path, query, or fragment.

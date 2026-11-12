@@ -18,23 +18,17 @@ const PLACEHOLDER: &str = "discovery";
 /// here and is never written anywhere.
 pub fn candidate(
     session: &Session,
-    endpoint: &str,
+    url: &str,
     token_env: Option<&str>,
-    allow_insecure_http: bool,
-    allow_private_network: bool,
 ) -> Result<PluginHostConfig, Failure> {
     let mut entry = json!({
         "id": "candidate",
-        "endpoint": endpoint,
+        "url": url,
         "operations": [{"pluginId": PLACEHOLDER, "operation": PLACEHOLDER}],
     });
 
-    if allow_insecure_http {
-        entry["allowInsecureHttp"] = json!(true);
-    }
-
-    if allow_private_network {
-        entry["allowPrivateNetwork"] = json!(true);
+    if url::Url::parse(url).is_ok_and(|url| url.scheme() == "http") {
+        entry["allowHttp"] = json!(true);
     }
 
     if let Some(variable) = token_env {
@@ -75,11 +69,7 @@ pub fn resolve(session: &Session, entry: &serde_json::Value) -> Result<PluginHos
 }
 
 fn hint(message: String) -> String {
-    if message.contains("must use https") {
-        format!("{message}. Pass --allow-insecure-http to permit cleartext HTTP for this host.")
-    } else if message.contains("private or loopback") {
-        format!("{message}. Pass --allow-private-network to permit it for this host.")
-    } else if message.contains("references environment variable") {
+    if message.contains("references environment variable") {
         format!("{message}.")
     } else {
         message

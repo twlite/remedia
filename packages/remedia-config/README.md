@@ -8,7 +8,7 @@ not publish it.
 import { RemediaConfigSchema, type RemediaConfig } from '@remedia/config';
 
 const config: RemediaConfig = {
-  users: [{ username: 'bot', password: "env('REMEDIA_RPC_PASSWORD')" }],
+  auth: { password: "env('REMEDIA_PASSWORD')" },
 };
 const validated = RemediaConfigSchema.parse(config);
 ```
@@ -24,7 +24,7 @@ with `pnpm --filter @remedia/config schema:check`. The exported
 `generateJsonSchema()` uses Zod's native draft 2020-12 conversion. The package
 exports `@remedia/config/schema.json`; the identical docs artifact is
 `apps/docs/public/schemas/remedia.config.schema.json`, deployed at
-`https://twlite.github.io/remedia/schemas/remedia.config.schema.json` with the docs.
+`https://remedia.twlite.dev/schemas/remedia.config.schema.json` with the docs.
 No server fetch or Node.js runtime dependency is introduced by `$schema` metadata.
 
 JSON Schema describes types, defaults, enums, numeric bounds, and strict objects.

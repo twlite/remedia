@@ -39,7 +39,7 @@ pub async fn diagnose_plugin_hosts(config: &ServerConfig) -> Vec<HostDiagnostic>
             .filter(|host| !host.enabled)
             .map(|host| HostDiagnostic {
                 id: host.id.clone(),
-                origin: host.endpoint.origin().ascii_serialization(),
+                origin: host.url.origin().ascii_serialization(),
                 state: "disabled",
                 detail: None,
                 advertised_operations: 0,

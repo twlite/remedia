@@ -21,7 +21,7 @@ Configure the plugin host **only on the Remedia server**:
   "pluginHosts": [
     {
       "id": "source-host-1",
-      "endpoint": "https://plugins.example.com",
+      "url": "https://plugins.example.com",
       "auth": { "type": "bearer", "token": "env('REMEDIA_PLUGIN_HOST_TOKEN')" },
       "operations": [
         { "pluginId": "example.metadata", "operation": "catalog.search", "replaySafe": true },

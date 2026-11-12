@@ -140,7 +140,7 @@ fn list_reads_live_server_stats_without_rpc_credentials() {
     let root = temp_root();
     let config = root.join("config.json");
     let password = root.join(".env");
-    fs::write(&config, r#"{"bind":{"host":"127.0.0.1","port":0},"users":[{"username":"bot","password":"env('REMEDIA_TEST_CLI_PASSWORD')"}]}"#).unwrap();
+    fs::write(&config, r#"{"listen": "127.0.0.1:0","users":[{"username":"bot","password":"env('REMEDIA_TEST_CLI_PASSWORD')"}]}"#).unwrap();
     fs::write(&password, "REMEDIA_TEST_CLI_PASSWORD=test-secret\n").unwrap();
     let mut server = cli(&root)
         .args([
@@ -444,6 +444,46 @@ fn doctor_preserves_unexpected_runtime_exit_codes_and_signals() {
         assert!(stdout.contains("FFmpeg NOT CHECKED"), "{stdout}");
         assert!(stderr.contains("unrelated runtime failure"), "{stderr}");
         assert!(!stderr.contains("Install FFmpeg"), "{stderr}");
+    }
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn init_creates_private_minimal_credentials_without_logging_or_overwriting_them() {
+    let root = temp_root();
+    let output = cli(&root).current_dir(&root).arg("init").output().unwrap();
+
+    assert!(output.status.success());
+
+    let path = root.join("remedia.config.json");
+    let bytes = fs::read(&path).unwrap();
+    let config: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let password = config["auth"]["password"].as_str().unwrap();
+
+    assert_eq!(config.as_object().unwrap().len(), 2);
+    assert_eq!(password.len(), 48);
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(password));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(password));
+    assert!(
+        !cli(&root)
+            .current_dir(&root)
+            .arg("init")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     fs::remove_dir_all(root).unwrap();

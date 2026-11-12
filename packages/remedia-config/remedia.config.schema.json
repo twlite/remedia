@@ -6,14 +6,24 @@
       "description": "Editor JSON Schema URI; metadata only, never fetched by the server.",
       "type": ["string", "null"]
     },
-    "bind": {
-      "description": "RPC listen address.",
-      "default": {},
+    "listen": {
+      "default": "127.0.0.1:8787",
+      "description": "IP address and TCP port; IPv6 uses brackets. Literal or runtime environment reference.",
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^env\\('[A-Za-z_][A-Za-z0-9_]*'\\)$",
+          "description": "Runtime environment reference, for example env('REMEDIA_RPC_PASSWORD'). Validation never resolves it."
+        },
+        { "type": "string" }
+      ]
+    },
+    "auth": {
+      "description": "Single account credentials; configure either auth or users.",
       "type": "object",
       "properties": {
-        "host": {
-          "default": "127.0.0.1",
-          "description": "Bind host; literal or runtime environment reference.",
+        "username": {
+          "default": "remedia",
           "anyOf": [
             {
               "type": "string",
@@ -21,16 +31,22 @@
               "description": "Runtime environment reference, for example env('REMEDIA_RPC_PASSWORD'). Validation never resolves it."
             },
             { "type": "string" }
-          ]
+          ],
+          "description": "Basic authentication username; literal or runtime environment reference. Resolved usernames must be unique."
         },
-        "port": {
-          "default": 8787,
-          "description": "TCP listen port; zero requests an ephemeral port.",
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 65535
+        "password": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^env\\('[A-Za-z_][A-Za-z0-9_]*'\\)$",
+              "description": "Runtime environment reference, for example env('REMEDIA_RPC_PASSWORD'). Validation never resolves it."
+            },
+            { "type": "string" }
+          ],
+          "description": "Basic authentication password; literal or runtime environment reference. Never exposed by configuration inspection."
         }
       },
+      "required": ["password"],
       "additionalProperties": false
     },
     "users": {
@@ -65,7 +81,7 @@
         "required": ["username", "password"],
         "additionalProperties": false
       },
-      "description": "Required authenticated users; duplicate resolved usernames are rejected at startup."
+      "description": "Authenticated users; configure either auth or users."
     },
     "sessionResumptionTimeoutSeconds": {
       "default": 60,
@@ -185,11 +201,6 @@
           "description": "Permit HTTP media URLs, subject to host and network policy.",
           "type": "boolean"
         },
-        "allowHttps": {
-          "default": true,
-          "description": "Permit HTTPS media URLs, subject to host and network policy.",
-          "type": "boolean"
-        },
         "blockPrivateNetworks": {
           "default": true,
           "description": "Reject media URLs resolving to private or reserved network addresses.",
@@ -216,7 +227,7 @@
             "description": "Disabled hosts keep their configuration but are not registered as executable at startup.",
             "type": "boolean"
           },
-          "endpoint": {
+          "url": {
             "anyOf": [
               {
                 "type": "string",
@@ -225,7 +236,7 @@
               },
               { "type": "string" }
             ],
-            "description": "Discovery and execution origin; https unless allowInsecureHttp."
+            "description": "Discovery and execution origin; https unless allowHttp."
           },
           "auth": {
             "default": { "type": "none" },
@@ -258,14 +269,9 @@
               }
             ]
           },
-          "allowInsecureHttp": {
+          "allowHttp": {
             "default": false,
             "description": "Permit http: endpoints and media origins.",
-            "type": "boolean"
-          },
-          "allowPrivateNetwork": {
-            "default": false,
-            "description": "Permit loopback, private and link-local addresses for this host.",
             "type": "boolean"
           },
           "mediaOrigins": {
@@ -294,20 +300,34 @@
             "maxItems": 256,
             "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "pluginId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$" },
-                "operation": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$" },
-                "replaySafe": {
-                  "default": false,
-                  "description": "Executing again has no side effects; enables retries and grant refresh.",
-                  "type": "boolean"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\\/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "pluginId": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+                    },
+                    "operation": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+                    },
+                    "replaySafe": {
+                      "default": false,
+                      "description": "Executing again has no side effects; enables retries and grant refresh.",
+                      "type": "boolean"
+                    }
+                  },
+                  "required": ["pluginId", "operation"],
+                  "additionalProperties": false
                 }
-              },
-              "required": ["pluginId", "operation"],
-              "additionalProperties": false
+              ]
             },
-            "description": "Allowed (pluginId, operation) pairs."
+            "description": "Explicit PLUGIN/OPERATION allowlist; object entries optionally set replaySafe, default false."
           },
           "limits": {
             "description": "Per-host resource limits.",
@@ -388,7 +408,7 @@
             "additionalProperties": false
           }
         },
-        "required": ["id", "endpoint", "operations"],
+        "required": ["id", "url", "operations"],
         "additionalProperties": false,
         "description": "A generic plugin-host deployment."
       }
@@ -475,8 +495,8 @@
       "additionalProperties": false
     }
   },
-  "required": ["users"],
   "additionalProperties": false,
   "description": "Remedia server configuration. Unknown fields are rejected at every level. Environment references are resolved only by the Rust runtime.",
-  "$id": "https://twlite.github.io/remedia/schemas/remedia.config.schema.json"
+  "$id": "https://remedia.twlite.dev/schemas/remedia.config.schema.json",
+  "oneOf": [{ "required": ["auth"] }, { "required": ["users"] }]
 }

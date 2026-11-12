@@ -1,7 +1,7 @@
 use super::session::Session;
 use super::{Failure, ToggleArgs, host_ids, print_restart_notice, raw_hosts};
 
-/// Enable or disable a host. The entry keeps its endpoint, credentials, operations and limits.
+/// Enable or disable a host. The entry keeps its url, credentials, operations and limits.
 pub fn run(session: &Session, args: &ToggleArgs, enable: bool) -> Result<u8, Failure> {
     let loaded = session.load()?;
 
@@ -54,7 +54,7 @@ pub fn run(session: &Session, args: &ToggleArgs, enable: bool) -> Result<u8, Fai
 
     if !enable {
         println!(
-            "Its endpoint, credentials, operations and limits are kept; run `plugins enable {}` to restore it.",
+            "Its url, credentials, operations and limits are kept; run `plugins enable {}` to restore it.",
             args.host_id
         );
     }

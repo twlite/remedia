@@ -48,7 +48,7 @@ host ID is a stable deployment identifier chosen by you. A manifest `name` is on
   "pluginHosts": [
     {
       "id": "source-host-1",
-      "endpoint": "https://plugins.example.com",
+      "url": "https://plugins.example.com",
       "auth": { "type": "bearer", "token": "env('REMEDIA_PLUGIN_HOST_TOKEN')" },
       "operations": [
         { "pluginId": "example.source", "operation": "source.stream", "replaySafe": true }
@@ -59,8 +59,8 @@ host ID is a stable deployment identifier chosen by you. A manifest `name` is on
 ```
 
 Only allow-listed `(pluginId, operation)` pairs can run, even if the host advertises more. Duplicate
-host IDs, unknown fields, cleartext HTTP without `allowInsecureHttp`, private literal addresses
-without `allowPrivateNetwork`, and invalid limits stop startup. Endpoints are origins (no path, query
+host IDs, unknown fields, cleartext HTTP without `allowHttp`,
+and invalid limits stop startup. Explicitly configured localhost and LAN origins are allowed. Endpoints are origins (no path, query
 or credentials in the URL). The v1 routes are fixed.
 
 ## Discovery and health

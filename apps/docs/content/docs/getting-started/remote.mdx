@@ -28,12 +28,11 @@ See [Install the server](/docs/server/installation) for options, or run the serv
 ## 2. Create a configuration
 
 ```sh
-remedia-server --generate-config-file
-export REMEDIA_RPC_PASSWORD='a-long-random-password'
+remedia init
 ```
 
-This writes `remedia.config.json`. It listens on `127.0.0.1:8787`, reads the password from
-`REMEDIA_RPC_PASSWORD`, and allows no media sources until you configure some. Edit
+This writes `remedia.config.json` with a random `auth.password` and username `remedia`. It listens
+on `127.0.0.1:8787` and allows no media sources until you configure some. Edit
 `media.allowedUrlHosts` to list the hosts your bot may play from, for example
 `["media.example.com"]`. See [Server configuration](/docs/server/configuration).
 
@@ -69,7 +68,7 @@ discord.once(Events.ClientReady, async (ready) => {
         type: 'remote',
         id: 'media-1',
         url: 'remedia://127.0.0.1:8787',
-        auth: { username: 'media-bot', password: process.env.REMEDIA_RPC_PASSWORD! },
+        auth: { username: 'remedia', password: process.env.REMEDIA_PASSWORD! },
       },
     ],
     send(guildId, payload) {
@@ -98,9 +97,9 @@ discord.once(Events.ClientReady, async (ready) => {
 await discord.login(process.env.DISCORD_TOKEN);
 ```
 
-Export `DISCORD_TOKEN` and `REMEDIA_RPC_PASSWORD` in the bot process before running the example. The example logs in, plays one source, and closes both clients.
+Export `DISCORD_TOKEN` and set `REMEDIA_PASSWORD` in the bot process to the generated `auth.password` before running the example. The example logs in, plays one source, and closes both clients.
 
-`media-bot` is the username from the generated configuration. URLs and files are opened **by the
+`remedia` is the username from the generated configuration. URLs and files are opened **by the
 server**, so a `{ file }` source is a path on the server machine and the URL host must be allowed in
 the server configuration. Buffers and Readables need an embedded node.
 

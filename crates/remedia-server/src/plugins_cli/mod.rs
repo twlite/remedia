@@ -84,12 +84,6 @@ pub struct InstallArgs {
     /// Mark an allowed operation as safe to retry (PLUGIN/OPERATION). Repeatable.
     #[arg(long = "replay-safe", value_name = "PLUGIN/OPERATION")]
     pub replay_safe: Vec<String>,
-    /// Permit a cleartext http:// endpoint for this host.
-    #[arg(long)]
-    pub allow_insecure_http: bool,
-    /// Permit a loopback or private-network endpoint for this host.
-    #[arg(long)]
-    pub allow_private_network: bool,
     /// Confirm without prompting. Does not bypass any security restriction.
     #[arg(long, short = 'y')]
     pub yes: bool,
@@ -208,8 +202,12 @@ pub fn parse_operation(value: &str) -> Result<(String, String), Failure> {
         })
 }
 
-/// An allowlist entry as it is written to the configuration. `replaySafe` is always explicit.
+/// Write a compact operation name, or an advanced entry when replay safety is enabled.
 pub fn operation_entry(plugin_id: &str, operation: &str, replay_safe: bool) -> Json {
+    if !replay_safe {
+        return Json::str(format!("{plugin_id}/{operation}"));
+    }
+
     Json::object([
         ("pluginId", Json::str(plugin_id)),
         ("operation", Json::str(operation)),

@@ -20,7 +20,7 @@
           "password": "secret"
         }
       ],
-      "$schema": "https://twlite.github.io/remedia/schemas/remedia.config.schema.json"
+      "$schema": "https://remedia.twlite.dev/schemas/remedia.config.schema.json"
     },
     "valid": true
   },
@@ -121,7 +121,7 @@
     "config": {
       "users": [
         {
-          "username": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+          "username": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
           "password": "a"
         }
       ]
@@ -137,9 +137,7 @@
           "password": "secret"
         }
       ],
-      "bind": {
-        "port": -1
-      }
+      "listen": "127.0.0.1:-1"
     },
     "valid": false
   },
@@ -152,9 +150,7 @@
           "password": "secret"
         }
       ],
-      "bind": {
-        "port": 0
-      }
+      "listen": "127.0.0.1:0"
     },
     "valid": true
   },
@@ -167,9 +163,7 @@
           "password": "secret"
         }
       ],
-      "bind": {
-        "port": 65535
-      }
+      "listen": "127.0.0.1:65535"
     },
     "valid": true
   },
@@ -182,9 +176,7 @@
           "password": "secret"
         }
       ],
-      "bind": {
-        "port": 65536
-      }
+      "listen": "127.0.0.1:65536"
     },
     "valid": false
   },
@@ -197,9 +189,7 @@
           "password": "secret"
         }
       ],
-      "bind": {
-        "port": 0.5
-      }
+      "listen": "127.0.0.1:0.5"
     },
     "valid": false
   },
@@ -827,7 +817,7 @@
         }
       ],
       "bind": {
-        "unexpected": true
+        "extra": true
       }
     },
     "valid": false
@@ -916,7 +906,7 @@
       "pluginHosts": [
         {
           "id": "source-host-1",
-          "endpoint": "https://plugins.example.com",
+          "url": "https://plugins.example.com",
           "operations": [
             {
               "pluginId": "example.source",
@@ -940,7 +930,7 @@
       "pluginHosts": [
         {
           "id": "source-host-1",
-          "endpoint": "https://plugins.example.com",
+          "url": "https://plugins.example.com",
           "operations": [
             {
               "pluginId": "p",
@@ -975,14 +965,14 @@
       "pluginHosts": [
         {
           "id": "source-host-1",
-          "endpoint": "http://plugins.example.com",
+          "url": "http://plugins.example.com",
           "operations": [
             {
               "pluginId": "example.source",
               "operation": "source.stream"
             }
           ],
-          "allowInsecureHttp": true
+          "allowHttp": true
         }
       ]
     },
@@ -1000,7 +990,7 @@
       "pluginHosts": [
         {
           "id": "source-host-1",
-          "endpoint": "https://plugins.example.com",
+          "url": "https://plugins.example.com",
           "operations": [
             {
               "pluginId": "example.source",
@@ -1010,7 +1000,7 @@
         },
         {
           "id": "source-host-1",
-          "endpoint": "https://plugins.example.com",
+          "url": "https://plugins.example.com",
           "operations": [
             {
               "pluginId": "example.source",
@@ -1034,7 +1024,7 @@
       "pluginHosts": [
         {
           "id": "source-host-1",
-          "endpoint": "http://plugins.example.com",
+          "url": "http://plugins.example.com",
           "operations": [
             {
               "pluginId": "example.source",
@@ -1058,7 +1048,7 @@
       "pluginHosts": [
         {
           "id": "source-host-1",
-          "endpoint": "https://plugins.example.com/v1",
+          "url": "https://plugins.example.com/v1",
           "operations": [
             {
               "pluginId": "example.source",
@@ -1082,7 +1072,7 @@
       "pluginHosts": [
         {
           "id": "source-host-1",
-          "endpoint": "https://u:p@plugins.example.com",
+          "url": "https://u:p@plugins.example.com",
           "operations": [
             {
               "pluginId": "example.source",
@@ -1106,7 +1096,7 @@
       "pluginHosts": [
         {
           "id": "source-host-1",
-          "endpoint": "https://plugins.example.com",
+          "url": "https://plugins.example.com",
           "operations": [
             {
               "pluginId": "example.source",
@@ -1134,7 +1124,7 @@
       "pluginHosts": [
         {
           "id": "source-host-1",
-          "endpoint": "https://plugins.example.com",
+          "url": "https://plugins.example.com",
           "operations": [
             {
               "pluginId": "example.source",
@@ -1161,7 +1151,7 @@
       "pluginHosts": [
         {
           "id": "source-host-1",
-          "endpoint": "https://plugins.example.com",
+          "url": "https://plugins.example.com",
           "operations": [
             {
               "pluginId": "example.source",
@@ -1186,7 +1176,7 @@
       "pluginHosts": [
         {
           "id": "bad id",
-          "endpoint": "https://plugins.example.com",
+          "url": "https://plugins.example.com",
           "operations": [
             {
               "pluginId": "example.source",
@@ -1210,7 +1200,7 @@
       "pluginHosts": [
         {
           "id": "source-host-1",
-          "endpoint": "https://plugins.example.com",
+          "url": "https://plugins.example.com",
           "operations": []
         }
       ]
@@ -1229,7 +1219,7 @@
       "pluginHosts": [
         {
           "id": "source-host-1",
-          "endpoint": "https://plugins.example.com",
+          "url": "https://plugins.example.com",
           "operations": [
             {
               "pluginId": "example.source",
@@ -1257,7 +1247,7 @@
       "pluginHosts": [
         {
           "id": "source-host-1",
-          "endpoint": "https://plugins.example.com",
+          "url": "https://plugins.example.com",
           "operations": [
             {
               "pluginId": "example.source",
@@ -1284,7 +1274,7 @@
       "pluginHosts": [
         {
           "id": "source-host-1",
-          "endpoint": "https://plugins.example.com",
+          "url": "https://plugins.example.com",
           "operations": [
             {
               "pluginId": "example.source",
@@ -1312,7 +1302,7 @@
       "pluginHosts": [
         {
           "id": "h",
-          "endpoint": "https://a.example",
+          "url": "https://a.example",
           "operations": [
             {
               "pluginId": "p",
@@ -1337,7 +1327,7 @@
       "pluginHosts": [
         {
           "id": "h",
-          "endpoint": "https://a.example",
+          "url": "https://a.example",
           "operations": [
             {
               "pluginId": "p",
@@ -1362,7 +1352,7 @@
       "pluginHosts": [
         {
           "id": "h",
-          "endpoint": "https://a.example",
+          "url": "https://a.example",
           "operations": [
             {
               "pluginId": "p",
@@ -1387,7 +1377,7 @@
       "pluginHosts": [
         {
           "id": "h",
-          "endpoint": "https://a.example",
+          "url": "https://a.example",
           "operations": [
             {
               "pluginId": "p",
@@ -1401,5 +1391,274 @@
         }
       ]
     }
+  },
+  {
+    "name": "minimal auth",
+    "config": {
+      "auth": {
+        "password": "secret"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "auth username",
+    "config": {
+      "auth": {
+        "username": "bot",
+        "password": "secret"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "auth and users",
+    "config": {
+      "auth": {
+        "password": "secret"
+      },
+      "users": [
+        {
+          "username": "bot",
+          "password": "x"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "old bind",
+    "config": {
+      "auth": {
+        "password": "secret"
+      },
+      "bind": {
+        "host": "127.0.0.1"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "old https",
+    "config": {
+      "auth": {
+        "password": "secret"
+      },
+      "media": {
+        "allowHttps": true
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "obsolete endpoint",
+    "config": {
+      "auth": {
+        "password": "secret"
+      },
+      "pluginHosts": [
+        {
+          "id": "h",
+          "url": "https://localhost",
+          "operations": ["p/o"],
+          "endpoint": "https://localhost"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "obsolete allowPrivateNetwork",
+    "config": {
+      "auth": {
+        "password": "secret"
+      },
+      "pluginHosts": [
+        {
+          "id": "h",
+          "url": "https://localhost",
+          "operations": ["p/o"],
+          "allowPrivateNetwork": true
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "obsolete allowInsecureHttp",
+    "config": {
+      "auth": {
+        "password": "secret"
+      },
+      "pluginHosts": [
+        {
+          "id": "h",
+          "url": "https://localhost",
+          "operations": ["p/o"],
+          "allowInsecureHttp": true
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "compact operations ['p/o']",
+    "config": {
+      "auth": {
+        "password": "secret"
+      },
+      "pluginHosts": [
+        {
+          "id": "h",
+          "url": "http://localhost:5678",
+          "allowHttp": true,
+          "operations": ["p/o"]
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "compact operations ['p/o', {'pluginId': 'p', 'operation': 'o'}]",
+    "config": {
+      "auth": {
+        "password": "secret"
+      },
+      "pluginHosts": [
+        {
+          "id": "h",
+          "url": "http://localhost:5678",
+          "allowHttp": true,
+          "operations": [
+            "p/o",
+            {
+              "pluginId": "p",
+              "operation": "o"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "compact operations ['bad']",
+    "config": {
+      "auth": {
+        "password": "secret"
+      },
+      "pluginHosts": [
+        {
+          "id": "h",
+          "url": "http://localhost:5678",
+          "allowHttp": true,
+          "operations": ["bad"]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "compact operations ['p/o/extra']",
+    "config": {
+      "auth": {
+        "password": "secret"
+      },
+      "pluginHosts": [
+        {
+          "id": "h",
+          "url": "http://localhost:5678",
+          "allowHttp": true,
+          "operations": ["p/o/extra"]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "null auth",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "x"
+        }
+      ],
+      "auth": null
+    },
+    "valid": false
+  },
+  {
+    "name": "null users",
+    "config": {
+      "auth": {
+        "password": "secret"
+      },
+      "users": null
+    },
+    "valid": false
+  },
+  {
+    "name": "ipv6 listener",
+    "config": {
+      "auth": {
+        "password": "secret"
+      },
+      "listen": "[::1]:8787"
+    },
+    "valid": true
+  },
+  {
+    "name": "IPv4 mapped listener",
+    "config": {
+      "auth": {
+        "password": "secret"
+      },
+      "listen": "[::ffff:127.0.0.1]:8787"
+    },
+    "valid": true
+  },
+  {
+    "name": "non IP listener",
+    "config": {
+      "auth": {
+        "password": "secret"
+      },
+      "listen": "localhost:8787"
+    },
+    "valid": false
+  },
+  {
+    "name": "private HTTPS host",
+    "config": {
+      "auth": {
+        "password": "secret"
+      },
+      "pluginHosts": [
+        {
+          "id": "h",
+          "url": "https://192.168.1.20",
+          "operations": ["p/o"]
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "HTTP extra origin needs permission",
+    "config": {
+      "auth": {
+        "password": "secret"
+      },
+      "pluginHosts": [
+        {
+          "id": "h",
+          "url": "https://example.com",
+          "mediaOrigins": ["http://localhost:5678"],
+          "operations": ["p/o"]
+        }
+      ]
+    },
+    "valid": false
   }
 ]

@@ -32,6 +32,10 @@ pub fn run(session: &Session, args: &UninstallArgs) -> Result<u8, Failure> {
             operations
                 .iter()
                 .map(|operation| {
+                    if let Some(name) = operation.as_str() {
+                        return name.to_owned();
+                    }
+
                     format!(
                         "{}/{}",
                         operation
@@ -51,7 +55,7 @@ pub fn run(session: &Session, args: &UninstallArgs) -> Result<u8, Failure> {
     println!(
         "Host `{}` ({})",
         args.host_id,
-        host.get("endpoint")
+        host.get("url")
             .and_then(|value| value.as_str())
             .unwrap_or("?")
     );

@@ -28,7 +28,7 @@ REMEDIA_BIND_HOST=127.0.0.1
 
 ```json
 {
-  "bind": { "host": "env('REMEDIA_BIND_HOST')", "port": 8787 },
+  "listen": "env('REMEDIA_BIND_HOST'):8787",
   "users": [{ "username": "media-bot", "password": "env('REMEDIA_RPC_PASSWORD')" }]
 }
 ```
@@ -48,9 +48,9 @@ reference syntax:
 }
 ```
 
-Supported fields are `bind.host`, each user `username` and `password`, each
+Supported fields are `listen`, `auth.username` and `auth.password`, each user `username` and `password`, each
 `media.allowedFileRoots` entry, each `media.allowedUrlHosts` entry, and each plugin host's
-`endpoint`, `auth.token` and `mediaOrigins` entries. The variable name must match
+`url`, `auth.token` and `mediaOrigins` entries. The variable name must match
 `[A-Za-z_][A-Za-z0-9_]*`. A missing variable fails startup. The resolved value is treated as literal
 text. No interpolation or expression evaluation occurs. Numeric and boolean fields do not accept
 environment references.

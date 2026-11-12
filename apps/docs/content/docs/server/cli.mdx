@@ -68,7 +68,7 @@ remedia-server --generate-config-file ./server.json
 
 The optional path defaults to `./remedia.config.json`. Generation refuses to overwrite an existing file. On Unix, the new file is created with mode `0600`.
 
-The generated starter configuration uses loopback binding (`127.0.0.1:8787`), denies media file and URL sources by default, and references a password through `env('REMEDIA_RPC_PASSWORD')`. Supply that secret before starting the server. The repository example also includes sample media and plugin settings. Review those before using it.
+The generated configuration uses loopback (`127.0.0.1:8787`) and contains a random password for username `remedia`. Credentials are stored only in the new configuration file. Media file and ordinary URL playback require explicit source allowlists.
 
 ## Upgrade
 
@@ -93,3 +93,9 @@ The installer does not restart running server processes or manage services. Rest
 - [Manage registered plugin hosts](/docs/server/cli-plugins)
 - [Environment and secrets](/docs/server/environment)
 - [Diagnose and inspect a server](/docs/server/diagnostics)
+
+## Initialize a configuration
+
+Run `remedia init` (or `remedia --config PATH init`) to create a minimal configuration and random
+local password. `--generate-config-file [PATH]` produces the same minimal JSON. Existing files are
+never overwritten and passwords are never printed.

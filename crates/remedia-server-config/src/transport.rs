@@ -1,7 +1,7 @@
 //! Authenticated, bounded and policy-checked HTTP access to plugin hosts.
 //!
-//! Every connection resolves DNS once and rejects non-public addresses unless the
-//! deployment opted in, never follows redirects and never uses proxies. Both the server and
+//! Every connection resolves DNS once and permits private addresses only for explicitly
+//! configured origins, never follows redirects and never uses proxies. Both the server and
 //! the management CLI discover hosts through this module so they enforce identical rules.
 use std::net::SocketAddr;
 use std::sync::{Arc, Once};
@@ -14,15 +14,15 @@ use crate::error::{PluginError, PluginErrorKind};
 use crate::protocol::{MANIFEST_PATH, Manifest, error_code, error_from_status, parse_manifest};
 use crate::{PluginHostConfig, is_public_ip};
 
-/// Resolves DNS answers once and rejects non-public addresses unless a deployment opts in,
+/// Resolves DNS answers once and permits private addresses only for configured hosts,
 /// so the validated address set is exactly what the connection uses.
 pub(crate) struct PolicyResolver {
-    allow_private: bool,
+    trusted_hosts: Vec<String>,
 }
 
 impl Resolve for PolicyResolver {
     fn resolve(&self, name: Name) -> Resolving {
-        let allow_private = self.allow_private;
+        let allow_private = self.trusted_hosts.iter().any(|host| host == name.as_str());
 
         Box::pin(async move {
             let addresses = tokio::net::lookup_host((name.as_str(), 0))
@@ -80,10 +80,50 @@ pub fn transport_error(error: &reqwest::Error) -> PluginError {
             "plugin host attempted a redirect, which is never followed",
         )
     } else {
-        PluginError::new(
-            PluginErrorKind::HostUnavailable,
-            "plugin host connection failed",
-        )
+        use std::error::Error;
+
+        // Inspect causes only to classify them; never expose their text or URL.
+        let mut source: Option<&(dyn Error + 'static)> = Some(error);
+        let mut refused = false;
+        let mut dns = false;
+        let mut tls = false;
+        let mut mismatch = false;
+        let mut blocked = false;
+
+        while let Some(cause) = source {
+            if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+                refused |= io.kind() == std::io::ErrorKind::ConnectionRefused;
+            }
+
+            let text = cause.to_string().to_ascii_lowercase();
+            dns |= text.contains("dns")
+                || text.contains("resolve")
+                || text.contains("name or service");
+            tls |= text.contains("tls") || text.contains("certificate");
+            mismatch |= text.contains("invalidcontenttype")
+                || text.contains("invalid content type")
+                || text.contains("wrong version")
+                || text.contains("invalid http version")
+                || text.contains("message header");
+            blocked |= text.contains("non-public address");
+            source = cause.source();
+        }
+
+        let detail = if blocked {
+            "destination blocked by network policy; check the configured origin"
+        } else if refused {
+            "plugin host refused the connection; check that it is running and the port is correct"
+        } else if mismatch {
+            "plugin host protocol mismatch; check whether the URL should use http or https"
+        } else if tls {
+            "plugin host TLS handshake failed; check the certificate, trust chain and URL scheme"
+        } else if dns {
+            "plugin host DNS lookup failed; check the hostname and resolver"
+        } else {
+            "plugin host connection failed; check the URL scheme, port and network reachability"
+        };
+
+        PluginError::new(PluginErrorKind::HostUnavailable, detail)
     }
 }
 
@@ -146,10 +186,14 @@ pub fn build_client(config: &PluginHostConfig) -> Result<reqwest::Client, Plugin
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
         .dns_resolver(Arc::new(PolicyResolver {
-            allow_private: config.allow_private_network,
+            trusted_hosts: config
+                .media_origins
+                .iter()
+                .filter_map(|origin| url::Url::parse(origin).ok()?.host_str().map(str::to_owned))
+                .collect(),
         }))
         .connect_timeout(config.limits.request_timeout)
-        .https_only(!config.allow_insecure_http)
+        .https_only(!config.allow_http)
         .user_agent(concat!("remedia-server/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|_| {
@@ -163,7 +207,7 @@ pub fn build_client(config: &PluginHostConfig) -> Result<reqwest::Client, Plugin
 /// URL of one of the fixed v1 routes beneath the configured origin.
 pub fn endpoint_url(config: &PluginHostConfig, path: &str) -> url::Url {
     // The configured endpoint is an origin; the path is one of the fixed v1 routes.
-    let mut url = config.endpoint.clone();
+    let mut url = config.url.clone();
 
     url.set_path(path);
 
@@ -192,7 +236,7 @@ pub fn ensure_literal_ip_allowed(
         _ => None,
     };
 
-    if literal.is_some_and(|address| !config.allow_private_network && !is_public_ip(address)) {
+    if literal.is_some_and(|address| !config.owns_media_origin(url) && !is_public_ip(address)) {
         return Err(PluginError::new(
             PluginErrorKind::MediaOriginNotAllowed,
             "address is not permitted for this plugin host",
@@ -222,7 +266,7 @@ pub async fn fetch_manifest_for(
     cancel: &CancellationToken,
     shutdown: &CancellationToken,
 ) -> Result<Manifest, PluginError> {
-    ensure_literal_ip_allowed(config, &config.endpoint).map_err(|_| {
+    ensure_literal_ip_allowed(config, &config.url).map_err(|_| {
         PluginError::new(
             PluginErrorKind::HostUnavailable,
             "address is not permitted for this plugin host",
@@ -261,4 +305,76 @@ pub async fn fetch_manifest_for(
     .await?;
 
     parse_manifest(&body, expected_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn resolver_blocks_unconfigured_private_hosts_and_pins_configured_hosts() {
+        let blocked = PolicyResolver {
+            trusted_hosts: vec![],
+        };
+        let trusted = PolicyResolver {
+            trusted_hosts: vec!["localhost".into()],
+        };
+
+        assert!(blocked.resolve("localhost".parse().unwrap()).await.is_err());
+        let addresses = trusted
+            .resolve("localhost".parse().unwrap())
+            .await
+            .unwrap()
+            .collect::<Vec<_>>();
+
+        assert!(!addresses.is_empty());
+        assert!(addresses.iter().all(|address| address.ip().is_loopback()));
+    }
+
+    #[tokio::test]
+    async fn connection_diagnostics_are_actionable_and_redact_urls() {
+        install_crypto_provider();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let error = client
+            .get(format!("http://{address}/private?token=secret"))
+            .send()
+            .await
+            .unwrap_err();
+        let diagnostic = transport_error(&error);
+
+        assert!(diagnostic.detail.contains("refused"));
+        assert!(!diagnostic.detail.contains("secret"));
+        assert!(!diagnostic.detail.contains(&address.to_string()));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 4096];
+
+            assert!(socket.read(&mut buffer).await.unwrap() > 0);
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let error = client
+            .get(format!("https://{address}/private?token=secret"))
+            .send()
+            .await
+            .unwrap_err();
+        let diagnostic = transport_error(&error);
+
+        assert!(
+            diagnostic.detail.contains("mismatch"),
+            "{}",
+            diagnostic.detail
+        );
+        assert!(!diagnostic.detail.contains("secret"));
+        server.await.unwrap();
+    }
 }

@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 /** Stable schema artifact served by the Remedia documentation site. */
 export const REMEDIA_CONFIG_SCHEMA_URL =
-  'https://twlite.github.io/remedia/schemas/remedia.config.schema.json';
+  'https://remedia.twlite.dev/schemas/remedia.config.schema.json';
 
 const environment = z
   .string()
@@ -177,7 +177,7 @@ const pluginHost = z
       .describe(
         'Disabled hosts keep their configuration but are not registered as executable at startup.',
       ),
-    endpoint: origin.describe('Discovery and execution origin; https unless allowInsecureHttp.'),
+    url: origin.describe('Discovery and execution origin; https unless allowHttp.'),
     auth: z
       .discriminatedUnion('type', [
         z.strictObject({ type: z.literal('none') }),
@@ -185,14 +185,7 @@ const pluginHost = z
       ])
       .default({ type: 'none' })
       .describe('Authentication sent only to the configured endpoint origin.'),
-    allowInsecureHttp: z
-      .boolean()
-      .default(false)
-      .describe('Permit http: endpoints and media origins.'),
-    allowPrivateNetwork: z
-      .boolean()
-      .default(false)
-      .describe('Permit loopback, private and link-local addresses for this host.'),
+    allowHttp: z.boolean().default(false).describe('Permit http: endpoints and media origins.'),
     mediaOrigins: z
       .array(origin)
       .default([])
@@ -205,32 +198,49 @@ const pluginHost = z
       .describe('Allow descriptor URLs on other origins under the ordinary media.* policy.'),
     operations: z
       .array(
-        z.strictObject({
-          pluginId: identifier,
-          operation: identifier,
-          replaySafe: z
-            .boolean()
-            .default(false)
-            .describe('Executing again has no side effects; enables retries and grant refresh.'),
-        }),
+        z.union([
+          z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/),
+          z.strictObject({
+            pluginId: identifier,
+            operation: identifier,
+            replaySafe: z
+              .boolean()
+              .default(false)
+              .describe('Executing again has no side effects; enables retries and grant refresh.'),
+          }),
+        ]),
       )
       .min(1)
       .max(256)
       .refine(
         (operations) =>
-          new Set(operations.map((item) => `${item.pluginId}\u0000${item.operation}`)).size ===
-          operations.length,
+          new Set(
+            operations.map((item) =>
+              typeof item === 'string' ? item : `${item.pluginId}/${item.operation}`,
+            ),
+          ).size === operations.length,
         'Operations must be unique',
       )
-      .describe('Allowed (pluginId, operation) pairs.'),
+      .describe(
+        'Explicit PLUGIN/OPERATION allowlist; object entries optionally set replaySafe, default false.',
+      ),
     limits: pluginHostLimits,
   })
   .refine(
     (entry) =>
-      entry.allowInsecureHttp ||
-      entry.endpoint.startsWith('env(') ||
-      entry.endpoint.trim().toLowerCase().startsWith('https:'),
-    'http endpoints require allowInsecureHttp',
+      entry.allowHttp ||
+      entry.url.startsWith('env(') ||
+      entry.url.trim().toLowerCase().startsWith('https:'),
+    'http endpoints require allowHttp',
+  )
+  .refine(
+    (entry) =>
+      entry.allowHttp ||
+      entry.mediaOrigins.every(
+        (mediaOrigin) =>
+          mediaOrigin.startsWith('env(') || mediaOrigin.trim().toLowerCase().startsWith('https:'),
+      ),
+    'http media origins require allowHttp',
   )
   .describe('A generic plugin-host deployment.');
 
@@ -245,19 +255,25 @@ export const RemediaConfigSchema = z
       .nullable()
       .optional()
       .describe('Editor JSON Schema URI; metadata only, never fetched by the server.'),
-    bind: z
-      .strictObject({
-        host: z
-          .union([
-            environment,
-            literal.refine((value) => value.trim().length > 0, 'Host cannot be blank'),
-          ])
-          .default('127.0.0.1')
-          .describe('Bind host; literal or runtime environment reference.'),
-        port: integer(0, 65535, 8787, 'TCP listen port; zero requests an ephemeral port.'),
-      })
-      .prefault({})
-      .describe('RPC listen address.'),
+    listen: z
+      .union([
+        environment,
+        literal.refine((value) => {
+          const match = /^(\[[0-9a-fA-F:.]+\]|[0-9.]+):(\d+)$/.exec(value);
+          if (!match || !match[1] || Number(match[2]) > 65535) return false;
+          return match[1].startsWith('[')
+            ? z.ipv6().safeParse(match[1].slice(1, -1)).success
+            : z.ipv4().safeParse(match[1]).success;
+        }, 'Expected an IP address and port'),
+      ])
+      .default('127.0.0.1:8787')
+      .describe(
+        'IP address and TCP port; IPv6 uses brackets. Literal or runtime environment reference.',
+      ),
+    auth: z
+      .strictObject({ username: username.default('remedia'), password })
+      .optional()
+      .describe('Single account credentials; configure either auth or users.'),
     users: z
       .array(z.strictObject({ username, password }))
       .min(1)
@@ -265,9 +281,8 @@ export const RemediaConfigSchema = z
         (users) => new Set(users.map((user) => user.username)).size === users.length,
         'Usernames must be unique',
       )
-      .describe(
-        'Required authenticated users; duplicate resolved usernames are rejected at startup.',
-      ),
+      .describe('Authenticated users; configure either auth or users.')
+      .optional(),
     sessionResumptionTimeoutSeconds: integer(
       1,
       86400,
@@ -299,10 +314,6 @@ export const RemediaConfigSchema = z
           .boolean()
           .default(true)
           .describe('Permit HTTP media URLs, subject to host and network policy.'),
-        allowHttps: z
-          .boolean()
-          .default(true)
-          .describe('Permit HTTPS media URLs, subject to host and network policy.'),
         blockPrivateNetworks: z
           .boolean()
           .default(true)
@@ -374,6 +385,10 @@ export const RemediaConfigSchema = z
       .prefault({})
       .describe('Local observability settings.'),
   })
+  .refine(
+    (value) => Boolean(value.auth) !== Boolean(value.users),
+    'Configure exactly one of auth or users',
+  )
   .describe(
     'Remedia server configuration. Unknown fields are rejected at every level. Environment references are resolved only by the Rust runtime.',
   );
@@ -390,5 +405,6 @@ export function generateJsonSchema(): Record<string, unknown> {
   return {
     ...z.toJSONSchema(RemediaConfigSchema, { target: 'draft-2020-12', io: 'input' }),
     $id: REMEDIA_CONFIG_SCHEMA_URL,
+    oneOf: [{ required: ['auth'] }, { required: ['users'] }],
   };
 }
