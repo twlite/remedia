@@ -1,4 +1,13 @@
 {
   "title": "TypeScript client",
-  "pages": ["overview", "media", "events", "crossfade", "sessions", "nodes", "reference"]
+  "pages": [
+    "overview",
+    "media",
+    "positions",
+    "events",
+    "crossfade",
+    "sessions",
+    "nodes",
+    "reference"
+  ]
 }

@@ -1,0 +1,100 @@
+---
+title: 'Embedded Discord sessions'
+description: Connect an existing bot Gateway to the embedded engine and manage voice sessions.
+---
+
+Create a Discord session when audio should reach a voice channel. The application supplies the authenticated Gateway connection.
+
+## Discord Gateway adapter
+
+The application still owns its Discord Gateway client and decides when to
+join a channel. Supply the adapter with the existing client: supply a function that sends a
+Gateway payload for a guild, then forward raw Gateway packets to
+`remedia.receive()`. Remedia sends OP 4, collects the matching
+`VOICE_STATE_UPDATE` and `VOICE_SERVER_UPDATE` in either order, and calls the
+native transport only after both are valid. `connect()` resolves after the
+voice WebSocket, UDP transport, encryption, and required DAVE setup are ready.
+
+```ts
+import { Remedia } from '@remedia/node';
+
+const remedia = await Remedia.create({
+  send(guildId, payload) {
+    return sendToShard(guildId, payload);
+  },
+});
+
+discord.on('raw', (packet) => remedia.receive(packet));
+
+const voice = remedia.createDiscordSession({
+  guildId: '123456789012345678',
+  channelId: '234567890123456789',
+  userId: '345678901234567890',
+});
+
+try {
+  await voice.connect();
+  await voice.play({ url: 'https://example.org/audio.mp3' });
+  console.log(voice.connectionState, await voice.wait());
+  await voice.stop(); // leaves the voice connection open
+} finally {
+  await voice.disconnect();
+  await remedia.close();
+}
+```
+
+### Connection timeout and cancellation
+
+Snowflakes remain decimal strings in JavaScript and are validated before any
+Gateway request. `connect()` defaults to a 45-second timeout and accepts
+`{ timeoutMs, signal }` for per-attempt timeout and `AbortSignal` cancellation. An interrupted connection sends OP 4 with `channel_id: null` and discards the
+pending credentials. `disconnect()` also sends this leave request, stops active
+playback, closes the native transport, and leaves the wrapper reusable for a
+later `connect()` with fresh Gateway events.
+
+`dispose()` disconnects and removes
+the session from its `Remedia` instance. Only one live wrapper per guild is
+allowed in an instance. Gateway responses are not persisted or logged. The
+server token and endpoint are discarded after native setup, and pending data is
+reset before each new exchange and on disconnect.
+
+An abort or timeout rejects the pending `connect()` and requests a Gateway
+leave. If native voice setup has already started, its network handshake cannot
+be interrupted mid-operation; `disconnect()` waits for the transport's bounded
+timeouts and disposes any late native connection result.
+
+### Automatic transport recovery
+
+Keep forwarding raw Gateway packets after connection. `receive()` ignores unrelated guilds, users, channels, and packet types. Changed voice credentials trigger transport replacement on the existing playback session. Recovery preserves the source and paused state and may create a brief audio gap. See [session recovery and movement](/docs/client/sessions) for control behavior, retries, and failure handling.
+
+The adapter correlates fresh dispatch sequences and discards stale credentials. If native setup finishes after a newer attempt or disconnect, that late native result is disposed. The [Rust voice reference](/docs/discord/voice-output) describes packet routing and DAVE state.
+
+## Session configuration and channel movement
+
+A client owns one session per guild. Separate clients (including separate bot users) can use the
+same guild and channel with independent playback, transport generations, and events. `userId` is
+the Discord bot user ID, not a Remedia client session ID. Channel IDs are mutable destinations.
+Duplicate guild registration on the same client throws. Dispose the old session before replacing it.
+
+```ts
+const session = remedia.createDiscordSession({
+  guildId,
+  channelId,
+  userId,
+  selfDeaf: true,
+  selfMute: false,
+  volume: 0.75,
+  filterGraph: 'bass=gain=3',
+});
+await session.connect();
+await session.move(otherChannelId);
+await session.setSelfDeaf(false);
+await session.setSelfMute(true);
+await session.dispose();
+```
+
+`selfDeaf` defaults to `true`, `selfMute` to `false`, gain to `1`, and the filtergraph to `null`. Values are validated before playback and retained across tracks. Keep `send(guildId, payload)` and `receive(packet)` wired to the same bot throughout the session.
+
+`move(channelId)` keeps the decoder and requests credentials for the new destination. A new destination supersedes an older pending move. `channelId` exposes the latest requested destination, including after failure. To recover from a failed move, retry `connect()`, move elsewhere, or disconnect. See [move concurrency and failure](/docs/client/sessions#concurrent-and-failed-moves) for the shared Node/client contract.
+
+Use direct `@remedia/node` when the engine should stay inside one process. Use [the client node pool](/docs/client/nodes) for remote nodes and explicit cross-node migration.

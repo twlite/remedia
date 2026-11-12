@@ -1,0 +1,132 @@
+---
+title: 'RPC commands'
+description: Command names, parameters, and results for custom WebSocket clients.
+---
+
+## Command table
+
+All Discord snowflakes are decimal strings in JSON. Parameters use camelCase. Commands that act on
+a guild require an existing guild session owned by the active client session.
+
+### Inspect a node
+
+| Command                 | Parameters | Result / behavior                                                                                                                      |
+| ----------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `node.info`             | `{}`       | `nodeId`, server version, protocol version, and `capabilities` (`crossfade`, `pluginOperations: { available, hosts, forwarding? }`)    |
+| `node.protocol_version` | `{}`       | Protocol version                                                                                                                       |
+| `node.health`           | `{}`       | `ok` or `shutting_down`                                                                                                                |
+| `node.stats`            | `{}`       | Uptime, connections, players, capacity, CPU/memory where available, health, and `pluginHosts` (per-host state, resources and counters) |
+
+### Own client and guild sessions
+
+| Command         | Parameters                      | Result / behavior                                                                         |
+| --------------- | ------------------------------- | ----------------------------------------------------------------------------------------- |
+| `client.create` | `{}`                            | Creates a session. Returns `sessionId`, `resumeCredential`, and the handshake `botUserId` |
+| `client.list`   | `{}`                            | Lists sessions belonging to the authenticated username and their snapshots                |
+| `client.resume` | `{sessionId, resumeCredential}` | Reclaims a detached session. Returns its identity, stable credential, and guild snapshots |
+| `client.close`  | `{}`                            | Immediately releases all owned guild players and transports                               |
+| `guild.create`  | `{guildId}`                     | Creates one isolated player session for that guild under this client                      |
+| `guild.list`    | `{}`                            | Lists owned guild snapshots                                                               |
+| `guild.get`     | `{guildId}`                     | Returns one guild/player/voice snapshot                                                   |
+| `guild.destroy` | `{guildId}`                     | Stops playback, disconnects voice, and removes the guild session                          |
+
+### Control Discord transport
+
+| Command            | Parameters                                                               | Result / behavior                                                                                                                                                                                                          |
+| ------------------ | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `voice.connect`    | `{guildId, channelId, sessionId, token, endpoint, transportGeneration?}` | Connects using fresh Gateway credentials. An existing transport is replaced without rebuilding playback. Endpoint must resolve to secure `discord.media`. SDKs include their monotonically increasing transport generation |
+| `voice.suspend`    | `{guildId, transportGeneration?}`                                        | Internal recovery operation that parks packet delivery and closes the current transport while retaining playback. Duplicate and stale generations are idempotently handled or rejected                                     |
+| `voice.state`      | `{guildId}`                                                              | Returns transport state and a failure flag. Never returns credentials                                                                                                                                                      |
+| `voice.disconnect` | `{guildId, transportGeneration?}`                                        | Stops the player and disconnects the transport. A newer explicit operation supersedes older in-flight connection attempts                                                                                                  |
+| `voice.fail`       | `{guildId, transportGeneration?}`                                        | Internal recovery terminal signal used by SDKs after bounded retries. Parks output as failed and closes a failed transport. Ordinary clients should not call it                                                            |
+
+### Forward plugin operations
+
+| Command          | Parameters                             | Result / behavior                                                                                                                     |
+| ---------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `plugin.list`    | `{refresh?}`                           | Lists configured plugin hosts with status and allowlisted-and-advertised operations. See [forwarding](/docs/server/plugin-forwarding) |
+| `plugin.execute` | `{hostId, pluginId, operation, input}` | Runs one allowlisted operation on exactly one host. Returns `{handled: false}` or `{handled: true, result}`                           |
+| `plugin.cancel`  | `{requestId}`                          | Cancels this connection's pending `plugin.list` or `plugin.execute`. Returns `{cancelled}`                                            |
+
+### Control playback
+
+| Command                                        | Parameters              | Result / behavior                                                                                                                             |
+| ---------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `player.play`                                  | `{guildId, source}`     | Starts a server-accessible file, URL or plugin operation. Returns selected audio stream metadata and source `generation`                      |
+| `player.pause`, `player.resume`, `player.stop` | `{guildId}`             | Controls the current source. Stop keeps the voice transport connected                                                                         |
+| `player.seek`                                  | `{guildId, positionMs}` | Seeks in the source media timeline when supported                                                                                             |
+| `player.filter.set`                            | `{guildId, graph}`      | Validates and applies a raw trusted FFmpeg audio graph                                                                                        |
+| `player.filter.clear`                          | `{guildId}`             | Clears the graph                                                                                                                              |
+| `player.volume.set`                            | `{guildId, gain}`       | Sets finite linear gain from `0.0` through `2.0`. Values above unity can clip                                                                 |
+| `player.state`                                 | `{guildId}`             | State, source `generation`, source metadata, duration, source/submitted/played position, graph, gain, processing mode, and safe error summary |
+
+### Inspect media
+
+| Command              | Parameters             | Result                                              |
+| -------------------- | ---------------------- | --------------------------------------------------- |
+| `media.probe`        | `{source, timeoutMs?}` | Audio stream metadata for an authorized file or URL |
+| `media.probe.cancel` | `{requestId}`          | `{cancelled: true}`                                 |
+
+See [probe deadlines and errors](/docs/server/rpc-playback#media-probing).
+
+### Stage crossfade playback
+
+| Command              | Parameters                                                                                    | Result                           |
+| -------------------- | --------------------------------------------------------------------------------------------- | -------------------------------- |
+| `player.stage.next`  | `{guildId, source, expectedGeneration, entryId, queueRevision, sourceRevision, expiresAtMs?}` | Stage snapshot                   |
+| `player.stage.state` | `{guildId}`                                                                                   | Current stage snapshot or `null` |
+| `player.stage.clear` | `{guildId}`                                                                                   | Cancel preparation               |
+| `player.prepare.ack` | `{guildId, expectedGeneration}`                                                               | `{acknowledged, generation}`     |
+
+See [staging rules and events](/docs/server/rpc-playback#staged-playback-rpc). `guild.create` also accepts optional `crossfade` settings.
+
+## Source and transport parameters
+
+Media source shapes:
+
+```json
+{ "type": "url", "url": "https://media.example.com/audio.ogg" }
+```
+
+```json
+{ "type": "file", "path": "/srv/remedia/media/audio.ogg" }
+```
+
+```json
+{
+  "type": "operation",
+  "hostId": "source-host-1",
+  "pluginId": "example.source",
+  "operation": "source.stream",
+  "input": { "id": "opaque" }
+}
+```
+
+File paths must resolve under configured allowed roots. URL sources are subject to configured scheme,
+host, and IP restrictions. The WebSocket protocol has no client-byte upload command. Use embedded input for buffers and Readables.
+
+An `operation` source runs an allow-listed operation on the configured plugin-host deployment
+`hostId` when the node prepares the source, then plays the audio it returns. `input` is opaque JSON,
+bounded by the host's `maxRequestBytes`. Unknown fields are rejected. Clients must check
+`node.info.capabilities.pluginOperations` (`available` and the `hosts` list) first. Older nodes omit it
+and reject the source with `invalid_request`. The failure codes (`plugin_host_not_found`,
+`plugin_host_unavailable`, `plugin_host_unauthorized`, `cancelled`, ...) are listed in
+[Playing audio through plugins](/docs/server/plugin-operations#errors). A newer `player.stop` or
+replacement cancels a pending operation, and the request fails with `cancelled`.
+
+`plugin.list`, `plugin.execute` and `plugin.cancel` forward opaque JSON operations to configured plugin
+hosts for the application, independent of any guild. See [Executing plugin operations](/docs/server/plugin-forwarding).
+`node.info.capabilities.pluginOperations.forwarding.available` is true when at least one plugin host is configured. Servers
+that predate them omit it and reject the commands as unknown. Responses are bounded by
+`limits.maxMessageBytes`. A larger result fails with `plugin_result_too_large`.
+
+To connect voice, the bot application first performs Discord Gateway channel joining and collects
+the `VOICE_STATE_UPDATE` and `VOICE_SERVER_UPDATE` dispatch values. It then sends them to
+`voice.connect`. The server does not send OP 4 and does not expose received credentials in responses
+or lifecycle events.
+
+`transportGeneration` is an optional positive integer added for SDK recovery ordering. The server
+accepts the same generation for the suspend/connect steps of one recovery attempt, rejects lower
+generations, and treats a disconnect or failure generation as terminal. A later explicit connection
+must use a larger generation. Requests from older protocol-v1 consumers may omit the field. The
+server assigns those operations local generations.

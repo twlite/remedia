@@ -1,15 +1,22 @@
 {
   "title": "Remote server",
   "pages": [
-    "overview",
     "installation",
-    "configuration",
+    "overview",
     "cli",
-    "deployment",
+    "diagnostics",
     "docker",
-    "protocol",
+    "deployment",
+    "configuration",
+    "configuration-reference",
+    "environment",
+    "plugin-configuration",
     "plugins",
+    "cli-plugins",
     "plugin-operations",
-    "plugin-forwarding"
+    "plugin-forwarding",
+    "protocol",
+    "rpc-commands",
+    "rpc-playback"
   ]
 }

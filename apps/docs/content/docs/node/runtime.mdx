@@ -1,0 +1,67 @@
+---
+title: 'FFmpeg runtime API'
+description: Read the loaded installation and handle native library discovery errors.
+---
+
+## FFmpeg discovery and diagnostics
+
+On import, `@remedia/node` chooses an FFmpeg 9 installation (`REMEDIA_FFMPEG_DIR`, then the system, then `~/.remedia/ffmpeg9`) and loads it before the engine starts. Nothing is downloaded. How the search works and how to install FFmpeg is in [Install FFmpeg 9](/docs/node/ffmpeg-9).
+
+```ts
+import { FfmpegLoadError, getFfmpegRuntime } from '@remedia/node';
+
+const runtime = getFfmpegRuntime();
+
+console.log(runtime.source); // 'explicit' | 'system' | 'managed' | 'unmanaged'
+console.log(runtime.directory);
+console.log(runtime.libraries.map(({ name, version }) => `${name} ${version}`));
+```
+
+### `getFfmpegRuntime()`
+
+```ts
+function getFfmpegRuntime(): FfmpegRuntimeInfo;
+```
+
+Returns the installation that was loaded. It does not search, load or download anything, so it
+is cheap and safe to call at any time after the package is imported, and it is independent of
+Discord, playback and the standalone server. It is only ever populated after the engine addon has
+actually loaded against the libraries.
+
+| Field        | Type                                                 | Description                                                                                                    |
+| ------------ | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `source`     | `'explicit' \| 'system' \| 'managed' \| 'unmanaged'` | How the installation was found. `unmanaged` means the platform has no bootstrap and the OS loader chose.       |
+| `directory`  | `string \| null`                                     | Directory holding the loaded libraries; `null` when `unmanaged`.                                               |
+| `libraries`  | `readonly FfmpegLibraryInfo[]`                       | The five loaded libraries (`name`, `path`, `version` as `major.minor.micro`, `major`). Empty when `unmanaged`. |
+| `considered` | `readonly FfmpegCandidateReport[]`                   | Every candidate examined in order (`source`, `directory`, `outcome`, optional `reason` and `detail`).          |
+
+### `FfmpegLoadError`
+
+Importing `@remedia/node` rejects with an `FfmpegLoadError` (an `Error` subclass with a `candidates`
+array of `FfmpegCandidateReport`) when no compatible installation can be loaded or an explicit
+`REMEDIA_FFMPEG_DIR` is unusable. Its message lists every considered path, the classified reason
+(`not-found`, `missing-libraries`, `abi-mismatch`, `architecture-mismatch`, `unresolved-dependency`,
+`mixed-installations`, `load-failed`), the installer command for the current OS, and how to set
+`REMEDIA_FFMPEG_DIR`. Because the failure is raised while the module loads, catch it around a dynamic
+import if you want to present your own message:
+
+```ts
+try {
+  const { Remedia } = await import('@remedia/node');
+  await Remedia.create();
+} catch (error) {
+  if (error instanceof Error && error.name === 'FfmpegLoadError') {
+    console.error(error.message); // paths considered, reasons, install instructions
+  }
+  throw error;
+}
+```
+
+With `@remedia/client`, an embedded node reports this error when it loads `@remedia/node`. Remote
+nodes never need FFmpeg on the client. See [native library troubleshooting](/docs/node/troubleshooting)
+for causes and fixes, and for how the bootstrap loads libraries on each operating system.
+
+| Environment variable          | Effect                                                                                                      |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `REMEDIA_FFMPEG_DIR`          | Use this FFmpeg 9 prefix (or its library directory). Takes precedence. Failure is an error, not a fallback. |
+| `NAPI_RS_NATIVE_LIBRARY_PATH` | Unchanged napi-rs override for the engine addon path. FFmpeg discovery still runs first.                    |

@@ -1,0 +1,76 @@
+---
+title: 'Diagnose and inspect a server'
+description: Run doctor, inspect build identity, and list local server processes.
+---
+
+## Diagnose the server
+
+```sh
+remedia-server doctor --config ./remedia.config.json --env-file .env
+```
+
+The doctor prints the embedded release version and Git commit SHA for both the CLI and server,
+OS and architecture, executable path, and the **actual loaded** FFmpeg library versions for
+avcodec, avformat, avutil, avfilter, and swresample. It compares their ABI majors with the
+FFmpeg 9 requirements (63, 63, 61, 12, 7).
+
+Each check has its own result:
+
+- **Runtime:** whether the native process started. OS loader failures are forwarded without treating every process failure as an FFmpeg problem.
+- **FFmpeg:** whether the five loaded library ABI majors match. Configuration and environment failures do not change this result.
+- **Environment:** whether required and optional dotenv files can be loaded and parsed. Missing required files fail. Absent optional files are allowed.
+- **Configuration:** validates the selected JSON and its environment references. Without `--config`, an absent `./remedia.config.json` is skipped: configuration is not required to inspect native libraries. An existing invalid default file fails. An explicit `--config PATH` is required to exist and validate. If dotenv loading fails, configuration is skipped with that reason.
+- **Plugin hosts:** when configuration is valid, performs live discovery and prints each host's state, origin (never credentials), advertised operations, and any discovery failure. Unreachable or degraded hosts produce a warning, not a failing exit status. Disabled hosts are not failures. Without valid configuration, these probes are skipped.
+
+A missing explicit configuration reports the path and how to create it using
+`remedia --generate-config-file PATH`. Missing environment references identify the variable
+to set. Invalid JSON, unavailable media roots, and other configuration errors report their actual
+cause and ask you to correct the configuration. They do not suggest installing FFmpeg.
+Serving still requires a valid configuration, even when a configuration-free doctor run succeeds.
+
+For example, running `remedia doctor` in a fresh directory with compatible native libraries ends with:
+
+```text
+Summary: runtime PASS; FFmpeg PASS; environment PASS; configuration SKIPPED; plugin hosts SKIPPED
+```
+
+Exit status is `0` when required checks pass (including optional configuration skips and plugin
+warnings), `1` for ABI, dotenv, or configuration failures, and `2` for invalid command-line
+arguments. The CLI preserves other runtime exit codes. On Unix a runtime terminated by a signal
+returns `128 + signal`. When the native process cannot start, the CLI exits nonzero and reports
+checks as not checked. Consult the executable or OS loader error above the summary.
+
+Apart from configured plugin-host discovery, doctor does not test remote audio URLs,
+Discord credentials, or external network access.
+
+## List running servers
+
+```sh
+remedia-server --list
+remedia-server list
+remedia-server --list --json
+```
+
+The table shows PID, bound listener address (including the actual port), active and maximum player/connection counts, resident memory where available, and processing/transport health. `--json` returns the raw live `node.stats` snapshot for each reachable server, plus its PID and listen address.
+
+Each running process registers a private control endpoint on `127.0.0.1` and writes a secret-bearing discovery record under `~/.remedia/run`. Only the current operating-system user's records are scanned. Discovery requests are authenticated with a random token, have a short timeout, and return **status only**, never RPC credentials or media URLs. The control listener is unrelated to the user-facing WebSocket port and cannot operate or restart servers.
+
+A server removes its record on graceful shutdown. If it crashes, a stale record can remain, but `--list` ignores records that do not answer the authenticated live query. This is local process discovery, not a global LAN scanner or process manager.
+
+Linux, macOS, and Windows expose native process measurements. The table labels private resident memory or macOS footprint according to the available counter. Unsupported values remain absent. See [Process resources](/docs/observability/resources).
+
+## Build identity and updates
+
+`remedia --version` and `remedia-server --version` show the embedded release version and Git
+commit SHA. They also probe the separate native runtime for libavcodec, libavformat, libavutil,
+libavfilter and libswresample versions. If the runtime or FFmpeg is missing, the build identity
+still prints and the command succeeds with an unavailable-libraries message.
+The server uses the same embedded version in `node.info` and `node.stats`, with an additional
+`commit` field. Existing protocol fields are unchanged.
+
+Release CI embeds the selected release version and checkout SHA. Local Cargo builds use the
+nearest `v` release tag and current commit, falling back to the Cargo package version and
+`unknown` outside Git. Source archive builders can set `REMEDIA_BUILD_VERSION` and
+`REMEDIA_BUILD_COMMIT` at build time.
+
+Updates compare the full release version before downloading artifacts. See [Update or upgrade](/docs/server/installation#update-or-upgrade) for selection, atomic replacement, and restart behavior.

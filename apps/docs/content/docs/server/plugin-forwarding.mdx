@@ -3,43 +3,11 @@ title: Executing plugin operations
 description: Discover and run allowlisted JSON operations on plugin hosts through your Remedia connection, without configuring plugin-host endpoints in your application.
 ---
 
-From your application, running a plugin operation is one call. `@remedia/client` sends the request
-over its existing authenticated connection, the Remedia server runs it on the plugin host you
-configured, and you get the host's JSON back. Your application needs no plugin-host URL or token.
-
-```ts
-const hosts = await client.plugins.list();
-
-const result = await client.plugins.execute({
-  nodeId: 'media-1',
-  hostId: 'source-host-1',
-  pluginId: 'example.metadata',
-  operation: 'catalog.search',
-  input: { query: 'example' },
-});
-
-if (result.handled) {
-  console.log(result.result);
-}
-```
-
-`catalog.search` is an **example application-defined operation**, not a built-in Remedia search.
-Remedia knows nothing about its meaning; your plugin host defines it. Only remote nodes can forward
-operations: embedded nodes have no plugin-host registry.
-
-<Callout title="Two things must be true first">
-  The plugin host must be [registered on the Remedia server](/docs/server/cli#manage-plugin-hosts),
-  and the operation must be on that host's allowlist. If not, the call fails with
-  `plugin_operation_not_allowed` or `plugin_host_not_found`.
-</Callout>
-
-This page is about **running an operation and receiving JSON**. To have Remedia play the audio an
-operation returns, see [Playing audio through plugins](/docs/server/plugin-operations). Both use the
-same hosts and permissions: [Plugins overview](/docs/plugins/overview).
+Use `client.plugins.execute()` to request JSON from an operator-approved plugin host. The selected Remedia server holds the host endpoint and credentials. Your application supplies the node, host ID, operation, and input.
 
 ## Allowlisting and discovery
 
-These are two different things, and both are required:
+An operation needs both authorization and a current advertisement:
 
 | Concern          | Where                                               | Who decides                                                                       |
 | ---------------- | --------------------------------------------------- | --------------------------------------------------------------------------------- |
@@ -58,85 +26,67 @@ Configure the plugin host **only on the Remedia server**:
       "operations": [
         { "pluginId": "example.metadata", "operation": "catalog.search", "replaySafe": true },
         { "pluginId": "example.metadata", "operation": "lyrics.search", "replaySafe": true },
-        { "pluginId": "example.metadata", "operation": "source.stream", "replaySafe": true }
+        { "pluginId": "example.source", "operation": "source.stream", "replaySafe": true }
       ]
     }
   ]
 }
 ```
 
-A host advertising more operations than the operator listed does **not** make them callable. There
-is no option to disable authorization. Existing restrictions still apply: origin and private-network
-policy, TLS (cleartext only with `allowInsecureHttp`), no redirects, pinned DNS, per-host pending
-limits, request and response size limits, timeouts and retry limits. No configuration fields were
-added, so the JSON Schema is unchanged.
+Only the intersection of the operator allowlist and the host advertisement is callable. See [Permissions and security](/docs/plugins/security) for network, retry, and credential rules, and [host configuration](/docs/server/plugin-configuration) for all limits.
 
 ## Complete example: search, then play
 
+The function below uses the initialized client from [the client guide](/docs/client/overview). The host defines `catalog.search` to return IDs and titles and `source.stream` to return encoded media for an ID.
+
 ```ts
-import { RemediaClient } from '@remedia/client';
+import type { RemediaClient } from '@remedia/client';
 
-const client = await RemediaClient.create({
-  nodes: [
-    {
-      id: 'remote',
-      type: 'remote',
-      url: 'remedia://localhost:8787',
-      auth: { username: 'remedia', password: 'password' },
-    },
-  ],
-  botUserId: '123456789012345678',
-  send: (guildId, payload) => gateway.send(guildId, payload),
-});
+type SearchResult = {
+  items: Array<{ id: string; title: string }>;
+};
 
-// 1. Discover what the operator allows and each host currently advertises.
-const hosts = await client.plugins.list({ nodeId: 'remote' });
+async function searchThenPlay(
+  client: RemediaClient,
+  guildId: string,
+  channelId: string,
+  userId: string,
+  query: string,
+): Promise<void> {
+  const outcome = await client.plugins.execute<SearchResult>({
+    nodeId: 'media-1',
+    hostId: 'source-host-1',
+    pluginId: 'example.metadata',
+    operation: 'catalog.search',
+    input: { query },
+  });
+  if (!outcome.handled || outcome.result.items.length === 0) return;
 
-for (const host of hosts) {
-  console.log(host.nodeId, host.hostId, host.status);
-
-  for (const { pluginId, operation } of host.operations) {
-    console.log(`  ${pluginId}/${operation}`);
+  const voice = client.createDiscordSession({
+    guildId,
+    channelId,
+    userId,
+    nodeId: outcome.nodeId,
+    pluginHosts: [outcome.hostId],
+  });
+  try {
+    await voice.connect();
+    await voice.play({
+      hostId: outcome.hostId,
+      pluginId: 'example.source',
+      operation: 'source.stream',
+      input: { id: outcome.result.items[0]!.id },
+    });
+    await voice.wait();
+  } finally {
+    await voice.dispose();
   }
 }
-
-// 2. Run an operation. The input and result are opaque JSON owned by your application.
-interface SearchResult {
-  items: Array<{ title: string }>;
-}
-
-const controller = new AbortController();
-const outcome = await client.plugins.execute<SearchResult>({
-  nodeId: 'remote',
-  hostId: 'source-host-1',
-  pluginId: 'example.metadata',
-  operation: 'catalog.search',
-  input: { query: 'some query' },
-  signal: controller.signal,
-});
-
-if (outcome.handled) {
-  console.log(outcome.result.items);
-} else {
-  console.log('the host did not handle this request');
-}
-
-// 3. Later, play an operation source on the same node that resolved the metadata.
-const voice = client.createDiscordSession({
-  guildId,
-  channelId,
-  userId,
-  nodeId: outcome.nodeId,
-  pluginHosts: [outcome.hostId],
-});
-await voice.connect();
-await voice.play({
-  hostId: outcome.hostId,
-  pluginId: 'example.metadata',
-  operation: 'source.stream',
-  input: { id: 'opaque to Remedia' },
-});
 ```
+
+The result generic describes your host's contract. Validate responses at your application boundary if the host is not trusted to implement that shape.
+
+### Cancel a forwarded request
 
 Aborting the signal while the request is pending cancels it on the client **and** on the server: the
 HTTP request to the plugin host is dropped, the host's own operation signal aborts, and the host's
@@ -162,7 +112,7 @@ operations ordered by `pluginId` then `operation`:
       "operations": [
         { "pluginId": "example.metadata", "operation": "catalog.search" },
         { "pluginId": "example.metadata", "operation": "lyrics.search" },
-        { "pluginId": "example.metadata", "operation": "source.stream" }
+        { "pluginId": "example.source", "operation": "source.stream" }
       ]
     }
   ]
@@ -215,7 +165,7 @@ There is **no fallback**: the request targets one host and never tries another h
 across providers is application logic.
 
 The serialized `{ "handled": ..., "result": ... }` envelope must fit in one RPC message
-(`limits.maxMessageBytes`, default 64 KiB). A larger result is not sent; the request fails with
+(`limits.maxMessageBytes`, default 64 KiB). A larger result is not sent. The request fails with
 `plugin_result_too_large` and the connection stays usable. Raise `maxMessageBytes` (and the host's
 `maxResponseBytes`) or return less data.
 
@@ -287,7 +237,7 @@ Discord session, as in the example above.
   `PluginOperationsUnsupportedError` instead of sending commands that do not exist, and those servers
   keep working for operation-source playback.
 - **Embedded nodes** have no plugin-host registry and report forwarding as unavailable. Embedded
-  integrations keep running their own locally registered plugins; no local HTTP server is started
+  integrations keep running their own locally registered plugins. No local HTTP server is started
   to imitate remote forwarding.
 
 ## Observability
@@ -295,7 +245,7 @@ Discord session, as in the example above.
 Executions appear in the existing plugin-host events (`server.plugin_host.operation_completed` and
 `operation_failed`) with `purpose` (`generic` or `media`), host ID, plugin ID, operation, outcome,
 attempts, retries, duration and a safe error category. Inputs and results are never logged.
-`node.stats.pluginHosts[].totals` adds `genericOperations`, `genericFailures` and `genericUnhandled`;
-media-resolution counters (`operations`, `operationFailures`, `grantsOpened`, `mediaBytes`) and
+`node.stats.pluginHosts[].totals` adds `genericOperations`, `genericFailures` and `genericUnhandled`.
+Media-resolution counters (`operations`, `operationFailures`, `grantsOpened`, `mediaBytes`) and
 `resources.activeStreams` are untouched by forwarded operations. `retries`, `unauthorized`, `timeouts`
 and `cancelled` cover both kinds.

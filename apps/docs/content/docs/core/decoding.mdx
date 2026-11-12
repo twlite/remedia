@@ -3,11 +3,9 @@ title: Audio decoding
 description: Open local files or HTTP(S) URLs and consume normalized PCM frames.
 ---
 
-`remedia-core` opens a source through FFmpeg's native libavformat, selects an audio stream, decodes
-it with libavcodec, and converts frames with libswresample. Sources may be local files, HTTP(S)
-URLs, owned encoded bytes, or a bounded producer-backed byte stream. It does not launch `ffmpeg` or
-`ffprobe` subprocesses, and it does not read a complete file or producer stream into memory before
-yielding audio.
+Use `remedia-core` to decode files, HTTP(S) URLs, owned bytes, or bounded producer streams into normalized PCM. Calls use native FFmpeg libraries and block the calling thread. Async applications should run them on blocking workers.
+
+For Node.js input ownership, use [Buffers, streams, and probing](/docs/node/inputs). For component boundaries, see [Engine architecture](/docs/architecture/overview).
 
 ## Output format
 
@@ -16,7 +14,7 @@ Every `PcmFrame` contains owned interleaved `f32` samples in the normalized form
 - 48,000 samples per second
 - 2 channels in Front Left / Front Right order
 - Interleaving `L0, R0, L1, R1, ...`
-- Samples clamped to the conventional `-1.0..=1.0` range; non-finite values become zero
+- Samples clamped to the conventional `-1.0..=1.0` range. Non-finite values become zero
 
 Mono sources are mapped to both stereo channels. Sources with more than two channels are downmixed
 by libswresample using the source channel layout. The decoder emits variable length frames and never
@@ -27,29 +25,7 @@ later.
 twice that many scalar `f32` values. `start_sample` is the frame's start position on the 48 kHz output
 timeline. The decoder's `output_format()` returns the shared `PcmFormat::NORMALIZED` constant.
 
-Playback sessions with an Opus-capable encoded output can automatically bypass PCM decoding for a
-restricted set of compatible source Opus packets. The decoder still owns the same demuxer and
-selected stream; it reads compressed packets first and constructs libavcodec and libswresample
-contexts only if the session needs PCM. The public `AudioDecoder` pull API continues to initialize
-and return PCM as before.
-
-The passthrough path is conservative. It requires an Opus stream with a supported OpusHead (48 kHz,
-mono or stereo, family-zero mapping, zero pre-skip, and zero OpusHead output gain), matching
-stream/OpusHead channel counts, no initial or trailing padding, and complete Opus packets whose
-actual duration and output compatibility checks succeed. Packets with skip-sample side data or a container duration shorter than the encoded
-Opus packet are decoded instead. An output may also reject packets that exceed its duration or size
-limits. MP3, AAC, Vorbis, trimmed Opus, and any source sent to a PCM-only output use the regular
-decode/resample path. Failure of an eligibility check is a normal fallback, not an error.
-
-For a passthrough source that later needs PCM processing, Remedia keeps the open demuxer and replays
-a rolling maximum of 120 ms and 512 KiB of preceding Opus packets into a newly initialized decoder.
-The bounded history is intended to provide decoder warm-up while remaining suitable for non-seekable
-inputs; it is not a claim that every possible Opus stream has identical decoder preroll needs.
-Decoded warm-up samples before the transition boundary are discarded. The transition never reopens
-a URL or restarts a one-shot byte stream. Seeking still uses FFmpeg decoding to trim an arbitrary
-target precisely and disables passthrough for the remainder of that source. See
-[RFC 7845](https://www.rfc-editor.org/rfc/rfc7845.html) for Ogg Opus pre-roll and granule-position
-semantics.
+For compatible Opus streams, playback may bypass PCM decoding. See [Opus passthrough](/docs/core/opus) for eligibility and decoder warm-up. The `AudioDecoder` pull API always returns PCM.
 
 ## Open and consume a file
 
@@ -98,11 +74,9 @@ The input sends one plain `GET`, disables FFmpeg seeking and automatic reconnect
 redirects to HTTP(S) transports. It is a forward-only byte stream, like
 `InputSource::byte_stream`: `seek` can move forward by decoding and discarding frames, and seeking
 backwards returns `DecoderError::UnsupportedSeeking`. An interrupted transfer is reported rather than
-resumed from another offset, and the source cannot be reopened; resolve a fresh resource instead.
+resumed from another offset, and the source cannot be reopened. Resolve a fresh resource instead.
 `InputSource::http_url` keeps FFmpeg's seekable behavior and is not changed. Diagnostics report this
-source kind as `http_sequential`. The input does not validate the host: a caller which accepts URLs
-from an untrusted party must apply its own address, redirect and size policy, as `remedia-server`
-does for plugin operation sources.
+source kind as `http_sequential`. Callers accepting untrusted URLs must apply address, redirect, and size policy. The server plugin-media path applies these restrictions before feeding its bounded input.
 
 ## In-memory bytes and producer streams
 
@@ -214,7 +188,7 @@ cargo run -p remedia-core --example decode -- url https://example.com/audio.mp3
 
 The example prints source metadata and the decoded sample count and duration. The decoder supports
 seeking when the input demuxer can seek. Playback sessions and generic PCM outputs are documented
-separately. Device output and remote stream uploads are not implemented; filters and Opus encoding
+separately. Device output and remote stream uploads are not implemented. Filters and Opus encoding
 are available through the core adapters described in the playback guide. Supported codecs and
 containers depend on the native FFmpeg libraries installed on the system.
 
@@ -223,7 +197,7 @@ containers depend on the native FFmpeg libraries installed on the system.
 `probe(source: InputSource, options: ProbeOptions) -> Result<AudioStreamInfo, DecoderError>`
 opens an input and runs native FFmpeg stream discovery, then closes it immediately. It creates
 no playback session, PCM decoder, filtergraph, output, or voice transport. Container tags are merged
-with selected audio stream tags; stream tags take precedence. Unknown fields stay `None`.
+with selected audio stream tags. Stream tags take precedence. Unknown fields stay `None`.
 
 ```rust
 use remedia_core::{probe, InputSource, ProbeOptions};
@@ -234,7 +208,7 @@ This is blocking I/O: use a blocking worker in asynchronous applications. `Probe
 is a positive total deadline (15 seconds by default); `cancellation` interrupts native I/O and
 bounded byte-stream reads. Errors use `DecoderError`, including `InputTimeout`, `Cancelled`,
 invalid media and `NoAudioStream`. All core input kinds are supported. Stream inputs are
-non-seekable and disposable; probing may consume some or all bytes. No source is retained for playback.
+non-seekable and disposable. Probing may consume some or all bytes. No source is retained for playback.
 FFmpeg may inspect packets while discovering formats, but Remedia does not run a PCM decoding loop.
 
 ## Linked FFmpeg runtime versions

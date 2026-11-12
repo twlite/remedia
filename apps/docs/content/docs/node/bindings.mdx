@@ -1,93 +1,45 @@
 ---
 title: '@remedia/node reference'
-description: Control native Remedia playback and Discord voice sessions from Node.js.
+description: Create an embedded engine, choose a session, and find the detailed API contracts.
 ---
 
-`@remedia/node` runs the Remedia audio engine inside your Node.js process. It plays audio into
-Discord voice channels, decodes local files, HTTP(S) URLs, in-memory bytes and Node.js streams, and
-exposes structured diagnostics. This page is the API reference. For a first working setup, follow the
-[embedded quickstart](/docs/getting-started/embedded).
+{/* Preserve section URLs from the previous reference layout. */}
 
-## What it supports
+<span id="what-it-supports" />
+<span id="ffmpeg-discovery-and-diagnostics" />
+<span id="getffmpegruntime" />
+<span id="ffmpegloaderror" />
+<span id="buffer-and-readable-inputs" />
+<span id="lifecycle-events-and-pre-play-hooks" />
+<span id="native-filters-and-master-volume" />
+<span id="discord-gateway-adapter" />
+<span id="structured-diagnostics" />
+<span id="session-configuration-and-channel-movement" />
+<span id="probe-media-without-playback" />
+<span id="staged-crossfade-playback" />
+<span id="building-from-source" />
 
-- **Discord voice playback.** Audio is audible only through a Discord voice session (`createDiscordSession`). Your application supplies the Gateway connection; see [Discord Gateway adapter](#discord-gateway-adapter).
-- **Standalone playback sessions** (`createPlaybackSession`) decode into a null output that consumes audio as fast as possible. They are for tests, tools and inspection. **They do not produce sound through local speakers.**
-- **Media probing** without playback, and optional [crossfading](#staged-crossfade-playback).
-- **Not included:** a local audio device, the `remedia-server` protocol, a Discord Gateway or REST client. Use [`@remedia/client`](/docs/client/overview) to choose between embedded and remote nodes.
+`@remedia/node` embeds the Rust audio engine in Node.js. Follow the [embedded quickstart](/docs/getting-started/embedded) for a working Discord bot. This reference covers direct access to the engine.
 
-The package ships prebuilt native addons for the platforms listed in
-[distribution](/docs/node/distribution). It needs FFmpeg 9 shared libraries on the host:
-[install FFmpeg 9](/docs/node/ffmpeg-9).
+## Engine API
 
-## FFmpeg discovery and diagnostics
-
-On import, `@remedia/node` chooses an FFmpeg 9 installation (`REMEDIA_FFMPEG_DIR`, then the system, then `~/.remedia/ffmpeg9`) and loads it before the engine starts. Nothing is downloaded. How the search works and how to install FFmpeg is in [Install FFmpeg 9](/docs/node/ffmpeg-9).
-
-```ts
-import { FfmpegLoadError, getFfmpegRuntime } from '@remedia/node';
-
-const runtime = getFfmpegRuntime();
-
-console.log(runtime.source); // 'explicit' | 'system' | 'managed' | 'unmanaged'
-console.log(runtime.directory);
-console.log(runtime.libraries.map(({ name, version }) => `${name} ${version}`));
-```
-
-### `getFfmpegRuntime()`
-
-```ts
-function getFfmpegRuntime(): FfmpegRuntimeInfo;
-```
-
-Returns the installation that was loaded. It does not search, load or download anything, so it
-is cheap and safe to call at any time after the package is imported, and it is independent of
-Discord, playback and the standalone server. It is only ever populated after the engine addon has
-actually loaded against the libraries.
-
-| Field        | Type                                                 | Description                                                                                                    |
-| ------------ | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `source`     | `'explicit' \| 'system' \| 'managed' \| 'unmanaged'` | How the installation was found. `unmanaged` means the platform has no bootstrap and the OS loader chose.       |
-| `directory`  | `string \| null`                                     | Directory holding the loaded libraries; `null` when `unmanaged`.                                               |
-| `libraries`  | `readonly FfmpegLibraryInfo[]`                       | The five loaded libraries (`name`, `path`, `version` as `major.minor.micro`, `major`); empty when `unmanaged`. |
-| `considered` | `readonly FfmpegCandidateReport[]`                   | Every candidate examined in order (`source`, `directory`, `outcome`, optional `reason` and `detail`).          |
-
-### `FfmpegLoadError`
-
-Importing `@remedia/node` rejects with an `FfmpegLoadError` (an `Error` subclass with a `candidates`
-array of `FfmpegCandidateReport`) when no compatible installation can be loaded or an explicit
-`REMEDIA_FFMPEG_DIR` is unusable. Its message lists every considered path, the classified reason
-(`not-found`, `missing-libraries`, `abi-mismatch`, `architecture-mismatch`, `unresolved-dependency`,
-`mixed-installations`, `load-failed`), the installer command for the current OS, and how to set
-`REMEDIA_FFMPEG_DIR`. Because the failure is raised while the module loads, catch it around a dynamic
-import if you want to present your own message:
-
-```ts
-try {
-  const { Remedia } = await import('@remedia/node');
-  await Remedia.create();
-} catch (error) {
-  if (error instanceof Error && error.name === 'FfmpegLoadError') {
-    console.error(error.message); // paths considered, reasons, install instructions
-  }
-  throw error;
-}
-```
-
-With `@remedia/client`, an embedded node reports this error when it loads `@remedia/node`; remote
-nodes never need FFmpeg on the client. See [native library troubleshooting](/docs/node/troubleshooting)
-for causes and fixes, and for how the bootstrap loads libraries on each operating system.
-
-| Environment variable          | Effect                                                                                                      |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `REMEDIA_FFMPEG_DIR`          | Use this FFmpeg 9 prefix (or its library directory). Takes precedence; failure is an error, not a fallback. |
-| `NAPI_RS_NATIVE_LIBRARY_PATH` | Unchanged napi-rs override for the engine addon path. FFmpeg discovery still runs first.                    |
+| Member                                    | Purpose                                                                            |
+| ----------------------------------------- | ---------------------------------------------------------------------------------- |
+| `Remedia.create(options?)`                | Initialize an independent engine. Pass `{ send }` for Discord Gateway integration. |
+| `createPlaybackSession<Metadata>()`       | Create a silent decoder session with a null output.                                |
+| `createDiscordSession<Metadata>(options)` | Register one voice session per guild.                                              |
+| `receive(packet)`                         | Forward raw Gateway dispatches for this bot.                                       |
+| `probe(source, options?)`                 | Inspect a disposable source without playback.                                      |
+| `processResources()`                      | Read cached process-wide CPU and memory counters.                                  |
+| `droppedDebugEvents`                      | Count dropped native diagnostic events.                                            |
+| `close()`                                 | Dispose owned sessions, stop workers, and flush telemetry. Safe to repeat.         |
 
 ## Create and close an instance
 
 Create each independent engine context with `await Remedia.create()`. The
 instance owns its playback sessions, voice connections, bounded diagnostics
 queue, and optional OpenTelemetry providers. Call `close()` during normal
-shutdown; it stops playback, disconnects voice transports, flushes telemetry,
+shutdown. It stops playback, disconnects voice transports, flushes telemetry,
 and releases native workers. It can be called more than once.
 
 ```ts
@@ -120,102 +72,13 @@ fast as possible and does not produce sound. Discord sessions use the
 transport-independent core Opus adapter and send the resulting packets through
 their associated voice connection.
 
-## Buffer and Readable inputs
-
-Pass encoded media bytes directly with a `Buffer` or `Uint8Array`:
-
-```ts
-import { readFile } from 'node:fs/promises';
-import { Remedia } from '@remedia/node';
-
-const bytes = await readFile('./audio/track.mp3');
-const remedia = await Remedia.create();
-const playback = remedia.createPlaybackSession();
-try {
-  await playback.play({ buffer: bytes });
-  console.log(await playback.wait());
-} finally {
-  await playback.dispose();
-  await remedia.close();
-}
-```
-
-For generated or streamed data, pass a Node.js `Readable` that yields only
-`Buffer` or `Uint8Array` chunks. Object-mode streams and other chunk values fail
-the playback operation with a source error. The pump starts before decoder
-initialization, so FFmpeg can probe while the producer is writing:
-
-```ts
-import { Readable } from 'node:stream';
-import { Buffer } from 'node:buffer';
-import { Remedia } from '@remedia/node';
-
-function makeWave(): Buffer {
-  const sampleRate = 48_000;
-  const sampleFrames = 4_800;
-  const bytes = Buffer.alloc(44 + sampleFrames * 2);
-  bytes.write('RIFF', 0);
-  bytes.writeUInt32LE(bytes.length - 8, 4);
-  bytes.write('WAVEfmt ', 8);
-  bytes.writeUInt32LE(16, 16);
-  bytes.writeUInt16LE(1, 20); // PCM
-  bytes.writeUInt16LE(1, 22); // mono
-  bytes.writeUInt32LE(sampleRate, 24);
-  bytes.writeUInt32LE(sampleRate * 2, 28);
-  bytes.writeUInt16LE(2, 32);
-  bytes.writeUInt16LE(16, 34);
-  bytes.write('data', 36);
-  bytes.writeUInt32LE(sampleFrames * 2, 40);
-  return bytes;
-}
-
-const bytes = makeWave();
-const source = Readable.from(
-  [bytes.subarray(0, 16), bytes.subarray(16, 2_000), bytes.subarray(2_000)],
-  { objectMode: false },
-);
-const remedia = await Remedia.create();
-const playback = remedia.createPlaybackSession();
-try {
-  await playback.play({ stream: source });
-  console.log(await playback.wait());
-} finally {
-  await playback.dispose();
-  await remedia.close();
-}
-```
-
-The native queue is capped at 512 KiB of pending bytes per stream. Writes wait
-for decoder consumption before the Readable pump asks for more data. When
-playback is paused, the queue fills and backpressure propagates to the source;
-this prevents unbounded buffering. The input is incremental and does not first
-materialize the complete stream. A single producer chunk and the Readable's own
-high-water mark add to the queue's memory use.
-
-Remedia copies Buffer/Uint8Array data into native-owned memory. For a Readable,
-the feeder copies each chunk before submitting it to native code. Remedia owns
-the feeder and detaches it on stop, dispose, or `Remedia.close()`, but it does
-not destroy the caller-owned Readable. The source is paused and no further
-chunks are consumed after cancellation. A producer error is propagated through
-decoder state and `playback.error` or the rejected `play()` Promise, not through
-diagnostic events.
-
-In-memory buffers support byte-offset seeking when FFmpeg can seek the
-container. A producer-backed Readable supports **forward-only** media-time
-seeking: Remedia decodes and discards audio until the target without caching
-the skipped stream. Backward seeks reject without stopping playback or flushing
-the output. Forward seeks may take time because the source must supply all
-intervening bytes; a requested position already passed by decoder read-ahead
-cannot be recovered. File and HTTP behavior is unchanged, and supported
-containers/codecs depend on the installed native FFmpeg libraries.
-
 ## Playback controls
 
 `PlaybackSession.state` reports `idle`, `starting`, `playing`, `pausing`,
 `resuming`, `paused`, `stopping`, `stopped`, `completed`, or `failed`.
 `play()` resolves only after the native decoder has opened and selected an
 audio stream. It rejects on initialization failure. Starting a second source
-while one is active is rejected; stop the current source first.
+while one is active is rejected. Stop the current source first.
 
 The session methods are Promise-based where they wait on native work:
 
@@ -229,438 +92,37 @@ const outcome = await playback.wait();
 
 Pausing and seeking take effect at a decoder/output boundary. `stop()` cancels
 playback but does not disconnect an associated Discord voice transport. A
-normal EOF moves to `completed`; an unrecoverable decoder or output error moves
+normal EOF moves to `completed`. An unrecoverable decoder or output error moves
 to `failed` and is available as `playback.error`. API failures reject their
 Promise and remain separate from debug diagnostics.
 
-`position` returns `mediaMs`, `mediaPositionAccuracy`, `submittedMs`, and
-`playedMs`. `mediaMs` is the original source timeline associated with the latest
-filtered PCM accepted by the output. Its accuracy is `timestamp` when based on
-valid source timestamps, `estimated` when decoding or a filtergraph makes that
-mapping uncertain, and `null` before a position is available. It is not proof
-that the listener has heard those samples. `submittedMs` is the filtered PCM
-output timeline (also used for Opus continuity), and `playedMs` is populated
-only when the output reports actual consumption. A Discord transport currently
-cannot report audible playback time, so `playedMs` is `null`; the Discord test
-bot displays source progress with an approximation marker in that case. The
-null output consumes the whole stream without real-time pacing, so positions
-can advance to the end quickly. `durationMs` is `null` when the source does not
-provide a duration.
-
-## Lifecycle events and pre-play hooks
-
-`PlaybackSession`, `DiscordSession`, and their owning `Remedia` instance use
-Node's built-in typed `EventEmitter`. Stable event names are exported as
-constants, with matching string-union types:
-
-```ts
-import { PlaybackSessionEvents } from '@remedia/node';
-
-const playback = remedia.createPlaybackSession<{ trackId: string }>();
-playback.on(PlaybackSessionEvents.playbackCompleted, (event) => {
-  // event.customMetadata is { trackId: string } | undefined
-  console.log(event.generation, event.customMetadata);
-});
-```
-
-`PlaybackSessionEvents` contains `playbackStarted`, `playbackCompleted`,
-`playbackStopped`, `playbackFailed`, `playbackPaused`, `playbackResumed`,
-`playbackSeeked`, `filterChanged`, `volumeChanged`, and `sessionDisposed`.
-`VoiceSessionEvents` contains `voiceStateChanged` and `voiceFailed`. `Remedia`
-forwards lifecycle events from its sessions and also emits `debug` diagnostics.
-The constants can be used with `on`, `once`, and `off`; the event map infers
-each payload. The same-named exported type `PlaybackSessionEvents` is the union
-of event-name string literals. Operational failures use `playbackFailed` or `voiceFailed`, not
-Node's special `error` event.
-
-Events describe engine transitions, not Discord audibility. `playbackStarted`
-fires after the native media pipeline has started; it does not mean a listener
-has heard a sample. `playbackCompleted` means decoding and processing reached
-natural EOF; it does not guarantee a transport or speaker buffer has drained.
-`playbackStopped` is distinct from natural completion. Pause, resume, seek,
-filter, and volume events are emitted only after a successful change; repeated
-idempotent operations do not emit duplicates. A rejected operation does not
-emit its successful state-change event. Session disposal emits
-`sessionDisposed` once.
-
-Every playback event includes a wrapper `sessionId`, native source `generation`,
-and `nodeId` (`null` for direct `@remedia/node` sessions). Discord-session
-payloads also include `guildId`. A generation identifies one source start, so
-terminal events cannot be confused with a later source. Event listeners run
-outside native locks. Synchronous listener exceptions are isolated and reported
-as a Node process warning (`REMEDIA_LISTENER_ERROR`); they do not fail playback.
-
-Attach arbitrary application metadata to one source without serializing it:
-
-```ts
-interface MyMetadata {
-  requestedBy: string;
-  trackId: string;
-}
-
-const voice = remedia.createDiscordSession<MyMetadata>({ guildId, channelId, userId });
-await voice.play(
-  { url },
-  {
-    customMetadata: { requestedBy: interaction.user.id, trackId: 'track-123' },
-  },
-);
-```
-
-The same object reference is included in lifecycle events for that generation,
-including delayed terminal events. It remains in JavaScript memory only and is
-released when that source reaches a terminal state or the session is disposed.
-Remedia does not interpret it as track or queue data.
-
-`hooks.beforePlay()` registers awaited local middleware. Hooks run in
-registration order before native playback starts; returning
-`{ cancel: true, reason }` cancels the operation, and a thrown/rejected hook
-rejects `play()` without starting media. The context contains the source,
-metadata, and an `AbortSignal`. Aborting while hooks are running cancels the
-pending start; aborting after startup requests stop for that playback. Hooks
-are application middleware, not server authorization, and are cleared when the
-session is disposed. Unlike ordinary event listeners, hooks may delay or cancel
-playback deliberately.
-
-## Native filters and master volume
-
-Both `PlaybackSession` and `DiscordSession` expose the core's raw FFmpeg audio
-filtergraph and an independent master gain. No named music presets are part of
-`@remedia/node`.
-
-```ts
-await voice.filters.set('bass=gain=8,volume=0.8');
-await voice.setVolume(0.75);
-
-await voice.filters.set('tremolo=f=5:d=0.6'); // replaces the previous graph live
-await voice.filters.clear();
-console.log(voice.filters.graph, voice.volume); // null, 0.75
-```
-
-Filter graphs can be set before playback or before `DiscordSession.connect()`.
-On an active track, a change is validated first and takes effect at the next
-decoded PCM boundary. Remedia discards delayed samples still held in the
-previous stateful graph, keeps PCM already accepted by the output, and retains
-the current decoder and Discord connection. It does not perform a seek flush,
-reset the Opus encoder, or invalidate queued RTP packets. A partial Opus frame
-is retained and can contain accepted PCM from both sides of the graph boundary;
-sample positions remain contiguous. Invalid graphs reject without replacing
-the graph already in use.
-If EOF wins a race before another PCM boundary exists, the update is retained
-for the next source on that session. A seek that loses an EOF race rejects with
-an invalid-state error.
-Pass a raw audio graph expression, not an FFmpeg command-line option; empty or
-whitespace-only strings reject, and `clear()` disables filtering. The parser
-requires one effective PCM input and output but does not sandbox filters that
-may access files or URLs. Only pass trusted graph strings to the engine.
-
-`volume` is a normalized linear gain from `0` through `2`; the default is `1`.
-`setVolume(0)` mutes without stopping playback, `setVolume(1)` is unity, and
-values above one may clip. Samples are clamped to `[-1, 1]`; this is not
-limiting or loudness normalization. Volume is applied after the graph and is
-preserved when filters change or tracks are replaced on the same session.
-Each session has independent settings, and disposal releases them.
-
-Time-changing filters alter the filtered PCM timeline. `position.mediaMs` tracks
-the original source position associated with the latest output boundary and is
-marked estimated whenever timestamps or a graph's buffering/timing prevent an
-exact mapping. Remedia does not parse filter expressions to guess a constant
-speed ratio. `position.submittedMs` advances by filtered samples submitted to
-the output, not source media time. `seek()` remains relative to the original
-source timeline and resets both timelines to the requested position. Discord
-does not report audible position, so `playedMs` remains `null`; source progress
-shown by the Discord test bot is therefore approximate. Graph replacement,
-seek, pause, stop, and end-of-stream draining are handled by the native playback
-worker; no graph or PCM work runs on Node's event loop.
-
-## Discord Gateway adapter
-
-The application still owns its Discord Gateway client and decides when to
-join a channel. Remedia now adapts that client: supply a function that sends a
-Gateway payload for a guild, then forward raw Gateway packets to
-`remedia.receive()`. Remedia sends OP 4, collects the matching
-`VOICE_STATE_UPDATE` and `VOICE_SERVER_UPDATE` in either order, and calls the
-native transport only after both are valid. `connect()` resolves after the
-voice WebSocket, UDP transport, encryption, and required DAVE setup are ready.
-
-```ts
-import { Remedia } from '@remedia/node';
-
-const remedia = await Remedia.create({
-  send(guildId, payload) {
-    return sendToShard(guildId, payload);
-  },
-});
-
-discord.on('raw', (packet) => remedia.receive(packet));
-
-const voice = remedia.createDiscordSession({
-  guildId: '123456789012345678',
-  channelId: '234567890123456789',
-  userId: '345678901234567890',
-});
-
-try {
-  await voice.connect();
-  await voice.play({ url: 'https://example.org/audio.mp3' });
-  console.log(voice.connectionState, await voice.wait());
-  await voice.stop(); // leaves the voice connection open
-} finally {
-  await voice.disconnect();
-  await remedia.close();
-}
-```
-
-Snowflakes remain decimal strings in JavaScript and are validated before any
-Gateway request. `connect()` defaults to a 45-second timeout and accepts
-`{ timeoutMs, signal }` for per-attempt timeout and `AbortSignal` cancellation.
-An interrupted connection sends OP 4 with `channel_id: null` and discards the
-pending credentials. `disconnect()` also sends this leave request, stops active
-playback, closes the native transport, and leaves the wrapper reusable for a
-later `connect()` with fresh Gateway events. `dispose()` disconnects and removes
-the session from its `Remedia` instance. Only one live wrapper per guild is
-allowed in an instance. Gateway responses are not persisted or logged; the
-server token and endpoint are discarded after native setup, and pending data is
-reset before each new exchange and on disconnect.
-
-An abort or timeout rejects the pending `connect()` and requests a Gateway
-leave. If native voice setup has already started, its network handshake cannot
-be interrupted mid-operation; `disconnect()` waits for the transport's bounded
-timeouts and disposes any late native connection result.
-
-`Remedia.receive(packet)` ignores non-voice packets and voice updates for other
-guilds, users, or channels. A changed voice server token/endpoint or voice
-session starts a fresh OP 4 exchange. The adapter correlates fresh dispatch
-sequences, ignores stale and duplicate updates, and retries a failed transport
-replacement a bounded number of times. `connectionState` reports
-`reconnecting` during this work and `connected` after the replacement transport
-and DAVE setup are ready.
-
-Credential refresh replaces only the Discord transport. The existing playback
-session and its decoder, current source, source generation, filtergraph, master
-volume, paused/playing state, and application `customMetadata` remain in place.
-Playback output is routed through a stable bounded handoff: it waits at the
-output boundary while a replacement transport is established, then sends new
-packets only through the new RTP/encryption/DAVE session. It never replays a
-track from the beginning or forwards a packet using old transport keys. Packets
-already accepted by the old transport may be lost during the handoff, so a
-short audible gap is possible. Files, HTTP inputs, buffers, and caller-owned
-Readables continue through the already-open decoder; no source is reopened or
-rewound. In particular, a one-shot Readable is not replayed. This is transport
-recovery, not a promise of lossless audio delivery.
-
-An ordinary Voice WebSocket Resume remains inside the native transport and does
-not send a bot Gateway OP 4. A new server region, token, endpoint, or voice
-session is handled as a credential migration. `pause()`, `resume()`, `seek()`,
-`stop()`, and `wait()` continue to address the existing playback while its voice
-transport is reconnecting. `stop()` cancels that playback and it is never
-restarted by transport recovery. Explicit `disconnect()`, session disposal, or
-closing the owning `Remedia` cancels pending recovery. Recovery has a bounded
-connection timeout and retry count; after exhaustion the session emits
-`voiceFailed` and the routed output fails. A source already paused remains
-paused if recovery succeeds.
-
-Each native replacement uses an internal transport generation. A late setup is
-discarded if a newer credential update or explicit disconnect has superseded it.
-
-The application remains responsible for authenticating its Gateway client and
-forwarding its raw dispatch packets. The binding does not implement Gateway
-connectivity, REST calls, channel commands, or bot authentication. The native
-credential-based function is internal to the package; applications do not
-collect or pass voice session IDs, tokens, or endpoints. See the
-[Discord transport guide](/docs/discord/voice-output) for DAVE support and
-protocol limitations.
-
-## Structured diagnostics
-
-Register one callback per `Remedia` instance. Events preserve severity,
-tracing target, stable event name, message, structured fields, timestamp in
-Unix milliseconds, and optional internal playback/voice correlation IDs.
-These IDs are not Discord guild IDs or secret voice session IDs.
-
-```ts
-const listener = (event) => {
-  console.log(event.severity, event.event, event.playbackId, event.fields);
-};
-remedia.on('debug', listener);
-// Later:
-remedia.off('debug', listener);
-remedia.removeAllListeners('debug');
-```
-
-Media workers do not call JavaScript directly. A dedicated worker forwards one
-instance's diagnostic receiver through a bounded
-N-API `ThreadsafeFunction`; cloned receivers are not treated as broadcasts.
-Events may be dropped under backpressure. `remedia.droppedDebugEvents` reports
-drops in both bounded queues. Debug callbacks do not carry operational errors;
-those are Promise rejections, playback state, and the `error` properties.
-Structured integer fields are strings so `u64` and `i64` values retain full
-precision in JavaScript; floating-point fields remain numbers.
-
-Environment variables are read when `Remedia.create()` runs:
-
-| Variable                                         | Default                   | Behavior                                                                                                                       |
-| ------------------------------------------------ | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `REMEDIA_DEBUG=1`                                | disabled                  | Enables debug events for Remedia components.                                                                                   |
-| `REMEDIA_LOG`                                    | `warn`                    | Tracing filter, for example `remedia_core=info,remedia_discord=debug`; takes precedence over `REMEDIA_DEBUG`.                  |
-| `REMEDIA_LOG_FORMAT`                             | `text`                    | Accepts `text` or `json`. Console output is disabled for this embedded binding so the JS callback is not duplicated to stderr. |
-| `REMEDIA_OTEL_ENABLED`                           | `false`                   | Set to `true` to enable OTLP traces and metrics.                                                                               |
-| `OTEL_SERVICE_NAME`                              | OpenTelemetry SDK default | Service resource name.                                                                                                         |
-| `OTEL_RESOURCE_ATTRIBUTES`                       | OpenTelemetry SDK default | Standard resource attributes.                                                                                                  |
-| `OTEL_EXPORTER_OTLP_*`                           | HTTP/protobuf defaults    | Standard shared and signal-specific endpoint/protocol settings.                                                                |
-| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | parent-based always-on    | Standard trace sampler configuration, validated when export is enabled.                                                        |
-
-OTLP exporters run asynchronously and are opt-in. `close()` flushes and shuts
-down the providers owned by that instance. These bindings do not install or
-replace a process-global tracing subscriber, so they can coexist with host
-application diagnostics. Core and Discord do not depend on Node.js.
-
-For Rust-level observability setup and metric semantics, see the
-[observability guide](/docs/observability/configuration). For the native media
-and transport boundaries, see the [decoding guide](/docs/core/decoding) and
-the [Discord voice guide](/docs/discord/voice-output).
-
-## Session configuration and channel movement
-
-A client owns one session per guild. Separate clients (including separate bot users) can use the
-same guild and channel with independent playback, transport generations, and events. `userId` is
-the Discord bot user ID, not a Remedia client session ID. Channel IDs are mutable destinations.
-Duplicate guild registration on the same client throws; dispose the old session before replacing it.
-
-```ts
-const session = remedia.createDiscordSession({
-  guildId,
-  channelId,
-  userId,
-  selfDeaf: true,
-  selfMute: false,
-  volume: 0.75,
-  filterGraph: 'bass=gain=3',
-});
-await session.connect();
-await session.move(otherChannelId);
-await session.setSelfDeaf(false);
-await session.setSelfMute(true);
-await session.dispose();
-```
-
-`selfDeaf` defaults to `true` (previously joins always sent `false`); `selfMute` defaults to
-`false`. These flags affect Discord voice state, independently of playback pause and gain.
-Setters retain values before connection and update Gateway OP 4 after joining. Unchanged values
-send nothing. Joins, credential refreshes, and moves preserve the flags. Keep the library-agnostic
-`send(guildId, payload)` and `receive(payload)` Gateway integration wired throughout the session.
-
-Initial `volume` is finite linear gain from 0 through 2, default 1. `filterGraph` is a trusted raw
-FFmpeg audio filtergraph or `null` (default). Invalid gain and empty/non-string graphs are rejected
-at creation; native FFmpeg validates graph syntax when the backend is allocated/configured, before
-playback is allowed. Configuration is serialized with runtime setters and applied before audio
-starts. Both values persist across tracks and transport replacement; existing `setVolume()` and
-`filters.set()`/`clear()` remain available with their existing change events.
-
-`move(channelId): Promise<void>` requests fresh Gateway credentials and replaces the existing voice
-transport without restarting or seeking playback. Decoder input (including one-shot Readables),
-filters, gain, playback generation, and paused state are retained. A move to the current destination
-shares a pending connection or resolves immediately when connected. A newer destination supersedes
-a pending attempt with an `AbortError`; `connect()` shares the latest attempt. Moving while explicit
-disconnection or disposal is underway rejects. `disconnect()`/`dispose()` cancel a pending move.
-`channelId` reports the latest requested destination, including after a failed move.
-
-Intentional moves do not use the automatic recovery retry policy. A failed move reports a failed
-voice state and leaves playback parked with bounded buffering; call `connect()` to retry the
-requested destination, `move()` to choose another, or `disconnect()`/`dispose()` to release it.
-Ordinary transport recovery retains its existing bounded credential-refresh retries. Transport
-replacement itself does not emit playback stopped/completed/failed events.
-
-Gateway mocks verify orchestration and local native tests verify media lifecycles. Real Discord
-channel movement, same-channel multi-bot voice, credential ordering, and self flags still require
-an application integration test with Discord. Forward only each bot's own Gateway dispatch stream.
-
-## Probe media without playback
-
-```ts
-const info = await remedia.probe(
-  { stream: createTemporaryAudioStream() },
-  { signal: controller.signal, timeoutMs: 15_000 },
-);
-console.log(info.durationMs, info.metadata.title, info.metadata.artist);
-// Resolve a fresh resource independently when playback begins.
-```
-
-`Remedia.probe(source: MediaSource, options?: ProbeOptions): Promise<AudioStreamInfo>` supports
-files, HTTP(S) URLs, Buffer, Uint8Array and binary Readables. It uses the same stream metadata
-representation as playback. Missing numeric values remain `null`; missing tags are absent.
-The operation creates no playback or Discord session and can run alongside playback.
-
-`signal` cancels native input I/O. `timeoutMs` is a total deadline, defaults to 15000, and must be
-an integer from 1 through 4294967295. At most eight probes can be outstanding per engine, with
-eight native workers per addon process; additional operations reject. Invalid media, missing
-audio, input errors and timeouts reject. Closing the engine cancels its probes.
-
-Readable input uses the existing bounded native queue. It may be partially or fully consumed.
-On every completion path Remedia cancels the queue, detaches its listeners and releases input
-handles. It never destroys the caller-owned Readable. It does not rewind, cache, clone or preserve
-sources. A stalled input times out; non-seekable formats that require unavailable data may fail.
-
-## Staged crossfade playback
-
-Crossfade is opt-in. Configure an idle embedded playback session before `play()`:
-
-```ts
-const playback = remedia.createPlaybackSession();
-playback.configureCrossfade({ enabled: true, durationMs: 5000, prepareBeforeMs: 30000 });
-playback.on('prepareRequested', async ({ generation }) => {
-  // Resolve a fresh source here, close to the transition, using your own queue.
-  await playback.stageNext(
-    { file: './next.wav' },
-    {
-      expectedGeneration: generation,
-      entryId: 'queue-entry-2',
-      queueRevision: 1,
-      sourceRevision: 0,
-    },
-  );
-});
-await playback.play({ file: './current.wav' });
-```
-
-Discord sessions accept the same settings in their creation option `crossfade`.
-`stageNext()` accepts the same file, URL, buffer and Readable inputs as embedded
-`play()`. The staged input is owned until replacement, cancellation, promotion or
-failure; promotion reuses its decoder and never calls `play()` again. Use
-`clearStage()` to cancel and `stagedSource` to inspect preparation. A source revision
-must increase when refreshing an expiring URL; optional `expiresAtMs` is an absolute
-Unix timestamp in milliseconds that prevents promotion after expiry.
-
-See [crossfade playback](/docs/core/playback#crossfade-playback) for lifecycle and timing.
-
-## Building from source
-
-Use the repository's pinned Rust toolchain, Node.js 22.18 or newer, and pnpm
-12.16.1. Building the native addon requires the FFmpeg development libraries
-used by `remedia-core`. The Opus encoder is built from bundled source and linked
-statically, so a separate system libopus development package is not required.
-From the repository root:
-
-```sh
-pnpm install --frozen-lockfile
-pnpm --filter @remedia/node test
-pnpm --filter @remedia/node build
-```
-
-The test command builds a debug addon and runs local Node integration tests.
-`build` creates the release addon and TypeScript declarations. The N-API loader
-and native declarations are generated from Rust source by `@napi-rs/cli`.
-
-Both scripts also build the FFmpeg-free **bootstrap** addon (`bootstrap/` crate,
-output `bootstrap.<platform>.node`) and, on macOS, rewrite the engine addon's FFmpeg
-install names to `@rpath` (`.github/scripts/normalize-macos-addon.mjs`) so that FFmpeg
-discovery can choose the installation at run time. `FFMPEG_DIR` and `PKG_CONFIG_PATH`
-select the FFmpeg you compile **against**; they are not used when the package runs. If
-`pkg-config` finds more than one FFmpeg (for example Homebrew's `ffmpeg` and
-an older `ffmpeg@N` formula), set them explicitly so the addon links FFmpeg 9.
-
-Windows builds use the dynamic MSVC CRT to match bundled Opus's CMake defaults;
-Opus itself remains statically linked. A Windows runtime machine needs a
-compatible Microsoft Visual C++ v14 runtime if it is not already installed.
-The N-API package does not bundle that runtime or guarantee static CRT
-linkage. FFmpeg's DLLs remain separate runtime dependencies.
+Read [playback positions](/docs/client/positions) before using `position` or `durationMs` in a user interface.
+
+## Session API
+
+| Member                                                     | Contract                                                                              |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `play(source, options?)`                                   | Start encoded media. Options include local `customMetadata` and `signal`.             |
+| `pause()`, `resume()`, `stop()`, `seek(ms)`, `wait()`      | Control or observe one source generation.                                             |
+| `filters.set(graph)`, `filters.clear()`, `setVolume(gain)` | Change trusted processing and gain.                                                   |
+| `configureCrossfade(options)`                              | Configure an idle standalone playback session. Discord sessions use creation options. |
+| `stageNext(source, options)`, `clearStage()`               | Prepare or cancel the next source.                                                    |
+| `stagedSource`                                             | Staging snapshot getter. The client SDK instead exposes `stagedSource()`.             |
+| `dispose()`                                                | Release the session.                                                                  |
+
+Discord sessions also expose `connect()`, `disconnect()`, `move()`, `setSelfDeaf()`, and `setSelfMute()`. Direct Node sessions have no node pool or cross-node `migrate()` API.
+
+## Detailed contracts
+
+| Topic                                         | Reference                                                                         |
+| --------------------------------------------- | --------------------------------------------------------------------------------- |
+| Input types, ownership, backpressure, probing | [Buffers and streams](/docs/node/inputs)                                          |
+| Discord connection, movement, recovery        | [Embedded voice](/docs/node/voice) and [session lifecycle](/docs/client/sessions) |
+| Filtergraph replacement and gain              | [Embedded filters](/docs/node/filters)                                            |
+| Events, generations, metadata, hooks          | [Events and hooks](/docs/client/events)                                           |
+| Loaded libraries and import failures          | [FFmpeg runtime API](/docs/node/runtime)                                          |
+| Debug callbacks and telemetry                 | [Embedded diagnostics](/docs/node/diagnostics)                                    |
+| Source build and generated loaders            | [Build the addon](/docs/node/building)                                            |
+| Staging and promotion                         | [Crossfading](/docs/client/crossfade)                                             |
+
+Direct Node playback events use `nodeId: null`. Standalone playback has no `guildId`. Discord events include it. The owning `Remedia` forwards session lifecycle events and emits `debug` diagnostics.

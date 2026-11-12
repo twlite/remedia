@@ -3,11 +3,7 @@ title: Choose your setup
 description: Decide whether to run Remedia inside your Node.js process or on a separate server, and which packages to install.
 ---
 
-Remedia plays audio into Discord voice channels for a bot you write. It decodes media, applies
-filters and volume, encodes Opus and sends it over Discord's encrypted voice transport. Your
-application keeps its own Discord Gateway connection, queue, and search logic.
-
-You choose where the audio engine runs. Install only the packages for that choice.
+Choose where audio will be processed, then install the packages for that setup. Both modes use your existing Discord Gateway connection and accept media selected by your application.
 
 ## Embedded or remote
 
@@ -35,15 +31,19 @@ You can mix them. A `RemediaClient` can hold an embedded node and several remote
 each Discord guild on the node it was first assigned to.
 
 <Callout title="Not sure?">
-  Start embedded. Moving to a remote server later means changing the node list passed to
-  `@remedia/client`, not rewriting your playback code.
+  Start with an embedded node for one bot process. The client SDK can later add remote nodes to the
+  same node list.
 </Callout>
 
-## What Remedia does not do
+<span id="what-remedia-does-not-do" />
 
-- It is not a music search service or source extractor. Your application decides which URL, file, or plugin operation to play.
-- It does not implement Discord's Gateway. You pass it a function that sends Gateway payloads and forward the packets you receive.
-- It is not a Lavalink-compatible server.
+## Application responsibilities
+
+- Select authorized media URLs, files, or plugin operations. Provider search and extraction belong to your application.
+- Authenticate the Discord Gateway client, send Gateway payloads, and forward incoming dispatches.
+- Maintain the queue and decide how to restore it after a process restart.
+
+The remote server exposes Remedia's own RPC protocol. Lavalink clients cannot connect directly.
 
 ## Next steps
 

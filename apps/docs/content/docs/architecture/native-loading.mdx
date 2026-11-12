@@ -1,0 +1,43 @@
+---
+title: 'Native library loading'
+description: How the bootstrap and OS loaders resolve FFmpeg before the engine addon.
+---
+
+## Bootstrap sequence
+
+`@remedia/node` is two native files plus FFmpeg. The platform package `@remedia/node-<platform>` contains a tiny **bootstrap** addon (`bootstrap.<platform>.node`) that has no FFmpeg dependency, and the **engine** addon (`node.<platform>.node`) that links FFmpeg dynamically. Importing the package runs this sequence once:
+
+1. Load the bootstrap. It can open shared libraries by absolute path and nothing else.
+2. [Select an FFmpeg 9 installation](/docs/node/ffmpeg-9#how-remedianode-chooses-an-installation) and open its five libraries through the bootstrap, keeping them resident.
+3. Load the engine addon. The operating system's loader finds FFmpeg already loaded and does not search for it again.
+4. Only then does the package report success; `getFfmpegRuntime()` returns the selected installation.
+
+Why this is needed: an addon's FFmpeg dependencies are resolved by the operating system **before** any JavaScript or Rust initialization code in that addon runs, so the addon cannot pick its own FFmpeg. Setting `LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH` or `PATH` is the traditional workaround. The bootstrap makes it unnecessary.
+
+## Platform notes
+
+**Linux and FreeBSD.** Libraries are opened by absolute path with `RTLD_LOCAL`, so FFmpeg's symbols stay out of the process-wide scope and cannot interpose another module's libraries. Glibc, musl and FreeBSD satisfy the engine's `DT_NEEDED` entries from the already loaded copies by `SONAME`. The installer's conda libraries find their own dependencies through `RUNPATH $ORIGIN`. Remedia does not modify `ld.so.cache`, `ld.so.conf`, or any system directory and needs no administrator rights.
+
+**macOS.** dyld does not substitute a different file for a dependency with an absolute install name, so preloading alone cannot redirect an addon linked against `/opt/homebrew/opt/ffmpeg/lib/libavcodec.63.dylib`. The release build therefore rewrites the engine addon's FFmpeg dependencies to `@rpath/lib….dylib` (and re-signs it), adds `/opt/homebrew/opt/ffmpeg/lib` and `/usr/local/opt/ffmpeg/lib` as fallback rpaths, and dyld then reuses the image the bootstrap preloaded, because its install name matches. You can confirm a build with:
+
+```sh
+otool -L node_modules/@remedia/node-darwin-arm64/node.darwin-arm64.node | grep -i libav
+# @rpath/libavcodec.63.dylib (compatibility version 63.0.0, ...)
+```
+
+If you compile the addon yourself on macOS, run `pnpm --filter @remedia/node build` (or `node .github/scripts/normalize-macos-addon.mjs` after a manual `napi build`), otherwise the addon keeps the build machine's absolute paths and discovery cannot redirect it. Apple Silicon and Intel are handled identically. The architecture of every library is checked against `process.arch` first.
+
+**Windows.** The bootstrap calls `LoadLibraryExW` with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS` on each DLL's absolute path, so a DLL's own dependencies are found next to it. Windows then matches the engine addon's imports (`avcodec-63.dll`, …) against the modules already loaded by name. The process `PATH` is not modified and the current directory is never searched. Paths containing spaces are supported.
+
+## Inspecting binaries yourself
+
+```sh
+ldd node_modules/@remedia/node-linux-x64-gnu/node.linux-x64-gnu.node     # Linux
+otool -L node_modules/@remedia/node-darwin-arm64/node.darwin-arm64.node   # macOS
+```
+
+```powershell
+dumpbin /DEPENDENTS node_modules\@remedia\node-win32-x64-msvc\node.win32-x64-msvc.node
+```
+
+`ldd` on Linux reports FFmpeg libraries as `not found` for a managed installation. That is expected: the bootstrap supplies them at run time. The bootstrap addon itself must show **no** FFmpeg dependency.

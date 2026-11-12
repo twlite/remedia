@@ -1,0 +1,56 @@
+---
+title: 'Environment and secrets'
+description: Load dotenv files and resolve deployment-specific configuration values.
+---
+
+## Load dotenv files
+
+```sh
+remedia-server serve \
+  --config ./remedia.config.json \
+  --env-file .env \
+  --optional-env-file .env.remedia
+```
+
+- `--env-file PATH` requires the file to exist, be readable, and contain valid dotenv assignments. Missing or malformed files are an error.
+- `--optional-env-file PATH` skips a missing file, but unreadable or malformed existing files still cause an error.
+- Both flags can be repeated. Required files are loaded first in argument order, then optional files in argument order. A later file entry overrides the same key in an earlier file.
+- The already-defined process environment overrides any values loaded from files.
+
+Supported input is `KEY=value`, optional `export KEY=value`, single/double-quoted strings, blank lines, and comments. Double quotes support `\\n`, `\\r`, `\\t`, `\\\\`, and `\\"`. File values are literal. No command execution, shell expansion, variable substitution, or `$KEY` interpolation occurs.
+
+For example:
+
+```dotenv
+REMEDIA_RPC_PASSWORD='some-long-random-password'
+REMEDIA_BIND_HOST=127.0.0.1
+```
+
+```json
+{
+  "bind": { "host": "env('REMEDIA_BIND_HOST')", "port": 8787 },
+  "users": [{ "username": "media-bot", "password": "env('REMEDIA_RPC_PASSWORD')" }]
+}
+```
+
+**Scope:** dotenv values are available to JSON `env('KEY')` references. Remedia does not mutate the process-global environment, so SDK or observability settings read directly from the process environment (including `REMEDIA_LOG` and `OTEL_*`) must be exported through your shell, container, or service manager.
+
+The environment files may contain credentials. Limit their filesystem permissions and do not commit them to source control.
+
+## Environment references
+
+String fields that may contain secrets or deployment-specific paths can use only this exact
+reference syntax:
+
+```json
+{
+  "password": "env('REMEDIA_RPC_PASSWORD')"
+}
+```
+
+Supported fields are `bind.host`, each user `username` and `password`, each
+`media.allowedFileRoots` entry, each `media.allowedUrlHosts` entry, and each plugin host's
+`endpoint`, `auth.token` and `mediaOrigins` entries. The variable name must match
+`[A-Za-z_][A-Za-z0-9_]*`. A missing variable fails startup. The resolved value is treated as literal
+text. No interpolation or expression evaluation occurs. Numeric and boolean fields do not accept
+environment references.

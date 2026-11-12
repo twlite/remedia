@@ -1,0 +1,60 @@
+---
+title: 'Server configuration fields'
+description: Defaults and limits for listener, accounts, sessions, media, and RPC capacity.
+---
+
+The tables below describe the JSON file consumed by `remedia-server`. Defaults apply to omitted fields. The [generated schema](/schemas/remedia.config.schema.json) contains the complete nested constraints.
+
+## Listener
+
+| Field       | Default       | Constraints                                          |
+| ----------- | ------------- | ---------------------------------------------------- |
+| `bind.host` | `"127.0.0.1"` | Bind host. Literal or runtime environment reference. |
+| `bind.port` | `8787`        | 0–65535                                              |
+
+## Connection and request limits
+
+| Field                         | Default | Constraints  |
+| ----------------------------- | ------- | ------------ |
+| `limits.maxConnections`       | `128`   | 1–65536      |
+| `limits.maxClientSessions`    | `128`   | 1–10000      |
+| `limits.maxTotalPlayers`      | `256`   | 1–10000      |
+| `limits.maxPlayersPerClient`  | `16`    | 1–1000       |
+| `limits.maxMessageBytes`      | `65536` | 1024–1048576 |
+| `limits.requestTimeoutMs`     | `30000` | 1–300000     |
+| `limits.maxInFlightRequests`  | `16`    | 1–4096       |
+| `limits.maxRequestsPerSecond` | `60`    | 1–100000     |
+| `limits.eventBuffer`          | `128`   | 1–65536      |
+
+## Media access
+
+| Field                        | Default | Constraints                                                                                                                                   |
+| ---------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `media.allowedFileRoots`     | `[]`    | Server-local directories. Relative to the config file. ~ expands at startup. Roots must exist and be directories. Empty denies file playback. |
+| `media.allowedUrlHosts`      | `[]`    | Allowed DNS hosts and subdomains. Empty denies URL playback. Wildcard cannot be mixed with specific resolved hosts.                           |
+| `media.allowHttp`            | `true`  | Permit HTTP media URLs, subject to host and network policy.                                                                                   |
+| `media.allowHttps`           | `true`  | Permit HTTPS media URLs, subject to host and network policy.                                                                                  |
+| `media.blockPrivateNetworks` | `true`  | Reject media URLs resolving to private or reserved network addresses.                                                                         |
+
+## Console output
+
+| Field                   | Default | Constraints                                                                                    |
+| ----------------------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `observability.console` | `true`  | Enable console diagnostics. Exporter configuration uses existing runtime environment settings. |
+
+## Account and session settings
+
+| Field                             | Default  | Constraints |
+| --------------------------------- | -------- | ----------- |
+| `users`                           | Required | min items 1 |
+| `sessionResumptionTimeoutSeconds` | `60`     | 1–86400     |
+
+`limits.maxPlayersPerClient` cannot exceed `limits.maxTotalPlayers`. `limits.maxClientSessions` applies per authenticated username.
+
+`users` must contain at least one account. Usernames are unique, nonempty, and cannot contain a colon or control characters. Passwords are nonempty. Both values support [environment references](/docs/server/environment#environment-references).
+
+## Audio and plugins
+
+- [Crossfade and Opus settings](/docs/server/configuration#crossfade-capability) apply to server players.
+- [Plugin host fields](/docs/server/plugin-configuration) define operation permissions and per-host limits.
+- [Observability settings](/docs/observability/configuration) define process environment and exporter behavior.

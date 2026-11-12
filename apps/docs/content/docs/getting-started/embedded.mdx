@@ -3,8 +3,7 @@ title: Embedded quickstart
 description: Install FFmpeg 9 and @remedia/node, then play audio into a Discord voice channel from your Node.js bot.
 ---
 
-This guide runs the Remedia engine inside your bot's Node.js process. It takes about five minutes
-once you have a bot that can join voice channels. Requires Node.js 22.18 or newer.
+Run the engine inside your bot's Node.js process. You need Node.js 22.18 or newer, a Discord bot token, and permission to join and speak in a test voice channel.
 
 ## 1. Install FFmpeg 9
 
@@ -20,7 +19,7 @@ On Windows PowerShell, and for other options, see [Install FFmpeg 9](/docs/node/
 ## 2. Install the package
 
 ```sh
-npm install @remedia/node
+npm install @remedia/node discord.js
 ```
 
 ## 3. Check that the engine starts
@@ -30,7 +29,7 @@ node --input-type=module -e "import { Remedia } from '@remedia/node'; const engi
 ```
 
 If this prints `Remedia native runtime OK`, FFmpeg was found and the addon loaded. Otherwise the error
-lists every location that was tried; see [native library troubleshooting](/docs/node/troubleshooting).
+lists every location that was tried. See [native library troubleshooting](/docs/node/troubleshooting).
 
 ## 4. Play into a voice channel
 
@@ -60,14 +59,20 @@ discord.once(Events.ClientReady, async (ready) => {
     userId: ready.user.id,
   });
 
-  await voice.connect();
-  await voice.play({ url: 'https://example.com/audio.mp3' });
-  await voice.wait();
-  await voice.dispose();
+  try {
+    await voice.connect();
+    await voice.play({ url: 'https://example.com/audio.mp3' });
+    await voice.wait();
+  } finally {
+    await remedia.close();
+    discord.destroy();
+  }
 });
 
 await discord.login(process.env.DISCORD_TOKEN);
 ```
+
+Export `DISCORD_TOKEN` before running the example. It plays one source, then closes the engine and Gateway client. In a long-running bot, keep both clients open until application shutdown.
 
 `connect()` resolves once the voice connection is ready. `play()` resolves once the audio stream is
 open and playback has started, and `wait()` resolves when it ends.
@@ -87,7 +92,7 @@ await voice.stop(); // stops playback and stays in the channel
 await voice.disconnect(); // leaves the channel
 ```
 
-Always call `await remedia.close()` when your process shuts down; it stops playback and releases
+Always call `await remedia.close()` when your process shuts down. It stops playback and releases
 native resources.
 
 <Callout title="Playback without Discord is silent">

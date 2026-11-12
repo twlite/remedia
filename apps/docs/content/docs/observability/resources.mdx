@@ -3,21 +3,11 @@ title: Process resources
 description: Cached native CPU, memory, thread, and descriptor measurements in node.stats and embedded mode.
 ---
 
-`node.stats` keeps its existing `cpu`, `memory`, player, connection, and health
-fields. The additive `resources` object contains the same CPU and memory counters,
-`collectedAtUnixMs`, `cpuSampleIntervalMs`, `samplingIntervalMs`,
-`collectionDurationMs`, and `openHandles`. `playback.activeSessions` counts sources
-in active lifecycle states, including paused and stopping sources; it is not an OS
-thread count. `players.active` remains allocated guild players, and
-`players.available` is the configured maximum minus allocated players, clamped at zero.
+Read `node.stats.resources` for process CPU, memory, thread, and handle measurements. `cpu` and `memory` also remain available in the top-level node statistics. Resource counters describe the whole process, including other Node.js engines or application memory in embedded mode.
 
-`@remedia/client` exposes typed `ResourceMemory`, `ResourceCpu`, and
-`ProcessResourceStatistics` through node statistics, along with `playersAvailable` and `playbackActive`. Existing servers may omit new
-fields; clients keep them optional and report absent `resources` as null. Existing
-RPC fields remain compatible. No additional endpoint or authentication mechanism
-is introduced. Local `remedia-server --list` displays private resident memory where
-available, otherwise explicitly labeled macOS footprint, alongside RSS.
-`--list --json` retains the full statistics object and discovery security checks.
+`players.active` counts allocated guild players. `playback.activeSessions` counts sources in active states, including paused and stopping sources. Neither is a thread count. `players.available` is remaining allocation capacity, clamped at zero.
+
+The resource snapshot includes collection time, sample interval, collection duration, and open handles. Older servers may omit it. Use [local process discovery](/docs/server/diagnostics#list-running-servers) to inspect the same statistics without RPC credentials.
 
 ## Memory accounting
 
@@ -26,7 +16,7 @@ unsupported, inaccessible, or not yet sampled. No counter substitutes for anothe
 
 | Counter                     | Linux                                                     | macOS                                | Windows                                                    |
 | --------------------------- | --------------------------------------------------------- | ------------------------------------ | ---------------------------------------------------------- |
-| `residentBytes`             | smaps rollup RSS; status VmRSS fallback                   | Mach resident size; libproc fallback | WorkingSetSize                                             |
+| `residentBytes`             | smaps rollup RSS. Status VmRSS fallback                   | Mach resident size. Libproc fallback | WorkingSetSize                                             |
 | `privateResidentBytes`      | Private_Clean + Private_Dirty in smaps rollup (USS-style) | null                                 | EX2 PrivateWorkingSetSize when supported                   |
 | `proportionalResidentBytes` | smaps rollup PSS                                          | null                                 | null                                                       |
 | `committedPrivateBytes`     | null                                                      | null                                 | PrivateUsage (commit, including nonresident pages)         |
@@ -35,13 +25,13 @@ unsupported, inaccessible, or not yet sampled. No counter substitutes for anothe
 | `peakResidentBytes`         | status VmHWM                                              | Mach resident size peak              | PeakWorkingSetSize                                         |
 | `footprintBytes`            | null                                                      | Mach phys_footprint                  | null                                                       |
 
-Linux rollup collection requires kernel support and permission; losing access
+Linux rollup collection requires kernel support and permission. Losing access
 makes USS and PSS null while status can still supply RSS. These counters describe
 the process inside its current namespace, not cgroup usage or a container memory
 limit. Private hugetlb accounting is not added to the stated clean/dirty metric.
 
-macOS footprint includes platform-specific ledger accounting and compressed memory;
-it is not USS. The collector does not infer private resident memory from Mach's
+MacOS footprint includes platform-specific ledger accounting and compressed memory.
+It is not USS. The collector does not infer private resident memory from Mach's
 `internal` counter or subtract shared libraries from RSS. A reliable USS/PSS counter
 is unavailable through the implemented task snapshot, so these fields remain null.
 
@@ -49,7 +39,7 @@ Windows EX2 private working set needs a sufficiently recent Windows release.
 If EX2 fails, the collector falls back to EX for RSS, peak RSS, and private commit,
 leaving private resident null. Reserved virtual addresses are not resident RAM.
 Other target operating systems return null memory fields until a native backend
-is implemented; available parallelism remains available where Rust supports it.
+is implemented. Available parallelism remains available where Rust supports it.
 
 ## CPU and sampling
 
@@ -61,12 +51,12 @@ samples exist. `userTimeMs` and `systemTimeMs` are cumulative milliseconds.
 threads, including the short-lived collector when it samples itself.
 `loadAverage1m` is the Unix system load average, not process utilization. Unsupported
 platform counters are null. `openHandles` counts Unix descriptors or Windows
-process handles; Linux excludes the collector's own directory enumeration handle.
+process handles. Linux excludes the collector's own directory enumeration handle.
 
 A process-wide cache refreshes on demand after **1000 ms**. Every caller immediately
 gets the previous completed snapshot while at most one background collector runs.
 The first call may return a snapshot with null timestamp and counters. Infrequent
-requests produce longer CPU measurement intervals; there is no periodic collector
+requests produce longer CPU measurement intervals. There is no periodic collector
 when nobody requests statistics. Sampling timestamps and duration make staleness
 and collection cost visible. Expensive OS queries run off Tokio and audio workers.
 
@@ -86,7 +76,7 @@ try {
 
 This synchronous method reads the native cache and schedules refresh without
 blocking JavaScript on collection. Embedded client node snapshots use it when the
-native addon supports it; older addons retain empty CPU/memory objects and null
+native addon supports it. Older addons retain empty CPU/memory objects and null
 resources. Every embedded instance in one Node.js process shares the process
 measurements, including memory owned by JavaScript, libraries, and other instances.
 They are not measurements of an individual Remedia engine or JavaScript heap.

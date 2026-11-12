@@ -3,11 +3,7 @@ title: Discord bot harness
 description: Run the manual discord.js app that exercises Remedia voice playback.
 ---
 
-`apps/discord` is a small manual integration app for testing the Node.js
-Gateway adapter and native Discord voice sender. It uses discord.js for the
-outer bot Gateway and slash commands; `@remedia/node` handles voice joining,
-decoding, Opus, DAVE, and outbound transport. It is not a general bot framework
-or a media extractor.
+Run `apps/discord` to exercise voice joining, playback, filters, recovery, and crossfading against a test Discord guild. The app uses `@remedia/client` with embedded or remote nodes and discord.js for the bot Gateway and commands. It keeps a small in-memory queue for manual testing.
 
 ## Setup and run
 
@@ -19,7 +15,7 @@ APPLICATION_ID=your-application-id
 ```
 
 Install the workspace and native dependencies described in the
-[Node.js binding setup](/docs/node/bindings#building-from-source), then build the
+[Node.js binding setup](/docs/node/building#building-from-source), then build the
 Node addon, register commands, and start the source through `tsx`:
 
 ```sh
@@ -39,7 +35,7 @@ voice session IDs, tokens, or endpoints.
 - `/play url:<http-or-https-url>` joins the command user's current voice
   channel and starts the URL. If another track is playing, the URL is appended
   to that server's in-memory queue. Replies use the title from Remedia media
-  metadata when available; otherwise they show a sanitized URL.
+  metadata when available. Otherwise they show a sanitized URL.
 - `/pause` and `/resume` control the current track and include its title when
   Remedia provided one.
 - `/seek seconds:<number>` seeks to a position in seconds and identifies the
@@ -56,7 +52,7 @@ voice session IDs, tokens, or endpoints.
 - `/nowplaying` shows the Remedia title when available, playback state, and
   an elapsed-time / progress-indicator / duration line against the original
   media timeline. It uses `mm:ss` and switches to `hh:mm:ss` for long tracks.
-  Estimated source positions are prefixed with `~`; unknown or live durations
+  Estimated source positions are prefixed with `~`. Unknown or live durations
   show no fabricated progress bar or percentage. Its fields show requester,
   queue count, filters, volume, and loop mode.
 - `/stop` stops playback and clears the queue while keeping the voice
@@ -64,7 +60,7 @@ voice session IDs, tokens, or endpoints.
 - `/disconnect` stops playback, clears the queue, and leaves the voice channel.
 - `/filter set <preset>` toggles one of `8d`, `bassboost`, `nightcore`,
   `vaporwave`, `tremolo`, or `vibrato`. An inactive preset is appended to the
-  active filters; selecting an active preset removes only it. The remaining
+  active filters. Selecting an active preset removes only it. The remaining
   graphs keep their order, and removing the last preset clears the graph.
   `/filter clear` disables all active graphs, and `/filter list` displays the
   choices and current selection.
@@ -72,40 +68,45 @@ voice session IDs, tokens, or endpoints.
   gain. Zero mutes, 100 is unity, and values above 100 may clip.
 - `/nowplaying` also shows the selected loop mode.
 
+### Queue lifetime and limits
+
 The queue belongs to this sample application, not `remedia-core` or
-`@remedia/node`. It is held in memory per guild and is lost when the bot exits.
-It holds up to 100 upcoming tracks in addition to the current track.
-The loop mode is stored per guild, remains selected across tracks and `/stop`,
+`@remedia/node`. It is held in memory per guild and is lost when the bot exits. It holds up to 100 upcoming tracks in addition to the current track. The loop mode is stored per guild, remains selected across tracks and `/stop`,
 and resets when the voice session is disconnected. In queue mode, the current
-track counts as part of the loop; if it is the only item, it repeats by itself.
-Upcoming queue entries have not been opened by Remedia yet, so they display
+track counts as part of the loop. If it is the only item, it repeats by itself. Upcoming queue entries have not been opened by Remedia yet, so they display
 their sanitized URLs until playback begins and metadata becomes available.
+
 When a track reaches natural end-of-stream, the app advances to the next queued
-URL. A track that fails to open or decode is skipped; the failure is retained
-in the playback snapshot and shown by `/nowplaying`; the process log reports
+URL. A track that fails to open or decode is skipped. The failure is retained
+in the playback snapshot and shown by `/nowplaying`. The process log reports
 the guild without printing the media URL. Commands are
 restricted to users currently in the same voice channel as the bot. The bot
-does not move an existing session to another channel implicitly; disconnect
+does not move an existing session to another channel implicitly. Disconnect
 first, then issue `/play` from the new channel.
 
-The six names above are convenience presets defined only in `apps/discord`; each
+### Filter presets
+
+The six names above are convenience presets defined only in `apps/discord`. Each
 maps to a raw FFmpeg graph passed to the generic Node API. `/filter set` toggles
 the selected preset: adding one appends its graph, while toggling it off removes
 only that graph and retains the order of other selections. Removing the last
-selection follows the same graph-clear path as `/filter clear`. Changes apply
-immediately to the active track and carry over to queued tracks and skips.
-Filter changes do not change volume, and volume changes do not rebuild the
+selection follows the same graph-clear path as `/filter clear`.
+
+Changes apply
+immediately to the active track and carry over to queued tracks and skips. Filter changes do not change volume, and volume changes do not rebuild the
 graph. A disconnect or bot shutdown disposes the guild player and drops both
 settings. Engine callers can use arbitrary trusted filtergraphs instead of
 these names.
 
+### Command replies and notifications
+
 Slash command replies use consistent Remedia embeds. Successful command
-responses are public and include the invoking user; validation and operation
+responses are public and include the invoking user. Validation and operation
 errors remain ephemeral. The helper defers privately because Discord does not
 allow a deferred reply to change visibility, then deletes that private defer
 and posts a public follow-up on success. Error replies edit the ephemeral defer.
-`/nowplaying` formats source time and duration around a compact progress bar;
-estimated source positions are prefixed with `~`.
+`/nowplaying` formats source time and duration around a compact progress bar.
+Estimated source positions are prefixed with `~`.
 
 The app subscribes to typed `@remedia/client` session events and posts public
 embeds for playback start, natural completion, stop, failure, pause, resume,
@@ -116,13 +117,17 @@ text channel. The first `/play`
 request that creates a guild queue stores its sendable channel object in that
 queue's in-memory metadata, and each playback passes that reference through
 Remedia's JavaScript-only `customMetadata`. The reference is not serialized to
-Rust or a remote Remedia server. Later requests and queued tracks continue to
+Rust or a remote Remedia server.
+
+Later requests and queued tracks continue to
 notify the original queue channel until the guild session is disconnected and
 disposed. Each playback notification identifies the track requester when
 available. Successful command replies remain separate from lifecycle
 notifications. Queue snapshots remain public. If the
 bot cannot send in the retained channel, playback continues and a warning is
 written only when `REMEDIA_DEBUG=1`.
+
+### Queue operations and source generations
 
 Queue operations are serialized per guild. Skip stops and joins the current
 playback before opening the next URL while retaining the connected voice
@@ -138,12 +143,12 @@ decoder.
 
 `stop` leaves Discord connected so another `/play` can reuse the session.
 `disconnect` or process shutdown releases the playback session and native voice
-transport. Playback is unpaced by the decoder; the Discord transport schedules
+transport. Playback is unpaced by the decoder. The Discord transport schedules
 encoded packets in real time. See the [voice output guide](/docs/discord/voice-output)
 for Opus, DAVE, transport encryption, and protocol limitations.
 
 This harness is intended for manual integration with a configured bot. Live
-Discord bot playback has been exercised; automated tests use deterministic mock
+Discord bot playback has been exercised. Automated tests use deterministic mock
 sessions and do not require Discord credentials. CI does not establish a live
 connection.
 
@@ -160,7 +165,7 @@ delivery while the existing playback continues.
    remain active through the change. Confirm that the public `Now playing`
    event appears in the queue's text channel.
 3. While audio is playing, change the channel's Region Override to another
-   available region. Wait for audio to resume and check `/nowplaying`; the same
+   available region. Wait for audio to resume and check `/nowplaying`. The same
    track should continue near its previous position and must not produce
    another `Now playing` event.
 4. Repeat while playback is paused. Confirm it remains paused after transport
@@ -172,7 +177,7 @@ delivery while the existing playback continues.
 The replacement may cause a short audible gap while Discord renegotiates the
 voice transport and DAVE state. The source decoder and playback generation
 should continue. Logs include guild, playback, sender, and transport generations
-plus recovery outcomes; they must not include voice tokens or session IDs.
+plus recovery outcomes. They must not include voice tokens or session IDs.
 
 ## Manual crossfade smoke test
 
@@ -186,7 +191,7 @@ bot, join a voice channel, and run:
 Supply two real, authorized direct HTTP(S) media URLs. Use a finite first track
 longer than 35 seconds and a second track longer than 5 seconds. The session uses
 `crossfade: { enabled: true, durationMs: 5000, prepareBeforeMs: 30000, curve: 'equalPower' }`.
-Preparation begins about 35 seconds before the first source ends; URL staging is
+Preparation begins about 35 seconds before the first source ends. URL staging is
 triggered by Remedia's clock, with no JavaScript transition timer.
 
 The test requires a **new guild session**. Run `/disconnect` before starting it if
@@ -215,17 +220,16 @@ creation and need no server configuration.
    no longer list it as upcoming.
 4. Confirm **Second source promoted** reports the first source's completion with
    `continuation: type=promoted`, the incoming generation, and entry ID. The bot
-   must not issue another `play()` for that source. Let the second source finish;
-   expect one final **Track ended**, with no replay or extra queue advancement.
+   must not issue another `play()` for that source. Let the second source finish. Expect one final **Track ended**, with no replay or extra queue advancement.
 5. Repeat with `/seek` during preparation: expect **Stage invalidated**, a new
    source generation, and a fresh engine preparation request if the new position
-   reaches its threshold. Try `/pause` and `/resume`; the stage should be retained
+   reaches its threshold. Try `/pause` and `/resume`. The stage should be retained
    while transition timing is frozen. Try `/stop`, `/skip`, and `/disconnect` in
    separate runs during preparation and overlap to verify cancellation.
 
 Missing, ignored, failed or late preparation does not stall the first source.
 Without promotion, the existing normal completion path starts the queued second
-URL and reports that fallback explicitly; this is **not** a successful crossfade.
+URL and reports that fallback explicitly. This is **not** a successful crossfade.
 A transition cancelled by Remedia restores the outgoing track before normal
 completion fallback. `/skip` cancels preparation/overlap, stops the current
 source, and starts any remaining queued track normally; `/stop` clears both items.
@@ -233,5 +237,5 @@ Lifecycle errors show their reason with media URLs and credentials redacted.
 
 Automated command and manager tests use mocks in both modes, including duplicate
 and stale events, continuation reconciliation, cancellation, and ordinary queues.
-This procedure must still be performed manually against real Discord voice;
-passing automated tests does not establish audible overlap or live transport behavior.
+This procedure must still be performed manually against real Discord voice.
+Passing automated tests does not establish audible overlap or live transport behavior.

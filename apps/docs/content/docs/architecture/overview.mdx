@@ -1,0 +1,57 @@
+---
+title: 'Engine architecture'
+description: Component ownership, media flow, and lifecycle boundaries.
+---
+
+Remedia separates media processing from Discord delivery and application control. This section is for contributors and applications embedding the Rust crates.
+
+## Follow the media path
+
+```text
+URL, file, bytes, or bounded stream
+  -> remedia-core: demux, decode, resample, filter
+  -> output adapter: PCM or Opus
+  -> remedia-discord: encryption and paced packet delivery
+```
+
+Compatible Opus packets can [bypass PCM processing](/docs/core/opus). Sources requiring filters, gain, seeking, or crossfade mixing use decoded PCM.
+
+## Component responsibilities
+
+| Component              | Owns                                                                                                |
+| ---------------------- | --------------------------------------------------------------------------------------------------- |
+| `remedia-core`         | Inputs, decoding, playback workers, filters, staging, generic PCM/Opus outputs                      |
+| `remedia-discord`      | Voice WebSocket, UDP, RTP, transport encryption, DAVE state, packet pacing                          |
+| `remedia-node`         | In-process N-API engine, bounded Readable ingestion, JavaScript lifecycle and Gateway adapter       |
+| `remedia-server`       | Authenticated RPC, server-owned configuration, sessions, source authorization, plugin-host requests |
+| `@remedia/client`      | Node selection, Gateway orchestration, remote recovery, unified JavaScript sessions                 |
+| `@remedia/plugin-host` | Application-defined operations, HTTP dispatch, single-use media grants                              |
+
+The application owns its queue, media-provider integration, and Discord Gateway client. Core media handling has no Discord, Node.js, or WebSocket dependency.
+
+## Resource ownership
+
+Each playback worker owns an input decoder and bounded output. Stop cancels I/O and joins the worker. Discord transport replacement preserves the playback worker through a stable sender router. See [voice output](/docs/discord/voice-output#voice-server-and-region-migration).
+
+Each Node engine owns its sessions and telemetry context. A server client session owns its guild players and voice connections. [Resumption](/docs/server/protocol#session-resumption) retains those resources only within the configured in-memory lifetime.
+
+## Contributor references
+
+- [Rust decoding](/docs/core/decoding) and [playback](/docs/core/playback)
+- [PCM and Opus outputs](/docs/core/outputs)
+- [Native loading](/docs/architecture/native-loading) and [building the addon](/docs/node/building)
+- [Release pipeline](/docs/architecture/releases)
+- [Performance measurements](/docs/core/performance)
+
+## Documentation checks
+
+From the repository root:
+
+```sh
+pnpm lint
+pnpm format:check
+pnpm --filter docs typecheck
+pnpm --filter docs build
+```
+
+The docs build exports the site and checks local page, asset, and heading links. Run `pnpm --filter docs check:links` against an existing export to repeat only the link check. The checker also accepts an export directory as its first argument and honors `NEXT_PUBLIC_BASE_PATH` for GitHub Pages deployments.

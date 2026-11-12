@@ -3,32 +3,13 @@ title: Server configuration
 description: Strict configuration, environment references, media access, and observability.
 ---
 
-`remedia-server` loads a required JSON file from the current working directory. Override the path
-with `--config PATH`. Unknown fields, missing required fields, invalid ranges, duplicate usernames,
-and missing environment variables stop startup with an error.
+Create a JSON configuration before starting the server. The default path is `./remedia.config.json`; `--config PATH` selects another file. Unknown fields, invalid ranges, duplicate accounts, and unresolved environment values fail startup.
 
 ```sh
-cargo run -p remedia-server -- --config /etc/remedia/remedia.config.json
+remedia --generate-config-file
 ```
 
-You can generate a safer starter file with `remedia-server --generate-config-file [PATH]`.
-It will not overwrite existing files. For dotenv loading, diagnostic commands, and
-running-instance discovery, see the [server CLI guide](/docs/server/cli).
-
-```sh
-remedia-server --generate-config-file
-remedia-server --env-file .env --optional-env-file .env.remedia serve
-remedia-server doctor --env-file .env
-```
-
-Use `--env-file` for a required file and `--optional-env-file` for a file which may
-not exist. Both flags can be repeated. Required files load before optional files,
-last matching assignment wins among files, and the already-exported environment
-takes precedence over all file values. Empty and comment-only files are allowed;
-malformed assignments are errors. These values are used only for JSON
-`env('NAME')` references, not injected into process-global environment variables.
-
-The full example file is [`remedia.config.example.json`](https://github.com/twlite/remedia/blob/main/crates/remedia-server/remedia.config.example.json).
+The generated file listens on loopback and denies media access until you allow sources. For secret loading, see [Environment and secrets](/docs/server/environment). For all listener, account, media, and capacity defaults, use the [field reference](/docs/server/configuration-reference).
 
 ## Crossfade capability
 
@@ -64,12 +45,12 @@ before the track ends.
 The workspace package `@remedia/config` exports `RemediaConfigSchema` (Zod 4), the
 `RemediaConfig` input type, and `generateJsonSchema()`. Its generated draft 2020-12
 artifact is served with the docs at
-[remedia.config.schema.json](https://twlite.github.io/remedia/schemas/remedia.config.schema.json).
+[remedia.config.schema.json](https://remedia.twlite.dev/schemas/remedia.config.schema.json).
 The same artifact is distributed as `@remedia/config/schema.json`.
 
 ```json
 {
-  "$schema": "https://twlite.github.io/remedia/schemas/remedia.config.schema.json",
+  "$schema": "https://remedia.twlite.dev/schemas/remedia.config.schema.json",
   "users": [{ "username": "bot", "password": "env('REMEDIA_RPC_PASSWORD')" }]
 }
 ```
@@ -93,7 +74,7 @@ path or an editor association, for example in VS Code workspace settings:
 ```
 
 The generated artifact is the field reference, avoiding a separately maintained
-settings table. Rebuild with `pnpm --filter @remedia/config schema`; CI runs
+settings table. Rebuild with `pnpm --filter @remedia/config schema`. CI runs
 `schema:check` and a validation corpus shared with Rust. Runtime schema parsing
 applies defaults but never expands environment references or accesses directories.
 Custom refinements such as UTF-8 byte lengths, duplicate usernames, cross-field
@@ -115,7 +96,7 @@ also validates resolved environment values and filesystem access at startup.
 ```
 
 This optional section can be added to an existing configuration. Omitting `audio`, `opus`, or any
-individual property uses the defaults shown above. Values are validated before startup; unknown
+individual property uses the defaults shown above. Values are validated before startup. Unknown
 fields are rejected, including inside `audio` and `opus`.
 
 `bitrate` is in **bits per second, not kilobits**: `128000` means 128 kbit/s for the stereo stream.
@@ -129,99 +110,8 @@ All server players receive these settings, with an independent, lazily created e
 output. Settings apply only when encoding PCM. Compatible Opus passthrough forwards the original
 packets without constructing an encoder, so these settings cannot change their bitrate or quality.
 There are no client or guild overrides, and the RPC protocol is unchanged. Embedded Node.js uses
-the same core defaults without loading this JSON file; it has no JavaScript encoder-setting API.
-See [Opus encoding output](/docs/core/playback#opus-encoding-output) for the Rust configuration API.
-
-## Environment references
-
-String fields that may contain secrets or deployment-specific paths can use only this exact
-reference syntax:
-
-```json
-{
-  "password": "env('REMEDIA_RPC_PASSWORD')"
-}
-```
-
-Supported fields are `bind.host`, each user `username` and `password`, each
-`media.allowedFileRoots` entry, each `media.allowedUrlHosts` entry, and each plugin host's
-`endpoint`, `auth.token` and `mediaOrigins` entries. The variable name must match
-`[A-Za-z_][A-Za-z0-9_]*`. A missing variable fails startup. The resolved value is treated as literal
-text; no interpolation or expression evaluation occurs. Numeric and boolean fields do not accept
-environment references.
-
-## Plugin hosts
-
-`pluginHosts` registers independent [plugin-host](/docs/server/plugins) deployments whose operations can
-produce playable audio. See [Playing audio through plugins](/docs/server/plugin-operations) for behavior,
-lifecycle and security. Every entry is validated at startup; duplicate IDs fail startup. You can manage
-these entries with [`remedia-server plugins`](/docs/server/cli#manage-plugin-hosts) instead of editing the file.
-
-```json
-{
-  "pluginHosts": [
-    {
-      "id": "source-host-1",
-      "enabled": true,
-      "endpoint": "https://plugins.example.com",
-      "auth": { "type": "bearer", "token": "env('REMEDIA_PLUGIN_HOST_TOKEN')" },
-      "allowInsecureHttp": false,
-      "allowPrivateNetwork": false,
-      "mediaOrigins": [],
-      "allowExternalMedia": false,
-      "operations": [
-        { "pluginId": "example.source", "operation": "source.stream", "replaySafe": true }
-      ],
-      "limits": {
-        "requestTimeoutMs": 10000,
-        "discoveryTtlMs": 60000,
-        "maxRequestBytes": 65536,
-        "maxResponseBytes": 65536,
-        "maxPendingOperations": 8,
-        "maxActiveStreams": 8,
-        "maxMediaBytes": 1073741824,
-        "mediaIdleTimeoutMs": 15000,
-        "mediaBufferBytes": 262144,
-        "maxAttempts": 2
-      }
-    }
-  ]
-}
-```
-
-| Field                         | Type    | Default / validation                                                                                                                                               |
-| ----------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `id`                          | string  | Required, unique; 1-128 letters, digits, `.`, `_` or `-`, starting alphanumeric. Stable deployment identity used by clients                                        |
-| `enabled`                     | boolean | `true`. When `false` the host keeps its configuration but is not registered at startup; requests naming it fail with `plugin_host_disabled`. Still fully validated |
-| `endpoint`                    | string  | Required HTTP(S) origin without credentials, path, query or fragment. Must be `https` unless `allowInsecureHttp` is true                                           |
-| `auth`                        | object  | `{ "type": "none" }` by default, or `{ "type": "bearer", "token": "..." }` with a 16-4096 byte token without spaces or control characters                          |
-| `allowInsecureHttp`           | boolean | `false`; permits `http:` endpoints and media origins for this host                                                                                                 |
-| `allowPrivateNetwork`         | boolean | `false`; permits loopback, private and link-local addresses for this host's endpoint and media. Literal private endpoints require it                               |
-| `mediaOrigins`                | array   | Extra origins whose media is fetched without credentials; the endpoint origin is always included                                                                   |
-| `allowExternalMedia`          | boolean | `false`; allows descriptor URLs on other origins, played under the ordinary `media.*` policy and FFmpeg HTTP input                                                 |
-| `operations[]`                | array   | Required, 1-256 unique allowed operations: `pluginId`, `operation` (same identifier grammar as hosts), and `replaySafe` (default `false`)                          |
-| `limits.requestTimeoutMs`     | integer | `10000`; 1-300,000. Connect and total deadline for each discovery or execute request, and media response headers                                                   |
-| `limits.discoveryTtlMs`       | integer | `60000`; 1,000-3,600,000. Discovery refresh interval                                                                                                               |
-| `limits.maxRequestBytes`      | integer | `65536`; 64-16,777,216. Serialized execute request, including the opaque `input`                                                                                   |
-| `limits.maxResponseBytes`     | integer | `65536`; 256-16,777,216. Discovery and execute response bodies                                                                                                     |
-| `limits.maxPendingOperations` | integer | `8`; 1-1,024. Concurrent operation preparations per host                                                                                                           |
-| `limits.maxActiveStreams`     | integer | `8`; 1-1,024. Concurrent media transfers per host                                                                                                                  |
-| `limits.maxMediaBytes`        | integer | 1 GiB; 1,024-68,719,476,736. A transfer exceeding it fails                                                                                                         |
-| `limits.mediaIdleTimeoutMs`   | integer | `15000`; 1-300,000. Maximum wait for the next media chunk while the decoder is consuming                                                                           |
-| `limits.mediaBufferBytes`     | integer | `262144`; 4,096-16,777,216. Per-stream queue between the network and the decoder                                                                                   |
-| `limits.maxAttempts`          | integer | `2`; 1-3. Total attempts for `replaySafe` operations                                                                                                               |
-
-`replaySafe` declares that executing the operation again has no side effects, which authorizes
-automatic retries and fresh resolution of expired grants. Leave it `false` for anything else.
-
-`operations[]` is the single authoritative allowlist, for playback **and** for
-[operation forwarding](/docs/server/plugin-forwarding): remote clients can invoke only these pairs, even
-if the host advertises more, and they discover them with `plugin.list` without configuring the host
-themselves. Forwarded results are also bounded by `limits.maxMessageBytes`; set it, and the host's
-`limits.maxResponseBytes`, high enough for the largest result you expect.
-
-The `pluginHosts` fields are part of the generated JSON Schema and `RemediaConfigSchema`. The strict
-Rust loader remains authoritative for resolved values such as environment references.
+the same core defaults without loading this JSON file. It has no JavaScript encoder-setting API.
+See [Opus encoding output](/docs/core/outputs#opus-encoding-output) for the Rust configuration API.
 
 ## Media access restrictions
 
@@ -229,12 +119,12 @@ File paths are canonicalized before use and must be regular files beneath one of
 roots. Use narrowly scoped roots containing only media the server should serve.
 
 Remote inputs accept only HTTP(S), according to `allowHttp` and `allowHttps`. `allowedUrlHosts` is an
-explicit host allowlist; an empty list denies all hosts. A listed parent domain also matches its
+explicit host allowlist. An empty list denies all hosts. A listed parent domain also matches its
 subdomains. `"*"` opts in to any public hostname. Private, loopback, link-local, multicast, reserved,
 and documentation IP ranges are rejected by default after DNS resolution.
 
 FFmpeg follows HTTP redirects, and the core HTTP input owns the redirected request. The server
-cannot revalidate each redirect target in this v0 implementation. For untrusted URL inputs, use a
+cannot revalidate each redirect target for direct URL sources. For untrusted URL inputs, use a
 strict host allowlist and enforce outbound egress rules that block internal networks and cloud
 metadata endpoints. Do not disable `blockPrivateNetworks` or configure `*` unless the media URLs are
 trusted and network egress is independently restricted.
@@ -254,3 +144,11 @@ diagnostic receivers and OTLP exporters. See [Observability](/docs/observability
 The process never logs passwords, authorization headers, Discord voice tokens, session keys, MLS
 material, or full media URLs. Treat RPC credentials, resume credentials, and voice credentials as
 secrets even when they are not written to logs.
+
+## Detailed references
+
+<span id="environment-references" />
+<span id="plugin-hosts" />
+
+- [Environment and secrets](/docs/server/environment)
+- [Plugin host configuration](/docs/server/plugin-configuration)

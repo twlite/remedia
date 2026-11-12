@@ -3,19 +3,14 @@ title: Playback performance
 description: Reproduce concurrent playback measurements and understand worker and buffering limits.
 ---
 
-Both embedded Node.js playback and the standalone server use the same Rust core.
-Each active playback owns a blocking worker. FFmpeg input acquisition, decoding,
-filtering, encoding, and synchronous output delivery currently share that worker.
-A slow source or full output queue can park its worker, without parking another
-session's worker. Crossfade preparation owns an additional worker and a bounded
-PCM staging buffer.
+Use the repository benchmark to compare concurrent playback workloads without Discord credentials. Its controlled sinks measure processing and backpressure. They do not measure live RTP or Discord delivery.
 
 ## Native processing and memory
 
 Each FFmpeg filtergraph uses one processing thread on its owning playback worker.
 This prevents FFmpeg's automatic graph threading from creating a pool sized to
-the machine for every session. Filters still run through native libavfilter;
-filter expressions, master volume, and Opus quality settings are unchanged.
+the machine for every session. Filters still run through native libavfilter.
+Filter expressions, master volume, and Opus quality settings are unchanged.
 Particularly expensive graphs should be measured with representative input.
 
 The decoder reuses its exclusively owned native resampling output frame, growing
@@ -25,7 +20,7 @@ mode changes release resampler state through the existing lifecycle.
 The Opus adapter encodes into bounded scratch storage and transfers only an
 allocation sized to the encoded payload to its sink. It still emits 20 ms stereo
 packets and uses complexity **9**, bitrate **128000**, and VBR by default.
-Configuration remains available through the existing audio Opus settings; lower
+Configuration remains available through the existing audio Opus settings. Lower
 complexity is an explicit application choice.
 
 ## Reproduce measurements
@@ -58,8 +53,8 @@ The JSON output includes wall time, delivered audio seconds, packet count,
 cumulative packet allocation capacity, startup p99, and sink deadline delay p95
 and p99. The runner adds child process CPU seconds and samples RSS and thread count
 approximately every 20 ms on macOS and Linux. Short unpaced runs can finish between
-samples, so their resource peaks are lower bounds. Startup is measured per session;
-sessions start sequentially. Deadline delay is relative to each sink's first packet.
+samples, so their resource peaks are lower bounds. Startup is measured per session.
+Sessions start sequentially. Deadline delay is relative to each sink's first packet.
 Percentiles use the sorted observation at `floor((n - 1) * percentile / 100)`.
 
 The paced sink directly backpressures delivery at audio deadlines, retaining no
@@ -77,8 +72,8 @@ backpressure to occupy every worker. A scheduler change requires separate bounde
 I/O and output handoffs, decoder ownership, readiness notification, and comparison
 against the paced baseline before adoption.
 
-Crossfade-enabled direct sources now use eligible Opus passthrough outside overlaps;
-promoted staged sources retain PCM ownership and continue transcoding. Ordinary
+Crossfade-enabled direct sources use eligible Opus passthrough outside overlaps.
+Promoted staged sources retain PCM ownership and continue transcoding. Ordinary
 sessions retain adaptive Opus passthrough and live processing transitions described
 in [Playback sessions](/docs/core/playback). Direct-source transitions use bounded codec preroll and exact packet boundary
 accounting. Staged compressed restoration remains a conservative PCM fallback.

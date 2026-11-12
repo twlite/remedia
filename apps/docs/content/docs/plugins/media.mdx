@@ -1,0 +1,36 @@
+---
+title: 'Return encoded audio'
+description: Use lazy media factories and understand direct ownership and HTTP grant lifetimes.
+---
+
+## Lazy encoded media
+
+```ts
+import { createReadStream } from 'node:fs';
+import { createMediaSource, createPluginHost } from '@remedia/plugin-host';
+
+const host = createPluginHost({ name: 'Media', publicUrl: 'https://plugins.example.com' });
+host.register({
+  id: 'example.media',
+  operations: {
+    stream: () =>
+      createMediaSource({
+        contentType: 'audio/ogg',
+        open: ({ signal }) => createReadStream('/srv/media/example.ogg', { signal }),
+        // Optional dispose(): release factory-owned resources, even if never opened.
+      }),
+  },
+});
+```
+
+Return a fresh source per operation. Its `open({ signal })` returns a Node Readable or Web ReadableStream of Uint8Array encoded bytes, optionally through a promise. PCM objects and object-mode data are invalid. The factory must respect cancellation during asynchronous opening. A stream returned after cancellation is destroyed. `dispose()` runs once per HTTP grant after expiry, cancellation, failure or completion, including unopened grants. Keep resources inside the factory until opening succeeds. If opening throws before returning a stream, the factory must clean any partially created resources itself.
+
+### Direct result ownership
+
+For direct calls, the caller receives the exact source or stream and owns opening, cancellation, consumption and disposal after successful dispatch. A caller opening a source directly passes its own AbortSignal. The host destroys a stream returned by an operation that was cancelled before successful dispatch.
+
+### HTTP grant ownership
+
+For HTTP calls, streams and sources become `{ url, expiresAtMs }` descriptors. No source is opened until the media URL is redeemed. Eager streams are also supported but may buffer while waiting. Prefer lazy factories. Unredeemed tokens expire automatically. URLs use 256-bit random tokens, can be redeemed once, and remain tied to their registration during delivery. Expiration limits redemption time. It does not terminate an already redeemed stream. Streams use bounded transport buffering and are pulled by consumers. Producers must honor their stream implementation's backpressure.
+
+Media is non-seekable. Range requests return 416 without consuming the token. The factory signature does not promise offsets, lengths or seek support. `remedia-server` honors this: it redeems each grant with one plain `GET` and decodes it as a forward-only stream (see [Playing audio through plugins](/docs/server/plugin-operations)). Seeking or reopening requires a separate, capability-negotiated contract which does not exist yet.

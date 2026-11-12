@@ -25,8 +25,8 @@ The **server operator** decides. Each host entry in `remedia.config.json` lists 
 
 - An operation a host advertises but the operator did not list **cannot** be called.
 - There is no setting that disables this check.
-- Clients discover what is allowed with `client.plugins.list()`. Discovery only reports; it never grants.
-- Manage entries with [`remedia-server plugins`](/docs/server/cli#manage-plugin-hosts) instead of editing JSON. `install` never enables advertised operations silently, and `sync` only adds operations you approve.
+- Clients discover what is allowed with `client.plugins.list()`. Discovery only reports. It never grants.
+- Manage entries with [`remedia-server plugins`](/docs/server/cli-plugins#manage-plugin-hosts) instead of editing JSON. `install` never enables advertised operations silently, and `sync` only adds operations you approve.
 - `"enabled": false` keeps a host's configuration but removes it from service. Requests naming it fail with `plugin_host_disabled`.
 
 Hosts are always addressed by their configured `id`. Requests never fall back to a different host

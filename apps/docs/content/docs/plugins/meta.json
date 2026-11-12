@@ -1,4 +1,4 @@
 {
   "title": "Plugins",
-  "pages": ["overview", "security", "host-reference"]
+  "pages": ["overview", "http-adapters", "media", "security", "host-reference", "http"]
 }

@@ -1,4 +1,4 @@
 {
   "title": "Core engine",
-  "pages": ["decoding", "playback", "performance"]
+  "pages": ["decoding", "playback", "filters", "outputs", "opus", "crossfade", "performance"]
 }

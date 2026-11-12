@@ -3,11 +3,9 @@ title: Plugins overview
 description: What plugin hosts are, the two ways Remedia uses them, and how to set one up.
 ---
 
-A **plugin host** is a service you run that exposes named operations over HTTP. Remedia talks to it
-through the server, so your application never needs the host's address or credentials.
+A plugin host exposes application-defined operations. Use one to resolve playable media at playback time or return JSON data such as catalog results. The server operator registers each host and chooses the callable operations.
 
-Remedia treats operations as opaque. It does not know what a "search" or a "track" is. You decide
-what your operations mean; Remedia delivers the request, enforces permissions, and returns the answer.
+Applications using a remote Remedia node need only its configured host ID. Direct callers of `@remedia/plugin-host` own their local host and invoke it without RPC.
 
 ## Two ways to use a plugin host
 
@@ -30,7 +28,7 @@ Both use the same host, the same server-side allowlist, and the same security ru
    remedia-server plugins install https://plugins.example.com --token-env REMEDIA_PLUGIN_TOKEN
    ```
 
-   See [Server CLI](/docs/server/cli#manage-plugin-hosts). Restart the server afterwards.
+   See [Server CLI](/docs/server/cli-plugins#manage-plugin-hosts). Restart the server afterwards.
 
 3. **Use it** from your application with `@remedia/client`.
 
@@ -41,4 +39,4 @@ code on the Remedia server.
 
 - [Permissions and security](/docs/plugins/security): what is allowed, who decides, and what is protected.
 - [`@remedia/plugin-host` reference](/docs/plugins/host-reference): HTTP protocol, cancellation, and limits.
-- [Server configuration](/docs/server/configuration#plugin-hosts): every `pluginHosts` field.
+- [Server configuration](/docs/server/plugin-configuration#plugin-hosts): every `pluginHosts` field.

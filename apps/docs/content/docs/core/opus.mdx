@@ -1,0 +1,101 @@
+---
+title: 'Opus passthrough and decoding'
+description: Eligibility, decoder warm-up, mode switching, and transport continuity.
+---
+
+## Automatic Opus passthrough and PCM mode switching
+
+When the output implements the optional `EncodedOpusOutput` capability (as
+`OpusEncoderOutput` does), playback can route compatible source Opus packets
+directly to the same packet sink used for encoded PCM. Other outputs remain
+PCM-only and keep the regular decoder behavior. `PlaybackSession::processing_mode()`
+reports the selected path as `Some(PlaybackProcessingMode::Passthrough)` or
+`Some(PlaybackProcessingMode::Transcoding)` after source startup. It is `None`
+before a source selects a path. The final selection remains inspectable after
+completion.
+
+Passthrough is enabled only when the selected stream is Opus at 48 kHz with a
+supported mono/stereo family-zero OpusHead with zero pre-skip and output gain,
+matching channel metadata, no initial/trailing padding, and packet payloads, durations, and sizes
+accepted by the output. The packet duration is parsed from the Opus payload.
+Packets with FFmpeg skip-sample side data or container duration indicating
+trimming fall back to PCM. Active filtergraphs, any gain other than exactly
+`1.0`, non-Opus input, seek, and outputs without encoded-Opus support require
+transcoding. Unsupported input is a normal fallback. See [audio decoding](/docs/core/decoding)
+for the complete conservative compatibility policy.
+
+If a live filter or gain change cannot initialize the PCM decoder, the active
+eligible passthrough path remains running and the filter update returns the
+decoder error. The rejected graph is not retained. While playing, a gain change
+that switches modes waits for the worker boundary and returns a transition
+error. While paused, it stages the gain for resume. These operations can wait
+for an in-flight input read or bounded output backpressure, and `stop()` cancels
+the wait.
+
+The demuxer stays open across mode changes. On passthrough-to-PCM activation,
+the worker constructs the decoder from the selected stream parameters and
+replays only a bounded history of up to 120 ms or 512 KiB of preceding Opus
+packets. Warm-up output before the exact transition boundary is discarded.
+The next unread source packet is then decoded and processed. This policy also
+works with one-shot non-seekable streams and does not promise identical
+warm-up behavior for every Opus implementation. The history is cleared on
+seeking and source replacement.
+
+When processing requirements are removed, the worker completes pending decoded
+frames and any partial encoder PCM before forwarding the next source packet. A remaining partial PCM block is padded to the shortest legal Opus packet
+duration, adding at most 119 silent samples per channel, and the native encoder
+state is reset before passthrough resumes. Delayed samples still buffered
+inside the active filtergraph are discarded at this boundary, matching live
+graph replacement behavior.
+
+No source is reopened, no output sink or Discord
+sender is replaced, and no seek flush or RTP-generation change occurs. The
+output sample position stays contiguous. RTP sequence and timestamp state
+remain transport-owned. A short silence or transition artifact is possible,
+especially around stateful or time-changing filters, so this is not a guarantee
+of sample-perfect seamless audio.
+
+Source-media position, processed PCM output position, and RTP transport time
+remain separate. Passthrough packets receive the next contiguous output sample
+position rather than inheriting container timestamps. Source timestamps still
+drive the media position when available. Time-changing filters determine their
+own output sample count. Remedia does not infer a speed ratio from graph text.
+
+For a reproducible unpaced throughput comparison using an Opus file, run:
+
+```sh
+cargo run -p remedia-core --example opus_processing_benchmark -- ./media/track.ogg
+```
+
+The example reports the selected mode, wall time, delivered duration, packet
+throughput, payload bytes, and real-time factor for automatic selection,
+forced PCM re-encoding, a light filter, and a tempo filter. It measures an
+in-process counting sink, not Discord network latency or peak memory.
+
+## Demuxing and decoder warm-up
+
+Playback sessions with an Opus-capable encoded output can automatically bypass PCM decoding for a
+restricted set of compatible source Opus packets. The decoder still owns the same demuxer and
+selected stream. It reads compressed packets first and constructs libavcodec and libswresample
+contexts only if the session needs PCM. The public `AudioDecoder` pull API continues to initialize
+and return PCM as before.
+
+The passthrough path is conservative. It requires an Opus stream with a supported OpusHead (48 kHz,
+mono or stereo, family-zero mapping, zero pre-skip, and zero OpusHead output gain), matching
+stream/OpusHead channel counts, no initial or trailing padding, and complete Opus packets whose
+actual duration and output compatibility checks succeed. Packets with skip-sample side data or a container duration shorter than the encoded
+Opus packet are decoded instead.
+
+An output may also reject packets that exceed its duration or size
+limits. MP3, AAC, Vorbis, trimmed Opus, and any source sent to a PCM-only output use the regular
+decode/resample path. Failure of an eligibility check is a normal fallback, not an error.
+
+For a passthrough source that later needs PCM processing, Remedia keeps the open demuxer and replays
+a rolling maximum of 120 ms and 512 KiB of preceding Opus packets into a newly initialized decoder. The bounded history is intended to provide decoder warm-up while remaining suitable for non-seekable
+inputs. It is not a claim that every possible Opus stream has identical decoder preroll needs.
+
+Decoded warm-up samples before the transition boundary are discarded. The transition never reopens
+a URL or restarts a one-shot byte stream. Seeking still uses FFmpeg decoding to trim an arbitrary
+target precisely and disables passthrough for the remainder of that source. See
+[RFC 7845](https://www.rfc-editor.org/rfc/rfc7845.html) for Ogg Opus pre-roll and granule-position
+semantics.

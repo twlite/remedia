@@ -1,0 +1,127 @@
+---
+title: 'Buffers, streams, and probing'
+description: Feed encoded bytes to the embedded engine and inspect disposable sources.
+---
+
+Use these inputs with direct `@remedia/node` sessions. For source support across embedded and remote nodes, see [Media sources](/docs/client/media).
+
+## Buffer and Readable inputs
+
+Pass encoded media bytes directly with a `Buffer` or `Uint8Array`:
+
+```ts
+import { readFile } from 'node:fs/promises';
+import { Remedia } from '@remedia/node';
+
+const bytes = await readFile('./audio/track.mp3');
+const remedia = await Remedia.create();
+const playback = remedia.createPlaybackSession();
+try {
+  await playback.play({ buffer: bytes });
+  console.log(await playback.wait());
+} finally {
+  await playback.dispose();
+  await remedia.close();
+}
+```
+
+For generated or streamed data, pass a Node.js `Readable` that yields only
+`Buffer` or `Uint8Array` chunks. Object-mode streams and other chunk values fail
+the playback operation with a source error. The pump starts before decoder
+initialization, so FFmpeg can probe while the producer is writing:
+
+```ts
+import { Readable } from 'node:stream';
+import { Buffer } from 'node:buffer';
+import { Remedia } from '@remedia/node';
+
+function makeWave(): Buffer {
+  const sampleRate = 48_000;
+  const sampleFrames = 4_800;
+  const bytes = Buffer.alloc(44 + sampleFrames * 2);
+  bytes.write('RIFF', 0);
+  bytes.writeUInt32LE(bytes.length - 8, 4);
+  bytes.write('WAVEfmt ', 8);
+  bytes.writeUInt32LE(16, 16);
+  bytes.writeUInt16LE(1, 20); // PCM
+  bytes.writeUInt16LE(1, 22); // mono
+  bytes.writeUInt32LE(sampleRate, 24);
+  bytes.writeUInt32LE(sampleRate * 2, 28);
+  bytes.writeUInt16LE(2, 32);
+  bytes.writeUInt16LE(16, 34);
+  bytes.write('data', 36);
+  bytes.writeUInt32LE(sampleFrames * 2, 40);
+  return bytes;
+}
+
+const bytes = makeWave();
+const source = Readable.from(
+  [bytes.subarray(0, 16), bytes.subarray(16, 2_000), bytes.subarray(2_000)],
+  { objectMode: false },
+);
+const remedia = await Remedia.create();
+const playback = remedia.createPlaybackSession();
+try {
+  await playback.play({ stream: source });
+  console.log(await playback.wait());
+} finally {
+  await playback.dispose();
+  await remedia.close();
+}
+```
+
+### Backpressure and memory
+
+The native queue is capped at 512 KiB of pending bytes per stream. Writes wait
+for decoder consumption before the Readable pump asks for more data. When
+playback is paused, the queue fills and backpressure propagates to the source.
+This prevents unbounded buffering. The input is incremental and does not first
+materialize the complete stream. A single producer chunk and the Readable's own
+high-water mark add to the queue's memory use.
+
+### Ownership and cancellation
+
+Remedia copies Buffer/Uint8Array data into native-owned memory. For a Readable,
+the feeder copies each chunk before submitting it to native code. Remedia owns
+the feeder and detaches it on stop, dispose, or `Remedia.close()`, but it does
+not destroy the caller-owned Readable. The source is paused and no further
+chunks are consumed after cancellation. A producer error is propagated through
+decoder state and `playback.error` or the rejected `play()` Promise, not through
+diagnostic events.
+
+### Seeking through encoded input
+
+In-memory buffers support byte-offset seeking when FFmpeg can seek the
+container. A producer-backed Readable supports **forward-only** media-time
+seeking: Remedia decodes and discards audio until the target without caching
+the skipped stream. Backward seeks reject without stopping playback or flushing
+the output. Forward seeks may take time because the source must supply all
+intervening bytes. A requested position already passed by decoder read-ahead
+cannot be recovered. File and HTTP behavior is unchanged, and supported
+containers/codecs depend on the installed native FFmpeg libraries.
+
+## Probe media without playback
+
+```ts
+const info = await remedia.probe(
+  { stream: createTemporaryAudioStream() },
+  { signal: controller.signal, timeoutMs: 15_000 },
+);
+console.log(info.durationMs, info.metadata.title, info.metadata.artist);
+// Resolve a fresh resource independently when playback begins.
+```
+
+`Remedia.probe(source: MediaSource, options?: ProbeOptions): Promise<AudioStreamInfo>` supports
+files, HTTP(S) URLs, Buffer, Uint8Array and binary Readables. It uses the same stream metadata
+representation as playback. Missing numeric values remain `null`. Missing tags are absent.
+The operation creates no playback or Discord session and can run alongside playback.
+
+`signal` cancels native input I/O. `timeoutMs` is a total deadline, defaults to 15000, and must be
+an integer from 1 through 4294967295. At most eight probes can be outstanding per engine, with
+eight native workers per addon process. Additional operations reject. Invalid media, missing
+audio, input errors and timeouts reject. Closing the engine cancels its probes.
+
+Readable input uses the existing bounded native queue. It may be partially or fully consumed.
+On every completion path Remedia cancels the queue, detaches its listeners and releases input
+handles. It never destroys the caller-owned Readable. It does not rewind, cache, clone or preserve
+sources. A stalled input times out. Non-seekable formats that require unavailable data may fail.

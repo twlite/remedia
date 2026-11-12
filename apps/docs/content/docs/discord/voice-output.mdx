@@ -3,21 +3,7 @@ title: Discord voice output
 description: Send core Opus packets through the outbound Discord voice transport.
 ---
 
-`remedia-discord` sends already-encoded Opus packets. It owns the Discord voice
-WebSocket, UDP socket, RTP state, transport encryption, DAVE session, and packet
-scheduler. It does not decode or encode audio. The outer Discord Gateway client
-must request the voice-state change and provide the resulting session details.
-
-The transport uses voice gateway v8, prefers `aead_aes256_gcm_rtpsize`, and
-supports the required `aead_xchacha20_poly1305_rtpsize` fallback. DAVE is
-mandatory: the connection negotiates a protocol version, exchanges MLS events,
-and does not become `Connected` until the `davey` session can encrypt media.
-`davey` currently supports DAVE protocol version 1; other versions fail with a
-typed error. The transport never falls back to plaintext audio.
-
-The connection follows [Discord's voice connection guide](https://docs.discord.com/developers/topics/voice-connections)
-and [DAVE protocol whitepaper](https://daveprotocol.com/). MLS and media-frame
-cryptography are provided by [`davey`](https://github.com/Snazzah/davey).
+Use `remedia-discord` to send Opus packets through Discord voice transport. Rust callers provide fresh Gateway credentials and a packet source. Node.js callers should use the [Gateway adapter](/docs/node/voice), which gathers those credentials from the existing bot connection.
 
 ## Connect with external Gateway information
 
@@ -29,8 +15,8 @@ ID and token in its `Debug` output, and the library does not log or persist them
 
 The Node.js binding includes a small adapter for applications that already own
 a Discord Gateway client. It sends the required channel join request and
-collects the voice state/server dispatches; see the
-[Node.js Gateway adapter guide](/docs/node/bindings#discord-gateway-adapter).
+collects the voice state/server dispatches. See the
+[Node.js Gateway adapter guide](/docs/node/voice#discord-gateway-adapter).
 Rust callers continue to provide `VoiceConnectionInfo` directly. The repository's
 [manual bot harness](/docs/discord/bot-harness) demonstrates this adapter with
 `discord.js` and app-level playback commands.
@@ -87,7 +73,7 @@ discovery, Select Protocol, Session Description, and initial DAVE MLS setup.
 It waits up to 20 seconds for the initial DAVE group to become media-ready.
 The API does not join a channel or request credentials on the caller's behalf.
 `OpusEncoderOutput` adapts normalized PCM to 20 ms stereo Opus packets at 48 kHz.
-A short final block is padded to a full Opus frame; packet metadata records how
+A short final block is padded to a full Opus frame. Packet metadata records how
 much source audio the padding represents. The adapter performs no real-time
 sleeping.
 
@@ -97,8 +83,8 @@ untrimmed, 48 kHz mono/stereo Opus packets accepted by the transport's duration
 and size checks. Inputs requiring skip-sample trimming, other codecs, active
 filtergraphs, and non-unity gain use the core's PCM decoder and Opus encoder.
 Enabling or clearing processing during a track changes the core path without
-constructing another Discord sender; RTP sequence/timestamp and DAVE state stay
-owned by the existing voice connection. See [playback mode switching](/docs/core/playback#automatic-opus-passthrough-and-pcm-mode-switching)
+constructing another Discord sender. RTP sequence/timestamp and DAVE state stay
+owned by the existing voice connection. See [playback mode switching](/docs/core/opus#automatic-opus-passthrough-and-pcm-mode-switching)
 for the decoder warm-up, padding, fallback, and transition limitations.
 
 For a manual sender example that reads connection information and an input source
@@ -118,7 +104,7 @@ channel. Do not put credentials in command history, fixtures, or logs.
 
 Each `DiscordVoiceConnection` owns one transport task and remains independent of
 individual playback sessions. Calling `opus_sender()` creates a bounded
-backpressured output for one playback; a newer output supersedes the prior one.
+backpressured output for one playback. A newer output supersedes the prior one.
 Finishing or cancelling an output does not disconnect the voice connection.
 Call `disconnect().await` to close the connection and release its worker, socket,
 and DAVE state. The Node and remote server adapters place a stable
@@ -139,15 +125,19 @@ session. Ordinary voice WebSocket Resume stays in this crate and does not send
 Gateway OP 4.
 
 The router has no unbounded handoff queue. The dedicated playback worker waits
-at the output boundary during recovery; accepted packets held only by the old
+at the output boundary during recovery. Accepted packets held only by the old
 transport can be lost when it closes. No packet is reused with stale transport
 encryption. This can create an audible gap, but does not restart or rewind the
-source. Files, HTTP inputs, buffers, and producer-backed Readables remain open
-in the same decoder; one-shot streams are not replayed. If bounded recovery
+source.
+
+Files, HTTP inputs, buffers, and producer-backed Readables remain open
+in the same decoder. One-shot streams are not replayed. If bounded recovery
 fails, the wrapper reports a terminal voice failure and the routed output
 fails. Stop cancels playback independently from voice recovery, and a stopped
 source is not restarted when a replacement transport attaches. Explicit
 disconnect, session disposal, and application shutdown cancel pending recovery.
+
+### Sender generations
 
 Each output has a monotonically increasing generation. Cancellation applies only
 while its generation is still current, so a delayed stop from an older playback
@@ -155,15 +145,19 @@ cannot deactivate a replacement track. Packets are checked against the latest
 published generation before delivery, including when several generation changes
 arrive before the transport worker observes them.
 
+### Pause, finish, stop, and seek
+
 The sender sends Speaking before the first RTP packet. Pause drains packets
 already accepted by the sender, sends the protocol's five 20 ms silence frames,
 and turns Speaking off. Resume enables Speaking again and continues the same
 voice connection. End-of-stream uses the same drain and silence behavior before
 the core session becomes `Completed`. Stop cancels pending delivery and releases
 only that playback output. A seek resets the core Opus encoder, increments the
-output generation, and drops queued pre-seek packets; packets already sent cannot
+output generation, and drops queued pre-seek packets. Packets already sent cannot
 be recalled. RTP sequence and timestamp counters remain continuous across seek
 and source replacement.
+
+### Packet pacing and backpressure
 
 Packets are paced from their encoded sample duration using a monotonic clock.
 The sender does not burst packets after a delay: packets more than one frame
@@ -174,7 +168,7 @@ Opus encoder themselves remain unpaced.
 
 `PlaybackSession::position().submitted` reports the PCM timeline accepted by the
 output. Discord does not report an audible sample position through this
-transport, so `played` is `None`; it must not be treated as sample-accurate
+transport, so `played` is `None`. It must not be treated as sample-accurate
 playback time.
 
 ## Connection errors and limits
@@ -189,22 +183,24 @@ The transport attempts Voice Gateway v8 Resume after an unexpected WebSocket
 closure or a missed heartbeat acknowledgment when the close condition permits
 Resume. Resume keeps the voice connection's UDP and DAVE state. Close codes
 that require fresh Gateway credentials instead park output and wait for the
-Node or remote Gateway adapter to send a new OP 4 request and credential pair;
-expired voice sessions become `Failed` and follow the same bounded recovery
-policy. The adapters retain the latest valid voice-state session ID while they
+Node or remote Gateway adapter to send a new OP 4 request and credential pair.
+Expired voice sessions become `Failed` and follow the same bounded recovery
+policy.
+
+The adapters retain the latest valid voice-state session ID while they
 apply the newest server token, including when its endpoint is unchanged. DAVE
 protocol version 1 is the only version supported by the selected `davey`
-release. Live playback through a configured Discord bot has been exercised;
-repository CI remains credential-free and does not open a live Discord
+release. Live playback through a configured Discord bot has been exercised.
+Repository CI remains credential-free and does not open a live Discord
 connection. Use the [manual voice region recovery procedure](/docs/discord/bot-harness#manual-voice-region-recovery)
 to check real credential rotation and transport replacement.
 
 This crate does not include a bot Gateway or REST client, channel-join commands,
 audio receiving, RTCP, video, remote binary uploads, DAVE cryptography, or Opus
-encoding. Opus encoding remains in `remedia-core`; DAVE/MLS and network transport
+encoding. Opus encoding remains in `remedia-core`. DAVE/MLS and network transport
 remain in `remedia-discord`.
 
-Connection and sender lifecycle events use an internal `voice_connection_id`; they never log the
+Connection and sender lifecycle events use an internal `voice_connection_id`. They never log the
 Discord voice session ID or token. Pass the same `ObservabilityHandle` to the playback session,
 Opus encoder output, and `connect_with_observability()` to route their diagnostics together. See the
 [observability guide](/docs/observability/configuration) for event fields, filters, metrics, and

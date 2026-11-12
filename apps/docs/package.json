@@ -3,9 +3,10 @@
   "version": "0.0.52",
   "private": true,
   "scripts": {
-    "build": "node scripts/copy-installers.mjs && next build",
+    "build": "node scripts/copy-installers.mjs && next build && node scripts/check-links.mjs",
     "dev": "next dev",
-    "typecheck": "next typegen && tsc --noEmit"
+    "typecheck": "next typegen && tsc --noEmit",
+    "check:links": "node scripts/check-links.mjs"
   },
   "dependencies": {
     "cn": "^0.5.0",

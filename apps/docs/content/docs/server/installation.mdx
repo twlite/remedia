@@ -33,9 +33,11 @@ irm https://remedia.twlite.dev/install.ps1 | iex
 & ([scriptblock]::Create((irm https://remedia.twlite.dev/install.ps1))) -NoFFmpeg
 ```
 
-`-InstallDir <path>` (or `REMEDIA_INSTALL_DIR`) selects another prefix; paths with spaces are supported.
+`-InstallDir <path>` (or `REMEDIA_INSTALL_DIR`) selects another prefix. Paths with spaces are supported.
 
-Windows x64 (MSVC) is the only supported standalone Windows target. The installer places command wrappers in `$HOME\.remedia\bin`, adds that directory to the user PATH (without admin rights), and updates the current PowerShell session PATH. It stores versioned executables separately, so a running server executable does not need to be overwritten. The PowerShell installer needs `tar` and access to GitHub, `micro.mamba.pm`, and conda-forge. It prefers Windows’ built-in `System32\tar.exe` when present, so Git’s GNU tar earlier on PATH cannot misinterpret drive-letter archive paths; otherwise it uses `tar` from PATH.
+Windows x64 (MSVC) is the only supported standalone Windows target. The installer places command wrappers in `$HOME\.remedia\bin`, adds that directory to the user PATH (without admin rights), and updates the current PowerShell session PATH. It stores versioned executables separately, so a running server executable does not need to be overwritten. The PowerShell installer needs `tar` and access to GitHub, `micro.mamba.pm`, and conda-forge. It prefers Windows’ built-in `System32\tar.exe` when present, so Git’s GNU tar earlier on PATH cannot misinterpret drive-letter archive paths. Otherwise it uses `tar` from PATH.
+
+### Use a browser-downloaded archive
 
 If the GitHub release archive returns an HTTP 504 in PowerShell, the installer also tries GitHub's release-asset API. If both download routes fail but the release downloads in your browser, download the **Windows x64 `.tar.gz` archive** from [GitHub Releases](https://github.com/twlite/remedia/releases), not the standalone `.exe`, and run:
 
@@ -60,6 +62,8 @@ curl -fsSL https://remedia.twlite.dev/install.sh | sh -s -- --ffmpeg-only
 ```
 
 Supported standalone targets: macOS Intel / Apple Silicon and Linux glibc x64 / ARM64. The script requires `curl`, `tar`, and a SHA-256 tool (`sha256sum` or `shasum`). It places `remedia` and `remedia-server` launchers in `~/.remedia/bin`. On Linux, a glibc-compatible host is required. The install script does not support Alpine/musl or FreeBSD server binaries.
+
+### Commands and shell setup
 
 On macOS/Linux, the installer adds the command directory to your shell startup file: `~/.zshrc` for zsh, `~/.bashrc` for bash, or `~/.profile` otherwise. Reinstalling does not duplicate the entry. Open a new terminal after running `curl | sh`, because the child installer process cannot change its parent shell's PATH. On Windows, the installer updates the user PATH and the current PowerShell session automatically. Then run:
 
@@ -120,8 +124,8 @@ Installers keep versioned binary pairs and switch them through an atomic pointer
 
 ## Security and troubleshooting
 
-The commands above execute a remote installation script. For production hosts, inspect the script first and pin the script to a trusted commit. Downloaded server archives are checked using GitHub's published SHA-256 asset digest; however, this is not an independent signature or protection against a compromised GitHub release.
+The commands above execute a remote installation script. For production hosts, inspect the script first and pin the script to a trusted commit. Downloaded server archives are checked using GitHub's published SHA-256 asset digest. However, this is not an independent signature or protection against a compromised GitHub release.
 
-FFmpeg is downloaded from conda-forge using micromamba. Make sure your environment permits those downloads. Running the installer without `--no-ffmpeg` (including `--ffmpeg-only`) requires the external package index; it is not fully offline or reproducible without a separately pinned conda package lock.
+FFmpeg is downloaded from conda-forge using micromamba. Make sure your environment permits those downloads. Running the installer without `--no-ffmpeg` (including `--ffmpeg-only`) requires the external package index. It is not fully offline or reproducible without a separately pinned conda package lock.
 
 For failures, check the executable with `remedia --version`, inspect its shared dependencies with `ldd` (Linux) or `otool -L` (macOS), and confirm your configuration exists. See [server deployment](/docs/server/deployment) for TLS, routing, and service operation.

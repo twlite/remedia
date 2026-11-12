@@ -3,13 +3,9 @@ title: Using @remedia/client
 description: Create a client, add embedded or remote nodes, join a Discord voice channel, play audio, and clean up.
 ---
 
-`@remedia/client` is the one SDK for playing audio into Discord from Node.js. It runs the engine
-inside your process (an **embedded** node), on `remedia-server` processes (**remote** nodes), or a
-mix, behind the same session API. It needs Node.js 22.18 or newer.
+Use `@remedia/client` to control embedded engines and remote servers through the same Discord session API. Start with one node, then add a pool when you need to distribute guilds. Node.js 22.18 or newer is required.
 
-If you are starting from scratch, the [embedded](/docs/getting-started/embedded) and
-[remote](/docs/getting-started/remote) quickstarts install everything for you. This page is the
-API walkthrough.
+For installation from scratch, follow the [embedded](/docs/getting-started/embedded) or [remote](/docs/getting-started/remote) quickstart.
 
 ## Install
 
@@ -55,7 +51,7 @@ discord.on('raw', (packet) => remedia.receive(packet));
 
 You keep your own Discord Gateway connection. Remedia calls `send` to ask Discord for a voice
 connection and expects every raw Gateway packet through `remedia.receive()`. `botUserId` is required
-when any node is remote; it is sent to the server so several bots can share one server account.
+when any node is remote. It is sent to the server so several bots can share one server account.
 
 Use `remedia://` for `ws://` and `remedias://` for `wss://`. With more than one node, see
 [Nodes and routing](/docs/client/nodes) for how guilds are assigned.
@@ -82,7 +78,7 @@ console.log(await voice.wait()); // 'completed', 'stopped' or 'failed'
 - `wait()` resolves when the current track reaches a terminal state.
 - Snowflakes (guild, channel, user IDs) are decimal strings.
 
-Sources can be a URL, a file path, or (on embedded nodes) a `Buffer` or `Readable`; see
+Sources can be a URL, a file path, or (on embedded nodes) a `Buffer` or `Readable`. See
 [Media sources and probing](/docs/client/media).
 
 ## Control playback
@@ -120,7 +116,7 @@ Failures are typed. The ones you will meet most often:
 | `NodeUnavailableError`        | The node is not connected. The client reconnects in the background.                                               |
 | `NodeSelectionError`          | No suitable node could be chosen, or a pinned node is full or unhealthy.                                          |
 | `UnsupportedMediaSourceError` | The node cannot accept that source type, for example a `Buffer` on a remote node.                                 |
-| `SessionLostError`            | The server no longer has your session; see [Session lifecycle](/docs/client/sessions).                            |
+| `SessionLostError`            | The server no longer has your session. See [Session lifecycle](/docs/client/sessions).                            |
 
 Messages never include passwords, tokens, or media URLs from other users.
 

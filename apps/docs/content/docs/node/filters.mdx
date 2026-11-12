@@ -1,0 +1,42 @@
+---
+title: 'Embedded filters and gain'
+description: Apply trusted FFmpeg graphs and control per-session gain.
+---
+
+## Native filters and master volume
+
+Both `PlaybackSession` and `DiscordSession` expose the core's raw FFmpeg audio
+filtergraph and an independent master gain. No named music presets are part of
+`@remedia/node`.
+
+```ts
+await voice.filters.set('bass=gain=8,volume=0.8');
+await voice.setVolume(0.75);
+
+await voice.filters.set('tremolo=f=5:d=0.6'); // replaces the previous graph live
+await voice.filters.clear();
+console.log(voice.filters.graph, voice.volume); // null, 0.75
+```
+
+### Replace a graph during playback
+
+Set filters before `play()` or `connect()`, while playing, or while paused. A replacement is validated before it becomes active at the next decoded PCM boundary. Invalid graphs reject and leave the current graph in place.
+
+Already submitted audio stays accepted, while delayed output held by the old graph is discarded. A live filter change keeps the source decoder and voice connection open. If natural EOF wins before the next boundary, the setting applies to the next source on that session. A seek that loses an EOF race rejects.
+
+Pass a raw audio expression such as `bass=gain=6`, without command-line flags. Empty strings reject. Use `filters.clear()` to disable the graph. Expressions need one effective audio input and output. FFmpeg filters can access files or URLs, so accept graphs only from trusted applications.
+
+For partial Opus frames, seek flushes, and exact worker ordering, see [Rust filter replacement](/docs/core/filters#replacement-boundaries).
+
+### Gain and clipping
+
+`volume` is a normalized linear gain from `0` through `2`. The default is `1`.
+`setVolume(0)` mutes without stopping playback, `setVolume(1)` is unity, and
+values above one may clip. Samples are clamped to `[-1, 1]`. This is not
+limiting or loudness normalization. Volume is applied after the graph and is
+preserved when filters change or tracks are replaced on the same session.
+Each session has independent settings, and disposal releases them.
+
+### Source and output time
+
+Tempo and buffering filters change the relationship between original-source position and submitted PCM. Seeking stays relative to the original source. Use the [position fields and accuracy metadata](/docs/client/positions) when displaying progress. Each session retains its graph and gain across tracks and transport recovery.

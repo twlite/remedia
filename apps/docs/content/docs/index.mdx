@@ -3,10 +3,7 @@ title: Remedia
 description: Play audio into Discord voice channels from Node.js, embedded in your bot or on a separate server.
 ---
 
-Remedia is an audio engine for Discord bots. Give it a URL, a file, or audio from your own plugin;
-it decodes the media, applies filters and volume, and sends it to a voice channel over Discord's
-encrypted voice transport. Your bot keeps control of its Discord connection, its queue, and the
-logic for finding music.
+Remedia decodes audio, applies filters and gain, and delivers it to Discord voice channels. Run the engine inside your Node.js bot or on a standalone server. Your application owns its queue, media sources, and Discord Gateway connection.
 
 ## What you can do
 
@@ -28,7 +25,7 @@ logic for finding music.
 You do not need all of them. Most bots install one of the first two rows. [Choose your setup](/docs/getting-started/choose)
 compares them in detail.
 
-A taste of the API:
+A Discord session starts playback after its voice connection is ready:
 
 ```ts
 const voice = remedia.createDiscordSession({ guildId, channelId, userId });

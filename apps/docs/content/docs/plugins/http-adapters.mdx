@@ -1,0 +1,93 @@
+---
+title: 'Serve a plugin host'
+description: Expose an initialized host through Fetch, Express, Connect, or Hono.
+---
+
+## Independently hosted Fetch service
+
+```ts
+import { createPluginHost, type Operation } from '@remedia/plugin-host';
+
+type Operations = { resolve: Operation<unknown, { id: string; title: string }> };
+const secret = process.env.REMEDIA_PLUGIN_TOKEN;
+if (!secret) throw new Error('REMEDIA_PLUGIN_TOKEN is required');
+export const host = createPluginHost<Operations>({
+  name: 'Source service',
+  publicUrl: 'https://plugins.example.com',
+  token: secret,
+  onError: (error) => console.error('Plugin service failure', error),
+});
+host.register<Operations>({
+  id: 'example.source',
+  operations: {
+    resolve(input) {
+      if (
+        typeof input !== 'object' ||
+        input === null ||
+        !('id' in input) ||
+        typeof input.id !== 'string'
+      )
+        throw new TypeError('Expected a string id');
+      return { id: input.id, title: 'Example' };
+    },
+  },
+});
+// Supply this function to your deployment's Fetch-compatible HTTP runtime:
+export function fetchHandler(request: Request): Promise<Response> {
+  return host.fetch(request);
+}
+```
+
+A remote client can invoke the service:
+
+```ts
+const response = await fetch('https://plugins.example.com/remedia/v1/execute', {
+  method: 'POST',
+  headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' },
+  body: JSON.stringify({ pluginId: 'example.source', operation: 'resolve', input: { id: '123' } }),
+});
+if (!response.ok) throw new Error(`Plugin HTTP ${response.status}`);
+console.log(await response.json());
+```
+
+TypeScript contracts do not validate remote JSON. Each handler must validate its untrusted inputs. Handler validation failures currently map to `plugin_failed` (502). A handler can throw `PluginHostError('invalid_request', 400)` to provide a typed client error.
+
+## Express and Connect
+
+```ts
+import express from 'express';
+import { createNodeMiddleware } from '@remedia/plugin-host/node';
+import { host } from './service.js'; // The initialized host above.
+
+const app = express();
+app.use(createNodeMiddleware(host)); // Mount at origin root, before all body parsers.
+app.use(express.json());
+app.get('/health', (_req, res) => {
+  res.send('ok');
+});
+const server = app.listen(3000); // Application owns the listener.
+async function shutdown() {
+  server.close();
+  await host.close();
+}
+process.once('SIGTERM', () => {
+  void shutdown().catch(console.error);
+});
+```
+
+For Connect, use `app.use(createNodeMiddleware(host))` before body parsers and pass the Connect app to `http.createServer(app)`. Unknown paths call `next()`. Without `next`, they return 404. Previously parsed or consumed bodies produce 400 with a mounting instruction. Request bodies are read once with a byte limit. The adapter uses streaming pipeline backpressure, cancels operations/media on disconnect and removes listeners after completion. Do not mount under a URL prefix. Protocol routes are absolute.
+
+## Hono
+
+```ts
+import { Hono } from 'hono';
+import { host } from './service.js';
+
+const app = new Hono();
+app.get('/.well-known/remedia', (c) => host.fetch(c.req.raw));
+app.all('/remedia/v1/*', (c) => host.fetch(c.req.raw));
+app.get('/health', (c) => c.text('ok'));
+export default app;
+```
+
+Hono remains an application dependency. The host itself depends only on standard Fetch APIs and Node built-ins. Its Node middleware is optional.

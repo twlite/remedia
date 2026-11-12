@@ -7,16 +7,18 @@ description: Which media sources each node type accepts, how to apply filters an
 
 `play()`, `stageNext()` and `probe()` take a `MediaSource`, one of:
 
-| Source                                                       | Embedded node | Remote node                                                              |
-| ------------------------------------------------------------ | ------------- | ------------------------------------------------------------------------ |
-| `{ url }`: an HTTP(S) URL                                    | Yes           | Yes, opened by the server and subject to its URL policy                  |
-| `{ file }`: a local path                                     | Yes           | Yes, a path **on the server**, under its allowed roots                   |
-| `{ buffer }`: a `Buffer` or `Uint8Array`                     | Yes           | No                                                                       |
-| `{ stream }`: a binary `Readable`                            | Yes           | No                                                                       |
-| `{ hostId, pluginId, operation, input }`: a plugin operation | No            | Yes, see [Playing audio through plugins](/docs/server/plugin-operations) |
+| Source                                                       | Embedded node | Remote node                                                                                    |
+| ------------------------------------------------------------ | ------------- | ---------------------------------------------------------------------------------------------- |
+| `{ url }`: an HTTP(S) URL                                    | Yes           | Yes, opened by the server and subject to its URL policy                                        |
+| `{ file }`: a local path                                     | Yes           | Yes, a path **on the server**, under its allowed roots                                         |
+| `{ buffer }`: a `Buffer` or `Uint8Array`                     | Yes           | No                                                                                             |
+| `{ stream }`: a binary `Readable`                            | Yes           | No                                                                                             |
+| `{ hostId, pluginId, operation, input }`: a plugin operation | No            | Playback and staging only, see [Playing audio through plugins](/docs/server/plugin-operations) |
+
+Operation sources are rejected by `probe()` in both modes.
 
 Buffer and Readable sources are never uploaded to a remote node. If a guild is assigned to a remote
-node, they are rejected with `UnsupportedMediaSourceError`; pin the guild to an embedded node with
+node, they are rejected with `UnsupportedMediaSourceError`. Pin the guild to an embedded node with
 `nodeId` instead.
 
 ## Filters and volume
@@ -42,18 +44,17 @@ const info = await client.probe(
 
 `probe(source: MediaSource, options?: ClientProbeOptions): Promise<AudioStreamInfo>` delegates
 to embedded native probing or remote `media.probe`. It creates no guild assignment, playback
-session or voice transport. Supply `nodeId` when multiple healthy nodes exist; a single healthy
+session or voice transport. Supply `nodeId` when multiple healthy nodes exist. A single healthy
 node is selected automatically. Unknown, unhealthy or ambiguous nodes reject.
 
-Embedded nodes accept all MediaSource variants. Remote nodes accept only server-accessible files
-and HTTP(S) URLs; buffers and Readables reject with `UnsupportedMediaSourceError`. Cancellation
-sends a best-effort remote cancellation request; disconnect and server request deadlines also
+Embedded probing accepts files, URLs, buffers, and binary Readables. Plugin operation sources are rejected by probing in both modes. Remote nodes accept only server-accessible files
+and HTTP(S) URLs. Buffers and Readables reject with `UnsupportedMediaSourceError`. Cancellation
+sends a best-effort remote cancellation request. Disconnect and server request deadlines also
 cancel native work. `timeoutMs` defaults to 15000 and is a positive 32-bit unsigned integer.
-Unknown numeric metadata stays `null`. See [native probing](/docs/node/bindings#probe-media-without-playback)
-for stream ownership and [the RPC reference](/docs/server/protocol#media-probing) for server limits.
+Unknown numeric metadata stays `null`. See [native probing](/docs/node/inputs#probe-media-without-playback)
+for stream ownership and [the RPC reference](/docs/server/rpc-playback#media-probing) for server limits.
 
-Metadata probing is independent of playback initialization and platform metadata extraction.
-A source integration can obtain a title or thumbnail directly from its media provider.
+Use your media provider for catalog titles and thumbnails. Use `probe()` when you need technical stream metadata.
 When technical audio metadata is needed, it can resolve a temporary resource, call `probe`, then
 discard that resource. When playback begins, the plugin resolves a completely fresh source.
-Probing does not guarantee later resource availability or duration accuracy. Remedia hosts no source plugins.
+Probing does not guarantee later resource availability or duration accuracy. Plugin-host operation sources are resolved only when playback or staging starts.

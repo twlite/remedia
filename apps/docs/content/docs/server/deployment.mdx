@@ -8,13 +8,13 @@ description: Local operation, TLS termination, network restrictions, and indepen
 Standalone releases cover Linux x64/ARM64 glibc, macOS x64/ARM64, and Windows x64 MSVC.
 Download the target `.tar.gz` archive and keep its `LICENSE` and `THIRD_PARTY_NOTICES.md` plus the `THIRD_PARTY_LICENSES.txt` appendix with the
 executable. Raw binaries are also accompanied by those notices in the release assets.
-Release archives now include both the FFmpeg-independent administrative CLI and the separately linked server runtime. The release archives do not bundle FFmpeg. The [one-command installer](/docs/server/installation) provisions FFmpeg 9 in an isolated directory, or you can install compatible shared libraries independently.
+Release archives include both the FFmpeg-independent administrative CLI and the separately linked server runtime. The release archives do not bundle FFmpeg. The [one-command installer](/docs/server/installation) provisions FFmpeg 9 in an isolated directory, or you can install compatible shared libraries independently.
 See [runtime ABI versions and library discovery](/docs/node/distribution) and
 [licensing and media responsibility](/docs/licensing). The server needs no Node.js runtime.
 
 ## Docker
 
-A ready-to-use Dockerfile and Compose example run the standalone server with persistent configuration and a loopback-only published port. See [Run the server in Docker](/docs/server/docker).
+The published `ghcr.io/twlite/remedia` image and Compose example run the standalone server with persistent configuration and a loopback-only published port. See [Run the server in Docker](/docs/server/docker).
 
 ## Local development
 
@@ -27,7 +27,7 @@ The server configuration contains only server-side accounts and access policy, a
 authenticated account to serve multiple independent bot identities.
 
 Contributors building from source can use `cargo run -p remedia-server` with the repository's
-example configuration; see [CONTRIBUTING.md](https://github.com/twlite/remedia/blob/main/CONTRIBUTING.md).
+example configuration. See [CONTRIBUTING.md](https://github.com/twlite/remedia/blob/main/CONTRIBUTING.md).
 
 ## TLS reverse proxy
 
@@ -52,7 +52,7 @@ location /v1/ws {
 Clients then connect to `wss://media.example.net/v1/ws`. Keep passwords and resume credentials in
 secret storage. Do not put them in URLs, logs, shell history, or source control. The server supports
 standard `ws://` and `wss://` clients. `@remedia/client` also maps `remedia://` to `ws://` and
-`remedias://` to `wss://`; optional URL userinfo is stripped and sent only in the WebSocket Basic
+`remedias://` to `wss://`. Optional URL userinfo is stripped and sent only in the WebSocket Basic
 Authorization header.
 
 ## Media network policy
@@ -72,22 +72,19 @@ filter expressions into a safe sandbox.
 
 Each process owns independent in-memory sessions. Unexpected socket loss permits resumption for a
 bounded timeout. Explicit close, expiry, and graceful shutdown release playback and voice resources.
-A process restart loses active sessions; v0 has no persistence, clustering, or coordinator.
+A process restart loses active sessions. Servers have no shared session store or cluster coordinator.
 
 Set connection, player, message, request, and event limits to match host resources. `node.stats`
 reports local capacity, player/connection counts, process uptime, CPU parallelism/load and resident
-memory when the host exposes them, plus transport and processing health. Some host metrics are
-Linux-specific and may be `null` elsewhere.
+memory when the host exposes them, plus transport and processing health. Memory counters differ by OS and unsupported values are `null`. See [Process resources](/docs/observability/resources).
 
 Multiple nodes do not share state and do not proxy commands. `@remedia/client` selects a healthy
-node for a new guild and routes later operations for that guild to the same node. It does not move
-active playback to another node; recovery requires application-managed restoration with fresh
-Discord voice credentials.
+node for a new guild and routes later operations for that guild to the same node. Existing assignments stay put during outages. Applications can explicitly [migrate supported URL playback](/docs/client/nodes#explicit-cross-node-migration) to a healthy node, or restore sessions with fresh Discord credentials after loss.
 
 ## Manual Discord test
 
 The [`remote_discord` example](https://github.com/twlite/remedia/blob/main/crates/remedia-server/examples/remote_discord.rs)
 connects as an RPC client, creates a guild player, uses voice credentials supplied by an external
 bot Gateway implementation, plays a URL, replaces and clears filters, then stops and disconnects.
-It never sends OP 4. CI does not use Discord credentials; it validates server playback through a
+It never sends OP 4. CI does not use Discord credentials. It validates server playback through a
 null output and localhost WebSocket connections.

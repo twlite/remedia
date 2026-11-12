@@ -25,7 +25,7 @@ curl -fsSL https://remedia.twlite.dev/install.sh | sh -s -- --ffmpeg-only
 - FFmpeg is installed to `~/.remedia/ffmpeg9` (`$HOME\.remedia\ffmpeg9` on Windows), outside your system library directories. Your system FFmpeg is not replaced.
 - `@remedia/node` finds that directory automatically. You do not need to set `PATH`, `LD_LIBRARY_PATH`, or any other variable.
 - `--ffmpeg-only` / `-FFmpegOnly` installs **only FFmpeg**. It does not install `remedia-server`, does not add commands, and does not edit your shell profile or `PATH`. You can run it again to update or re-verify FFmpeg.
-- The installer downloads FFmpeg from conda-forge, so it needs network access. Set `REMEDIA_INSTALL_DIR` to install under a different prefix.
+- The installer downloads FFmpeg from conda-forge, so it needs network access. Set `REMEDIA_INSTALL_DIR` to install under a different prefix. For an embedded engine using that custom prefix, set `REMEDIA_FFMPEG_DIR` to its `ffmpeg9` directory.
 
 <Callout title="Note">
   You only need one installation method. The manual installation methods below are alternatives, not
@@ -64,8 +64,8 @@ const runtime = getFfmpegRuntime();
 console.log(runtime.source, runtime.directory);
 ```
 
-For a server, run [`remedia-server doctor`](/docs/server/cli#diagnose-the-server) on the audio host.
-If loading fails, the error lists every location that was tried and why each was rejected; see
+For a server, run [`remedia-server doctor`](/docs/server/diagnostics#diagnose-the-server) on the audio host.
+If loading fails, the error lists every location that was tried and why each was rejected. See
 [native library troubleshooting](/docs/node/troubleshooting).
 
 ## Manual installation
@@ -74,7 +74,7 @@ Use these only if you do not want the installer. After installing, run the verif
 
 ### macOS
 
-Homebrew's `ffmpeg` formula is FFmpeg 9.0.2 (also available as `ffmpeg@9`):
+Install Homebrew's shared FFmpeg package, then verify its library ABI majors against the [required versions](#required-library-versions):
 
 ```sh
 brew install ffmpeg
@@ -94,17 +94,19 @@ export REMEDIA_FFMPEG_DIR="$CONDA_PREFIX"
 
 Install a **shared** FFmpeg build. Static builds do not provide the DLLs Remedia loads.
 
-- **Scoop** (`ffmpeg-shared` is the gyan.dev shared build, 9.0.2). Scoop adds its `bin` directory to your `PATH`, which `@remedia/node` searches:
+- **Scoop:** install the shared build and verify that it provides the required FFmpeg 9 DLLs. Scoop adds its `bin` directory to `PATH`, which Remedia searches:
 
   ```powershell
   scoop install ffmpeg-shared
   ```
 
-- **Winget** (`Gyan.FFmpeg.Shared`, 9.0.2). Winget only creates command aliases for `ffmpeg.exe`; the DLLs are not added to `PATH`. Point Remedia at the package's `bin` folder:
+- **Winget:** install `Gyan.FFmpeg.Shared`, then locate its shared-library directory. A command alias for `ffmpeg.exe` alone does not expose the DLLs to Remedia:
 
   ```powershell
   winget install Gyan.FFmpeg.Shared
-  $env:REMEDIA_FFMPEG_DIR = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Gyan.FFmpeg.Shared_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build-shared\bin"
+  Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Filter avcodec-63.dll -Recurse
+  # Set this to the containing directory printed above:
+  $env:REMEDIA_FFMPEG_DIR = 'C:\path\to\shared-ffmpeg\bin'
   ```
 
   The package folder name can differ on your machine. Locate the directory containing `avcodec-63.dll` and use that path.
@@ -122,18 +124,7 @@ You may also need the matching [Microsoft Visual C++ Redistributable](https://le
 
 ### Linux
 
-Remedia needs the **glibc** build of FFmpeg 9 shared libraries. As of November 2026, most stable
-distributions still ship older majors, so check before using your package manager:
-
-| Distribution                                    | FFmpeg in the stable repositories             |
-| ----------------------------------------------- | --------------------------------------------- |
-| Arch Linux, Manjaro                             | 9.0.2: `sudo pacman -S ffmpeg`                |
-| Debian 13, Ubuntu 24.04 / 26.04, Fedora 43 / 44 | Older than 9; use the installer or micromamba |
-| Debian testing/unstable, Fedora Rawhide         | 9.0.2 only in development releases            |
-
-On a distribution with FFmpeg 9 packaged, install it with the package manager and `@remedia/node`
-finds it in the loader's standard directories. Do not mix unstable or development repositories into a
-stable system just to get FFmpeg 9; use the Remedia installer or micromamba instead:
+The installer supports glibc Linux. Distribution FFmpeg packages may target another ABI major. Verify the shared-library versions before choosing a system package. For a pinned FFmpeg 9 environment, use micromamba:
 
 ```sh
 micromamba create -n remedia-ffmpeg9 -c conda-forge 'ffmpeg=9.0.2'
@@ -176,8 +167,7 @@ should report majors 63, 63, 61, 12 and 7.
 
 ### The standalone server runtime
 
-`remedia-server` starts its native runtime through the `remedia` launcher installed by the Remedia
-installer, which configures library paths. If you provide FFmpeg yourself (installer option
+The installed `remedia` and `remedia-server` launchers configure library paths, then invoke the lightweight CLI. The CLI starts `remedia-server-runtime` for serving and diagnostics. If you provide FFmpeg yourself (installer option
 `--no-ffmpeg` / `-NoFFmpeg`), the runtime relies on the system loader, so make the FFmpeg directory
 visible to the process: `LD_LIBRARY_PATH` on Linux, `DYLD_LIBRARY_PATH` on macOS, or `PATH` on
 Windows. Run `remedia-server doctor` to confirm.
@@ -186,15 +176,15 @@ Windows. Run `remedia-server doctor` to confirm.
 
 Compiling Remedia (not running a published addon) needs FFmpeg 9 headers and `pkg-config` metadata.
 Set `FFMPEG_DIR` to the FFmpeg prefix and `PKG_CONFIG_PATH` to its `lib/pkgconfig` directory so the
-build links FFmpeg 9 and not another version on your machine. These variables only affect builds;
-they are not read when a published package runs. See
+build links FFmpeg 9 and not another version on your machine. These variables only affect builds.
+They are not read when a published package runs. See
 [CONTRIBUTING.md](https://github.com/twlite/remedia/blob/main/CONTRIBUTING.md) and
 [`verify-native-deps.mjs`](https://github.com/twlite/remedia/blob/main/.github/scripts/verify-native-deps.mjs).
 
 ### Other targets
 
 FreeBSD x64 is tested against a pinned FFmpeg 9.0.2 source build. Linux musl, ARMv7 and Android
-targets are cross-compiled in CI but are build-only; they carry no runtime compatibility
+targets are cross-compiled in CI but are build-only. They carry no runtime compatibility
 guarantee. See [package distribution](/docs/node/distribution) for platform coverage.
 
 ### Inspecting a native addon
@@ -202,5 +192,5 @@ guarantee. See [package distribution](/docs/node/distribution) for platform cove
 Use `ldd` (Linux, FreeBSD), `otool -L` (macOS) or `dumpbin /DEPENDENTS` (Windows) to see which
 FFmpeg libraries an addon requests. On macOS, the published addon requests
 `@rpath/libavcodec.63.dylib` and so on, which lets `@remedia/node` choose among Homebrew, the managed
-prefix and `REMEDIA_FFMPEG_DIR`; a custom build whose libraries carry absolute install names elsewhere
+prefix and `REMEDIA_FFMPEG_DIR`. A custom build whose libraries carry absolute install names elsewhere
 cannot be selected. Licensing implications of redistributing FFmpeg are in [licensing](/docs/licensing).

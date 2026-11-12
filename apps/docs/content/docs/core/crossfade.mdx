@@ -1,0 +1,60 @@
+---
+title: 'Rust crossfade lifecycle'
+description: Preparation, bounded staging, promotion, and cancellation in the playback worker.
+---
+
+## Crossfade playback
+
+Crossfade is disabled by default. Opted-in sessions can pass through eligible Opus
+packets outside an overlap, and decode stereo 48 kHz PCM when mixing is required. A whole packet must fit before the overlap boundary. Otherwise the decoder warms
+from bounded compressed history and trims to the exact source boundary. The sources
+mix with a sample-accurate equal-power curve. One output and Opus encoder
+remain open across promotions.
+
+Prepared sources keep their existing producer and
+bounded PCM buffer after promotion. They continue transcoding rather than reopen
+the source or bypass decoded samples. Direct sources can restore passthrough after
+temporary volume processing only at matching source and encoder packet boundaries. A gain update that leaves passthrough waits for PCM activation. Restoration can
+complete later when the direct source reaches a safe boundary. Seeking disables passthrough restoration for that direct source. Ordinary sessions retain their existing Opus
+passthrough selection and allocate no staging decoder or PCM buffer.
+
+### Preparation timing
+
+Defaults are a 5000 ms fade and a 30000 ms preparation lead. The engine emits
+`prepareRequested` approximately 35000 ms before a known-duration source ends.
+Unknown-duration inputs do not receive end-based requests. Resolve upcoming sources
+when requested rather than caching expiring URLs minutes ahead. Fades support
+1000–30000 ms. Preparation leads support 5000–120000 ms.
+
+### Stage identity and buffering
+
+`stageNext(source, { expectedGeneration, entryId, queueRevision, sourceRevision })`
+identifies a queued occurrence, including repeated tracks. Repeating the same
+identity is idempotent. Higher queue revisions replace previous decisions. Higher
+source revisions refresh the same entry. Older revisions cannot overwrite a newer
+stage, including after cancellation. Staging opens an independent decoder with a
+bounded two-second PCM buffer and backpressure. `stageReady`, `stageFailed` and
+`stageInvalidated` report its lifecycle.
+
+### Late stages and interrupted transitions
+
+At the fade boundary, an unready, missing, expired or failed stage is ignored and
+ordinary source completion continues. The mixer never waits for an incoming frame.
+An underflow during overlap cancels the transition and restores the outgoing
+source. `transitionCancelled` identifies the interrupted incoming generation. Pause freezes overlap progress and preserves preparation. Resume checks readiness
+and expiry.
+
+Seek clears preparation, advances the source generation to fence delayed requests,
+and recalculates the request threshold. This generation change applies only to
+crossfade sessions. The source is retained and no new start event is emitted. Stop
+cancels decoders and blocked buffer operations. Volume and filters apply to the
+mixed PCM. Transport recovery retains the same playback engine.
+
+### Promotion events
+
+The incoming source emits `playbackStarted` when overlap begins. After the fade,
+the outgoing source emits `playbackCompleted` with
+`continuation: { type: 'promoted', generation, entryId }`. That continuation means
+the next source is already playing: consumers must not call `play()` for it.
+The final source completes normally without continuation. Generations identify
+sources independently of transport recovery and the continuous output clock.

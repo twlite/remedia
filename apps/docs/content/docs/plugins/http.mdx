@@ -1,0 +1,40 @@
+---
+title: 'Plugin host HTTP protocol'
+description: Discovery, JSON execution, media grants, authentication, limits, and errors.
+---
+
+## HTTP reference and limits
+
+| Method | Path                       | Behavior                                                                                           |
+| ------ | -------------------------- | -------------------------------------------------------------------------------------------------- |
+| GET    | `/.well-known/remedia`     | Public discovery: name, protocolVersion: 1, endpoints, plugin IDs and operation lists              |
+| POST   | `/remedia/v1/execute`      | JSON `{ pluginId, operation, input }`. Returns `{ handled: false }` or `{ handled: true, result }` |
+| GET    | `/remedia/v1/media/:token` | Redeem a temporary encoded media response                                                          |
+
+`/.well-known/remedia` is public discovery, including when execution requires a bearer token. All responses use `Cache-Control: no-store`. Execute requires `application/json` (parameters allowed), limits bodies to 65536 bytes by default, and requires `Authorization: Bearer …` when `token` is configured. `maxRequestBytes` adjusts that limit. Requests and results must be JSON-safe: remote results reject cycles, undefined properties, functions, BigInt, non-finite numbers, getters, symbols and non-plain objects rather than silently converting them. Top-level streams/sources use media delivery instead.
+
+### Media URL settings
+
+`publicUrl` must be a trusted HTTP(S) origin without paths, credentials, queries or fragments. It is only required for media grants. Incoming Host headers do not affect grants. `mediaTtlMs` defaults to 60000 (range 1–3600000). `maxMediaTokens` defaults to 1024. Limits must be positive safe integers. `token` must contain at least 16 characters. Authentication covers execute. Discovery is public and media URLs themselves are bearer credentials. Use TLS and restrict network access. Never log media URLs. Applications must authorize operations and restrict any user-selected URLs/files inside their handlers.
+
+### HTTP error codes
+
+Errors return `{ error: { code } }`.
+
+| HTTP status | Codes                                                                     |
+| ----------- | ------------------------------------------------------------------------- |
+| 400         | `invalid_request`, `invalid_json`                                         |
+| 401         | `unauthorized`                                                            |
+| 404         | `plugin_not_found`, `operation_not_found`, `media_not_found`, `not_found` |
+| 405         | `method_not_allowed`                                                      |
+| 413         | `request_too_large`                                                       |
+| 415         | `unsupported_media_type`                                                  |
+| 416         | `range_not_supported`                                                     |
+| 499         | `cancelled`                                                               |
+| 500         | `public_url_required`                                                     |
+| 502         | `plugin_failed`, `invalid_result`, `invalid_media_source`                 |
+| 503         | `host_closed`, `plugin_unregistered`, `media_token_limit`                 |
+
+Duplicate direct registration uses `PluginHostError` with `409` and `duplicate_plugin`. Explicit handler errors retain their supplied `PluginHostError` status. Unexpected handler errors are redacted to `plugin_failed`.
+
+See also: [Playing audio through plugins](/docs/server/plugin-operations), [Executing plugin operations](/docs/server/plugin-forwarding) and [Permissions and security](/docs/plugins/security).

@@ -1,0 +1,36 @@
+---
+title: 'Build the Node addon'
+description: Build the engine, bootstrap loader, and TypeScript declarations from source.
+---
+
+## Building from source
+
+Use the repository's pinned Rust toolchain, Node.js 22.18 or newer, and pnpm
+12.16.1. Building the native addon requires the FFmpeg development libraries
+used by `remedia-core`. The Opus encoder is built from bundled source and linked
+statically, so a separate system libopus development package is not required.
+From the repository root:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm --filter @remedia/node test
+pnpm --filter @remedia/node build
+```
+
+The test command builds a debug addon and runs local Node integration tests.
+`build` creates the release addon and TypeScript declarations. The N-API loader
+and native declarations are generated from Rust source by `@napi-rs/cli`.
+
+Both scripts also build the FFmpeg-free **bootstrap** addon (`bootstrap/` crate,
+output `bootstrap.<platform>.node`) and, on macOS, rewrite the engine addon's FFmpeg
+install names to `@rpath` (`.github/scripts/normalize-macos-addon.mjs`) so that FFmpeg
+discovery can choose the installation at run time. `FFMPEG_DIR` and `PKG_CONFIG_PATH`
+select the FFmpeg you compile **against**. They are not used when the package runs. If
+`pkg-config` finds more than one FFmpeg (for example Homebrew's `ffmpeg` and
+an older `ffmpeg@N` formula), set them explicitly so the addon links FFmpeg 9.
+
+Windows builds use the dynamic MSVC CRT to match bundled Opus's CMake defaults.
+Opus itself remains statically linked. A Windows runtime machine needs a
+compatible Microsoft Visual C++ v14 runtime if it is not already installed.
+The N-API package does not bundle that runtime or guarantee static CRT
+linkage. FFmpeg's DLLs remain separate runtime dependencies.

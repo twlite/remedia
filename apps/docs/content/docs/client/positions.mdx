@@ -1,0 +1,50 @@
+---
+title: 'Playback positions and seeking'
+description: Interpret source time, output time, unknown durations, and cached remote progress.
+---
+
+Use `session.position` to distinguish source progress from audio submitted to the output. All JavaScript positions are in milliseconds.
+
+## Choose the right position
+
+| Field                   | Meaning                                                                                 |
+| ----------------------- | --------------------------------------------------------------------------------------- |
+| `mediaMs`               | Original-source position associated with the latest accepted output boundary, or `null` |
+| `mediaPositionAccuracy` | `timestamp`, `estimated`, or `null`                                                     |
+| `submittedMs`           | Filtered PCM timeline submitted to the output                                           |
+| `playedMs`              | Output-reported consumption, or `null` when unavailable                                 |
+
+`durationMs` is `null` when the source has no known duration. Discord provides no audible sample-position report, so `playedMs` is `null`. Show approximate source progress rather than claiming listener-accurate playback.
+
+```ts
+await session.refresh(); // Request current state from a remote backend.
+const { mediaMs, mediaPositionAccuracy } = session.position;
+if (mediaMs !== null) {
+  const approximate = mediaPositionAccuracy === 'estimated' || session.position.playedMs === null;
+  console.log(`${approximate ? '~' : ''}${Math.floor(mediaMs / 1000)} seconds`);
+}
+```
+
+## Read interpolated elapsed time
+
+`session.getPlaybackTime()` returns the adapter's current elapsed-time estimate in milliseconds. Remote nodes extrapolate between authoritative events and snapshots with a monotonic clock, freeze while paused or disconnected, and reconcile after reconnect. A new source generation gets a new clock. Tempo filters mean source duration is not a valid upper bound for this estimate.
+
+Use `position` when you need the source-versus-output distinction and accuracy metadata. Neither API measures Discord audibility.
+
+## Understand filtered timelines
+
+Tempo and buffering filters can change output sample counts independently of source time. `submittedMs` follows filtered samples. `mediaMs` stays on the source timeline and is marked estimated when timestamps or graph timing cannot establish an exact mapping. Remedia does not infer a fixed speed ratio by parsing graph text.
+
+Remote positions are observations updated through events and `refresh()`. The SDK may use a local clock for preparation scheduling, but a cached position is not a continuously sampled audible clock. A standalone Node playback session uses a null output and may consume an entire file faster than real time.
+
+## Seek within a source
+
+```ts
+await session.seek(30_000);
+```
+
+Files, owned buffers, and seekable HTTP resources can seek when FFmpeg's demuxer supports it. A seek resets the source and submitted timelines at the requested media time and drops queued pre-seek audio. It keeps the Discord connection.
+
+Readable inputs and plugin media grants are forward-only. Forward seeking decodes and discards intervening audio. It can take time, and a position already passed by decoder read-ahead cannot be recovered. Backward seeks reject without stopping playback or flushing the active output.
+
+Seeking may invalidate a staged crossfade source and change its generation. Resolve a fresh stage in response to the next preparation request. For sample-level behavior, see [Rust seeking](/docs/core/playback#seeking-and-position) and [filter timing](/docs/core/filters).

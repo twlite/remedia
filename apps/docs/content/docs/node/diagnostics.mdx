@@ -1,0 +1,57 @@
+---
+title: 'Embedded diagnostics'
+description: Subscribe to bounded native diagnostic events and configure embedded telemetry.
+---
+
+## Structured diagnostics
+
+Register one callback per `Remedia` instance. Events preserve severity,
+tracing target, stable event name, message, structured fields, timestamp in
+Unix milliseconds, and optional internal playback/voice correlation IDs.
+These IDs are not Discord guild IDs or secret voice session IDs.
+
+```ts
+const listener = (event) => {
+  console.log(event.severity, event.event, event.playbackId, event.fields);
+};
+remedia.on('debug', listener);
+// Later:
+remedia.off('debug', listener);
+remedia.removeAllListeners('debug');
+```
+
+### Delivery and dropped events
+
+Media workers do not call JavaScript directly. A dedicated worker forwards one
+instance's diagnostic receiver through a bounded
+N-API `ThreadsafeFunction`. Cloned receivers are not treated as broadcasts.
+Events may be dropped under backpressure. `remedia.droppedDebugEvents` reports
+drops in both bounded queues. Debug callbacks do not carry operational errors.
+Those are Promise rejections, playback state, and the `error` properties.
+Structured integer fields are strings so `u64` and `i64` values retain full
+precision in JavaScript. Floating-point fields remain numbers.
+
+### Environment settings
+
+Environment variables are read when `Remedia.create()` runs:
+
+| Variable                                         | Default                   | Behavior                                                                                                                       |
+| ------------------------------------------------ | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `REMEDIA_DEBUG=1`                                | disabled                  | Enables debug events for Remedia components.                                                                                   |
+| `REMEDIA_LOG`                                    | `warn`                    | Tracing filter, for example `remedia_core=info,remedia_discord=debug`. Takes precedence over `REMEDIA_DEBUG`.                  |
+| `REMEDIA_LOG_FORMAT`                             | `text`                    | Accepts `text` or `json`. Console output is disabled for this embedded binding so the JS callback is not duplicated to stderr. |
+| `REMEDIA_OTEL_ENABLED`                           | `false`                   | Set to `true` to enable OTLP traces and metrics.                                                                               |
+| `OTEL_SERVICE_NAME`                              | OpenTelemetry SDK default | Service resource name.                                                                                                         |
+| `OTEL_RESOURCE_ATTRIBUTES`                       | OpenTelemetry SDK default | Standard resource attributes.                                                                                                  |
+| `OTEL_EXPORTER_OTLP_*`                           | HTTP/protobuf defaults    | Standard shared and signal-specific endpoint/protocol settings.                                                                |
+| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | parent-based always-on    | Standard trace sampler configuration, validated when export is enabled.                                                        |
+
+OTLP exporters run asynchronously and are opt-in. `close()` flushes and shuts
+down the providers owned by that instance. These bindings do not install or
+replace a process-global tracing subscriber, so they can coexist with host
+application diagnostics. Core and Discord do not depend on Node.js.
+
+For Rust-level observability setup and metric semantics, see the
+[observability guide](/docs/observability/configuration). For the native media
+and transport boundaries, see the [decoding guide](/docs/core/decoding) and
+the [Discord voice guide](/docs/discord/voice-output).

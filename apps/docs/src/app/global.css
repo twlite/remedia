@@ -10,3 +10,8 @@ html > body[data-scroll-locked] {
   margin-right: 0px !important;
   --removed-body-scroll-bar-size: 0px !important;
 }
+
+/* Long API paths should wrap in prose while fenced examples keep horizontal scrolling. */
+.prose :not(pre, td, th) > code {
+  overflow-wrap: anywhere;
+}

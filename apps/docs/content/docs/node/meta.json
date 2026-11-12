@@ -1,4 +1,15 @@
 {
   "title": "Node.js bindings",
-  "pages": ["bindings", "ffmpeg-9", "distribution", "troubleshooting"]
+  "pages": [
+    "ffmpeg-9",
+    "inputs",
+    "voice",
+    "filters",
+    "diagnostics",
+    "troubleshooting",
+    "bindings",
+    "runtime",
+    "building",
+    "distribution"
+  ]
 }

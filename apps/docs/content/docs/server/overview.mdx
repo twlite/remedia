@@ -3,96 +3,37 @@ title: Server overview
 description: Install remedia-server, configure it, start it, and connect to it with @remedia/client.
 ---
 
-`remedia-server` is a standalone audio server. Your bot connects to it with `@remedia/client`; the
-server decodes media and sends audio to Discord, so the bot machine needs no FFmpeg. Use it when you
-want audio off the bot process, or one audio host shared by several bots.
+{/* Preserve section URLs from the previous reference layout. */}
 
-For a hands-on walkthrough, follow the [remote quickstart](/docs/getting-started/remote). This page
-explains the pieces.
+<span id="1-install" />
+<span id="2-create-the-configuration" />
+<span id="3-set-credentials-and-media-access" />
+<span id="4-check-and-start" />
+<span id="5-connect-from-your-bot" />
 
-## 1. Install
+Run `remedia-server` on the machine that should decode and send audio. Bots connect with `@remedia/client` and keep their own Discord Gateway connections. Multiple bots can share server credentials while owning separate sessions.
 
-```sh
-curl -fsSL https://remedia.twlite.dev/install.sh | sh
-```
+Follow the [remote quickstart](/docs/getting-started/remote) to install and connect a bot. Use the pages below to configure and operate that deployment.
 
-Windows PowerShell: `irm https://remedia.twlite.dev/install.ps1 | iex`. The installer puts the
-`remedia` and `remedia-server` commands on your path and installs FFmpeg 9 next to them. No Rust
-toolchain or Node.js is needed. See [Install the server](/docs/server/installation).
+## Deployment tasks
 
-## 2. Create the configuration
-
-```sh
-remedia-server --generate-config-file
-```
-
-This writes `remedia.config.json` with safe defaults: it binds to `127.0.0.1:8787`, reads the
-account password from `REMEDIA_RPC_PASSWORD`, and refuses all media sources until you allow some.
-It will not overwrite an existing file.
-
-## 3. Set credentials and media access
-
-```sh
-export REMEDIA_RPC_PASSWORD='a-long-random-password'
-```
-
-Then edit `remedia.config.json`. The generated account is `media-bot`. Allow the sources your bot
-plays, for example:
-
-```json
-{
-  "media": {
-    "allowedUrlHosts": ["media.example.com"],
-    "allowedFileRoots": ["/srv/music"]
-  }
-}
-```
-
-Secrets can be loaded from `.env` files with `--env-file` and `--optional-env-file`; see
-[Server CLI](/docs/server/cli#load-dotenv-files). Every key is described in
-[Server configuration](/docs/server/configuration).
-
-## 4. Check and start
-
-```sh
-remedia-server doctor      # verifies FFmpeg libraries, your configuration, and plugin hosts
-remedia-server             # same as: remedia-server serve
-```
-
-Add `--config PATH` to use another file, and `--env-file .env` to load secrets from a file.
-While it runs, `remedia-server --list` shows each server, its address, players, and health.
-
-## 5. Connect from your bot
-
-```ts
-import { RemediaClient } from '@remedia/client';
-
-const remedia = await RemediaClient.create({
-  botUserId: discord.user.id,
-  nodes: [
-    {
-      type: 'remote',
-      id: 'media-1',
-      url: 'remedia://127.0.0.1:8787',
-      auth: { username: 'media-bot', password: process.env.REMEDIA_RPC_PASSWORD! },
-    },
-  ],
-  send(guildId, payload) {
-    discord.guilds.cache.get(guildId)?.shard.send(payload);
-  },
-});
-```
-
-Continue with [Using `@remedia/client`](/docs/client/overview). The client keeps each guild on the
-node it was assigned to and reconnects automatically if the connection drops.
+| Task                                          | Guide                                               |
+| --------------------------------------------- | --------------------------------------------------- |
+| Install a release or choose an installer mode | [Installation](/docs/server/installation)           |
+| Pull the published container image            | [Docker](/docs/server/docker)                       |
+| Allow media and configure accounts            | [Configuration](/docs/server/configuration)         |
+| Load credentials from environment files       | [Environment and secrets](/docs/server/environment) |
+| Check a server and inspect local processes    | [Diagnostics](/docs/server/diagnostics)             |
+| Expose the listener through TLS               | [Deployment](/docs/server/deployment)               |
+| Register a plugin service                     | [Manage hosts](/docs/server/cli-plugins)            |
 
 ## Things to know
 
 - **Files and URLs are opened by the server.** A `{ file }` source is a path on the server, inside `media.allowedFileRoots`. Buffers and Readables cannot be sent to a server.
 - **Sessions are in memory.** If the connection drops, the client can resume within `sessionResumptionTimeoutSeconds`. Restarting the server ends all sessions and playback.
-- **Each server is independent.** `@remedia/client` chooses a node for new guilds; servers do not coordinate or migrate players. See [Nodes and routing](/docs/client/nodes).
+- **Each server is independent.** `@remedia/client` chooses a node for new guilds. Servers do not coordinate or migrate players. See [Nodes and routing](/docs/client/nodes).
 - **Security.** The server binds to loopback by default and has no TLS of its own. For remote access, put it behind a TLS reverse proxy and restrict outbound network access. See [Deployment](/docs/server/deployment).
-- **Plugins.** Register plugin hosts with `remedia-server plugins install`; see [Plugins overview](/docs/plugins/overview).
+- **Plugins.** Register plugin hosts with `remedia-server plugins install`. See [Plugins overview](/docs/plugins/overview).
 
 ## Raw protocol
 

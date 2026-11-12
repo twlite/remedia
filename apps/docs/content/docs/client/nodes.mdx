@@ -3,9 +3,7 @@ title: Nodes and routing
 description: Configure a pool of embedded and remote nodes, how guilds are assigned and kept on a node, and explicit migration between nodes.
 ---
 
-A `RemediaClient` holds a pool of **nodes**: an embedded engine in your process, remote
-`remedia-server` processes, or both. Every Discord guild is assigned to one node when its session
-first connects, and stays there.
+A client can route guilds to embedded engines, remote servers, or both. Guild assignments stay on their selected node until disposal or an explicit migration.
 
 ## Configure a node pool
 
@@ -39,22 +37,22 @@ discord.on('raw', (packet) => remedia.receive(packet));
 
 When any remote node is configured, `botUserId` is required and must be the host Discord client's
 positive decimal snowflake. `@remedia/client` sends it as `X-Remedia-Bot-Id` on each WebSocket
-handshake; it is never part of the server's static user configuration. This lets independent bot
+handshake. It is never part of the server's static user configuration. This lets independent bot
 clients use the same server credentials while retaining separate server sessions. For embedded-only
 node pools the option is optional.
 
 The application owns the Discord Gateway connection. Remedia sends OP 4 through `send`, correlates
 the matching `VOICE_STATE_UPDATE` and `VOICE_SERVER_UPDATE`, and connects the selected node's voice
 transport after both fresh events arrive. Snowflakes are decimal strings. `voice.connect()` resolves
-after the selected backend has connected; remote mode waits for server-side voice and DAVE setup.
+after the selected backend has connected. Remote mode waits for server-side voice and DAVE setup.
 Call `remedia.receive(packet)` for each raw Gateway packet and `await remedia.close()` during
 application shutdown.
 
 `remedia://` maps to `ws://`, `remedias://` maps to `wss://`, and a missing path becomes `/v1/ws`.
-Standard `ws://` and `wss://` URLs are also accepted. Configure Basic credentials with `auth`; URL
+Standard `ws://` and `wss://` URLs are also accepted. Configure Basic credentials with `auth`. URL
 userinfo is supported as a convenience, decoded, stripped from the URL, and sent only in the
 WebSocket `Authorization` header. TLS certificate validation remains enabled. Use `remedias://`
-for remote deployment and terminate TLS at a trusted reverse proxy; the server itself does not
+for remote deployment and terminate TLS at a trusted reverse proxy. The server itself does not
 provide TLS.
 
 ## Node selection and guild affinity
@@ -69,7 +67,7 @@ Inspect `remedia.nodes` for client IDs, server IDs, status, health statistics, c
 and the last connection error. `remedia.assignments` and `getAssignment(guildId)` expose the sticky
 guild-to-node mapping. All later playback, filter, volume, and voice operations stay on that node.
 Remote `{ url }` and `{ file }` sources are resolved by the server. `{ buffer }` and `{ stream }`
-sources require an embedded node; pin that guild with `nodeId: 'local'` or Remedia rejects the input
+sources require an embedded node. Pin that guild with `nodeId: 'local'` or Remedia rejects the input
 instead of uploading it or silently moving the guild.
 
 ## Explicit cross-node migration
@@ -98,7 +96,7 @@ settings persist. A `guildMigrated` client event contains `guildId`, `fromNodeId
 
 For an active source, the SDK currently supports HTTP(S) URL playback with an observed
 `position.mediaMs`. The destination opens a new decoder and seeks to the last observed source
-position; it also restores the paused state and local `customMetadata`. This starts a new
+position. It also restores the paused state and local `customMetadata`. This starts a new
 backend playback generation and emits a new `playbackStarted`. There may be audible gaps or
 brief playback from the beginning before the seek completes. Exact sample continuity and
 preservation of a pending `wait()` call are not guaranteed. Active `{ file }`, `{ buffer }`,

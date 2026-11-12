@@ -3,21 +3,19 @@ title: '@remedia/client reference'
 description: Options, members, events, and errors exported by @remedia/client.
 ---
 
-Guides: [Using `@remedia/client`](/docs/client/overview), [Nodes and routing](/docs/client/nodes),
-[Events and hooks](/docs/client/events). Every public export carries JSDoc in the published
-declarations (`dist/index.d.ts`); this page is the overview.
+Use these tables to find client options and session methods. For a working integration, start with [Using @remedia/client](/docs/client/overview). Published declarations include the complete parameter and return types.
 
 ## `RemediaClient`
 
 ```ts
-const client = await RemediaClient.create(options: RemediaClientOptions);
+const client = await RemediaClient.create(options);
 ```
 
 | Option               | Type                                          | Description                                                                            |
 | -------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `nodes`              | `RemediaNodeConfig[]`                         | Required, at least one. Node IDs must be unique.                                       |
 | `send`               | `(guildId, payload) => void \| Promise<void>` | Required. Sends a Discord Gateway payload through the shard responsible for the guild. |
-| `botUserId`          | `string`                                      | Bot user snowflake. Required when any node is remote; sent as `X-Remedia-Bot-Id`.      |
+| `botUserId`          | `string`                                      | Bot user snowflake. Required when any node is remote. Sent as `X-Remedia-Bot-Id`.      |
 | `requestTimeoutMs`   | `number`                                      | Remote RPC timeout. Default 15000.                                                     |
 | `maxPendingRequests` | `number`                                      | Concurrent RPC requests per remote node. Default 128.                                  |
 | `selectNode`         | `NodeSelection`                               | Optional callback choosing among healthy candidates for a new guild.                   |
@@ -26,8 +24,8 @@ const client = await RemediaClient.create(options: RemediaClientOptions);
 | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `createDiscordSession(options)`                      | Register one guild session. Throws if the guild already has one on this client.                           |
 | `receive(packet)`                                    | Forward a raw Gateway packet. Unrelated packets are ignored.                                              |
-| `probe(source, options?)`                            | Inspect media without playing it; see [Media sources and probing](/docs/client/media#standalone-probing). |
-| `plugins.list(options?)`, `plugins.execute(options)` | Discover and run plugin operations; see [Executing plugin operations](/docs/server/plugin-forwarding).    |
+| `probe(source, options?)`                            | Inspect media without playing it. See [Media sources and probing](/docs/client/media#standalone-probing). |
+| `plugins.list(options?)`, `plugins.execute(options)` | Discover and run plugin operations. See [Executing plugin operations](/docs/server/plugin-forwarding).    |
 | `nodes`                                              | Read-only `NodeSnapshot[]`: status, health, capacity, capabilities, assigned guilds.                      |
 | `assignments`, `getAssignment(guildId)`              | Sticky guild-to-node mapping.                                                                             |
 | `close()`                                            | Dispose sessions and close nodes. Rejects with an `AggregateError` if cleanup fails.                      |
@@ -55,16 +53,17 @@ Created with `createDiscordSession(options)`.
 | Member                                                                                                                        | Description                                                                                      |
 | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `connect(options?)`                                                                                                           | Join the channel. `{ signal, timeoutMs }`.                                                       |
-| `play(source, options?)`                                                                                                      | Start a source; resolves with `AudioStreamInfo`. `options`: `customMetadata`, `signal`.          |
+| `play(source, options?)`                                                                                                      | Start a source. Resolves with `AudioStreamInfo`. `options`: `customMetadata`, `signal`.          |
 | `pause()`, `resume()`, `stop()`, `seek(ms)`                                                                                   | Playback controls.                                                                               |
 | `setVolume(gain)`, `filters.set(graph)`, `filters.clear()`                                                                    | Gain and filtergraph.                                                                            |
-| `wait()`, `refresh()`                                                                                                         | Wait for a terminal state; fetch a fresh snapshot.                                               |
-| `move(channelId)`, `setSelfDeaf(flag)`, `setSelfMute(flag)`                                                                   | Voice state; see [Session lifecycle](/docs/client/sessions).                                     |
-| `migrate(nodeId)`                                                                                                             | Move to another node; see [Nodes and routing](/docs/client/nodes#explicit-cross-node-migration). |
+| `getPlaybackTime()`                                                                                                           | Current adapter elapsed-time estimate in milliseconds. See [Positions](/docs/client/positions).  |
+| `wait()`, `refresh()`                                                                                                         | Wait for a terminal state. Fetch a fresh snapshot.                                               |
+| `move(channelId)`, `setSelfDeaf(flag)`, `setSelfMute(flag)`                                                                   | Voice state. See [Session lifecycle](/docs/client/sessions).                                     |
+| `migrate(nodeId)`                                                                                                             | Move to another node. See [Nodes and routing](/docs/client/nodes#explicit-cross-node-migration). |
 | `stageNext(source, options)`, `stagedSource()`, `clearStage()`                                                                | Crossfade staging.                                                                               |
-| `disconnect()`, `dispose()`                                                                                                   | Leave the channel; leave and release.                                                            |
+| `disconnect()`, `dispose()`                                                                                                   | Leave the channel. Leave and release.                                                            |
 | `state`, `position`, `durationMs`, `volume`, `error`, `connectionState`, `nodeId`, `nodeType`, `assignmentStatus`, `snapshot` | Cached observations.                                                                             |
-| `hooks.beforePlay(hook)`                                                                                                      | Ordered middleware before playback; see [Events and hooks](/docs/client/events).                 |
+| `hooks.beforePlay(hook)`                                                                                                      | Ordered middleware before playback. See [Events and hooks](/docs/client/events).                 |
 
 ## Events
 

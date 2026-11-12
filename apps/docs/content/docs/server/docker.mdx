@@ -5,7 +5,7 @@ description: Deploy the published ghcr.io/twlite/remedia image using Docker or D
 
 The published `ghcr.io/twlite/remedia` image includes the standalone server and FFmpeg 9
 shared libraries for Linux AMD64 and ARM64. Docker selects your architecture automatically.
-You only need Docker and a configuration file; no repository checkout or build tools are required.
+You only need Docker and a configuration file. No repository checkout or build tools are required.
 
 ## Choose a tag
 
@@ -60,7 +60,7 @@ docker logs -f remedia
 
 The default command is `remedia serve --config /config/remedia.config.json`.
 The directory mount persists configuration and permits atomic configuration edits by
-[plugin commands](/docs/server/cli#manage-plugin-hosts).
+[plugin commands](/docs/server/cli-plugins#manage-plugin-hosts).
 
 ## Run with Docker Compose
 
@@ -85,7 +85,7 @@ docker compose up -d
 docker compose logs -f remedia
 ```
 
-A bot on the host connects to `remedia://127.0.0.1:8787`; a bot on the same Compose network
+A bot on the host connects to `remedia://127.0.0.1:8787`. A bot on the same Compose network
 connects to `remedia://remedia:8787`, using the configured account. For connections from
 another machine, use a [TLS reverse proxy](/docs/server/deployment#tls-reverse-proxy).
 The server binds all container interfaces, while the host port is restricted to loopback.
@@ -97,7 +97,7 @@ Discord voice needs outbound HTTPS and UDP. No inbound UDP port is required.
 
 To play local files, add `-v /srv/media:/media:ro` to `docker run`, or add
 `- /srv/media:/media:ro` under Compose's `volumes`. Clients use container paths such as
-`/media/song.mp3`; a remote path always refers to the server's filesystem.
+`/media/song.mp3`. A remote path always refers to the server's filesystem.
 
 ```sh
 docker exec remedia remedia --version
@@ -108,7 +108,7 @@ docker exec remedia remedia --list --json
 The image health check queries the local server status. It does not verify external media,
 Discord connectivity or published-port reachability. Logs go to stdout/stderr.
 
-Plugin commands edit the mounted configuration; restart afterward:
+Plugin commands edit the mounted configuration. Restart afterward:
 
 ```sh
 docker compose run --rm remedia plugins list
@@ -126,13 +126,13 @@ docker compose up -d
 
 For `docker run`, pull the desired tag, run `docker stop remedia && docker rm remedia`, and
 repeat the run command with that tag and the same mounts and environment file.
-Configuration persists on the host. Recreating the container ends active playback sessions;
-clients must reconnect and restore state. Update the image instead of running `remedia update`
+Configuration persists on the host. Recreating the container ends active playback sessions.
+Clients must reconnect and restore state. Update the image instead of running `remedia update`
 inside the container.
 
 ## Advanced: build the image yourself
 
-The optional repository Dockerfile packages a published release; it does not compile Rust:
+The optional repository Dockerfile packages a published release. It does not compile Rust:
 
 ```sh
 git clone https://github.com/twlite/remedia.git
@@ -142,5 +142,5 @@ docker build -f docker/Dockerfile --build-arg REMEDIA_VERSION=0.1.0-dev.7 -t rem
 
 Use a fixed published version. For compiling the binaries from source, see
 [installation](/docs/server/installation). The repository's `docker/compose.build.yaml`
-provides an optional local image build override. GitHub API rate limits can affect builds;
-see `docker/README.md` for the supported BuildKit token secret.
+provides an optional local image build override. GitHub API rate limits can affect builds.
+See `docker/README.md` for the supported BuildKit token secret.

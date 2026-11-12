@@ -3,11 +3,160 @@ title: Structured logging and OpenTelemetry
 description: Configure Remedia tracing, bounded diagnostic events, and optional OTLP export.
 ---
 
-Remedia uses Rust's `tracing` ecosystem for structured diagnostics. `remedia-core` and
-`remedia-discord` emit spans and lifecycle events; they do not install a subscriber or enable a
-network exporter. The shared `remedia-observability` crate provides local subscriber construction,
-console formatting, component filters, bounded event routing, and optional OpenTelemetry traces and
-metrics.
+Configure structured Rust diagnostics, console logging, and optional OTLP traces and metrics. Server operators usually need the environment-variable table below. Rust embedders can create an owned observability context. Node.js applications can subscribe to [embedded debug events](/docs/node/diagnostics).
+
+## Environment variables
+
+| Variable                              | Default                 | Behavior                                                                                                                                                                               |
+| ------------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `REMEDIA_DEBUG`                       | unset (`0`)             | `1` enables debug logs for Remedia components.                                                                                                                                         |
+| `REMEDIA_LOG`                         | `warn`                  | Tracing filter directives, such as `remedia_core=debug,remedia_discord=info`. Takes precedence over `REMEDIA_DEBUG`.                                                                   |
+| `REMEDIA_LOG_FORMAT`                  | `text`                  | Selects `text` or one-event-per-line `json` console output.                                                                                                                            |
+| `REMEDIA_OTEL_ENABLED`                | `false`                 | Enables OTLP traces and metrics only when set to `true`.                                                                                                                               |
+| `OTEL_SERVICE_NAME`                   | SDK default             | Sets the OpenTelemetry `service.name` resource attribute.                                                                                                                              |
+| `OTEL_RESOURCE_ATTRIBUTES`            | unset                   | Adds standard comma-separated resource attributes.                                                                                                                                     |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`         | OTLP HTTP default       | Standard endpoint shared by traces and metrics unless a signal-specific endpoint is set.                                                                                               |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`  | inherited               | Overrides the general endpoint for traces.                                                                                                                                             |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | inherited               | Overrides the general endpoint for metrics.                                                                                                                                            |
+| `OTEL_EXPORTER_OTLP_PROTOCOL`         | `http/protobuf`         | Selects the general OTLP protocol.                                                                                                                                                     |
+| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`  | inherited               | Overrides the protocol for traces.                                                                                                                                                     |
+| `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | inherited               | Overrides the protocol for metrics.                                                                                                                                                    |
+| `OTEL_TRACES_SAMPLER`                 | `parentbased_always_on` | Uses the OpenTelemetry SDK sampler. Supported values are `always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, `parentbased_always_off`, and `parentbased_traceidratio`. |
+| `OTEL_TRACES_SAMPLER_ARG`             | SDK default             | Sampling ratio for a ratio sampler. Remedia validates values are between `0.0` and `1.0`.                                                                                              |
+
+Supported OTLP protocols are `grpc`, `http/protobuf`, and `http/json`. The default HTTP/protobuf
+exporter follows the standard OTLP endpoint convention. Signal-specific endpoint and protocol
+variables take precedence over their general counterparts. GRPC exporter creation requires an
+active Tokio runtime. Invalid Remedia filters, booleans, formats, protocols, sampler names, and
+sampler ratios fail initialization with a typed configuration error. Invalid endpoint configuration
+is reported by the exporter builder.
+
+`REMEDIA_LOG` filters console lines and the bounded diagnostic receiver. When OTLP is enabled,
+Remedia lifecycle spans and events at `INFO` or above are exported independently of that filter, so
+the default `warn` console setting does not disable traces.
+
+## Native FFmpeg diagnostics
+
+FFmpeg has a process-wide native logging callback separate from Rust `tracing`. When the core first
+initializes FFmpeg, Remedia installs one centralized callback for the process. Additional sessions
+and `Remedia` instances reuse it. FFmpeg calls made synchronously inside Remedia are routed to the
+current Remedia tracing dispatcher with target `remedia_core::ffmpeg` and event name
+`core.ffmpeg.log`.
+
+Native error, warning, info, debug, and trace levels map to the corresponding
+tracing severities. They use the same `REMEDIA_LOG` filter as the structured Rust events. Debug and
+trace native messages are requested from FFmpeg only when `REMEDIA_DEBUG=1` or a matching
+`REMEDIA_LOG` directive asks for them. Remedia does not change FFmpeg verbosity during playback. The native verbosity choice is read once at the process's first Remedia FFmpeg initialization.
+Changing environment variables afterward does not mutate FFmpeg's global setting.
+
+Repeated identical messages from the same FFmpeg context and severity are rate-limited for ten
+seconds. The next forwarded event reports how many repeats were suppressed. Messages are bounded and
+redacted for URI values and credential-like key/value fields. FFmpeg skip-sample and discard-padding
+messages are diagnostics, not playback errors. The decoder supplies the selected stream's packet
+time base so FFmpeg can adjust timestamps when it removes encoder delay or padding described by
+codec metadata.
+
+FFmpeg exposes no getter for a previously installed logging callback. Remedia installs its callback
+once and forwards calls outside a Remedia-marked operation to FFmpeg's default callback up to the
+verbosity level that was active at installation. This preserves default FFmpeg behavior, but an
+application's custom native FFmpeg callback cannot be discovered or chained. FFmpeg can also emit
+messages from internal native worker threads, where thread-local Remedia attribution is unavailable.
+Those are treated as unmarked. Applications embedding another FFmpeg consumer with a custom callback
+should coordinate native logging ownership before initializing Remedia. The Node binding does not
+install a Rust tracing subscriber, but the native FFmpeg callback itself is process-global.
+
+The embedded Node binding disables console output to avoid duplicating events that the application
+handles through JavaScript. Its `REMEDIA_LOG`, `REMEDIA_DEBUG`, and OTLP settings still control
+filtering and export. `REMEDIA_LOG_FORMAT` is validated but does not change the structured JavaScript
+event object.
+
+Examples:
+
+```sh
+REMEDIA_DEBUG=1 REMEDIA_LOG_FORMAT=json cargo run -p remedia-core --example playback -- file ./audio.wav
+REMEDIA_LOG='remedia_core=trace,remedia_discord=info' cargo run -p remedia-discord --example play_file
+REMEDIA_OTEL_ENABLED=true \
+OTEL_SERVICE_NAME=remedia-core \
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
+OTEL_TRACES_SAMPLER=parentbased_traceidratio \
+OTEL_TRACES_SAMPLER_ARG=0.25 \
+cargo run -p remedia-core --example playback -- file ./audio.wav
+```
+
+## Events, spans, and metrics
+
+Events carry a stable callsite name, target, severity, human-readable message, and structured
+fields. The bounded event route inherits correlation IDs from the active Remedia span when the
+event does not set one directly. Playback operations use the internal `playback_id`. Discord
+operations use `voice_connection_id`. These process-unique numeric IDs correlate Remedia work and
+are unrelated to Discord's secret voice session ID. Decoder events identify only the source kind
+(`file`, `http`, `http_sequential`, `buffer` or `byte_stream`), not its path or URL.
+
+The Rust `DiagnosticEvent` carries this structured shape (shown here as JSON-like data):
+
+```json
+{
+  "timestamp": "2026-11-02T10:00:00Z",
+  "severity": "Info",
+  "target": "remedia_core::playback",
+  "event": "core.playback.started",
+  "message": "playback started",
+  "playback_id": 42,
+  "voice_connection_id": null,
+  "fields": { "codec": "flac", "duration_known": true }
+}
+```
+
+### Spans and packet diagnostics
+
+Lifecycle spans cover media opening, playback worker lifetime, voice connection establishment,
+DAVE initialization, and disconnection. Packet-level RTP and Opus details use `trace` and include
+only duration, byte count, scheduling delay, and drop reason. Remedia does not emit debug events for
+every media or network packet.
+
+`remedia-server` additionally emits `server.plugin_host.discovered`, `server.plugin_host.discovery_failed`,
+`server.plugin_host.operation_completed` and `server.plugin_host.operation_failed` (target
+`remedia_server::plugin_host`). They carry the configured host ID, plugin ID, operation name, attempt
+number, duration and a low-cardinality error label. They never contain endpoint or media URLs, tokens or
+operation input. Per-host health and counters are also in `node.stats`. See
+[Playing audio through plugins](/docs/server/plugin-operations#diagnostics).
+
+### Metric instruments
+
+OTLP metrics use low-cardinality attributes only. They do not include guild IDs, playback IDs,
+voice connection IDs, source paths, or URLs. The current instruments include:
+
+- Active playback sessions and voice connections (up/down counters).
+- Playback starts, natural completions, and failures.
+- Voice connection and reconnect attempts.
+- RTP packets sent and dropped, plus packet underruns.
+- Decoder startup and voice connection establishment durations.
+- RTP scheduling delay.
+
+### Flush and shut down exporters
+
+Providers use the OpenTelemetry SDK's asynchronous trace batch processor and periodic metric reader.
+Console output has a bounded 1,024-line queue and uses lossy non-blocking writes. Inspect
+`dropped_console_lines()` when diagnosing log pressure. Structured event delivery is bounded too.
+Call `force_flush()` and `shutdown()` from normal application shutdown code so pending telemetry is
+exported and owned provider threads are released. These methods may block and do not belong in an
+audio callback or frame consumer.
+
+## Security and embedding
+
+Remedia does not log Discord tokens, voice session IDs, encryption keys, MLS material, authenticated
+URLs, PCM sample values, or Opus payload bytes. Structured event routing redacts sensitive field
+names and URL values as a defense in depth. Applications should follow the same rule when adding
+their own tracing fields. Never place credentials in an event message.
+
+In a native application, use a local `ObservabilityHandle` to share one metrics provider and bounded
+diagnostic receiver across sessions. The Node binding owns one such context per `Remedia` instance.
+It does not install or replace a process-global tracing subscriber. Its JavaScript callback runs
+through a bounded `ThreadsafeFunction`, never directly on a media worker. The standalone server initializes the same context in its native runtime.
+
+OTLP log export is unavailable. Console logs and the bounded structured Rust event
+route remain available. Node diagnostic events preserve structured fields; 64-bit integer field
+values are delivered as decimal strings to avoid JavaScript precision loss.
 
 ## Initialize an application context
 
@@ -35,11 +184,11 @@ observability.shutdown()?;
 ```
 
 `Observability::from_env()` creates a local dispatcher. It does not affect code using the process
-default subscriber unless that code runs through a Remedia component given the returned handle.
-Direct `AudioDecoder` use follows the application's current tracing subscriber. An application may
-explicitly call `try_install_global()` if it owns global subscriber initialization; the call fails
-with `GlobalSubscriberError` when another subscriber is already installed and never replaces it.
-Global installation cannot be undone because `tracing` has no subscriber-uninstall operation. Keep
+default subscriber unless that code runs through a Remedia component given the returned handle. Direct `AudioDecoder` use follows the application's current tracing subscriber. An application may
+explicitly call `try_install_global()` if it owns global subscriber initialization.
+
+The call fails
+with `GlobalSubscriberError` when another subscriber is already installed and never replaces it. Global installation cannot be undone because `tracing` has no subscriber-uninstall operation. Keep
 the `Observability` owner alive while the installed subscriber is in use, then flush and shut it
 down during application shutdown. When the host already owns tracing, it can keep that subscriber
 and pass a local Remedia handle to playback and voice connections instead.
@@ -49,151 +198,3 @@ events. The queue holds at most 256 events and uses non-blocking sends; `dropped
 overflow. The Node binding creates one receiver per `Remedia` instance and forwards events from a
 dedicated worker through a bounded N-API callback queue. `remedia.on('debug', listener)` receives
 structured events, and `remedia.droppedDebugEvents` counts drops in both bounded queues.
-
-## Environment variables
-
-| Variable                              | Default                 | Behavior                                                                                                                                                                               |
-| ------------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `REMEDIA_DEBUG`                       | unset (`0`)             | `1` enables debug logs for Remedia components.                                                                                                                                         |
-| `REMEDIA_LOG`                         | `warn`                  | Tracing filter directives, such as `remedia_core=debug,remedia_discord=info`. Takes precedence over `REMEDIA_DEBUG`.                                                                   |
-| `REMEDIA_LOG_FORMAT`                  | `text`                  | Selects `text` or one-event-per-line `json` console output.                                                                                                                            |
-| `REMEDIA_OTEL_ENABLED`                | `false`                 | Enables OTLP traces and metrics only when set to `true`.                                                                                                                               |
-| `OTEL_SERVICE_NAME`                   | SDK default             | Sets the OpenTelemetry `service.name` resource attribute.                                                                                                                              |
-| `OTEL_RESOURCE_ATTRIBUTES`            | unset                   | Adds standard comma-separated resource attributes.                                                                                                                                     |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`         | OTLP HTTP default       | Standard endpoint shared by traces and metrics unless a signal-specific endpoint is set.                                                                                               |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`  | inherited               | Overrides the general endpoint for traces.                                                                                                                                             |
-| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | inherited               | Overrides the general endpoint for metrics.                                                                                                                                            |
-| `OTEL_EXPORTER_OTLP_PROTOCOL`         | `http/protobuf`         | Selects the general OTLP protocol.                                                                                                                                                     |
-| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`  | inherited               | Overrides the protocol for traces.                                                                                                                                                     |
-| `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | inherited               | Overrides the protocol for metrics.                                                                                                                                                    |
-| `OTEL_TRACES_SAMPLER`                 | `parentbased_always_on` | Uses the OpenTelemetry SDK sampler. Supported values are `always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, `parentbased_always_off`, and `parentbased_traceidratio`. |
-| `OTEL_TRACES_SAMPLER_ARG`             | SDK default             | Sampling ratio for a ratio sampler; Remedia validates values are between `0.0` and `1.0`.                                                                                              |
-
-Supported OTLP protocols are `grpc`, `http/protobuf`, and `http/json`. The default HTTP/protobuf
-exporter follows the standard OTLP endpoint convention. Signal-specific endpoint and protocol
-variables take precedence over their general counterparts. gRPC exporter creation requires an
-active Tokio runtime. Invalid Remedia filters, booleans, formats, protocols, sampler names, and
-sampler ratios fail initialization with a typed configuration error. Invalid endpoint configuration
-is reported by the exporter builder.
-
-`REMEDIA_LOG` filters console lines and the bounded diagnostic receiver. When OTLP is enabled,
-Remedia lifecycle spans and events at `INFO` or above are exported independently of that filter, so
-the default `warn` console setting does not disable traces.
-
-## Native FFmpeg diagnostics
-
-FFmpeg has a process-wide native logging callback separate from Rust `tracing`. When the core first
-initializes FFmpeg, Remedia installs one centralized callback for the process; additional sessions
-and `Remedia` instances reuse it. FFmpeg calls made synchronously inside Remedia are routed to the
-current Remedia tracing dispatcher with target `remedia_core::ffmpeg` and event name
-`core.ffmpeg.log`. Native error, warning, info, debug, and trace levels map to the corresponding
-tracing severities. They use the same `REMEDIA_LOG` filter as the structured Rust events. Debug and
-trace native messages are requested from FFmpeg only when `REMEDIA_DEBUG=1` or a matching
-`REMEDIA_LOG` directive asks for them. Remedia does not change FFmpeg verbosity during playback.
-The native verbosity choice is read once at the process's first Remedia FFmpeg initialization;
-changing environment variables afterward does not mutate FFmpeg's global setting.
-
-Repeated identical messages from the same FFmpeg context and severity are rate-limited for ten
-seconds; the next forwarded event reports how many repeats were suppressed. Messages are bounded and
-redacted for URI values and credential-like key/value fields. FFmpeg skip-sample and discard-padding
-messages are diagnostics, not playback errors. The decoder supplies the selected stream's packet
-time base so FFmpeg can adjust timestamps when it removes encoder delay or padding described by
-codec metadata.
-
-FFmpeg exposes no getter for a previously installed logging callback. Remedia installs its callback
-once and forwards calls outside a Remedia-marked operation to FFmpeg's default callback up to the
-verbosity level that was active at installation. This preserves default FFmpeg behavior, but an
-application's custom native FFmpeg callback cannot be discovered or chained. FFmpeg can also emit
-messages from internal native worker threads, where thread-local Remedia attribution is unavailable;
-those are treated as unmarked. Applications embedding another FFmpeg consumer with a custom callback
-should coordinate native logging ownership before initializing Remedia. The Node binding does not
-install a Rust tracing subscriber, but the native FFmpeg callback itself is process-global.
-
-The embedded Node binding disables console output to avoid duplicating events that the application
-handles through JavaScript. Its `REMEDIA_LOG`, `REMEDIA_DEBUG`, and OTLP settings still control
-filtering and export. `REMEDIA_LOG_FORMAT` is validated but does not change the structured JavaScript
-event object.
-
-Examples:
-
-```sh
-REMEDIA_DEBUG=1 REMEDIA_LOG_FORMAT=json cargo run -p remedia-core --example playback -- file ./audio.wav
-REMEDIA_LOG='remedia_core=trace,remedia_discord=info' cargo run -p remedia-discord --example play_file
-REMEDIA_OTEL_ENABLED=true \
-OTEL_SERVICE_NAME=remedia-core \
-OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
-OTEL_TRACES_SAMPLER=parentbased_traceidratio \
-OTEL_TRACES_SAMPLER_ARG=0.25 \
-cargo run -p remedia-core --example playback -- file ./audio.wav
-```
-
-## Events, spans, and metrics
-
-Events carry a stable callsite name, target, severity, human-readable message, and structured
-fields. The bounded event route inherits correlation IDs from the active Remedia span when the
-event does not set one directly. Playback operations use the internal `playback_id`; Discord
-operations use `voice_connection_id`. These process-unique numeric IDs correlate Remedia work and
-are unrelated to Discord's secret voice session ID. Decoder events identify only the source kind
-(`file`, `http`, `http_sequential`, `buffer` or `byte_stream`), not its path or URL.
-
-The Rust `DiagnosticEvent` carries this structured shape (shown here as JSON-like data):
-
-```json
-{
-  "timestamp": "2026-11-02T10:00:00Z",
-  "severity": "Info",
-  "target": "remedia_core::playback",
-  "event": "core.playback.started",
-  "message": "playback started",
-  "playback_id": 42,
-  "voice_connection_id": null,
-  "fields": { "codec": "flac", "duration_known": true }
-}
-```
-
-Lifecycle spans cover media opening, playback worker lifetime, voice connection establishment,
-DAVE initialization, and disconnection. Packet-level RTP and Opus details use `trace` and include
-only duration, byte count, scheduling delay, and drop reason. Remedia does not emit debug events for
-every media or network packet.
-
-`remedia-server` additionally emits `server.plugin_host.discovered`, `server.plugin_host.discovery_failed`,
-`server.plugin_host.operation_completed` and `server.plugin_host.operation_failed` (target
-`remedia_server::plugin_host`). They carry the configured host ID, plugin ID, operation name, attempt
-number, duration and a low-cardinality error label. They never contain endpoint or media URLs, tokens or
-operation input. Per-host health and counters are also in `node.stats`; see
-[Playing audio through plugins](/docs/server/plugin-operations#diagnostics).
-
-OTLP metrics use low-cardinality attributes only; they do not include guild IDs, playback IDs,
-voice connection IDs, source paths, or URLs. The current instruments include:
-
-- Active playback sessions and voice connections (up/down counters).
-- Playback starts, natural completions, and failures.
-- Voice connection and reconnect attempts.
-- RTP packets sent and dropped, plus packet underruns.
-- Decoder startup and voice connection establishment durations.
-- RTP scheduling delay.
-
-Providers use the OpenTelemetry SDK's asynchronous trace batch processor and periodic metric reader.
-Console output has a bounded 1,024-line queue and uses lossy non-blocking writes; inspect
-`dropped_console_lines()` when diagnosing log pressure. Structured event delivery is bounded too.
-Call `force_flush()` and `shutdown()` from normal application shutdown code so pending telemetry is
-exported and owned provider threads are released. These methods may block and do not belong in an
-audio callback or frame consumer.
-
-## Security and embedding
-
-Remedia does not log Discord tokens, voice session IDs, encryption keys, MLS material, authenticated
-URLs, PCM sample values, or Opus payload bytes. Structured event routing redacts sensitive field
-names and URL values as a defense in depth. Applications should follow the same rule when adding
-their own tracing fields; never place credentials in an event message.
-
-In a native application, use a local `ObservabilityHandle` to share one metrics provider and bounded
-diagnostic receiver across sessions. The Node binding owns one such context per `Remedia` instance;
-it does not install or replace a process-global tracing subscriber. Its JavaScript callback runs
-through a bounded `ThreadsafeFunction`, never directly on a media worker. A standalone server can
-initialize the same context when its runtime is implemented.
-
-OTLP log export is not enabled in this milestone. Console logs and the bounded structured Rust event
-route remain available. Node diagnostic events preserve structured fields; 64-bit integer field
-values are delivered as decimal strings to avoid JavaScript precision loss. The server is still a
-placeholder.

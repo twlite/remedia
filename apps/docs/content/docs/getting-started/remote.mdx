@@ -50,7 +50,7 @@ The server prints `remedia-server listening on 127.0.0.1:8787`. In another termi
 ## 4. Connect your bot
 
 ```sh
-npm install @remedia/client
+npm install @remedia/client discord.js
 ```
 
 ```ts
@@ -85,21 +85,27 @@ discord.once(Events.ClientReady, async (ready) => {
     userId: ready.user.id,
   });
 
-  await voice.connect();
-  await voice.play({ url: 'https://media.example.com/audio.mp3' });
-  await voice.wait();
-  await remedia.close();
+  try {
+    await voice.connect();
+    await voice.play({ url: 'https://media.example.com/audio.mp3' });
+    await voice.wait();
+  } finally {
+    await remedia.close();
+    discord.destroy();
+  }
 });
 
 await discord.login(process.env.DISCORD_TOKEN);
 ```
+
+Export `DISCORD_TOKEN` and `REMEDIA_RPC_PASSWORD` in the bot process before running the example. The example logs in, plays one source, and closes both clients.
 
 `media-bot` is the username from the generated configuration. URLs and files are opened **by the
 server**, so a `{ file }` source is a path on the server machine and the URL host must be allowed in
 the server configuration. Buffers and Readables need an embedded node.
 
 Use `remedias://` instead of `remedia://` for a TLS-protected server behind a reverse proxy. Do not
-expose the plain listener to the public internet; see [Deployment](/docs/server/deployment).
+expose the plain listener to the public internet. See [Deployment](/docs/server/deployment).
 
 ## Next steps
 

@@ -1,12 +1,26 @@
 ---
-title: Crossfading
-description: Overlap the end of one track with the start of the next using staged playback.
+title: 'Crossfading'
+description: Prepare the next source, handle promotion, and keep queue decisions generation-safe.
 ---
 
-Check `client.nodes` capability snapshots before selecting a remote node for
-crossfade. A remote node must advertise `capabilities.crossfade.available`; server
-policy and explicit session opt-in are both required. Embedded sessions use their
-own configuration without a server config file.
+Enable crossfade when a session is created, then stage the next source in response to `prepareRequested`. The engine owns transition timing. Your application owns the queue and resolves fresh media sources.
+
+## Enable a session
+
+Remote nodes must advertise `capabilities.crossfade.available`. The operator must enable [server crossfade policy](/docs/server/configuration#crossfade-capability), and the session must opt in. Embedded sessions take the creation options directly.
+
+| Setting           | Default      | Range                                |
+| ----------------- | ------------ | ------------------------------------ |
+| `enabled`         | `false`      | Explicit opt-in                      |
+| `durationMs`      | `5000`       | 1000–30000 ms                        |
+| `prepareBeforeMs` | `30000`      | 5000–120000 ms before overlap begins |
+| `curve`           | `equalPower` | Only supported curve                 |
+
+With defaults, preparation is requested about 35 seconds before a known-duration source ends. Unknown-duration sources do not get an end-based preparation request.
+
+## Stage the next queue entry
+
+The example assumes an initialized client and an already selected node that supports crossfade:
 
 ```ts
 const session = client.createDiscordSession({
@@ -15,27 +29,54 @@ const session = client.createDiscordSession({
   userId,
   crossfade: { enabled: true, durationMs: 5000, prepareBeforeMs: 30000, curve: 'equalPower' },
 });
-session.on('prepareRequested', async ({ generation }) => {
-  await session.stageNext(
-    { url: 'https://media.example.com/fresh-next.wav' },
-    {
-      expectedGeneration: generation,
-      entryId: 'entry-2',
-      queueRevision: 1,
-      sourceRevision: 0,
-    },
-  );
+
+session.on('prepareRequested', ({ generation }) => {
+  void session
+    .stageNext(
+      { url: 'https://media.example.com/next.wav' },
+      {
+        expectedGeneration: generation,
+        entryId: 'queue-entry-2',
+        queueRevision: 1,
+        sourceRevision: 0,
+      },
+    )
+    .catch((error) => console.error('Could not stage the next entry', error));
 });
-await session.connect();
-await session.play({ url: 'https://media.example.com/current.wav' });
+
+session.on('playbackCompleted', (event) => {
+  if (event.continuation?.type === 'promoted') {
+    console.log('Already playing entry', event.continuation.entryId);
+    return;
+  }
+  console.log('Source completed without promotion', event.generation);
+});
+
+try {
+  await session.connect();
+  await session.play({ url: 'https://media.example.com/current.wav' });
+  // Keep the session until the application has finished the complete queue.
+} catch (error) {
+  await session.dispose();
+  throw error;
+}
+// The application calls await session.dispose() when leaving the channel.
 ```
 
-Applications supply fresh, authorized URLs and queue identities. Remote stages
-accept server-accessible files and HTTP(S) URLs; embedded stages also accept buffers
-and Readables. `stageNext()` returns a preparation snapshot, `stagedSource()` reads
-it, and `clearStage()` cancels it. Optional `expiresAtMs` prevents promotion of an
-expired source. Local custom metadata is never sent to the server.
+Resolve expiring URLs inside the preparation callback in a real queue. Remote stages accept server-accessible files, URLs, and configured plugin operations. Embedded stages also accept buffers and binary Readables. See [source support](/docs/client/media).
 
-Use completion `continuation` metadata to reconcile automatic promotion without
-replaying the source. Reconnection uses retained events and guild snapshots;
-queue ownership remains with the application. See [playback lifecycle](/docs/core/playback#crossfade-playback).
+## Revisions and expiry
+
+`entryId` identifies one queued occurrence, including repeats. Increase `queueRevision` when the queue decision changes. Increase `sourceRevision` when refreshing the resolved source for the same entry. `expectedGeneration` fences delayed preparation against the active source. Repeating an identical stage is idempotent.
+
+Optional `expiresAtMs` is an absolute Unix time in milliseconds. It prevents promotion of an expired ordinary source. Operation-source media is redeemed immediately, so its stage ignores this field. Attach `customMetadata` to the incoming source through the stage options. It stays local to JavaScript.
+
+## Observe promotion and fallback
+
+`stageNext()` returns a preparation snapshot. Read the current snapshot with `stagedSource()` and cancel it with `clearStage()`. Direct `@remedia/node` uses the `stagedSource` getter instead.
+
+Incoming `playbackStarted.transition` marks overlap start. After the fade, outgoing `playbackCompleted.continuation` identifies the source already promoted. Reconcile your queue from that identity and do not call `play()` for it again.
+
+An absent, late, failed, or expired stage does not stall the outgoing source. An overlap underflow cancels the transition and restores the outgoing source. The application can then use its ordinary completion path. Pause freezes progress and retains preparation. Seek invalidates the stage and advances the crossfade source generation. Stop cancels preparation and overlap.
+
+Reconnect reconciles authoritative guild snapshots. It does not replay detached events. See [event reconciliation](/docs/client/events#cached-state-and-waiting), [Rust lifecycle](/docs/core/crossfade), and [staging RPC](/docs/server/rpc-playback#staged-playback-rpc).
