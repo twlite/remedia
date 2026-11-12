@@ -13,7 +13,7 @@
     "test:ci": "node --test .github/scripts/ci-changes.test.mjs",
     "docs:api": "node scripts/docs/generate.ts",
     "docs:typecheck": "tsc -p scripts/docs/tsconfig.json",
-    "docs:test": "node --test scripts/docs/tests/*.test.ts",
+    "docs:test": "node --test --test-concurrency=1 scripts/docs/tests/*.test.ts",
     "docs:verify-export": "node scripts/docs/verify-export.ts"
   },
   "devDependencies": {

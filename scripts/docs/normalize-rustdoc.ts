@@ -596,7 +596,10 @@ class RustdocNormalizer {
         );
 
         node.type = this.#type(data.type);
-        node.value = data.const.value ?? data.const.expr;
+        // The expression as written (`1`), not the evaluated value with its suffix (`1u16`), as rustdoc displays it.
+        const written = data.const.expr || data.const.value;
+
+        if (written) node.value = written;
         break;
       }
       case 'static': {

@@ -88,6 +88,11 @@ export async function ensureRustdocToolchain(): Promise<void> {
   });
 
   if (install.code !== 0) {
+    // Parallel callers (for example concurrent test files) can race on the installation; accept it if another won.
+    const retry = await run('rustc', [`+${RUSTDOC_TOOLCHAIN}`, '--version']).catch(() => undefined);
+
+    if (retry?.code === 0) return;
+
     throw new RustdocFormatError(`Could not install ${RUSTDOC_TOOLCHAIN}:\n${install.stderr}`);
   }
 }
