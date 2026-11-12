@@ -61,6 +61,16 @@ export type RemediaEvents = (typeof RemediaEvents)[keyof typeof RemediaEvents];
  * @typeParam Metadata - Application-owned metadata attached to playback generations.
  */
 
+/**
+ * How the outgoing and incoming sources are weighted during a crossfade.
+ *
+ * - `equalPower` applies fixed equal-power gains. It is the default.
+ * - `adaptive` starts from the same gains and adds a bounded, smoothed gain that
+ *   follows the loudness difference between the two tracks. It only ever
+ *   attenuates (by at most 6 dB) and never boosts.
+ */
+export type CrossfadeCurve = 'equalPower' | 'adaptive';
+
 /** Session opt-in for continuous PCM crossfade playback. */
 export interface CrossfadeOptions {
   /** Explicit enablement; omitted sessions retain ordinary playback. */
@@ -69,8 +79,8 @@ export interface CrossfadeOptions {
   durationMs?: number;
   /** Lead before overlap in milliseconds, 5000–120000; defaults to 30000. */
   prepareBeforeMs?: number;
-  /** Equal-power curve; the only supported curve. */
-  curve?: 'equalPower';
+  /** Mixing curve; defaults to `equalPower`. */
+  curve?: CrossfadeCurve;
 }
 
 /** Identify a particular queued occurrence. Revisions prevent stale stage

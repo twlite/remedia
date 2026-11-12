@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use tokio::time::MissedTickBehavior;
 use tracing::instrument::WithSubscriber;
 
-use crate::config::MediaAccessError;
+use crate::config::{CrossfadeCurve, MediaAccessError, engine_curve};
 use crate::plugin_host::{MediaGuard, OperationRef, PluginError, PluginErrorKind};
 use crate::protocol::{RpcError, RpcRequest};
 use crate::state::{
@@ -48,7 +48,11 @@ pub(crate) async fn execute(
                         "available": server.config.crossfade.enabled,
                         "durationMs": server.config.crossfade.duration_ms,
                         "prepareBeforeMs": server.config.crossfade.prepare_before_ms,
-                        "curve": "equalPower",
+                        "curve": server.config.crossfade.curve.as_str(),
+                        "curves": [
+                            CrossfadeCurve::EqualPower.as_str(),
+                            CrossfadeCurve::Adaptive.as_str(),
+                        ],
                     }
                 }
             }))
@@ -150,16 +154,15 @@ pub(crate) async fn execute(
                             "crossfade is disabled by the server configuration",
                         ));
                     }
-                    if crossfade
-                        .curve
-                        .as_deref()
-                        .is_some_and(|curve| curve != "equalPower")
-                    {
-                        return Err(RpcError::new(
-                            "invalid_request",
-                            "unsupported crossfade curve",
-                        ));
-                    }
+                    let curve = match crossfade.curve.as_deref() {
+                        None => server.config.crossfade.curve,
+                        Some(name) => CrossfadeCurve::from_name(name).ok_or_else(|| {
+                            RpcError::new(
+                                "invalid_request",
+                                "unsupported crossfade curve; use equalPower or adaptive",
+                            )
+                        })?,
+                    };
                     let config = remedia_core::CrossfadeConfig::new(
                         crossfade
                             .duration_ms
@@ -173,7 +176,8 @@ pub(crate) async fn execute(
                             "invalid_request",
                             "invalid crossfade duration or preparation lead",
                         )
-                    })?;
+                    })?
+                    .with_curve(engine_curve(curve));
                     // The session is constructed below; install this configuration
                     // before playback is permitted to start.
                     let session = require_client(&connection)?;

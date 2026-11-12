@@ -53,7 +53,7 @@ pub(crate) fn playback_snapshot(playback: &PlaybackSession, generation: u64) -> 
             "enabled": true,
             "durationMs": config.duration_ms,
             "prepareBeforeMs": config.prepare_before_ms,
-            "curve": "equalPower",
+            "curve": config.curve.as_str(),
         })
     });
     serde_json::json!({

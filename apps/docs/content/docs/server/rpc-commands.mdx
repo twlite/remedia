@@ -10,12 +10,12 @@ a guild require an existing guild session owned by the active client session.
 
 ### Inspect a node
 
-| Command                 | Parameters | Result / behavior                                                                                                                      |
-| ----------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `node.info`             | `{}`       | `nodeId`, server version, protocol version, and `capabilities` (`crossfade`, `pluginOperations: { available, hosts, forwarding? }`)    |
-| `node.protocol_version` | `{}`       | Protocol version                                                                                                                       |
-| `node.health`           | `{}`       | `ok` or `shutting_down`                                                                                                                |
-| `node.stats`            | `{}`       | Uptime, connections, players, capacity, CPU/memory where available, health, and `pluginHosts` (per-host state, resources and counters) |
+| Command                 | Parameters | Result / behavior                                                                                                                                                                                          |
+| ----------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node.info`             | `{}`       | `nodeId`, server version, protocol version, and `capabilities` (`crossfade: { configured, available, durationMs, prepareBeforeMs, curve, curves }`, `pluginOperations: { available, hosts, forwarding? }`) |
+| `node.protocol_version` | `{}`       | Protocol version                                                                                                                                                                                           |
+| `node.health`           | `{}`       | `ok` or `shutting_down`                                                                                                                                                                                    |
+| `node.stats`            | `{}`       | Uptime, connections, players, capacity, CPU/memory where available, health, and `pluginHosts` (per-host state, resources and counters)                                                                     |
 
 ### Own client and guild sessions
 

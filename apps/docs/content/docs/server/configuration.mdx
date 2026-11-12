@@ -42,6 +42,9 @@ default**. Set `enabled: true` to permit individual guild sessions to opt in.
 }
 ```
 
+`audio.crossfade.curve` is the default curve for sessions that do not choose one: `equalPower` (the default) or
+`adaptive`. Sessions can override it per guild. See [Crossfade curves](/docs/core/crossfade#crossfade-curves).
+
 `node.info.capabilities.crossfade` reports `configured` separately from
 `available`. Clients must check **`available: true`** before opting in. Until
 crossfade is enabled in server policy, the server reports `available: false`.

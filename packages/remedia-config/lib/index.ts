@@ -364,9 +364,11 @@ export const RemediaConfigSchema = z
               'Preparation lead before overlap begins, in milliseconds.',
             ),
             curve: z
-              .literal('equalPower')
+              .enum(['equalPower', 'adaptive'])
               .default('equalPower')
-              .describe('Sample-accurate equal-power overlap curve.'),
+              .describe(
+                'Default overlap curve. equalPower applies fixed equal-power gains; adaptive adds a bounded, smoothed loudness-matching gain that only attenuates. Sessions may choose their own.',
+              ),
           })
           .prefault({})
           .describe('Server crossfade permission and defaults.'),

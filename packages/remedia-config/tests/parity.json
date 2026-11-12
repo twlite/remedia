@@ -669,6 +669,40 @@
     "valid": false
   },
   {
+    "name": "valid fade {'curve': 'equalPower'}",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "audio": {
+        "crossfade": {
+          "curve": "equalPower"
+        }
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "valid fade {'curve': 'adaptive'}",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "audio": {
+        "crossfade": {
+          "curve": "adaptive"
+        }
+      }
+    },
+    "valid": true
+  },
+  {
     "name": "invalid fade {'curve': 'linear'}",
     "config": {
       "users": [
@@ -680,6 +714,23 @@
       "audio": {
         "crossfade": {
           "curve": "linear"
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid fade {'curve': 'Adaptive'}",
+    "config": {
+      "users": [
+        {
+          "username": "bot",
+          "password": "secret"
+        }
+      ],
+      "audio": {
+        "crossfade": {
+          "curve": "Adaptive"
         }
       }
     },

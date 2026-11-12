@@ -100,15 +100,15 @@ Read [playback positions](/docs/client/positions) before using `position` or `du
 
 ## Session API
 
-| Member                                                     | Contract                                                                              |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `play(source, options?)`                                   | Start encoded media. Options include local `customMetadata` and `signal`.             |
-| `pause()`, `resume()`, `stop()`, `seek(ms)`, `wait()`      | Control or observe one source generation.                                             |
-| `filters.set(graph)`, `filters.clear()`, `setVolume(gain)` | Change trusted processing and gain.                                                   |
-| `configureCrossfade(options)`                              | Configure an idle standalone playback session. Discord sessions use creation options. |
-| `stageNext(source, options)`, `clearStage()`               | Prepare or cancel the next source.                                                    |
-| `stagedSource`                                             | Staging snapshot getter. The client SDK instead exposes `stagedSource()`.             |
-| `dispose()`                                                | Release the session.                                                                  |
+| Member                                                     | Contract                                                                                                                               |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `play(source, options?)`                                   | Start encoded media. Options include local `customMetadata` and `signal`.                                                              |
+| `pause()`, `resume()`, `stop()`, `seek(ms)`, `wait()`      | Control or observe one source generation.                                                                                              |
+| `filters.set(graph)`, `filters.clear()`, `setVolume(gain)` | Change trusted processing and gain.                                                                                                    |
+| `configureCrossfade(options)`                              | Configure an idle standalone playback session. `curve` is `equalPower` (default) or `adaptive`. Discord sessions use creation options. |
+| `stageNext(source, options)`, `clearStage()`               | Prepare or cancel the next source.                                                                                                     |
+| `stagedSource`                                             | Staging snapshot getter. The client SDK instead exposes `stagedSource()`.                                                              |
+| `dispose()`                                                | Release the session.                                                                                                                   |
 
 Discord sessions also expose `connect()`, `disconnect()`, `move()`, `setSelfDeaf()`, and `setSelfMute()`. Direct Node sessions have no node pool or cross-node `migrate()` API.
 

@@ -22,6 +22,11 @@ fn defaults_bind_to_loopback_and_load_limits() {
     assert!(!config.crossfade.enabled);
     assert_eq!(config.crossfade.duration_ms, 5_000);
     assert_eq!(config.crossfade.prepare_before_ms, 30_000);
+    assert_eq!(
+        config.crossfade.curve,
+        super::CrossfadeCurve::EqualPower,
+        "equalPower remains the default curve"
+    );
 }
 
 #[test]
@@ -193,6 +198,18 @@ fn crossfade_configuration_requires_explicit_opt_in_and_valid_bounds() {
     assert!(config.crossfade.enabled);
     assert_eq!(config.crossfade.duration_ms, 8_000);
     assert_eq!(config.crossfade.prepare_before_ms, 45_000);
+    assert_eq!(config.crossfade.curve, super::CrossfadeCurve::EqualPower);
+
+    for curve in ["equalPower", "adaptive"] {
+        let json = JSON.replace(
+            "\"users\":",
+            &format!("\"audio\":{{\"crossfade\":{{\"curve\":\"{curve}\"}}}},\"users\":"),
+        );
+        let config = ServerConfig::parse_with(&json, Path::new("."), |_| Some("secret".into()))
+            .expect("supported curve");
+
+        assert_eq!(config.crossfade.curve.as_str(), curve);
+    }
 
     for crossfade in [
         r#"{"durationMs":0}"#,
@@ -200,6 +217,7 @@ fn crossfade_configuration_requires_explicit_opt_in_and_valid_bounds() {
         r#"{"prepareBeforeMs":100}"#,
         r#"{"prepareBeforeMs":120001}"#,
         r#"{"curve":"linear"}"#,
+        r#"{"curve":"Adaptive"}"#,
         r#"{"unknown":true}"#,
     ] {
         let json = JSON.replace(

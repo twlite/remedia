@@ -9,14 +9,44 @@ Enable crossfade when a session is created, then stage the next source in respon
 
 Remote nodes must advertise `capabilities.crossfade.available`. The operator must enable [server crossfade policy](/docs/server/configuration#crossfade-capability), and the session must opt in. Embedded sessions take the creation options directly.
 
-| Setting           | Default      | Range                                |
-| ----------------- | ------------ | ------------------------------------ |
-| `enabled`         | `false`      | Explicit opt-in                      |
-| `durationMs`      | `5000`       | 1000–30000 ms                        |
-| `prepareBeforeMs` | `30000`      | 5000–120000 ms before overlap begins |
-| `curve`           | `equalPower` | Only supported curve                 |
+| Setting           | Default                     | Range                                                     |
+| ----------------- | --------------------------- | --------------------------------------------------------- |
+| `enabled`         | `false`                     | Explicit opt-in                                           |
+| `durationMs`      | `5000`                      | 1000–30000 ms                                             |
+| `prepareBeforeMs` | `30000`                     | 5000–120000 ms before overlap begins                      |
+| `curve`           | node default (`equalPower`) | `equalPower` or `adaptive`; see [curves](#choose-a-curve) |
 
 With defaults, preparation is requested about 35 seconds before a known-duration source ends. Unknown-duration sources do not get an end-based preparation request.
+
+## Choose a curve
+
+`equalPower` applies fixed equal-power gains and is the default. `adaptive` starts from the same gains and adds
+a bounded, smoothed gain that follows the loudness difference between the outgoing and incoming tracks. It only
+ever attenuates, by at most 6 dB, so a quiet track is never boosted, and it leaves the start and end of the
+overlap unchanged. It suits queues of unrelated tracks with different mastering levels. Both curves limit peaks
+instead of hard clipping them. [How it works](/docs/core/crossfade#crossfade-curves) describes the algorithm and
+its limits.
+
+```ts
+const session = client.createDiscordSession({
+  guildId,
+  channelId,
+  userId,
+  crossfade: { enabled: true, curve: 'adaptive' },
+});
+```
+
+Omitting `curve` uses the node's configured default, which is `equalPower` unless the operator changed
+`audio.crossfade.curve`. A remote node reports the curves it can mix in `capabilities.crossfade.curves`. Nodes
+released before the adaptive curve omit that list and are treated as `['equalPower']`, and the SDK throws
+before creating the guild if you request a curve the node does not list.
+
+```ts
+const { curve, curves } = client.nodes[0]!.capabilities!.crossfade;
+// curve: the node default. curves: every curve it can mix, e.g. ['equalPower', 'adaptive'].
+```
+
+Embedded nodes always support both curves.
 
 ## Stage the next queue entry
 

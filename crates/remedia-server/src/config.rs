@@ -10,9 +10,17 @@ use remedia_core::OpusEncoderConfig;
 use remedia_observability::{ObservabilityConfig, ObservabilityError};
 
 pub(crate) use remedia_server_config::{
-    AuthUser, CrossfadeConfig, Limits, MediaAccess, PluginHostConfig, is_public_ip,
+    AuthUser, CrossfadeConfig, CrossfadeCurve, Limits, MediaAccess, PluginHostConfig, is_public_ip,
     valid_identifier,
 };
+
+/// The native engine's curve for a configured or requested curve.
+pub(crate) const fn engine_curve(curve: CrossfadeCurve) -> remedia_core::CrossfadeCurve {
+    match curve {
+        CrossfadeCurve::EqualPower => remedia_core::CrossfadeCurve::EqualPower,
+        CrossfadeCurve::Adaptive => remedia_core::CrossfadeCurve::Adaptive,
+    }
+}
 
 #[derive(Clone)]
 pub struct ServerConfig {

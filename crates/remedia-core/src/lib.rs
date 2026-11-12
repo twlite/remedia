@@ -25,7 +25,10 @@ pub(crate) fn with_dispatch<T>(handle: &ObservabilityHandle, callback: impl FnOn
 }
 
 pub use byte_stream::{ByteStreamError, ByteStreamWriter};
-pub use crossfade::{CrossfadeWindow, MixError, PcmCrossfade, StageBufferError, StagedPcmBuffer};
+pub use crossfade::{
+    CrossfadeCurve, CrossfadeWindow, MixError, MixStats, PcmCrossfade, StageBufferError,
+    StagedPcmBuffer,
+};
 pub use decoder::{
     AudioDecoder, AudioStreamInfo, DecoderOptions, PcmFormat, PcmFrame, ProbeOptions, probe,
 };

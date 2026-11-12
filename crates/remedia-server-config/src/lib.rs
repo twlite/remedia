@@ -156,12 +156,41 @@ pub struct MediaAccess {
     pub block_private_networks: bool,
 }
 
+/// How the two sources of a crossfade are weighted, as written in configuration.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CrossfadeCurve {
+    /// Fixed equal-power gains. This is the default.
+    #[default]
+    EqualPower,
+    /// Equal-power gains plus a bounded, smoothed, loudness-aware common gain.
+    Adaptive,
+}
+
+impl CrossfadeCurve {
+    /// The name used in configuration files and on the wire.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EqualPower => "equalPower",
+            Self::Adaptive => "adaptive",
+        }
+    }
+
+    /// Parse a configured curve name. Names are case sensitive.
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Self::EqualPower, Self::Adaptive]
+            .into_iter()
+            .find(|curve| curve.as_str() == name)
+    }
+}
+
 /// Validated crossfade policy. Native playback readiness is negotiated separately.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CrossfadeConfig {
     pub enabled: bool,
     pub duration_ms: u32,
     pub prepare_before_ms: u32,
+    /// Default curve for sessions that do not choose one.
+    pub curve: CrossfadeCurve,
 }
 
 /// Opus encoder settings as written in configuration.
@@ -224,16 +253,17 @@ pub fn parse(json: &str, base: &Path, env: &mut Env) -> Result<Settings, ConfigE
         ));
     }
 
-    if fade.curve != "equalPower" {
+    let Some(curve) = CrossfadeCurve::from_name(&fade.curve) else {
         return Err(ConfigError::Invalid(
-            "audio.crossfade.curve must be equalPower",
+            "audio.crossfade.curve must be equalPower or adaptive",
         ));
-    }
+    };
 
     let crossfade = CrossfadeConfig {
         enabled: fade.enabled,
         duration_ms: fade.duration_ms,
         prepare_before_ms: fade.prepare_before_ms,
+        curve,
     };
     let listen = resolve_env("listen", raw.listen, env)?;
     let address: std::net::SocketAddr = listen.parse().map_err(|_| {

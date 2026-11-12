@@ -14,6 +14,7 @@ import {
   type PlayOptions,
   type PlaybackSessionEventMap,
   type StageNextOptions,
+  type CrossfadeCurve,
   type CrossfadeOptions,
   type StageSnapshot,
 } from './lifecycle.js';
@@ -24,6 +25,9 @@ import {
   type PlaybackState,
 } from './types.js';
 import { FilterControls, validateVolume } from './filters.js';
+
+/** Crossfade curves accepted by the native engine. */
+const CROSSFADE_CURVES: readonly CrossfadeCurve[] = ['equalPower', 'adaptive'];
 
 /**
  * Controls one playback session. Local sessions decode into a no-op output.
@@ -106,6 +110,7 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
   /**
    * Configure overlapping PCM playback while idle.
    * @param options - Explicit opt-in settings, or false to retain ordinary playback.
+   * `curve` selects `equalPower` (default) or `adaptive`.
    * @returns Nothing; throws if settings are invalid or playback is active.
    */
   configureCrossfade(options: CrossfadeOptions | false): void {
@@ -113,9 +118,9 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     if (options) {
       if (
         options.enabled !== true ||
-        (options.curve !== undefined && options.curve !== 'equalPower')
+        (options.curve !== undefined && !CROSSFADE_CURVES.includes(options.curve))
       ) {
-        throw new TypeError('crossfade requires enabled: true and the equalPower curve');
+        throw new TypeError('crossfade requires enabled: true and an equalPower or adaptive curve');
       }
       const durationMs = options.durationMs ?? 5000;
       this.#native.playbackConfigureCrossfade(
@@ -123,6 +128,7 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
         true,
         durationMs,
         options.prepareBeforeMs ?? 30000,
+        options.curve ?? 'equalPower',
       );
       this.#fadeDurationMs = durationMs;
       this.#crossfadeEnabled = true;

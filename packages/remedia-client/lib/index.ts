@@ -45,6 +45,7 @@ export type {
   StageNextOptions,
   StageSnapshot,
   CrossfadeContinuation,
+  CrossfadeCurve,
   CrossfadeTransition,
   NodeSelection,
   NodeSnapshot,

@@ -1,6 +1,6 @@
 ---
 title: 'Rust crossfade lifecycle'
-description: Preparation, bounded staging, promotion, and cancellation in the playback worker.
+description: Preparation, bounded staging, promotion, mixing curves, and cancellation in the playback worker.
 ---
 
 ## Crossfade playback
@@ -8,7 +8,7 @@ description: Preparation, bounded staging, promotion, and cancellation in the pl
 Crossfade is disabled by default. Opted-in sessions can pass through eligible Opus
 packets outside an overlap, and decode stereo 48 kHz PCM when mixing is required. A whole packet must fit before the overlap boundary. Otherwise the decoder warms
 from bounded compressed history and trims to the exact source boundary. The sources
-mix with a sample-accurate equal-power curve. One output and Opus encoder
+mix with a sample-accurate [curve](#crossfade-curves), `equalPower` by default. One output and Opus encoder
 remain open across promotions.
 
 Prepared sources keep their existing producer and
@@ -17,6 +17,87 @@ the source or bypass decoded samples. Direct sources can restore passthrough aft
 temporary volume processing only at matching source and encoder packet boundaries. A gain update that leaves passthrough waits for PCM activation. Restoration can
 complete later when the direct source reaches a safe boundary. Seeking disables passthrough restoration for that direct source. Ordinary sessions retain their existing Opus
 passthrough selection and allocate no staging decoder or PCM buffer.
+
+### Crossfade curves
+
+`CrossfadeConfig::curve` selects how the two sources are weighted during the overlap.
+`CrossfadeConfig::new(duration_ms, prepare_before_ms)` keeps `CrossfadeCurve::EqualPower`;
+`.with_curve(CrossfadeCurve::Adaptive)` opts in to the adaptive curve.
+
+```rust
+use remedia_core::{CrossfadeConfig, CrossfadeCurve, PlaybackSession};
+
+let session = PlaybackSession::new();
+let config = CrossfadeConfig::new(5_000, 30_000)
+    .expect("durations are in range")
+    .with_curve(CrossfadeCurve::Adaptive);
+
+session.configure_crossfade(Some(config))?;
+```
+
+| Curve        | Behavior                                                                                                                         |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `equalPower` | Fixed gains `cos`/`sin` over the window. No analysis. The default.                                                               |
+| `adaptive`   | The same gains, plus one bounded, smoothed gain shared by both sources and both channels that follows their loudness difference. |
+
+Both curves keep the first mixed sample equal to the outgoing source and the last equal to the
+incoming source, and neither changes the length of the transition.
+
+#### How `adaptive` works
+
+The mixer stays inside the existing PCM worker. It makes no additional decoder, buffer, or allocation,
+and does nothing outside the overlap.
+
+1. **Base mix.** Each sample pair is mixed with the equal-power gains.
+2. **Measure.** Squared samples of the outgoing source, the incoming source, and the equal-power mix
+   are summed per 10 ms hop (480 frames, aligned to the start of the overlap, not to PCM blocks).
+   Left and right are summed together, so one level drives one gain. Each hop's mean-square power is
+   smoothed with a 150 ms attack and a 300 ms release. A single hop can raise the estimate by at most
+   4x, so an isolated transient barely moves it. The mix is measured directly, so correlation between
+   the tracks is accounted for.
+3. **Target.** The desired output level glides from the outgoing level to the incoming level in decibels
+   along a smoothstep. The common gain is the desired level minus the measured mix level, clamped to
+   **-6 dB..0 dB**. A positive result would be a boost, so it is never applied. Confidence fades
+   the adjustment to zero as either source approaches silence (-70 dBFS is silent, -55 dBFS is
+   fully trusted), so noise floors and gaps are never chased.
+4. **Smooth.** The gain moves by one-pole smoothing (200 ms) limited to 0.1 dB per hop (10 dB/s), and
+   is interpolated linearly in amplitude between hop boundaries. A hop's gain depends only on audio
+   already mixed, so there is no feedback loop.
+5. **Edges.** The adjustment is weighted to exactly zero for the first and last two hops and
+   rises smoothly over 20% of the window, so the output joins the unprocessed neighbouring source
+   with no gain step.
+
+The result is independent of how the caller splits the PCM into blocks, down to the bit.
+
+#### Peak handling
+
+Both curves pass the mix through a stereo-linked, zero-latency peak limiter instead of clipping it.
+Samples that fit are returned unchanged. A sample that would exceed full scale is attenuated
+immediately, and the reduction releases exponentially over about 20 ms. The limiter never reduces by
+more than 20 dB, fades its influence out over the last 480 frames of the window, and a final clamp to
+`-1.0..=1.0` remains only as a safety net. Previously, over-range samples were hard-clipped. Anything
+that fits in range is bit-identical to before.
+
+On two identical near-full-scale sine waves, which sum to 1.39 times full scale at the midpoint, the limiter
+produces about 0.6% distortion where clipping produces about 12%.
+
+`CrossfadeConfig` gained a public `curve` field. Code that builds the struct with a literal must set it;
+`CrossfadeConfig::new` keeps its signature and `equalPower` behavior.
+
+#### Limits to be aware of
+
+- Levels are RMS of the overlap, without K-weighting or integrated loudness. They approximate, but are not,
+  perceived loudness.
+- The cut is capped at 6 dB. Tracks more than about 12 dB apart are brought closer, not matched.
+- `adaptive` never boosts, so a quiet track is not made louder than it is.
+- The limiter has no look-ahead, because the overlap must keep the sample clock of the sources around it.
+  A peak is attenuated from the sample where it occurs, which can be audible as a brief duck on
+  isolated full-scale clicks and as slight compression when two dense, loud masters are summed.
+- The estimates need roughly the first 150 ms of the overlap, and fades near the 1 s minimum
+  give the adjustment little time to act.
+- Volume and filter graphs apply after the mix, as before.
+
+Measured costs and reproducible comparisons are in [Performance](/docs/core/performance#crossfade-curves).
 
 ### Preparation timing
 

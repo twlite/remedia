@@ -151,7 +151,8 @@ export interface PlaybackSnapshot {
     enabled: true;
     durationMs: number;
     prepareBeforeMs: number;
-    curve: 'equalPower';
+    /** Curve the session mixes with. */
+    curve: CrossfadeCurve;
   } | null;
   staged?: StageSnapshot | null;
   lastError: {
@@ -316,6 +317,15 @@ export interface NodeStatistics {
   resources?: ProcessResourceStatistics | null;
 }
 
+/**
+ * How the outgoing and incoming sources are weighted during a crossfade.
+ *
+ * - `equalPower` applies fixed equal-power gains. It is the default.
+ * - `adaptive` starts from the same gains and adds a bounded, smoothed gain that follows the
+ *   loudness difference between the two tracks. It only ever attenuates, by at most 6 dB.
+ */
+export type CrossfadeCurve = 'equalPower' | 'adaptive';
+
 /** Advertised crossfade policy. An enabled server setting is not sufficient:
  * available becomes true only after the native mixer and promotion protocol work.
  */
@@ -328,8 +338,13 @@ export interface CrossfadeCapability {
   durationMs: number;
   /** Preparation lead before overlap begins, in milliseconds; defaults to 30000. */
   prepareBeforeMs: number;
-  /** Equal-power mixing curve; the only supported curve. */
-  curve: 'equalPower';
+  /** Default mixing curve for sessions that do not choose one; `equalPower` unless the node says otherwise. */
+  curve: CrossfadeCurve;
+  /**
+   * Every curve this node can mix with. Older nodes that predate the adaptive curve report only
+   * `equalPower`; check this before requesting `adaptive`.
+   */
+  curves: readonly CrossfadeCurve[];
 }
 
 /** Plugin-host operation sources supported by a node. Older nodes omit it, which means unsupported. */
@@ -473,8 +488,12 @@ export interface SessionCrossfadeOptions {
   durationMs?: number;
   /** Lead time before the overlap starts, 5000-120000 milliseconds. */
   prepareBeforeMs?: number;
-  /** Equal-power mixing curve; the only supported curve. */
-  curve?: 'equalPower';
+  /**
+   * Mixing curve for this session; defaults to the node's configured curve, which is `equalPower`
+   * unless the operator changed it. `adaptive` requires a node that lists it in
+   * {@link CrossfadeCapability.curves}.
+   */
+  curve?: CrossfadeCurve;
 }
 
 /** Read-only client view of a node, its health, capacity, and assigned guilds. */
