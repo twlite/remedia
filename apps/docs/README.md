@@ -18,12 +18,21 @@ The build uses Next.js `output: 'export'` and writes a self-contained static sit
 There is no production Node.js server or `next start` command. Search runs in the browser against
 the exported `/api/search` index. Social previews and Markdown endpoints are generated at build time.
 
+## Generated API reference
+
+TypeScript and Rust API pages are generated from source into the ignored `.generated/api` directory
+by `pnpm docs:api` (run from the repository root, and automatically by `pnpm --filter docs dev` and
+`pnpm --filter docs build`). They are merged into the Fumadocs source in `src/lib/source.ts` and
+rendered by `src/components/api`. See the [generation guide](content/docs/architecture/api-reference.mdx).
+The Rust half needs the pinned nightly toolchain (installed automatically by `rustup`) and the native
+FFmpeg build dependencies.
+
 ## GitHub Pages deployment
 
 `.github/workflows/deploy-docs.yaml` builds and deploys documentation changes pushed to `main`.
 It also supports manual dispatch on `main`. In repository **Settings → Pages**, select
 **GitHub Actions** as the build and deployment source. The workflow uploads `apps/docs/out` and
-deploys it through the `github-pages` environment; no native FFmpeg build is required.
+deploys it through the `github-pages` environment. The generated API reference documents the Rust crates, so the workflow installs the same FFmpeg build dependencies as CI.
 
 The workflow reads the site's URL and base path from `actions/configure-pages`, supporting both
 project sites such as `https://twlite.github.io/remedia` and custom-domain sites at `/`.

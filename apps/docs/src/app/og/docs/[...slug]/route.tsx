@@ -1,7 +1,7 @@
 import { source } from '@/lib/source';
 import { notFound } from 'next/navigation';
 import { createSocialImage } from '@/lib/og';
-import { getPageImageUrl } from '@/lib/shared';
+import { getImageSlugs, getPageImageUrl } from '@/lib/shared';
 
 export const dynamic = 'force-static';
 
@@ -18,8 +18,12 @@ export async function GET(_req: Request, { params }: RouteContext<'/og/docs/[...
 }
 
 export function generateStaticParams() {
-  return source.getPages().map((page) => ({
-    lang: page.locale,
-    slug: getPageImageUrl(page).segments,
-  }));
+  // API symbol pages reuse their package image, so only guides and API package indexes render a PNG.
+  return source
+    .getPages()
+    .filter((page) => getImageSlugs(page.slugs).length === page.slugs.length)
+    .map((page) => ({
+      lang: page.locale,
+      slug: getPageImageUrl(page).segments,
+    }));
 }

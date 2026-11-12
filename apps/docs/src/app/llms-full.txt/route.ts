@@ -1,7 +1,7 @@
-import { docsLlms } from '@/lib/source';
+import { guidesFullText } from '@/lib/source';
 
 export const dynamic = 'force-static';
 
 export async function GET() {
-  return new Response(await docsLlms.full());
+  return new Response(await guidesFullText());
 }

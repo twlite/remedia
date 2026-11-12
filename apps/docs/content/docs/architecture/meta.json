@@ -1,4 +1,4 @@
 {
   "title": "Architecture",
-  "pages": ["overview", "native-loading", "releases"]
+  "pages": ["overview", "native-loading", "releases", "api-reference"]
 }

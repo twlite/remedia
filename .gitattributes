@@ -3,3 +3,6 @@
 # Generated napi-rs loader and declarations
 packages/remedia-node/native.js linguist-detectable=false
 packages/remedia-node/native.d.ts linguist-detectable=false
+
+*.mdx linguist-detectable=false
+*.css linguist-detectable=false

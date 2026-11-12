@@ -130,8 +130,8 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+      # The generated API reference documents the Rust crates, so every docs build needs FFmpeg.
       - uses: mamba-org/setup-micromamba@v3
-        if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
         with:
           environment-file: .github/native-deps/ffmpeg9.yml
           environment-name: remedia-ffmpeg9
@@ -140,7 +140,6 @@ jobs:
           cache-environment-key: checks-ffmpeg9-${{ hashFiles('.github/native-deps/ffmpeg9.yml') }}
           cache-downloads: true
       - name: Select the repository Rust toolchain
-        if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
         run: rustup show active-toolchain
       - uses: pnpm/action-setup@v6.1.0
         with:
@@ -157,12 +156,10 @@ jobs:
         run: node .github/scripts/release.mjs sync "$RELEASE_VERSION"
       - run: pnpm install --frozen-lockfile
       - name: Install libclang development files for Rust checks
-        if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends libclang-dev
       - name: Configure native dependency paths
-        if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
         shell: micromamba-shell {0}
         run: |
           echo "FFMPEG_DIR=$CONDA_PREFIX" >> "$GITHUB_ENV"
@@ -172,7 +169,6 @@ jobs:
           if [ -z "$libclang_path" ]; then echo "libclang.so not found under /usr/lib/llvm-*" >&2; exit 1; fi
           echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
       - name: Verify FFmpeg 9 build dependencies
-        if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
         shell: micromamba-shell {0}
         run: node .github/scripts/verify-native-deps.mjs --build
       - name: Validate POSIX installer syntax
@@ -193,6 +189,7 @@ jobs:
         if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
         if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
+      - run: pnpm docs:test
       - run: pnpm --filter @remedia/plugin-host test
       - run: pnpm --filter @remedia/client test
       - run: pnpm --filter discord-app test

@@ -1,0 +1,65 @@
+---
+title: 'Generated API reference'
+description: How the TypeScript and Rust API pages are generated from source, how their URLs work, and how to document new APIs.
+---
+
+The [generated API reference](/docs/api) documents every public symbol of the TypeScript packages and Rust crates. It is rebuilt from the repository source on every documentation build, so signatures cannot drift from the code. The authored guides explain how to use Remedia; the reference lists exactly what exists.
+
+| Language   | Documented                                                                                                                                                                                                                                                                                                                                       |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| TypeScript | [`@remedia/client`](/docs/api/typescript/client), [`@remedia/node`](/docs/api/typescript/node) (including the generated N-API declarations), [`@remedia/plugin-host`](/docs/api/typescript/plugin-host) and its `/node` export, [`@remedia/config`](/docs/api/typescript/config)                                                                 |
+| Rust       | [`remedia-core`](/docs/api/rust/remedia-core), [`remedia-discord`](/docs/api/rust/remedia-discord), [`remedia-observability`](/docs/api/rust/remedia-observability), [`remedia-resources`](/docs/api/rust/remedia-resources), [`remedia-server-config`](/docs/api/rust/remedia-server-config), [`remedia-server`](/docs/api/rust/remedia-server) |
+
+## Reading a page
+
+Every public class, interface, type alias, enum, function, variable, struct, trait, union, macro, constant, static and module has its own page. Members are sections of that page with stable anchors: `#method-handle`, `#property-plugins`, `#variant-Rect`, `#impl-Source-for-Counter`.
+
+- **Signatures** are syntax highlighted. Every type name that Remedia documents links to its page, including names nested in generics, unions and aliases, and names from other packages or crates. Standard-library and common third-party types link to their upstream documentation. A type that appears in a public signature but is not exported is shown unlinked.
+- **TypeScript overloads** appear as **Overload 1**, **Overload 2**, and so on. Each tab has its own signature, parameters, return value and examples. Every tab is present in the page HTML, and a link such as `#method-handle-overload-2` opens the right tab.
+- **Rust types** list fields or variants, inherent methods, trait implementations with their associated types and items, auto-trait and blanket implementations, and, for traits, the required and provided items and the known implementors.
+- Documentation comments keep their Markdown, code fences, `@example`, `@remarks`, `@deprecated`, `@throws` and `@see` tags, and Rustdoc sections such as `# Examples`, `# Errors`, `# Panics` and `# Safety`.
+- **View source** links point to the exact lines at the commit the documentation was built from.
+
+Pages are searchable with the site search, which indexes each symbol and member. `/llms.mdx/docs/api/…/content.md` serves the same page as Markdown.
+
+## What is documented
+
+Documentation follows the public surface:
+
+- TypeScript symbols come from the package `exports` entry points. `@internal`, `@hidden`, `@ignore` and private members are omitted. Inherited members from documented base classes are listed with a link to their origin.
+- Rust items are documented where they are publicly reachable. An item defined in a private module and re-exported appears at its re-export path. `#[doc(hidden)]` and private items are omitted. Generated pages use the crate's default features.
+- `@remedia/node/native` documents the declarations NAPI-RS generates from the Rust bindings. It is not a published export; use the typed [`Remedia`](/docs/api/typescript/node/Remedia) wrapper.
+
+## Writing documentation that renders well
+
+Write TSDoc on exported TypeScript declarations and Rustdoc on public Rust items. Use `@param name - description` for every parameter, `@returns`, and `@throws` for errors callers should handle. Link other symbols with `{@link Name}` in TypeScript and intra-doc links such as ``[`Name`]`` in Rust. Put at least one `@example` or `# Examples` block on entry points. A change to a public API needs no manual reference edit; the guides that explain behavior still do.
+
+## Generating locally
+
+```sh
+pnpm docs:api            # TypeDoc + rustdoc JSON, normalization, link resolution, validation
+pnpm docs:api --only=typescript   # skip Rust while iterating on TypeScript docs
+pnpm --filter docs dev   # generates, then starts the site
+pnpm --filter docs build # generates, exports, checks links and verifies the export
+```
+
+The output goes to `apps/docs/.generated/api`, which is not committed. The docs build always regenerates it first.
+
+Rust documentation uses a **pinned nightly toolchain only for rustdoc JSON** (rustdoc's JSON output is unstable). `pnpm docs:api` installs `nightly-2026-11-01` with `rustup` when it is missing and invokes `cargo +nightly-2026-11-01 doc`; the repository's stable `rust-toolchain.toml` is untouched. Documenting the crates compiles the FFmpeg bindings, so the native FFmpeg build dependencies described in [Building from source](/docs/node/building) are required, as they are for `cargo build`. TypeScript documentation uses TypeDoc 0.28.20 with TypeScript 5.9, independent of the docs app's TypeScript version.
+
+The generator pins TypeDoc's version and JSON schema and rustdoc's `format_version`, and fails with a clear message when either differs. To upgrade, change the constants in `scripts/docs/config.ts`, update the normalizer for the new format, and run `pnpm docs:test`.
+
+## How it works
+
+1. `scripts/docs/typedoc.ts` and `rustdoc.ts` produce raw TypeDoc and rustdoc JSON.
+2. `normalize-typedoc.ts` and `normalize-rustdoc.ts` convert both into one symbol model (`scripts/docs/model.ts`) that keeps language-specific data such as TypeScript overloads and Rust impl blocks.
+3. `symbols.ts` gives every symbol a structured identity (package, declaring file, qualified path) and allocates URLs. `links.ts` resolves references by identity, never by name matching.
+4. `pages.ts` builds pages, navigation, tables of contents and search data. `validate.ts` rejects duplicate URLs or anchors and links to missing pages, and reports unlinked references as warnings.
+5. The docs app merges the generated pages into the Fumadocs source beside the authored guides and renders them with server components in `apps/docs/src/components/api`.
+
+## Limitations
+
+- Types that appear in a public signature but are not exported are listed in the generation warnings and shown unlinked rather than documented.
+- Rust implementor lists contain only implementations in the same crate; an implementation in a downstream crate appears on that crate's type page.
+- Items behind non-default Cargo features and platform-specific `cfg` items are not documented.
+- The sidebar lists only the symbols of the package you are viewing; other packages stay collapsed.

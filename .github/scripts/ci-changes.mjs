@@ -14,6 +14,7 @@ export function needsChecks(paths) {
         'packages/',
         'apps/docs/',
         'apps/discord/',
+        'scripts/docs/',
         '.cargo/',
         '.github/workflows/',
         '.github/scripts/',

@@ -152,7 +152,10 @@ pnpm --filter docs build
 ```
 
 The docs app can be run with `pnpm --filter docs dev` and built with
-`pnpm --filter docs build`. `pnpm --filter @remedia/node test` builds the debug N-API addon and runs
+`pnpm --filter docs build`. Both first generate the TypeScript and Rust API reference with
+`pnpm docs:api` (TypeDoc and rustdoc JSON, using a pinned nightly toolchain for documentation only,
+and the native FFmpeg dependencies); `pnpm docs:test` tests the generator. See
+[Generated API reference](apps/docs/content/docs/architecture/api-reference.mdx). `pnpm --filter @remedia/node test` builds the debug N-API addon and runs
 the TypeScript integration tests with Vitest. To separate compilation from execution, run
 `pnpm --filter @remedia/node build:native` (release addon),
 `pnpm --filter @remedia/node build:types`, then

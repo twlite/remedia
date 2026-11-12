@@ -12,14 +12,16 @@ import { getMDXComponents } from '@/components/mdx';
 import type { Metadata } from 'next';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import { getPageImageUrl, getPageMarkdownUrl, gitConfig } from '@/lib/shared';
+import { isApiPath } from '@/lib/api/store';
 
 export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
   const params = await props.params;
   const page = source.getPage(params.slug);
-  if (!page) notFound();
+  if (!page || isApiPath(page.path)) notFound();
+
+  const markdownUrl = getPageMarkdownUrl(page).url;
 
   const MDX = page.data.body;
-  const markdownUrl = getPageMarkdownUrl(page).url;
 
   return (
     <DocsPage toc={page.data.toc} full={page.data.full}>
@@ -45,7 +47,8 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
 }
 
 export async function generateStaticParams() {
-  return source.generateParams();
+  // Generated API pages are served by `app/docs/api`.
+  return source.generateParams().filter((params) => params.slug?.[0] !== 'api');
 }
 
 export async function generateMetadata(props: PageProps<'/docs/[[...slug]]'>): Promise<Metadata> {

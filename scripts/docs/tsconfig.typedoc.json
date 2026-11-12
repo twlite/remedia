@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig.json",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": true,
+    "types": ["node"],
+    "paths": {
+      "@remedia/node": ["../../packages/remedia-node/lib/index.ts"],
+      "@remedia/plugin-host": ["../../packages/remedia-plugin-host/src/index.ts"],
+      "@remedia/plugin-host/node": ["../../packages/remedia-plugin-host/src/node.ts"],
+      "@remedia/config": ["../../packages/remedia-config/lib/index.ts"]
+    }
+  },
+  "include": [
+    "../../packages/remedia-*/lib/**/*.ts",
+    "../../packages/remedia-*/src/**/*.ts",
+    "../../packages/remedia-node/native.d.ts"
+  ]
+}

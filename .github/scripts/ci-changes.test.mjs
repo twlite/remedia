@@ -14,6 +14,7 @@ test('unrelated pushes skip checks while previously watched paths still run them
     'apps/docs/content/docs/index.md',
     'apps/docs/src/app/page.tsx',
     'apps/discord/src/index.ts',
+    'scripts/docs/generate.ts',
     'crates/remedia-core/src/opus.rs',
     'packages/remedia-client/lib/index.ts',
     '.github/scripts/release.mjs',

@@ -11,8 +11,10 @@
     "isolatedModules": true,
     "jsx": "react-jsx",
     "incremental": true,
+    "allowImportingTsExtensions": true,
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@docs-scripts/*": ["../../scripts/docs/*"]
     },
     "plugins": [
       {

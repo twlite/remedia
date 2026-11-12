@@ -24,8 +24,16 @@ export function getPageMarkdownUrl(page: { slugs: string[]; locale?: string | un
 
 const getImageUrl = createGetUrl(docsImageRoute);
 
+/**
+ * Slugs of the page whose social image represents a page. Generated API pages share the image of
+ * their package (`api/<language>/<package>`) instead of rendering one PNG per symbol.
+ */
+export function getImageSlugs(slugs: string[]): string[] {
+  return slugs[0] === 'api' ? slugs.slice(0, 3) : slugs;
+}
+
 export function getPageImageUrl(page: { slugs: string[]; locale?: string | undefined }) {
-  const segments = [...page.slugs, 'image.png'];
+  const segments = [...getImageSlugs(page.slugs), 'image.png'];
 
   return {
     segments,

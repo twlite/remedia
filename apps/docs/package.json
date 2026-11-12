@@ -3,8 +3,8 @@
   "version": "0.0.52",
   "private": true,
   "scripts": {
-    "build": "node scripts/copy-installers.mjs && next build && node scripts/check-links.mjs",
-    "dev": "next dev",
+    "build": "pnpm --workspace-root run docs:api && node scripts/copy-installers.mjs && next build && node scripts/check-links.mjs && pnpm --workspace-root run docs:verify-export",
+    "dev": "pnpm --workspace-root run docs:api && next dev",
     "typecheck": "next typegen && tsc --noEmit",
     "check:links": "node scripts/check-links.mjs"
   },
