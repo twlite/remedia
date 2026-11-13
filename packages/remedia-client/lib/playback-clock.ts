@@ -1,5 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import type { PlaybackSnapshot, PlaybackState } from './types.js';
+import { estimateTempoFactor } from './tempo-factor.js';
 
 /**
  * On-demand clock for an assigned remote playback generation.
@@ -10,6 +11,9 @@ export class PlaybackClock {
   #generation = -1;
   #positionMs = 0;
   #sampledAtMs: number;
+  #mediaMs = 0;
+  #mediaRate: number | null = 1;
+  #mediaKnown = false;
   readonly #now: () => number;
 
   constructor(now: () => number = () => performance.now()) {
@@ -29,11 +33,19 @@ export class PlaybackClock {
       // A new track has its own timeline. Do not carry elapsed time from the
       // previous generation, including any time spent paused or disconnected.
       this.#positionMs = 0;
+      this.#mediaMs = 0;
+      this.#mediaKnown = true;
       this.#generation = generation;
       this.#sampledAtMs = this.#now();
       this.#suspended = false;
       this.#state = 'playing';
       return;
+    }
+    // A lifecycle start may follow a snapshot that had no media timestamps yet.
+    // The start event itself establishes the source-time zero boundary.
+    if (!this.#mediaKnown) {
+      this.#mediaMs = 0;
+      this.#mediaKnown = true;
     }
     this.transition('playing');
   }
@@ -42,6 +54,7 @@ export class PlaybackClock {
   transition(state: PlaybackState): void {
     const now = this.#now();
     this.#positionMs = this.#readAt(now);
+    this.#mediaMs = this.#readMediaAt(now) ?? this.#mediaMs;
     this.#sampledAtMs = now;
     this.#state = state;
   }
@@ -54,6 +67,8 @@ export class PlaybackClock {
     }
     if (!Number.isFinite(positionMs) || positionMs < 0) return;
     this.#positionMs = positionMs;
+    this.#mediaMs = positionMs;
+    this.#mediaKnown = true;
     this.#sampledAtMs = this.#now();
   }
 
@@ -61,6 +76,7 @@ export class PlaybackClock {
   suspend(): void {
     const now = this.#now();
     this.#positionMs = this.#readAt(now);
+    this.#mediaMs = this.#readMediaAt(now) ?? this.#mediaMs;
     this.#sampledAtMs = now;
     this.#suspended = true;
   }
@@ -71,15 +87,47 @@ export class PlaybackClock {
     const nextGeneration = snapshot.generation !== this.#generation;
     const observed =
       snapshot.position.playedMs ??
-      snapshot.position.mediaMs ??
-      (snapshot.position.submittedMs > 0 ? snapshot.position.submittedMs : null);
+      (snapshot.position.submittedMs > 0 ? snapshot.position.submittedMs : null) ??
+      snapshot.position.mediaMs;
     const now = this.#now();
     const previousEstimate = this.#readAt(now);
+    const previousMedia = this.#readMediaAt(now);
     this.#generation = snapshot.generation;
     this.#state = snapshot.state;
     this.#positionMs = observed ?? (nextGeneration ? 0 : previousEstimate);
+    this.#mediaMs = snapshot.position.mediaMs ?? (nextGeneration ? 0 : (previousMedia ?? 0));
+    const hasMediaTimestamp = snapshot.position.mediaMs !== null;
+    const canReuseMediaEstimate = !nextGeneration && previousMedia !== null;
+    this.#mediaKnown = hasMediaTimestamp || canReuseMediaEstimate;
+    this.#mediaRate = estimateTempoFactor(snapshot.filterGraph);
     this.#sampledAtMs = now;
     this.#suspended = false;
+  }
+
+  /** Preserve source position when a filter changes instead of applying the new rate retroactively. */
+  setFilterGraph(graph: string | null): void {
+    const now = this.#now();
+    this.#positionMs = this.#readAt(now);
+    this.#mediaMs = this.#readMediaAt(now) ?? this.#mediaMs;
+    this.#sampledAtMs = now;
+    this.#mediaRate = estimateTempoFactor(graph);
+  }
+
+  /** Source-media estimate. Null means no safe media mapping is available. */
+  getMediaTime(): number | null {
+    return this.#readMediaAt(this.#now());
+  }
+
+  /** Known constant source time advanced per second of output. */
+  getPlaybackRate(): number | null {
+    return this.#mediaRate;
+  }
+
+  #readMediaAt(now: number): number | null {
+    if (!this.#mediaKnown || this.#mediaRate === null) return null;
+    const active = this.#state === 'playing' && !this.#suspended;
+    const elapsed = active ? Math.max(0, now - this.#sampledAtMs) * this.#mediaRate : 0;
+    return Math.max(0, this.#mediaMs + elapsed);
   }
 
   /** Elapsed output time in ms; source duration is not a valid cap for tempo-changing filters. */

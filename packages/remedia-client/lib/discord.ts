@@ -454,6 +454,16 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     return this.#backend?.getPlaybackTime() ?? 0;
   }
 
+  /** Estimated source-media time. Unlike output time, this follows tempo filters. */
+  getMediaTime(): number | null {
+    return this.#backend?.getMediaTime() ?? null;
+  }
+
+  /** Constant source playback speed, or null when an opaque graph prevents estimation. */
+  getPlaybackRate(): number | null {
+    return this.#backend?.getPlaybackRate() ?? null;
+  }
+
   /** Source duration in milliseconds, or null when unknown. */
   get durationMs(): number | null {
     return this.#backend?.durationMs ?? null;

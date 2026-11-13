@@ -64,7 +64,7 @@ describe('remote playback clock', () => {
     // Playback can outlast the source duration when tempo-changing filters slow it down.
     expect(clock.getPlaybackTime()).toBe(2800);
     clock.reconcile(snapshot(2, 'playing', null, 1100, 1300));
-    expect(clock.getPlaybackTime()).toBe(1100);
+    expect(clock.getPlaybackTime()).toBe(1300);
     clock.reconcile(snapshot(2, 'playing', null, null, 1500));
     expect(clock.getPlaybackTime()).toBe(1500);
   });
@@ -86,6 +86,53 @@ describe('remote playback clock', () => {
     expect(clock.getPlaybackTime()).toBe(300);
     clock.reconcile(snapshot(2, 'playing', 1300, null), true);
     expect(clock.getPlaybackTime()).toBe(1300);
+  });
+
+  it('estimates source progress at the active tempo without rewriting prior time', () => {
+    let now = 0;
+    const clock = new PlaybackClock(() => now);
+    clock.reconcile({
+      ...snapshot(1, 'playing', null, 5000, 4000),
+      filterGraph: 'aresample=48000,asetrate=48000*1.25',
+    });
+    expect(clock.getPlaybackRate()).toBe(1.25);
+    now = 2000;
+    expect(clock.getMediaTime()).toBe(7500);
+    clock.setFilterGraph('aresample=48000,asetrate=48000*0.8');
+    expect(clock.getMediaTime()).toBe(7500);
+    now = 3000;
+    expect(clock.getMediaTime()).toBe(8300);
+    clock.transition('paused');
+    now = 5000;
+    expect(clock.getMediaTime()).toBe(8300);
+    clock.seek(12000, 2);
+    expect(clock.getMediaTime()).toBe(12000);
+    clock.transition('playing');
+    now = 6000;
+    expect(clock.getMediaTime()).toBe(12800);
+    clock.suspend();
+    now = 10000;
+    expect(clock.getMediaTime()).toBe(12800);
+  });
+
+  it('accepts source positions when output samples are not reported', () => {
+    let now = 0;
+    const clock = new PlaybackClock(() => now);
+    clock.reconcile({ ...snapshot(4, 'playing', null, 1000), filterGraph: 'atempo=1.5' });
+    now = 1000;
+    expect(clock.getMediaTime()).toBe(2500);
+    clock.reconcile({ ...snapshot(4, 'playing', null, null), filterGraph: 'atempo=1.5' });
+    expect(clock.getMediaTime()).toBe(2500);
+  });
+
+  it('starts estimating after a timestamp-less initial snapshot', () => {
+    let now = 0;
+    const clock = new PlaybackClock(() => now);
+    clock.reconcile({ ...snapshot(5, 'starting', null), filterGraph: 'atempo=1.25' });
+    expect(clock.getMediaTime()).toBeNull();
+    clock.start(5);
+    now = 2000;
+    expect(clock.getMediaTime()).toBe(2500);
   });
 
   it('does not advance while the authoritative server state is paused', () => {

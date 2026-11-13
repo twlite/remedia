@@ -36,6 +36,10 @@ export interface GuildBackend extends EventEmitter<GuildBackendEvents> {
   readonly position: PlaybackPosition;
   /** Locally estimated output elapsed time in ms, reconciled with authoritative native snapshots. */
   getPlaybackTime(): number;
+  /** Locally interpolated source position, or null when its rate is unknown. */
+  getMediaTime(): number | null;
+  /** Constant source tempo factor, or null when the graph is not safely estimable. */
+  getPlaybackRate(): number | null;
   /** Source duration in milliseconds, or null when unknown. */
   readonly durationMs: number | null;
   /** Most recent playback or voice failure message, or null when no error is available. */
