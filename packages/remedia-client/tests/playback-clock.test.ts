@@ -125,6 +125,16 @@ describe('remote playback clock', () => {
     expect(clock.getMediaTime()).toBe(2500);
   });
 
+  it('starts estimating after a timestamp-less initial snapshot', () => {
+    let now = 0;
+    const clock = new PlaybackClock(() => now);
+    clock.reconcile({ ...snapshot(5, 'starting', null), filterGraph: 'atempo=1.25' });
+    expect(clock.getMediaTime()).toBeNull();
+    clock.start(5);
+    now = 2000;
+    expect(clock.getMediaTime()).toBe(2500);
+  });
+
   it('does not advance while the authoritative server state is paused', () => {
     let now = 0;
     const clock = new PlaybackClock(() => now);
