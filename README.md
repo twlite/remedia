@@ -7,6 +7,9 @@ encrypted voice transport. Run it inside your Node.js bot, or on a separate serv
 Your application keeps its own Discord Gateway connection and decides what to play. Remedia is not a
 music search service or a Lavalink-compatible server.
 
+For a batteries included framework for Remedia, use [Discord Player](https://discord-player.js.org).
+It provides a queue system and other bot features so you do not have to set them up manually.
+
 ## Get started
 
 Pick how you want to run the engine:

@@ -241,12 +241,6 @@ impl DaveProtocol {
                 self.create_key_package()?,
             )]);
         }
-        let transition_id = data
-            .get("transition_id")
-            .ok_or_else(|| {
-                VoiceError::Protocol("DAVE prepare-epoch omitted `transition_id`".into())
-            })
-            .and_then(|value| parse_u16(value, "transition_id"))?;
         let current_epoch = self
             .session
             .epoch()
@@ -270,20 +264,9 @@ impl DaveProtocol {
         if version != self.protocol_version {
             return Err(VoiceError::UnsupportedDaveVersion(version));
         }
-        self.session
-            .prepare_transition(transition_id, version)
-            .map_err(|error| VoiceError::Dave(error.to_string()))?;
-        if transition_id == 0 {
-            return Ok(Vec::new());
-        }
-        self.pending_transitions.insert(transition_id, version);
-        Ok(vec![OutgoingGatewayMessage::Json(json_message(
-            23,
-            json!({
-                "transition_id": transition_id,
-                "protocol_version": version,
-            }),
-        ))])
+        // Opcode 24 has no transition ID. Keep the current group and media
+        // keys; opcode 21 supplies the ID for a same-epoch transition.
+        Ok(Vec::new())
     }
 
     fn process_proposals(

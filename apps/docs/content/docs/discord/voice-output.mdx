@@ -179,6 +179,17 @@ background transport failure is available from `connection.failure()` and
 changes the state to `Failed`. No Opus packet is sent until DAVE media encryption
 is ready.
 
+DAVE epoch announcements (opcode 24) contain `epoch` and `protocol_version`,
+without a transition ID. Epoch 1 recreates the local MLS group and sends a new
+key package, including during a sole-member reset. A same-epoch announcement
+retains the group; a future-epoch announcement waits for MLS processing. Transition
+IDs come from opcode 21 or the MLS commit/welcome messages (29/30). Readiness is
+acknowledged for those transitions, and opcode 22 switches the sending keys.
+Opcode 21 with transition ID 0 executes initialization immediately, preserving
+the sole-member reset flow. Unsupported versions, stale epochs (except the
+explicit epoch 1 reset), and unknown execute-transition IDs are rejected;
+transport-only downgrades remain forbidden.
+
 The transport attempts Voice Gateway v8 Resume after an unexpected WebSocket
 closure or a missed heartbeat acknowledgment when the close condition permits
 Resume. Resume keeps the voice connection's UDP and DAVE state. Close codes
