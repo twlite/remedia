@@ -19,9 +19,7 @@ export function estimateTempoFactor(graph: string | null): number | null {
       else if (/^\d/.test(rawArgs)) return null;
     } else if (name === 'asetrate') {
       // Restrict to numeric expressions of the form N or N * multiplier.
-      const match = /^(\d+(?:\.\d+)?)(?:\s*\*\s*(\d+(?:\.\d+)?))?(?::.*)?$/.exec(
-        rawArgs.trim(),
-      );
+      const match = /^(\d+(?:\.\d+)?)(?:\s*\*\s*(\d+(?:\.\d+)?))?(?::.*)?$/.exec(rawArgs.trim());
       if (!match) return null;
       const rate = Number(match[1]) * Number(match[2] ?? 1);
       if (!Number.isFinite(rate) || rate <= 0) return null;
