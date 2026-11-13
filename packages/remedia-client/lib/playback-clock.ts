@@ -81,8 +81,8 @@ export class PlaybackClock {
     const nextGeneration = snapshot.generation !== this.#generation;
     const observed =
       snapshot.position.playedMs ??
-      snapshot.position.mediaMs ??
-      (snapshot.position.submittedMs > 0 ? snapshot.position.submittedMs : null);
+      (snapshot.position.submittedMs > 0 ? snapshot.position.submittedMs : null) ??
+      snapshot.position.mediaMs;
     const now = this.#now();
     const previousEstimate = this.#readAt(now);
     const previousMedia = this.#readMediaAt(now);
