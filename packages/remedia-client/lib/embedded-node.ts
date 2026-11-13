@@ -21,6 +21,7 @@ import type {
   VoiceConnectionState,
 } from './types.js';
 import type { GuildBackend, GuildBackendEvents, NodeAdapter } from './adapters.js';
+import { estimateTempoFactor } from './tempo-factor.js';
 
 interface EmbeddedPlayback extends EventEmitterType {
   readonly state: PlaybackState;
@@ -264,7 +265,13 @@ class EmbeddedGuildBackend extends RemediaEventEmitter<GuildBackendEvents> imple
   }
   getPlaybackTime(): number {
     const pos = this.#session.position;
-    return pos.playedMs ?? pos.mediaMs ?? pos.submittedMs;
+    return pos.playedMs ?? pos.submittedMs;
+  }
+  getMediaTime(): number | null {
+    return this.#session.position.mediaMs;
+  }
+  getPlaybackRate(): number | null {
+    return estimateTempoFactor(this.#session.filters.graph);
   }
   get durationMs(): number | null {
     return this.#session.durationMs;
