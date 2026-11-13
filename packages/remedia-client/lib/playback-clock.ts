@@ -41,6 +41,12 @@ export class PlaybackClock {
       this.#state = 'playing';
       return;
     }
+    // A lifecycle start may follow a snapshot that had no media timestamps yet.
+    // The start event itself establishes the source-time zero boundary.
+    if (!this.#mediaKnown) {
+      this.#mediaMs = 0;
+      this.#mediaKnown = true;
+    }
     this.transition('playing');
   }
 
