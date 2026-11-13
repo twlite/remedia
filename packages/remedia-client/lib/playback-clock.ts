@@ -90,7 +90,7 @@ export class PlaybackClock {
     this.#state = snapshot.state;
     this.#positionMs = observed ?? (nextGeneration ? 0 : previousEstimate);
     this.#mediaMs = snapshot.position.mediaMs ?? (nextGeneration ? 0 : previousMedia ?? 0);
-    this.#mediaKnown = snapshot.position.mediaMs !== null || !nextGeneration && previousMedia !== null;
+    this.#mediaKnown = snapshot.position.mediaMs !== null || (!nextGeneration && previousMedia !== null);
     this.#mediaRate = estimateTempoFactor(snapshot.filterGraph);
     this.#sampledAtMs = now;
     this.#suspended = false;
