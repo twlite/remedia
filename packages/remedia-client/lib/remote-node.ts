@@ -1138,6 +1138,12 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
   getPlaybackTime(): number {
     return this.#playbackClock.getPlaybackTime();
   }
+  getMediaTime(): number | null {
+    return this.#playbackClock.getMediaTime();
+  }
+  getPlaybackRate(): number | null {
+    return this.#playbackClock.getPlaybackRate();
+  }
   get durationMs(): number | null {
     return this.#snapshot.durationMs;
   }
@@ -1209,6 +1215,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
         filterGraph: configuredFilter,
         volume: configuredVolume,
       };
+      this.#playbackClock.setFilterGraph(this.#snapshot.filterGraph);
       if (this.#snapshot.filterGraph !== null) {
         await this.#node.control(this.#options.guildId, 'player.filter.set', {
           graph: this.#snapshot.filterGraph,
@@ -1424,6 +1431,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
       else await this.#node.control(this.#options.guildId, 'player.filter.set', { graph });
     }
     this.#snapshot = { ...this.#snapshot, filterGraph: graph };
+    this.#playbackClock.setFilterGraph(graph);
   }
 
   async setVolume(gain: number): Promise<void> {
@@ -1706,6 +1714,7 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
       const graph = nullableString(event.data.graph);
       this.#snapshot = { ...this.#snapshot, filterGraph: graph };
       if (previousGraph !== graph) {
+        this.#playbackClock.setFilterGraph(graph);
         this.emit(PlaybackEvent.filterChanged, {
           ...this.#playbackIdentity(event.data),
           previousGraph,
