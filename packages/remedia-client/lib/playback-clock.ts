@@ -95,7 +95,7 @@ export class PlaybackClock {
     this.#generation = snapshot.generation;
     this.#state = snapshot.state;
     this.#positionMs = observed ?? (nextGeneration ? 0 : previousEstimate);
-    this.#mediaMs = snapshot.position.mediaMs ?? (nextGeneration ? 0 : previousMedia ?? 0);
+    this.#mediaMs = snapshot.position.mediaMs ?? (nextGeneration ? 0 : (previousMedia ?? 0));
     const hasMediaTimestamp = snapshot.position.mediaMs !== null;
     const canReuseMediaEstimate = !nextGeneration && previousMedia !== null;
     this.#mediaKnown = hasMediaTimestamp || canReuseMediaEstimate;
