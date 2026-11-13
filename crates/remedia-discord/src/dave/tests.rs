@@ -45,13 +45,12 @@ fn prepare_transition_requires_nonzero_dave_and_returns_ready_message() {
 }
 
 #[test]
-fn prepare_epoch_starts_mls_and_prepares_later_epoch_transitions() {
+fn sole_member_reset_reinitializes_mls_without_epoch_transition_id() {
     let mut session = DaveProtocol::new(davey::DAVE_PROTOCOL_VERSION, 100, 200).unwrap();
     let initial = session
         .handle(&GatewayMessage::Json {
             opcode: 24,
             data: json!({
-                "transition_id": 0,
                 "epoch": 1,
                 "protocol_version": davey::DAVE_PROTOCOL_VERSION,
             }),
@@ -61,6 +60,18 @@ fn prepare_epoch_starts_mls_and_prepares_later_epoch_transitions() {
     assert!(
         matches!(initial.as_slice(), [OutgoingGatewayMessage::Binary(bytes)] if bytes.first() == Some(&26))
     );
+
+    let transition = session
+        .handle(&GatewayMessage::Json {
+            opcode: 21,
+            data: json!({
+                "transition_id": 0,
+                "protocol_version": davey::DAVE_PROTOCOL_VERSION,
+            }),
+            sequence: None,
+        })
+        .unwrap();
+    assert!(transition.is_empty());
 
     let later = session.handle(&GatewayMessage::Json {
         opcode: 24,
