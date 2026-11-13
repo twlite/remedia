@@ -63,6 +63,10 @@ embedders.
 Read the documentation at **[remedia.twlite.dev/docs](https://remedia.twlite.dev/docs)**. Its source
 is in [`apps/docs`](apps/docs).
 
+## Community
+
+Join the [AndrozDev Discord server](https://androz2091.fr/discord) to get help and share what you build.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for toolchains, native dependencies, tests, and release

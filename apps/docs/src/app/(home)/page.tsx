@@ -9,6 +9,7 @@ import {
   LayoutGrid,
   Zap,
 } from 'lucide-react';
+import { DiscordInvite } from '@/components/discord-invite';
 import { HomeSearch } from '@/components/home-search';
 import { InstallCommand } from '@/components/install-command';
 import { version } from '../../../../../packages/remedia-node/package.json';
@@ -156,6 +157,7 @@ export default function HomePage() {
                 View on GitHub
               </a>
             </div>
+            <DiscordInvite />
           </div>
           <div className={styles.codeWindow}>
             <div className={styles.codeHeader}>

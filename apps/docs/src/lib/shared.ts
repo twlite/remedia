@@ -1,5 +1,8 @@
 import { createGetUrl } from 'fumadocs-core/source';
 
+/** Invitation to the AndrozDev support community shared with Discord Player. */
+export const discordInviteUrl = 'https://androz2091.fr/discord';
+
 export const appName = 'Remedia';
 export const docsRoute = '/docs';
 export const docsImageRoute = '/og/docs';
