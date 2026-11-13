@@ -91,7 +91,10 @@ describe('remote playback clock', () => {
   it('estimates source progress at the active tempo without rewriting prior time', () => {
     let now = 0;
     const clock = new PlaybackClock(() => now);
-    clock.reconcile({ ...snapshot(1, 'playing', null, 5000, 4000), filterGraph: 'aresample=48000,asetrate=48000*1.25' });
+    clock.reconcile({
+      ...snapshot(1, 'playing', null, 5000, 4000),
+      filterGraph: 'aresample=48000,asetrate=48000*1.25',
+    });
     expect(clock.getPlaybackRate()).toBe(1.25);
     now = 2000;
     expect(clock.getMediaTime()).toBe(7500);
