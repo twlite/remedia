@@ -372,10 +372,32 @@ fn update(no_ffmpeg: bool) -> Result<(), Box<dyn std::error::Error>> {
             .as_nanos(),
         extension
     ));
-    fs::write(&script_path, source)?;
+    // Only execute the installer shipped with this binary. Old releases must be
+    // repaired explicitly using the current installer; never fetch mutable script text.
+    let mut script = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&script_path)?;
+    script.write_all(source.as_bytes())?;
+    drop(script);
     let mut process = if cfg!(windows) {
-        let mut command = Command::new("powershell.exe");
-        command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
+        let shell = if Command::new("pwsh")
+            .args(["-NoProfile", "-NonInteractive", "-Command", "exit 0"])
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            "pwsh"
+        } else {
+            "powershell.exe"
+        };
+        let mut command = Command::new(shell);
+        command.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ]);
         command.arg(&script_path);
         if no_ffmpeg {
             command.arg("-NoFFmpeg");
@@ -407,8 +429,11 @@ fn update(no_ffmpeg: bool) -> Result<(), Box<dyn std::error::Error>> {
     }
     let status = process.status();
     let _ = fs::remove_file(script_path);
-    if !status?.success() {
-        return Err("the installer failed; the current installation was not switched".into());
+    let status = status?;
+    if !status.success() {
+        // Child stdout/stderr are inherited, so the original PowerShell exception
+        // (including HTTP, assembly or filesystem diagnostics) remains visible.
+        return Err(format!("installer exited with {status}; see its error above. Older Windows installations can be repaired with the current installer: https://remedia.twlite.dev/docs/server/installation#recover-an-older-windows-installation").into());
     }
     Ok(())
 }

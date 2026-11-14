@@ -138,8 +138,8 @@ function runSh(box, args, extraEnv = {}) {
   });
 }
 
-function runPs1(box, args) {
-  return spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-File', installPs1, ...args], {
+function runPs1(box, args, shell = 'pwsh') {
+  return spawnSync(shell, ['-NoProfile', '-NonInteractive', '-File', installPs1, ...args], {
     encoding: 'utf8',
     env: {
       ...process.env,
@@ -389,8 +389,8 @@ test(
       mkdirSync(dirname(serverMarker), { recursive: true });
       writeFileSync(serverMarker, 'v0.0.1');
 
-      for (let run = 0; run < 2; run += 1) {
-        const result = runPs1(box, ['-FFmpegOnly']);
+      for (const shell of ['powershell.exe', 'pwsh']) {
+        const result = runPs1(box, ['-FFmpegOnly'], shell);
 
         assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
         assert.match(result.stdout, /Verified FFmpeg 9 libraries/);
@@ -406,6 +406,7 @@ test(
 
       assert.match(micromambaCalls[0], /^micromamba create /);
       assert.match(micromambaCalls[1], /^micromamba install /);
+      for (const call of micromambaCalls) assert.match(call, /--platform win-64/);
     } finally {
       box.cleanup();
     }
@@ -685,3 +686,242 @@ test('PowerShell installation skips current versions and keeps its pointer on do
     box.cleanup();
   }
 });
+
+for (const shell of windows ? ['powershell.exe', 'pwsh'] : ['pwsh']) {
+  test(`${shell} validates Windows x64 and Windows 11 ARM64 independently of shell architecture`, (t) => {
+    if (spawnSync(shell, ['-NoProfile', '-Command', 'exit 0']).error)
+      return t.skip(`${shell} unavailable`);
+
+    const source = readFileSync(installPs1, 'utf8');
+    const predicate = source.slice(
+      source.indexOf('function Test-RemediaWindowsPlatform'),
+      source.indexOf('$osArchitecture ='),
+    );
+    const architecture = source.slice(
+      source.indexOf('$osArchitecture ='),
+      source.indexOf('if (-not (Test-RemediaWindowsPlatform'),
+    );
+    const result = spawnSync(
+      shell,
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `${predicate}
+      $ErrorActionPreference = 'Stop'
+      foreach ($arch in @('AMD64', 'X64', 'ARM64')) {
+        if (-not (Test-RemediaWindowsPlatform $arch 22000 $true)) { throw "Rejected $arch" }
+      }
+      if (Test-RemediaWindowsPlatform ARM64 19045 $true) { throw 'Accepted Windows 10 ARM64' }
+      if (Test-RemediaWindowsPlatform x86 22631 $true) { throw 'Accepted x86' }
+      if (Test-RemediaWindowsPlatform IA64 22631 $true) { throw 'Accepted IA64' }
+      if (Test-RemediaWindowsPlatform AMD64 22631 $false) { throw 'Accepted non-Windows' }
+      foreach ($native in @('AMD64', 'ARM64')) {
+        $env:PROCESSOR_ARCHITECTURE = 'x86'
+        $env:PROCESSOR_ARCHITEW6432 = $native
+        ${architecture}
+        if ($osArchitecture -ne $native) { throw 'Lost native architecture in an emulated shell' }
+      }
+      $env:PROCESSOR_ARCHITEW6432 = ''
+      $env:PROCESSOR_ARCHITECTURE = 'ARM64'
+      ${architecture}
+      if ($osArchitecture -ne 'ARM64') { throw 'Lost native shell architecture' }
+    `,
+      ],
+      { encoding: 'utf8' },
+    );
+
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  });
+}
+
+// Run after cargo build on Windows CI. The proxy replaces only external services:
+// the installed wrapper, real CLI update handler, embedded installer, hashing,
+// extraction, staging and pointer switch all execute unchanged.
+test(
+  'Windows installed CLI updates through pwsh and PowerShell 5.1 without replacing active executables',
+  { skip: !windows },
+  (t) => {
+    const cli = process.env.REMEDIA_TEST_CLI;
+    if (!cli) return t.skip('Set REMEDIA_TEST_CLI to the built standalone CLI');
+    assert.ok(existsSync(cli), cli);
+
+    const box = sandbox();
+    const realShell = spawnSync(
+      'powershell.exe',
+      ['-NoProfile', '-Command', '(Get-Command powershell.exe).Source'],
+      { encoding: 'utf8' },
+    ).stdout.trim();
+    const userPath = spawnSync(
+      realShell,
+      ['-NoProfile', '-Command', "[Environment]::GetEnvironmentVariable('Path','User')"],
+      { encoding: 'utf8' },
+    ).stdout.trim();
+    const psQuote = (value) => `'${value.replaceAll("'", "''")}'`;
+
+    try {
+      const payload = join(box.base, 'payload');
+      mkdirSync(payload);
+      writeFileSync(join(payload, 'remedia-server-x86_64-pc-windows-msvc.exe'), readFileSync(cli));
+      writeFileSync(
+        join(payload, 'remedia-server-runtime-x86_64-pc-windows-msvc.exe'),
+        'fixture runtime',
+      );
+      for (const name of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt'])
+        writeFileSync(join(payload, name), name);
+      const archive = join(box.base, 'release.tar.gz');
+      packArchive(archive, payload, readdirSync(payload));
+      const digest = createHash('sha256').update(readFileSync(archive)).digest('hex');
+      const metadata = join(box.base, 'release.json');
+      const bootstrap = join(box.base, 'bootstrap.ps1');
+      writeFileSync(
+        bootstrap,
+        `param([string]$Installer, [switch]$NoFFmpeg)
+function Invoke-RestMethod { param($Uri, $Headers) Get-Content -LiteralPath ${psQuote(metadata)} -Raw | ConvertFrom-Json }
+& $Installer -NoFFmpeg:$NoFFmpeg
+`,
+      );
+      // A real executable is needed because Rust Command does not execute .cmd files.
+      const proxy = join(box.base, 'proxy.rs');
+      writeFileSync(
+        proxy,
+        `use std::{env, fs::OpenOptions, io::Write, process::{Command, exit}};
+fn main() {
+ let args: Vec<String> = env::args().skip(1).collect();
+ let shell = env::var("FIXTURE_SHELL").unwrap();
+ let name = env::current_exe().unwrap().file_name().unwrap().to_string_lossy().to_string();
+ writeln!(OpenOptions::new().append(true).open(env::var("FIXTURE_LOG").unwrap()).unwrap(), "{} {:?}", name, args).unwrap();
+ if let Some(i) = args.iter().position(|a| a == "-File") {
+   let mut cmd = Command::new(shell);
+   cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]);
+   cmd.arg(env::var("FIXTURE_BOOTSTRAP").unwrap()).arg(&args[i+1]);
+   cmd.args(&args[i+2..]);
+   exit(cmd.status().unwrap().code().unwrap_or(1));
+ }
+ exit(0);
+}
+`,
+      );
+      const compiled = spawnSync('rustc', [proxy, '-o', join(box.fakeBin, 'powershell.exe')], {
+        encoding: 'utf8',
+      });
+      assert.equal(compiled.status, 0, compiled.stderr);
+      const proxyBytes = readFileSync(join(box.fakeBin, 'powershell.exe'));
+      const env = {
+        ...process.env,
+        PATH: `${box.fakeBin};${process.env.PATH}`,
+        REMEDIA_INSTALL_DIR: box.installDir,
+        REMEDIA_ARCHIVE_PATH: archive,
+        FIXTURE_BOOTSTRAP: bootstrap,
+        FIXTURE_LOG: box.log,
+        FIXTURE_SHELL: realShell,
+      };
+      const pointer = join(box.installDir, 'libexec/current.txt');
+      const setRelease = (version, checksum = digest) =>
+        writeFileSync(
+          metadata,
+          JSON.stringify({
+            tag_name: `v${version}`,
+            assets: [
+              {
+                name: 'remedia-server-x86_64-pc-windows-msvc.tar.gz',
+                digest: `sha256:${checksum}`,
+              },
+            ],
+          }),
+        );
+      const runWrapper = (args, extraEnv = {}) =>
+        spawnSync(
+          process.env.ComSpec || 'cmd.exe',
+          ['/d', '/s', '/c', `""${join(box.installDir, 'bin/remedia.cmd')}" ${args}"`],
+          { encoding: 'utf8', env: { ...env, ...extraEnv } },
+        );
+
+      for (const shell of ['powershell.exe', 'pwsh']) {
+        const detected = spawnSync(
+          realShell,
+          ['-NoProfile', '-Command', `(Get-Command ${shell}).Source`],
+          { encoding: 'utf8' },
+        );
+        assert.equal(detected.status, 0, detected.stderr);
+        env.FIXTURE_SHELL = detected.stdout.trim();
+        if (shell === 'pwsh') writeFileSync(join(box.fakeBin, 'pwsh.exe'), proxyBytes);
+        // In the fallback case hide the system pwsh from the updater's PATH.
+        env.PATH = `${box.fakeBin};${process.env.SystemRoot}\\System32`;
+        setRelease('0.1.0');
+        const initial = spawnSync(
+          env.FIXTURE_SHELL,
+          ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', bootstrap, installPs1, '-NoFFmpeg'],
+          { encoding: 'utf8', env },
+        );
+        assert.equal(initial.status, 0, initial.stdout + initial.stderr);
+        assert.equal(runWrapper('--version').status, 0);
+        assert.equal(
+          spawnSync(
+            process.env.ComSpec || 'cmd.exe',
+            ['/d', '/s', '/c', `""${join(box.installDir, 'bin/remedia-server.cmd')}" --version"`],
+            { env },
+          ).status,
+          0,
+        );
+        const previous = readFileSync(pointer, 'utf8');
+        const oldExe = join(box.installDir, 'libexec', previous, 'remedia-server.exe');
+        const oldBytes = readFileSync(oldExe);
+        for (const library of prefixLibraries(box)) {
+          mkdirSync(dirname(library), { recursive: true });
+          writeFileSync(library, 'active DLL');
+        }
+        setRelease('0.2.0');
+        // Remove the explicit prefix: update must infer it from its versioned executable.
+        const result = runWrapper(shell === 'pwsh' ? 'update' : 'update --no-ffmpeg', {
+          REMEDIA_INSTALL_DIR: undefined,
+        });
+        assert.equal(result.status, 0, result.stdout + result.stderr);
+        assert.notEqual(readFileSync(pointer, 'utf8'), previous);
+        assert.deepEqual(readFileSync(oldExe), oldBytes);
+        for (const library of prefixLibraries(box))
+          assert.equal(readFileSync(library, 'utf8'), 'active DLL');
+        assert.match(
+          readFileSync(box.log, 'utf8'),
+          new RegExp(`${shell.replace('.', '\\.')}.*-File`),
+        );
+        const current = readFileSync(pointer, 'utf8');
+        const repeat = runWrapper('update --no-ffmpeg');
+        assert.equal(repeat.status, 0, repeat.stdout + repeat.stderr);
+        assert.match(repeat.stdout, /already current/);
+        assert.equal(readFileSync(pointer, 'utf8'), current);
+        setRelease('0.3.0');
+        const missing = runWrapper('update --no-ffmpeg', {
+          REMEDIA_ARCHIVE_PATH: join(box.base, 'missing.tar.gz'),
+        });
+        assert.notEqual(missing.status, 0);
+        assert.match(missing.stdout + missing.stderr, /missing.tar.gz/);
+        assert.equal(readFileSync(pointer, 'utf8'), current);
+        setRelease('0.3.0', '0'.repeat(64));
+        const failed = runWrapper('update --no-ffmpeg');
+        assert.notEqual(failed.status, 0);
+        assert.match(failed.stdout + failed.stderr, /checksum mismatch/i);
+        assert.equal(readFileSync(pointer, 'utf8'), current);
+        assert.equal(runWrapper('--version').status, 0);
+        setRelease('0.1.0');
+        const switched = runWrapper('upgrade --no-ffmpeg', { REMEDIA_VERSION: '0.1.0' });
+        assert.equal(switched.status, 0, switched.stdout + switched.stderr);
+        assert.equal(
+          readFileSync(
+            join(box.installDir, 'libexec', readFileSync(pointer, 'utf8'), 'version.txt'),
+            'utf8',
+          ),
+          'v0.1.0',
+        );
+        rmSync(join(box.installDir, 'libexec/current.txt'));
+      }
+    } finally {
+      spawnSync(realShell, [
+        '-NoProfile',
+        '-Command',
+        `[Environment]::SetEnvironmentVariable('Path', ${psQuote(userPath)}, 'User')`,
+      ]);
+      box.cleanup();
+    }
+  },
+);

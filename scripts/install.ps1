@@ -10,9 +10,20 @@ $ErrorActionPreference = 'Stop'
 if ($FFmpegOnly -and $NoFFmpeg) {
   throw 'Conflicting options: -FFmpegOnly installs only FFmpeg and -NoFFmpeg installs only the server, so nothing would be left to install. Remove one of them.'
 }
-if (-not [Environment]::Is64BitOperatingSystem -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne [Runtime.InteropServices.Architecture]::X64) {
-  throw 'The Remedia installer currently supports Windows x64 only (remedia-server publishes a Windows x64 MSVC binary only).'
+# Read the native OS architecture even from an emulated or 32-bit shell. These
+# environment values are available in Windows PowerShell 5.1 without newer .NET APIs.
+function Test-RemediaWindowsPlatform {
+  param([string]$Architecture, [int]$Build, [bool]$WindowsHost)
+  return $WindowsHost -and ($Architecture -in @('AMD64', 'X64') -or
+    ($Architecture -eq 'ARM64' -and $Build -ge 22000))
 }
+$osArchitecture = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+if (-not (Test-RemediaWindowsPlatform -Architecture $osArchitecture -Build ([Environment]::OSVersion.Version.Build) -WindowsHost ($env:OS -eq 'Windows_NT'))) {
+  throw 'Remedia requires Windows x64 (Intel or AMD) or Windows 11 ARM64 with x64 emulation.'
+}
+# Initialize before any GitHub metadata request, not just archive downloads.
+Add-Type -AssemblyName System.Net.Http
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 # FFmpeg 9 shared-library ABI majors (not application versions). Keep in sync with
 # .github/scripts/ffmpeg-abi.mjs and packages/remedia-node/lib/ffmpeg-runtime.ts.
 $ffmpegAbi = [ordered]@{ avcodec = 63; avformat = 63; avutil = 61; avfilter = 12; swresample = 7 }
@@ -268,7 +279,7 @@ function Install-RemediaFFmpeg {
   $action = if (Test-Path -LiteralPath (Join-Path $prefix 'conda-meta')) { 'install' } else { 'create' }
   Write-InstallStatus 'Provisioning FFmpeg 9 via micromamba (package resolution may take a while)...'
   # Native command output must reach the console, not this function's return value (the prefix).
-  & $mamba $action --yes --prefix $prefix --override-channels -c conda-forge $ffmpegPackage | Out-Host
+  & $mamba $action --yes --prefix $prefix --platform win-64 --override-channels -c conda-forge $ffmpegPackage | Out-Host
   if ($LASTEXITCODE -ne 0) { throw 'FFmpeg 9 provisioning failed.' }
   Test-RemediaFFmpeg -Prefix $prefix
   return $prefix
@@ -360,7 +371,32 @@ try {
   if (!(Test-Path $serverExe) -or !(Test-Path $runtimeExe)) { throw 'CLI or runtime binary not present in release archive.' }
 
   if (-not $NoFFmpeg) {
-    Install-RemediaFFmpeg -BinaryDirectory $binDir -WorkDirectory $tmp | Out-Null
+    # Do not modify DLLs used by the active installation. The pinned FFmpeg ABI
+    # is unchanged; -FFmpegOnly remains the explicit dependency repair/update path.
+    $healthyFFmpeg = $false
+    if ((Test-Path -LiteralPath $currentFile) -and
+        (Test-Path -LiteralPath (Join-Path $InstallDir 'ffmpeg9'))) {
+      try {
+        Test-RemediaFFmpeg -Prefix (Join-Path $InstallDir 'ffmpeg9')
+        $healthyFFmpeg = $true
+      } catch {
+        throw "The current FFmpeg installation needs repair. Run the current installer with -FFmpegOnly before updating. $($_.Exception.Message)"
+      }
+    }
+    if (-not $healthyFFmpeg) {
+      $dependencyPrefix = Join-Path $InstallDir 'ffmpeg9'
+      $dependencyExisted = Test-Path -LiteralPath $dependencyPrefix
+      try {
+        Install-RemediaFFmpeg -BinaryDirectory $binDir -WorkDirectory $tmp | Out-Null
+      } catch {
+        # A failed first provision must not shadow externally managed libraries
+        # on the next invocation of the existing command wrapper.
+        if (-not $dependencyExisted) {
+          Remove-Item -LiteralPath $dependencyPrefix -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        throw
+      }
+    }
   } else {
     Write-InstallStatus 'Skipping FFmpeg installation (-NoFFmpeg).'
   }

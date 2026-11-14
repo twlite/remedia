@@ -35,7 +35,7 @@ irm https://remedia.twlite.dev/install.ps1 | iex
 
 `-InstallDir <path>` (or `REMEDIA_INSTALL_DIR`) selects another prefix. Paths with spaces are supported.
 
-Windows x64 (MSVC) is the only supported standalone Windows target. The installer places command wrappers in `$HOME\.remedia\bin`, adds that directory to the user PATH (without admin rights), and updates the current PowerShell session PATH. It stores versioned executables separately, so a running server executable does not need to be overwritten. The PowerShell installer needs `tar` and access to GitHub, `micro.mamba.pm`, and conda-forge. It prefers Windows’ built-in `System32\tar.exe` when present, so Git’s GNU tar earlier on PATH cannot misinterpret drive-letter archive paths. Otherwise it uses `tar` from PATH.
+Windows x64 (AMD64, including Intel and AMD processors) and Windows 11 ARM64 are supported. Both use the x64 MSVC server binaries, x64 micromamba, and `win-64` FFmpeg 9 libraries; Windows 11 ARM64 runs these through its built-in x64 emulation. Windows 10 ARM64 and 32-bit Windows are unsupported. The installer places command wrappers in `$HOME\.remedia\bin`, adds that directory to the user PATH (without admin rights), and updates the current PowerShell session PATH. It stores versioned executables separately, so a running server executable does not need to be overwritten. The PowerShell installer needs `tar` and access to GitHub, `micro.mamba.pm`, and conda-forge. It prefers Windows’ built-in `System32\tar.exe` when present, so Git’s GNU tar earlier on PATH cannot misinterpret drive-letter archive paths. Otherwise it uses `tar` from PATH.
 
 ### Use a browser-downloaded archive
 
@@ -120,7 +120,21 @@ Both commands select the latest stable release, or the newest published prerelea
 
 If you manage FFmpeg independently, use `remedia update --no-ffmpeg`. `REMEDIA_INSTALL_DIR` and `REMEDIA_VERSION` can be supplied to the installers to select another install directory or release tag. Set `REMEDIA_VERSION` before running `remedia update` to select an explicit release.
 
-Installers keep versioned binary pairs and switch them through an atomic pointer file. A running instance continues using its previous binary until restarted. Updates infer the installation prefix from the executable unless `REMEDIA_INSTALL_DIR` is set. Windows supports Windows PowerShell 5.1 and PowerShell 7+, including direct GitHub downloads and release-asset API fallback.
+Installers keep versioned binary pairs and switch them through an atomic pointer file. A running instance continues using its previous binary until restarted. Updates infer the installation prefix from the executable unless `REMEDIA_INSTALL_DIR` is set. Windows supports Windows PowerShell 5.1 and PowerShell 7+, including direct GitHub downloads and release-asset API fallback. Each update prefers `pwsh` when available, falling back to `powershell.exe`, independently of the shell used to install. Errors from the installer are printed directly. Server updates reuse verified existing FFmpeg libraries so they do not modify DLLs in use; use `-FFmpegOnly` explicitly to repair or update dependencies. Stop running servers before repairing dependencies.
+
+### Recover an older Windows installation
+
+Older binaries run their own build-time installer, so they cannot pick up installer fixes from the website. If `remedia update` fails with a `System.Net.Http` assembly error, or rejects Windows 11 ARM64, run the current installer explicitly in PowerShell 5.1 or PowerShell 7:
+
+```powershell
+# Required by Windows PowerShell 5.1 before the initial HTTPS request
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+& ([scriptblock]::Create((irm https://remedia.twlite.dev/install.ps1))) -InstallDir 'C:\Tools\Remedia' -NoFFmpeg
+```
+
+Replace the example directory with your existing installation prefix. Omit `-NoFFmpeg` if the installer should provision dependencies. Set `$env:REMEDIA_VERSION` to a release tag to switch versions; otherwise the installer selects the latest release. Restart the server after installing. If that release is already installed, the installer exits without replacing it; select a newer fixed release when available.
+
+The CLI continues using its embedded installer rather than downloading and executing mutable remote scripts. Recovery is an explicit execution of the current installer under the same trust model as initial installation; you can download and review it first or pin it to a trusted commit. Archive SHA-256 verification remains enabled.
 
 ## Security and troubleshooting
 

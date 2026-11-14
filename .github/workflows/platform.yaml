@@ -216,6 +216,12 @@ jobs:
       - name: Build standalone server (Windows)
         if: inputs.os == 'windows'
         run: cargo build --release --locked -p remedia-server --bins
+      - name: Test installed Windows CLI self-updates in both PowerShell shells
+        if: inputs.os == 'windows'
+        shell: pwsh
+        env:
+          REMEDIA_TEST_CLI: ${{ github.workspace }}\target\release\remedia-server.exe
+        run: node --test .github/scripts/installer.test.mjs
       - name: Build N-API addon
         if: inputs.os == 'linux'
         working-directory: packages/remedia-node
