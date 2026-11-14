@@ -802,9 +802,15 @@ fn main() {
 }
 `,
       );
-      const compiled = spawnSync('rustc', [proxy, '-o', join(box.fakeBin, 'powershell.exe')], {
-        encoding: 'utf8',
-      });
+      // Direct rustc invocations do not read Cargo's target linker environment.
+      // Use the workflow's MSVC linker rather than Git's link.exe from PATH.
+      const linker = process.env.CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER;
+      const linkerArgs = linker ? ['-C', `linker=${linker}`] : [];
+      const compiled = spawnSync(
+        'rustc',
+        [proxy, ...linkerArgs, '-o', join(box.fakeBin, 'powershell.exe')],
+        { encoding: 'utf8' },
+      );
       assert.equal(compiled.status, 0, compiled.stderr);
       const proxyBytes = readFileSync(join(box.fakeBin, 'powershell.exe'));
       const env = {
