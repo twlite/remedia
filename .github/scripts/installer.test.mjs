@@ -367,6 +367,10 @@ test(
     assert.ok(existsSync(cli), cli);
 
     const box = sandbox();
+    const nativeArchitecture =
+      process.env.PROCESSOR_ARCHITEW6432 ?? process.env.PROCESSOR_ARCHITECTURE;
+    const target =
+      nativeArchitecture === 'ARM64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc';
     const realShell = spawnSync(
       'powershell.exe',
       ['-NoProfile', '-Command', '(Get-Command powershell.exe).Source'],
@@ -396,11 +400,8 @@ test(
     try {
       const payload = join(box.base, 'payload');
       mkdirSync(payload);
-      writeFileSync(join(payload, 'remedia-server-x86_64-pc-windows-msvc.exe'), readFileSync(cli));
-      writeFileSync(
-        join(payload, 'remedia-server-runtime-x86_64-pc-windows-msvc.exe'),
-        'fixture runtime',
-      );
+      writeFileSync(join(payload, `remedia-server-${target}.exe`), readFileSync(cli));
+      writeFileSync(join(payload, `remedia-server-runtime-${target}.exe`), 'fixture runtime');
       for (const name of [
         'LICENSE',
         'THIRD_PARTY_NOTICES.md',
@@ -450,7 +451,8 @@ fn main() {
       );
       // Direct rustc invocations do not read Cargo's target linker environment.
       // Use the workflow's MSVC linker rather than Git's link.exe from PATH.
-      const linker = process.env.CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER;
+      const linker =
+        process.env[`CARGO_TARGET_${target.toUpperCase().replaceAll('-', '_')}_LINKER`];
       const linkerArgs = linker ? ['-C', `linker=${linker}`] : [];
       const compiled = spawnSync(
         'rustc',
@@ -476,7 +478,7 @@ fn main() {
             tag_name: `v${version}`,
             assets: [
               {
-                name: 'remedia-server-x86_64-pc-windows-msvc.tar.gz',
+                name: `remedia-server-${target}.tar.gz`,
                 digest: `sha256:${checksum}`,
               },
             ],
@@ -542,10 +544,10 @@ pointer: ${existsSync(pointer) ? readFileSync(pointer, 'utf8') : '(missing)'}`,
         const previous = readFileSync(pointer, 'utf8');
         const oldExe = join(box.installDir, 'libexec', previous, 'remedia-server.exe');
         const oldBytes = readFileSync(oldExe);
-        for (const library of prefixLibraries(box)) {
-          mkdirSync(dirname(library), { recursive: true });
-          writeFileSync(library, 'active DLL');
-        }
+        const configFile = join(box.installDir, 'remedia.config.json');
+        const configBytes = Buffer.from('{"fixture":"preserve existing configuration"}\n');
+        writeFileSync(configFile, configBytes);
+        assert.equal(existsSync(join(box.installDir, 'ffmpeg9')), false);
         setRelease('0.2.0');
         // Remove the explicit prefix: update must infer it from its versioned executable.
         const result = runWrapper(shell === 'pwsh' ? 'update' : 'update --no-ffmpeg', {
@@ -554,8 +556,8 @@ pointer: ${existsSync(pointer) ? readFileSync(pointer, 'utf8') : '(missing)'}`,
         assert.equal(result.status, 0, result.stdout + result.stderr);
         assert.notEqual(readFileSync(pointer, 'utf8'), previous);
         assert.deepEqual(readFileSync(oldExe), oldBytes);
-        for (const library of prefixLibraries(box))
-          assert.equal(readFileSync(library, 'utf8'), 'active DLL');
+        assert.deepEqual(readFileSync(configFile), configBytes);
+        assert.equal(existsSync(join(box.installDir, 'ffmpeg9')), false);
         assert.match(
           readFileSync(box.log, 'utf8'),
           new RegExp(`${shell.replace('.', '\\.')}.*-File`),
@@ -578,6 +580,7 @@ pointer: ${existsSync(pointer) ? readFileSync(pointer, 'utf8') : '(missing)'}`,
         assert.match(failed.stdout + failed.stderr, /checksum mismatch/i);
         assert.equal(readFileSync(pointer, 'utf8'), current);
         assert.equal(runWrapper('--version').status, 0);
+        assert.deepEqual(readFileSync(configFile), configBytes);
         setRelease('0.1.0');
         const switched = runWrapper('upgrade --no-ffmpeg', { REMEDIA_VERSION: '0.1.0' });
         assert.equal(switched.status, 0, switched.stdout + switched.stderr);
