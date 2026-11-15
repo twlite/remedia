@@ -860,7 +860,12 @@ fn main() {
         spawnSync(
           process.env.ComSpec || 'cmd.exe',
           ['/d', '/s', '/c', `""${join(box.installDir, 'bin/remedia.cmd')}" ${args}"`],
-          { encoding: 'utf8', env: { ...env, ...extraEnv } },
+          {
+            encoding: 'utf8',
+            env: { ...env, ...extraEnv },
+            // The /S /C command is already correctly quoted for cmd.exe.
+            windowsVerbatimArguments: true,
+          },
         );
 
       for (const shell of ['powershell.exe', 'pwsh']) {
@@ -904,7 +909,7 @@ pointer: ${existsSync(pointer) ? readFileSync(pointer, 'utf8') : '(missing)'}`,
           spawnSync(
             process.env.ComSpec || 'cmd.exe',
             ['/d', '/s', '/c', `""${join(box.installDir, 'bin/remedia-server.cmd')}" --version"`],
-            { env },
+            { env, windowsVerbatimArguments: true },
           ).status,
           0,
         );
