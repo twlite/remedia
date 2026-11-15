@@ -8,13 +8,22 @@ pub(super) fn worker_entry(
     output: Arc<dyn MediaOutput>,
     cancellation: CancellationToken,
     ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
+    reopen: fallback::Reopen,
 ) {
     let panic_ready = ready.clone();
     let worker_shared = Arc::clone(&shared);
     let worker_output = Arc::clone(&output);
     let worker_cancellation = cancellation.clone();
     let result = catch_unwind(AssertUnwindSafe(|| {
-        worker_loop(shared, generation, source, output, cancellation, ready);
+        worker_loop(
+            shared,
+            generation,
+            source,
+            output,
+            cancellation,
+            ready,
+            reopen,
+        );
     }));
 
     if result.is_err() {
@@ -38,6 +47,7 @@ pub(super) fn worker_loop(
     output: Arc<dyn MediaOutput>,
     cancellation: CancellationToken,
     ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
+    reopen: fallback::Reopen,
 ) {
     let _log_capture = crate::ffmpeg_logging::capture();
     let Some(startup::PreparedWorker {
@@ -65,16 +75,163 @@ pub(super) fn worker_loop(
         pre_skip: decoder.opus_pre_skip(),
         ..SeekRecovery::default()
     };
+    // A seek waiting for a second decoder to be prepared on the same track. The active source
+    // keeps playing until it is ready. `force_pcm` asks for PCM output while it is, because
+    // swapping decoders blends decoded audio.
+    let mut fallback: Option<fallback::FallbackSeek> = None;
+    let mut force_pcm = false;
     loop {
-        if seek_recovery.ready(
-            &shared,
-            &decoder,
-            &processor,
-            &pending_frame,
-            passthrough_mode,
-            input_finished,
-            deferred_filter_update.is_some(),
-        ) {
+        if let Some(waiting) = fallback.as_ref() {
+            waiting.set_playhead(fallback_playhead(&pending_frame, &processor));
+            if waiting.timed_out() {
+                tracing::warn!(
+                    name: "core.playback.fallback_seek_timed_out",
+                    target: "remedia_core::playback",
+                    playback_id,
+                    waited_ms = waiting.elapsed().as_millis() as u64,
+                    "fallback seek abandoned; the replacement source did not catch up"
+                );
+                let error = PlaybackError::UnsupportedSeeking(
+                    "the replacement source did not catch up with playback in time".to_owned(),
+                );
+                fallback.take().expect("waiting seek").finish(Err(error));
+                force_pcm = false;
+            } else if waiting.is_finished() && !waiting.is_ready() {
+                let outcome = waiting.take_outcome();
+                let done = fallback.take().expect("waiting seek");
+                force_pcm = false;
+                let error = match outcome {
+                    Some(Err(error)) => error,
+                    _ => PlaybackError::Cancelled,
+                };
+                tracing::warn!(
+                    name: "core.playback.fallback_seek_failed",
+                    target: "remedia_core::playback",
+                    playback_id,
+                    error_kind = playback_error_kind(&error),
+                    "fallback seek failed; the current source continues"
+                );
+                done.finish(Err(error));
+            } else if waiting.is_ready() && passthrough_mode {
+                // Swapping decoders blends decoded audio, so leave forwarded packets first.
+                force_pcm = true;
+            } else if waiting.is_ready() && !seek_recovery.junction {
+                let done = fallback.take().expect("waiting seek");
+                force_pcm = false;
+                let mut replacement = match done.take_outcome() {
+                    Some(Ok(replacement)) => replacement,
+                    _ => {
+                        done.finish(Err(PlaybackError::Cancelled));
+                        continue;
+                    }
+                };
+                // The audio the old decoder would play next, at the exact sample the swap
+                // happens on. If the old source cannot produce any more, the swap still works.
+                let old = match pending_frame.take() {
+                    Some(frame) => Some(frame),
+                    None => match decoder.next_timed_frame() {
+                        Ok(frame) => frame,
+                        Err(_) if is_stopped(&shared, generation) => return,
+                        Err(_) => None,
+                    },
+                };
+                // The replacement continues from the target plus the source time that has
+                // passed, which is not where the old source is: the difference is the seek.
+                let position = old
+                    .as_ref()
+                    .map(|frame| {
+                        done.position_for(
+                            frame
+                                .source_start_sample
+                                .unwrap_or(frame.frame.start_sample),
+                        )
+                    })
+                    .or_else(|| replacement.start());
+                let aligned = match position {
+                    Some(position) => replacement.align(position).map(|()| position),
+                    None => Err(PlaybackError::SeekOutOfRange {
+                        target: done.target(),
+                        duration: replacement.info.duration.unwrap_or_default(),
+                    }),
+                };
+                let head = aligned.and_then(|position| match replacement.take_head() {
+                    Some(head)
+                        if head.source_start_sample.unwrap_or(head.frame.start_sample)
+                            == position =>
+                    {
+                        Ok(head)
+                    }
+                    Some(_) => Err(PlaybackError::UnsupportedSeeking(
+                        "the replacement source's timestamps are not contiguous".to_owned(),
+                    )),
+                    None => Err(PlaybackError::SeekOutOfRange {
+                        target: done.target(),
+                        duration: replacement.info.duration.unwrap_or_default(),
+                    }),
+                });
+                match head {
+                    Ok(mut head) => {
+                        fallback::blend_head(
+                            &mut head.frame.samples,
+                            old.as_ref().map(|frame| &frame.frame.samples[..]),
+                        );
+                        let applied_sample =
+                            head.source_start_sample.unwrap_or(head.frame.start_sample);
+                        let info = replacement.info.clone();
+                        // The old decoder, and with it its connection, is released here.
+                        decoder = *replacement.decoder;
+                        pending_frame = Some(head);
+                        input_finished = false;
+                        // The replacement is decoded, so the stream stays on the PCM path.
+                        can_passthrough = false;
+                        passthrough_eligible = false;
+                        seek_recovery.pending = false;
+                        seek_recovery.junction = false;
+                        seek_recovery.truthful = false;
+                        {
+                            let mut data = lock(&shared.data);
+                            data.duration = info.duration;
+                            data.info = Some(info);
+                            data.passthrough_available = false;
+                            shared.changed.notify_all();
+                        }
+                        fallback::record_applied(
+                            playback_id,
+                            done.target(),
+                            applied_sample,
+                            done.elapsed(),
+                        );
+                        done.finish(Ok(()));
+                    }
+                    Err(error) => {
+                        // The old source's next audio goes back where it was.
+                        pending_frame = old;
+                        if is_stopped(&shared, generation) {
+                            return;
+                        }
+                        tracing::warn!(
+                            name: "core.playback.fallback_seek_failed",
+                            target: "remedia_core::playback",
+                            playback_id,
+                            error_kind = playback_error_kind(&error),
+                            "fallback seek could not be applied; the current source continues"
+                        );
+                        done.finish(Err(error));
+                    }
+                }
+            }
+        }
+        if fallback.is_none()
+            && seek_recovery.ready(
+                &shared,
+                &decoder,
+                &processor,
+                &pending_frame,
+                passthrough_mode,
+                input_finished,
+                deferred_filter_update.is_some(),
+            )
+        {
             // The encoder lags its input by its lookahead, so it must be given the first
             // samples of the next packet before that packet is forwarded in their place.
             seek_recovery.pending = false;
@@ -104,10 +261,12 @@ pub(super) fn worker_loop(
             generation,
             &mut pending_frame,
             input_finished,
-            can_passthrough,
+            can_passthrough && !force_pcm,
             passthrough_mode,
         ) {
             WorkerAction::Exit => return,
+            // The replacement finished preparing; the check at the top of the loop acts on it.
+            WorkerAction::PollFallback => {}
             WorkerAction::ConfigureProcessing => {
                 let was_passthrough = passthrough_mode;
                 if (processing::ProcessingTransition {
@@ -466,6 +625,41 @@ pub(super) fn worker_loop(
                 }
             },
             WorkerAction::Seek(request) => {
+                // Only the latest seek may replace the active source.
+                if let Some(previous) = fallback.take() {
+                    previous.supersede();
+                    force_pcm = false;
+                }
+                // A decoder that cannot reposition itself is never asked to: a failed attempt
+                // on an HTTP source can drop the connection and lose the current position.
+                if lock(&shared.data).fallback_seeking
+                    && reopen.available()
+                    && !decoder.can_seek_in_place()
+                {
+                    let origin = fallback_playhead(&pending_frame, &processor);
+                    match fallback::FallbackSeek::start(
+                        &shared,
+                        &reopen,
+                        request,
+                        origin,
+                        &cancellation,
+                    ) {
+                        Ok(started) => {
+                            tracing::info!(
+                                name: "core.playback.fallback_seek_started",
+                                target: "remedia_core::playback",
+                                playback_id,
+                                position_ms = started.target().as_millis() as u64,
+                                "seek is preparing a replacement source; playback continues"
+                            );
+                            fallback = Some(started);
+                        }
+                        Err((request, error)) => {
+                            let _ = request.response.send(Err(error));
+                        }
+                    }
+                    continue;
+                }
                 if passthrough_mode {
                     if let Err(error) = decoder.activate_decoder(&[], None) {
                         let playback_error: PlaybackError = error.into();
@@ -568,6 +762,28 @@ pub(super) fn worker_loop(
                             return;
                         }
                         let playback_error: PlaybackError = error.into();
+                        if matches!(playback_error, PlaybackError::UnsupportedSeeking(_))
+                            && lock(&shared.data).fallback_seeking
+                            && reopen.available()
+                        {
+                            // The decoder reported that it cannot seek after all. It keeps
+                            // playing from where it was while a replacement is prepared.
+                            seek_recovery.pending = false;
+                            let origin = fallback_playhead(&pending_frame, &processor);
+                            match fallback::FallbackSeek::start(
+                                &shared,
+                                &reopen,
+                                request,
+                                origin,
+                                &cancellation,
+                            ) {
+                                Ok(started) => fallback = Some(started),
+                                Err((request, error)) => {
+                                    let _ = request.response.send(Err(error));
+                                }
+                            }
+                            continue;
+                        }
                         let recoverable = matches!(
                             playback_error,
                             PlaybackError::UnsupportedSeeking(_)
@@ -597,6 +813,11 @@ pub(super) fn worker_loop(
                         }
                     }
                 }
+            }
+            WorkerAction::Finish if fallback.is_some() => {
+                // The old source ended while its replacement is still being prepared. Wait for
+                // it, rather than complete the playback the seek was meant to continue.
+                thread::sleep(Duration::from_millis(5));
             }
             WorkerAction::Finish => {
                 let gain = lock(&shared.data).volume;
@@ -706,6 +927,20 @@ mod processing;
 /// packet boundary, and the encoder lookahead can be drained with the next packet's first
 /// samples. That needs the stream's pre-skip to equal the encoder's lookahead; any other stream
 /// keeps decoding, as it did before.
+/// Where the active source is on its own timeline: the start of the audio about to be delivered,
+/// or the end of what was delivered last.
+fn fallback_playhead(pending_frame: &Option<DecodedPcmFrame>, processor: &PcmProcessor) -> u64 {
+    pending_frame
+        .as_ref()
+        .map(|frame| {
+            frame
+                .source_start_sample
+                .unwrap_or(frame.frame.start_sample)
+        })
+        .or_else(|| processor.source_position().map(|position| position.sample))
+        .unwrap_or(0)
+}
+
 #[derive(Default)]
 struct SeekRecovery {
     pending: bool,

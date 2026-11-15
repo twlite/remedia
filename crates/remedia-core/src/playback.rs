@@ -18,7 +18,7 @@ use crate::error::DecoderError;
 use crate::filter::{FilterGraphError, PcmFilterGraph, PcmProcessor, ProcessError};
 use crate::opus::EncodedOpusPacket;
 use crate::output::{MediaOutput, OutputError};
-use crate::source::{CancellationToken, InputSource};
+use crate::source::{CancellationToken, InputSource, SourceReopener};
 use crate::with_dispatch;
 
 /// Lifecycle state for one playback session.
@@ -94,6 +94,11 @@ pub enum PlaybackError {
     SeekPending,
     #[error("seeking is not supported by this source: {0}")]
     UnsupportedSeeking(String),
+    /// A fallback seek was replaced by a newer seek, or the track changed (a crossfade began or
+    /// the playback stopped being the one that was asked to seek) before its replacement source
+    /// was ready. Playback continued on the source that was already playing.
+    #[error("the seek was replaced before its replacement source was ready")]
+    SeekSuperseded,
     #[error("seek position {target:?} is beyond media duration {duration:?}")]
     SeekOutOfRange {
         target: Duration,
@@ -168,6 +173,36 @@ pub struct PlaybackSession {
     crossfade: Mutex<Option<CrossfadeConfig>>,
 }
 
+/// A seek that has been submitted to a session. See [`PlaybackSession::start_seek`].
+///
+/// Dropping it without waiting does not cancel the seek.
+pub struct PendingSeek {
+    response: mpsc::Receiver<Result<(), PlaybackError>>,
+    shared: Arc<SessionShared>,
+    stage: Arc<Mutex<Option<Arc<PreparedStage>>>>,
+}
+
+impl PendingSeek {
+    /// Block until the seek has been applied or rejected.
+    ///
+    /// Returns [`PlaybackError::SeekSuperseded`] when a newer seek replaced this one before its
+    /// replacement source was ready, and [`PlaybackError::Cancelled`] when the playback was
+    /// stopped. In every error case the source that was already playing keeps playing.
+    pub fn wait(self) -> Result<(), PlaybackError> {
+        let outcome = self.response.recv().unwrap_or_else(|_| {
+            Err(lock(&self.shared.data)
+                .last_error
+                .clone()
+                .unwrap_or(PlaybackError::WorkerPanicked))
+        });
+        if outcome.is_ok() {
+            staging::clear_stage(&self.shared, &self.stage);
+        }
+
+        outcome
+    }
+}
+
 /// A completion wait bound to the playback generation active when it was
 /// created. Replacing a stopped source cannot make an older waiter follow the
 /// new source.
@@ -203,6 +238,10 @@ struct SessionData {
     cancellation: Option<CancellationToken>,
     output: Option<Arc<dyn MediaOutput>>,
     pending_seek: Option<SeekRequest>,
+    /// Fallback seeking is allowed for this session (see `configure_fallback_seeking`).
+    fallback_seeking: bool,
+    /// A fallback replacement finished preparing (or failed); the worker should look at it.
+    fallback_signal: bool,
     filter_graph: Option<String>,
     pending_filter_graph: Option<FilterUpdate>,
     processor_initialized: bool,
@@ -222,6 +261,7 @@ struct FilterUpdate {
 
 enum WorkerAction {
     ConfigureProcessing,
+    PollFallback,
     Decode,
     Deliver(DecodedPcmFrame),
     Seek(SeekRequest),
@@ -236,6 +276,7 @@ enum WorkerAction {
 mod tests;
 
 mod crossfade_worker;
+mod fallback;
 mod session;
 mod staging;
 use staging::PreparedStage;

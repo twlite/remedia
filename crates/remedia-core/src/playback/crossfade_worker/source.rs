@@ -17,6 +17,8 @@ enum ActiveInput {
 pub(super) struct ActiveSource {
     input: ActiveInput,
     source: InputSource,
+    /// How to obtain this track again, for a seek the active decoder cannot perform.
+    reopen: fallback::Reopen,
     probe: Option<super::tail::TailProbe>,
     effective_end: Option<u64>,
     encoded: bool,
@@ -50,6 +52,7 @@ impl ActiveSource {
         let pre_skip = decoder.opus_pre_skip();
         let duration_samples = decoder.info().duration.map(samples_from_duration);
         Self {
+            reopen: fallback::Reopen::new(&source, None),
             source,
             probe: None,
             effective_end: None,
@@ -81,6 +84,7 @@ impl ActiveSource {
     ) -> Self {
         Self {
             source: stage.source.clone(),
+            reopen: stage.reopen.clone(),
             probe: None,
             effective_end: None,
             input: ActiveInput::Prepared(stage),
@@ -98,6 +102,64 @@ impl ActiveSource {
             consumed,
             duration_samples: info.duration.map(samples_from_duration),
         }
+    }
+
+    /// Use `reopen` to obtain this track again, in place of the one derived from its source.
+    pub(super) fn with_reopen(mut self, reopen: fallback::Reopen) -> Self {
+        self.reopen = reopen;
+        self
+    }
+
+    pub(super) fn reopen(&self) -> &fallback::Reopen {
+        &self.reopen
+    }
+
+    /// Whether the active input can reposition itself without help. A promoted source's seek
+    /// opens a fresh decoder, which can reposition itself exactly when the staged one could.
+    pub(super) fn can_seek_in_place(&self) -> bool {
+        match &self.input {
+            ActiveInput::Direct { decoder, .. } => decoder.can_seek_in_place(),
+            ActiveInput::Prepared(stage) => stage.random_access(),
+        }
+    }
+
+    /// Continue this track on `decoder`, a second decoder on the same track that has already
+    /// produced the audio up to `consumed`. `queued` is audio it decoded beyond that point.
+    ///
+    /// The output encoder is not touched: its state follows the audio, which does not change.
+    pub(super) fn adopt_replacement(
+        &mut self,
+        decoder: Box<AudioDecoder>,
+        queued: VecDeque<f32>,
+        info: &AudioStreamInfo,
+    ) {
+        if let ActiveInput::Prepared(stage) = &self.input {
+            stage.cancel_and_join();
+        }
+
+        // The replacement is decoded, so this source stays on the PCM path.
+        self.pre_skip = decoder.opus_pre_skip();
+        self.input = ActiveInput::Direct {
+            decoder,
+            pcm: queued,
+            ended: false,
+        };
+        self.encoded = false;
+        self.eligible = false;
+        self.stream_eligible = false;
+        self.boundary = None;
+        self.junction = false;
+        self.prime = None;
+        self.probe = None;
+        self.effective_end = None;
+        self._cancel_link = None;
+        self.duration_samples = info.duration.map(samples_from_duration);
+    }
+
+    /// Place the source position on `consumed`, for a replacement that starts elsewhere than
+    /// the source it replaced stopped.
+    pub(super) fn set_consumed(&mut self, consumed: u64) {
+        self.consumed = consumed;
     }
 
     /// Take over a promoted stage's decoder once its staged PCM is fully consumed, so a source

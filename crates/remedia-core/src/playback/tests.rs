@@ -98,6 +98,13 @@ impl GateHandle {
         self.0.changed.notify_all();
     }
 
+    /// Fail the output from now on, as a lost voice connection does.
+    fn disconnect(&self) {
+        let mut data = lock(&self.0.data);
+        data.cancelled = true;
+        self.0.changed.notify_all();
+    }
+
     fn wait_for_calls(&self, count: usize) -> bool {
         let data = lock(&self.0.data);
         let (data, _) = self
@@ -455,6 +462,8 @@ mod preskip;
 mod audit;
 
 mod cleanup;
+
+mod fallback;
 
 mod packet_sink;
 use packet_sink::*;

@@ -64,6 +64,74 @@ impl AudioDecoder {
         Ok(())
     }
 
+    /// Whether the input can reposition itself without help, so a seek is a cheap demuxer
+    /// operation. A plain HTTP URL whose server ignores `Range` requests cannot: FFmpeg
+    /// reconnects repeatedly while failing such a seek and can lose the current read position, so
+    /// a caller that wants to keep playing must not attempt it on an active decoder.
+    pub(crate) fn can_seek_in_place(&self) -> bool {
+        self.reader.input.supports_random_access()
+    }
+
+    /// Drop compressed packets that start more than `margin_samples` before `target_sample`,
+    /// without decoding them. The packets kept still cover the margin, which lets the codec settle
+    /// before the target. Returns the number of packets dropped.
+    ///
+    /// Intended for a freshly opened decoder that will decode forward to a position, such as a
+    /// fallback-seek replacement. Only packets with a demuxer timestamp are dropped on the
+    /// strength of their position, because the decoded frames after them are timed from the first
+    /// packet kept. A stream's first packets may lack one (MP3 and AAC streams begin before their
+    /// start time); up to two are dropped with the packets that follow, if one of those is
+    /// timestamped. A stream without timestamps keeps every packet.
+    pub(crate) fn skip_packets_before(
+        &mut self,
+        target_sample: u64,
+        margin_samples: u64,
+    ) -> Result<u64, DecoderError> {
+        let _log_capture = crate::ffmpeg_logging::capture();
+        let cutoff = target_sample.saturating_sub(margin_samples);
+        let mut skipped = 0;
+        if cutoff == 0 {
+            return Ok(skipped);
+        }
+
+        // Untimestamped packets at the start, kept aside until a timestamped one confirms that
+        // the stream is timed.
+        let mut held: Vec<DemuxedAudioPacket> = Vec::new();
+        loop {
+            let packet = self.read_compressed_packet()?;
+            let before_cutoff = packet.as_ref().is_some_and(|packet| {
+                packet
+                    .source_start_sample
+                    .is_none_or(|start| start < cutoff)
+            });
+            let timestamped = packet
+                .as_ref()
+                .is_some_and(|packet| !packet.source_position_estimated);
+
+            match packet {
+                Some(_) if before_cutoff && timestamped => {
+                    skipped += 1 + held.len() as u64;
+                    held.clear();
+                }
+                Some(packet) if before_cutoff && held.len() < 2 && skipped == 0 => {
+                    held.push(packet);
+                }
+                other => {
+                    // The first packet that has to be decoded, and any held before it, go back
+                    // in order.
+                    if let Some(packet) = other {
+                        self.queue_compressed_packet(packet);
+                    }
+                    for packet in held.drain(..).rev() {
+                        self.queue_compressed_packet(packet);
+                    }
+
+                    return Ok(skipped);
+                }
+            }
+        }
+    }
+
     /// Consume the source in order without retaining the skipped PCM. This is
     /// intentionally a *media* seek, not an AVIO byte offset seek: compressed
     /// media can have variable bitrates and codec-dependent timestamps.

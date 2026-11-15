@@ -6,7 +6,7 @@ use super::*;
 /// logic is deliberately separate from the legacy worker.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_commands(
-    shared: &SessionShared,
+    shared: &Arc<SessionShared>,
     generation: u64,
     output: &Arc<dyn MediaOutput>,
     cancellation: &CancellationToken,
@@ -15,6 +15,7 @@ pub(super) fn handle_commands(
     transition: &mut Option<Transition>,
     stage_slot: &Mutex<Option<Arc<PreparedStage>>>,
     preparation_requested: &mut bool,
+    fallback: &mut Option<fallback::FallbackSeek>,
 ) -> Result<(), PlaybackError> {
     loop {
         let mut data = lock(&shared.data);
@@ -22,28 +23,74 @@ pub(super) fn handle_commands(
             return Err(PlaybackError::Cancelled);
         }
         if let Some(request) = data.pending_seek.take() {
+            let fallback_allowed = data.fallback_seeking && current.reopen().available();
             drop(data);
-            if let Some(fade) = transition.take() {
-                fade.next.cancel_and_join();
-                {
-                    let mut state = lock(&shared.data);
-                    state.source_generation = fade.previous_generation;
-                    state.info = Some(fade.outgoing_info.clone());
-                    state.duration = fade.outgoing_info.duration;
+
+            // Only the latest seek may replace the active source.
+            if let Some(previous) = fallback.take() {
+                previous.supersede();
+            }
+
+            // A decoder that cannot reposition itself is never asked to: a failed attempt on an
+            // HTTP source can drop the connection and lose the current position.
+            let attempt = if fallback_allowed && !current.can_seek_in_place() {
+                Err(PlaybackError::UnsupportedSeeking(
+                    "the source cannot reposition itself".to_owned(),
+                ))
+            } else {
+                current.seek(request.position, cancellation)
+            };
+            if let Err(PlaybackError::UnsupportedSeeking(_)) = &attempt
+                && fallback_allowed
+            {
+                // Nothing is torn down: the current source, its transition and the staged next
+                // track stay as they are until the replacement is ready.
+                let origin = current.consumed;
+                match fallback::FallbackSeek::start(
+                    shared,
+                    current.reopen(),
+                    request,
+                    origin,
+                    cancellation,
+                ) {
+                    Ok(started) => {
+                        tracing::info!(
+                            name: "core.playback.fallback_seek_started",
+                            target: "remedia_core::playback",
+                            playback_id = lock(&shared.data).playback_id,
+                            position_ms = started.target().as_millis() as u64,
+                            "seek is preparing a replacement source; playback continues"
+                        );
+                        *fallback = Some(started);
+                    }
+                    Err((request, error)) => {
+                        let _ = request.response.send(Err(error));
+                    }
                 }
-                shared.publish(CrossfadeEvent::TransitionCancelled {
-                    outgoing_generation: fade.previous_generation,
-                    incoming_generation: fade.incoming_generation,
-                    identity: fade.identity.clone(),
-                });
+                continue;
             }
-            if let Some(stage) = lock(stage_slot).take() {
-                shared.publish(CrossfadeEvent::StageInvalidated {
-                    identity: stage.identity.clone(),
-                });
-                stage.cancel_and_join();
-            }
-            let result = current.seek(request.position, cancellation).and_then(|()| {
+
+            let result = attempt.and_then(|()| {
+                if let Some(fade) = transition.take() {
+                    fade.next.cancel_and_join();
+                    {
+                        let mut state = lock(&shared.data);
+                        state.source_generation = fade.previous_generation;
+                        state.info = Some(fade.outgoing_info.clone());
+                        state.duration = fade.outgoing_info.duration;
+                    }
+                    shared.publish(CrossfadeEvent::TransitionCancelled {
+                        outgoing_generation: fade.previous_generation,
+                        incoming_generation: fade.incoming_generation,
+                        identity: fade.identity.clone(),
+                    });
+                }
+                if let Some(stage) = lock(stage_slot).take() {
+                    shared.publish(CrossfadeEvent::StageInvalidated {
+                        identity: stage.identity.clone(),
+                    });
+                    stage.cancel_and_join();
+                }
                 let sample = samples_from_duration(request.position);
                 processor
                     .reset(sample)

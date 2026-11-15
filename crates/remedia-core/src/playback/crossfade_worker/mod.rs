@@ -50,6 +50,7 @@ pub(super) fn worker_entry(
     ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
     stage_slot: Arc<Mutex<Option<Arc<PreparedStage>>>>,
     config: CrossfadeConfig,
+    reopen: fallback::Reopen,
 ) {
     let panic_ready = ready.clone();
     let result = catch_unwind(AssertUnwindSafe(|| {
@@ -62,6 +63,7 @@ pub(super) fn worker_entry(
             ready,
             &stage_slot,
             config,
+            reopen,
         );
     }));
     if result.is_err() {
@@ -81,6 +83,7 @@ fn worker_loop(
     ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
     stage_slot: &Mutex<Option<Arc<PreparedStage>>>,
     config: CrossfadeConfig,
+    reopen: fallback::Reopen,
 ) {
     let _stage_cleanup = StageCleanup(stage_slot);
     let opened = AudioDecoder::open_for_playback(
@@ -101,7 +104,7 @@ fn worker_loop(
     };
     let info = decoder.info().clone();
     let mut outgoing_info = info.clone();
-    let mut current = ActiveSource::decoder(decoder, source);
+    let mut current = ActiveSource::decoder(decoder, source).with_reopen(reopen);
     let graph = {
         let mut data = lock(&shared.data);
         data.processor_initialized = true;
@@ -142,6 +145,11 @@ fn worker_loop(
     let mut incoming_scratch: Vec<f32> = Vec::new();
     let mut preparation_requested = false;
     let mut fade_decided = false;
+    // A seek waiting for a second decoder on the same track. The track keeps playing until the
+    // replacement is parked, then `switching` carries it to the next block read.
+    let mut fallback: Option<fallback::FallbackSeek> = None;
+    let mut switching: Option<(fallback::FallbackSeek, fallback::Replacement)> = None;
+    let playback_id = lock(&shared.data).playback_id;
 
     loop {
         if cancellation.is_cancelled() || is_stopped(&shared, generation) {
@@ -157,6 +165,7 @@ fn worker_loop(
             &mut transition,
             stage_slot,
             &mut preparation_requested,
+            &mut fallback,
         ) {
             if is_stopped(&shared, generation) {
                 return;
@@ -166,6 +175,36 @@ fn worker_loop(
         }
         if is_stopped(&shared, generation) {
             return;
+        }
+
+        if let Some(waiting) = fallback.as_ref() {
+            waiting.set_playhead(current.consumed);
+            if transition.is_some() {
+                // A crossfade has begun, so this track is ending and the seek no longer applies.
+                fallback.take().expect("waiting seek").supersede();
+            } else if waiting.timed_out() {
+                let error = PlaybackError::UnsupportedSeeking(
+                    "the replacement source did not catch up with playback in time".to_owned(),
+                );
+                fallback.take().expect("waiting seek").finish(Err(error));
+            } else if waiting.is_finished() {
+                let outcome = waiting.take_outcome();
+                let done = fallback.take().expect("waiting seek");
+                match outcome {
+                    Some(Ok(replacement)) => switching = Some((done, replacement)),
+                    Some(Err(error)) => {
+                        tracing::warn!(
+                            name: "core.playback.fallback_seek_failed",
+                            target: "remedia_core::playback",
+                            playback_id,
+                            error_kind = playback_error_kind(&error),
+                            "fallback seek failed; the current source continues"
+                        );
+                        done.finish(Err(error));
+                    }
+                    None => done.finish(Err(PlaybackError::Cancelled)),
+                }
+            }
         }
 
         if !preparation_requested {
@@ -311,6 +350,12 @@ fn worker_loop(
         } else {
             before_overlap
         };
+        // Swapping decoders blends decoded audio, so forwarded packets wait until it is done.
+        let before_overlap = if switching.is_some() {
+            Some(0)
+        } else {
+            before_overlap
+        };
         match current.try_encoded(
             &shared,
             &output,
@@ -357,6 +402,13 @@ fn worker_loop(
         }
         let mut pcm = match current.read(wanted, &cancellation) {
             Ok(Some(data)) => data,
+            // The track ended while its replacement is still being prepared. Wait for it instead
+            // of completing the playback the seek was meant to continue.
+            Ok(None) if transition.is_none() && switching.is_none() && fallback.is_some() => {
+                thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            Ok(None) if switching.is_some() => Vec::new(),
             Ok(None) if transition.is_none() => break,
             Ok(None) => vec![0.0; wanted * 2],
             Err(_) if is_stopped(&shared, generation) => return,
@@ -365,6 +417,60 @@ fn worker_loop(
                 return;
             }
         };
+        if let Some((done, _)) = switching.take_if(|_| transition.is_some()) {
+            // A crossfade began in this same iteration, after the replacement was found ready.
+            // The track is ending, so the seek no longer applies.
+            done.supersede();
+        }
+        if let Some((done, mut replacement)) = switching.take() {
+            let count = pcm.len() / 2;
+            let start = current.consumed.saturating_sub(count as u64);
+            match splice(
+                &mut replacement,
+                &mut pcm,
+                done.position_for(start),
+                done.target(),
+            ) {
+                Ok(applied) => {
+                    let info = replacement.info.clone();
+                    let queued = replacement
+                        .take_head()
+                        .map(|frame| frame.frame.samples)
+                        .unwrap_or_default();
+                    if count == 0 {
+                        current.set_consumed(applied);
+                    }
+                    current.adopt_replacement(replacement.decoder, queued.into(), &info);
+                    finish_fallback_switch(
+                        &shared,
+                        stage_slot,
+                        &mut preparation_requested,
+                        &info,
+                        playback_id,
+                        &done,
+                        applied,
+                    );
+                    done.finish(Ok(()));
+                    if count == 0 {
+                        continue;
+                    }
+                }
+                Err(error) => {
+                    // The old source's audio is still in `pcm`; deliver it and carry on.
+                    tracing::warn!(
+                        name: "core.playback.fallback_seek_failed",
+                        target: "remedia_core::playback",
+                        playback_id,
+                        error_kind = playback_error_kind(&error),
+                        "fallback seek could not be applied; the current source continues"
+                    );
+                    done.finish(Err(error));
+                    if count == 0 {
+                        break;
+                    }
+                }
+            }
+        }
         let mut source_position = current.consumed;
         let mut transition_failed = false;
         if let Some(active) = transition.as_mut() {
@@ -513,7 +619,9 @@ fn worker_loop(
 
 mod commands;
 mod source;
+mod splice;
 mod tail;
 
 use commands::handle_commands;
 use source::ActiveSource;
+use splice::{finish_fallback_switch, splice};
