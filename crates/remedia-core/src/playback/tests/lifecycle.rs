@@ -207,39 +207,20 @@ fn decoder_and_output_failures_reach_the_session() {
 fn separate_sessions_progress_independently_under_backpressure() {
     let source_a = TempWave::constant(24_000, 3000);
     let source_b = TempWave::constant(24_000, 6000);
-    let observability = Observability::new(
-        ObservabilityConfig::default()
-            .with_filter("info")
-            .expect("valid test filter"),
-    )
-    .expect("create observability context");
-    let diagnostics = observability.diagnostics();
-    let handle = observability.handle();
-    let session_a = PlaybackSession::with_observability(handle.clone());
-    let session_b = PlaybackSession::with_observability(handle);
+    let session_a = PlaybackSession::new();
+    let session_b = PlaybackSession::new();
     let (output_a, gate_a) = GateOutput::new();
     let (output_b, gate_b) = GateOutput::new();
 
     session_a.play(source_a.source(), output_a).unwrap();
     session_b.play(source_b.source(), output_b).unwrap();
-    let mut playback_ids = std::collections::HashSet::new();
-    let mut events_seen = Vec::new();
-    while playback_ids.len() < 2 {
-        let event = diagnostics
-            .recv_timeout(TEST_TIMEOUT)
-            .unwrap_or_else(|error| {
-                panic!("playback start diagnostics arrive; saw events {events_seen:?}: {error}")
-            });
-        events_seen.push(event.event.clone());
-        if event.event == "core.playback.starting" {
-            playback_ids.insert(event.playback_id.expect("playback ID field"));
-        }
-    }
-    assert_eq!(
-        playback_ids.len(),
-        2,
-        "sessions must have distinct correlation IDs"
-    );
+
+    // Each session has its own correlation ID, read from its own state rather than from a
+    // process-wide diagnostics stream that parallel tests share.
+    let id_a = lock(&session_a.shared.data).playback_id;
+    let id_b = lock(&session_b.shared.data).playback_id;
+    assert_ne!(id_a, id_b, "sessions must have distinct correlation IDs");
+
     assert!(gate_a.wait_for_calls(1));
     assert!(gate_b.wait_for_calls(1));
     assert!(gate_a.snapshot().accepted.is_empty());
