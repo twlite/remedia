@@ -317,23 +317,6 @@ async fn send(socket: &mut TestSocket, id: &str, command: &str, params: Value) {
         .unwrap();
 }
 
-async fn receive(socket: &mut TestSocket, id: &str) -> Value {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let Message::Text(text) = socket.next().await.unwrap().unwrap() else {
-                continue;
-            };
-            let value: Value = serde_json::from_str(text.as_str()).unwrap();
-
-            if value.get("id").and_then(Value::as_str) == Some(id) {
-                return value;
-            }
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for response {id}"))
-}
-
 /// Read until every listed response has arrived, in whatever order the server sent them.
 async fn receive_many(socket: &mut TestSocket, ids: &[&str]) -> HashMap<String, Value> {
     let mut found = HashMap::new();
