@@ -861,7 +861,17 @@ fn main() {
           { encoding: 'utf8', env },
         );
         assert.equal(initial.status, 0, initial.stdout + initial.stderr);
-        assert.equal(runWrapper('--version').status, 0);
+        const versionProbe = runWrapper('--version');
+        assert.equal(
+          versionProbe.status,
+          0,
+          `Installed CLI --version failed with status ${versionProbe.status}
+stdout: ${versionProbe.stdout}
+stderr: ${versionProbe.stderr}
+spawn error: ${versionProbe.error ?? 'none'}
+installation: ${box.installDir}
+pointer: ${existsSync(pointer) ? readFileSync(pointer, 'utf8') : '(missing)'}`,
+        );
         assert.equal(
           spawnSync(
             process.env.ComSpec || 'cmd.exe',
