@@ -32,6 +32,8 @@ pub(super) fn spawn_playback_monitor(
                             previous_generation,
                             generation: logical,
                             position_ms,
+                            requested_position_ms,
+                            replaced_source,
                         } => {
                             let previous = logical_to_rpc
                                 .get(&previous_generation)
@@ -45,6 +47,8 @@ pub(super) fn spawn_playback_monitor(
                                 json!({
                                     "guildId": guild.guild_id, "generation": next,
                                     "previousGeneration": previous, "positionMs": position_ms,
+                                    "requestedPositionMs": requested_position_ms,
+                                    "fallback": replaced_source,
                                 }),
                             );
                         }

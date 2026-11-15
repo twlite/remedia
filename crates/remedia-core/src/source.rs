@@ -84,6 +84,62 @@ impl InputSource {
     pub(crate) fn can_seek(&self) -> bool {
         !matches!(self, Self::ByteStream(_) | Self::SequentialHttpUrl(_))
     }
+
+    /// Return an input that reads the same resource again from its first byte, when this
+    /// source can be opened a second time without help from its producer.
+    ///
+    /// Files, owned bytes and ordinary HTTP(S) URLs qualify. A single-pass URL and a byte
+    /// stream cannot: the first is typically a single-use grant and the second is a one-shot
+    /// queue. Those need a [`SourceReopener`].
+    pub(crate) fn reopen_in_place(&self) -> Option<Self> {
+        match self {
+            Self::File(_) | Self::HttpUrl(_) | Self::Bytes(_) => Some(self.clone()),
+            Self::SequentialHttpUrl(_) | Self::ByteStream(_) => None,
+        }
+    }
+}
+
+/// Failure to obtain a source again for fallback seeking.
+///
+/// The message is shown to callers and must not contain credentials or signed URLs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReopenError(String);
+
+impl ReopenError {
+    /// Describe why the source could not be opened again.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+
+    /// The message describing the failure.
+    pub fn message(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ReopenError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ReopenError {}
+
+/// Obtains a fresh input for the track that is already playing.
+///
+/// Fallback seeking (see `PlaybackSession::configure_fallback_seeking`) opens a second,
+/// independent decoder on the same track when the active one cannot reposition itself. Files,
+/// owned bytes and ordinary HTTP(S) URLs are reopened by Remedia. A source it cannot reopen on
+/// its own, such as a one-shot byte stream produced from a single-use grant, supplies this
+/// trait so the producer can issue a new grant or stream.
+///
+/// `reopen` runs on a short-lived background thread, never on the playback worker. It may block
+/// on I/O, but it must return promptly once `cancellation` is cancelled. The returned input must
+/// play the same media from its first sample: Remedia decodes forward and discards audio up to
+/// the seek target.
+pub trait SourceReopener: Send + Sync {
+    /// Produce a new input for the same track, readable from the start.
+    fn reopen(&self, cancellation: &CancellationToken) -> Result<InputSource, ReopenError>;
 }
 
 impl PartialEq for InputSource {

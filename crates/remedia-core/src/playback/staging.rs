@@ -30,6 +30,9 @@ pub(super) struct PreparedStage {
     pub(super) identity: StageIdentity,
     pub(super) buffer: Arc<StagedPcmBuffer>,
     pub(super) source: InputSource,
+    /// How to obtain the staged track again if it becomes the active source and is then asked to
+    /// seek in a way its decoder cannot.
+    pub(super) reopen: fallback::Reopen,
     pub(super) trimmed_samples: std::sync::atomic::AtomicU64,
     shared: Arc<SessionShared>,
     expires_at_unix_ms: Option<u64>,
@@ -37,6 +40,9 @@ pub(super) struct PreparedStage {
     info: Mutex<Option<AudioStreamInfo>>,
     error: Mutex<Option<String>>,
     worker: Mutex<Option<JoinHandle<()>>>,
+    /// The staged decoder's input can reposition itself. `true` until its input proves otherwise,
+    /// which is what a seek after promotion needs to know to choose a fallback replacement.
+    random_access: std::sync::atomic::AtomicBool,
     /// The staged stream can forward Opus packets and its input is local, so its decoder may
     /// move to the playback worker (set once its input is open).
     passthrough_eligible: std::sync::atomic::AtomicBool,
@@ -61,6 +67,7 @@ impl crate::source::CancellationWake for StageCancelLink {
 impl PreparedStage {
     fn start(
         source: InputSource,
+        reopener: Option<Arc<dyn SourceReopener>>,
         identity: StageIdentity,
         shared: Arc<SessionShared>,
         expires_at_unix_ms: Option<u64>,
@@ -68,6 +75,7 @@ impl PreparedStage {
     ) -> Result<Arc<Self>, PlaybackError> {
         let stage = Arc::new(Self {
             identity,
+            reopen: fallback::Reopen::new(&source, reopener),
             source: source.clone(),
             trimmed_samples: std::sync::atomic::AtomicU64::new(0),
             shared,
@@ -77,6 +85,7 @@ impl PreparedStage {
             info: Mutex::new(None),
             error: Mutex::new(None),
             worker: Mutex::new(None),
+            random_access: std::sync::atomic::AtomicBool::new(true),
             passthrough_eligible: std::sync::atomic::AtomicBool::new(false),
             handoff_requested: std::sync::atomic::AtomicBool::new(false),
             handed_off: std::sync::atomic::AtomicBool::new(false),
@@ -109,6 +118,10 @@ impl PreparedStage {
                 },
             )?;
             *lock(&self.info) = Some(decoder.info().clone());
+            self.random_access.store(
+                decoder.can_seek_in_place(),
+                std::sync::atomic::Ordering::Release,
+            );
             // Handing the decoder to the playback worker removes the staged PCM cushion that
             // absorbs a stalled remote read, so only inputs that cannot stall on a remote peer
             // qualify. Network and producer-fed streams keep their buffered stage.
@@ -237,6 +250,12 @@ impl PreparedStage {
         }
     }
 
+    /// Whether the staged input can reposition itself, as far as is known.
+    pub(super) fn random_access(&self) -> bool {
+        self.random_access
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
     pub(super) fn passthrough_eligible(&self) -> bool {
         self.passthrough_eligible
             .load(std::sync::atomic::Ordering::Acquire)
@@ -297,6 +316,29 @@ impl PlaybackSession {
         identity: StageIdentity,
         expires_at_unix_ms: Option<u64>,
     ) -> Result<StageSnapshot, PlaybackError> {
+        self.stage_next_inner(source, None, identity, expires_at_unix_ms)
+    }
+
+    /// Stage a source together with the means to obtain it again, for
+    /// [fallback seeking](Self::configure_fallback_seeking) after it has been promoted. See
+    /// [`play_with_reopener`](Self::play_with_reopener).
+    pub fn stage_next_with_reopener(
+        &self,
+        source: InputSource,
+        reopener: Arc<dyn SourceReopener>,
+        identity: StageIdentity,
+        expires_at_unix_ms: Option<u64>,
+    ) -> Result<StageSnapshot, PlaybackError> {
+        self.stage_next_inner(source, Some(reopener), identity, expires_at_unix_ms)
+    }
+
+    fn stage_next_inner(
+        &self,
+        source: InputSource,
+        reopener: Option<Arc<dyn SourceReopener>>,
+        identity: StageIdentity,
+        expires_at_unix_ms: Option<u64>,
+    ) -> Result<StageSnapshot, PlaybackError> {
         if self.crossfade_config().is_none() {
             return Err(PlaybackError::Cancelled);
         }
@@ -352,6 +394,7 @@ impl PlaybackSession {
             let playback_cancellation = lock(&self.shared.data).cancellation.clone();
             let next = match PreparedStage::start(
                 source,
+                reopener,
                 identity,
                 Arc::clone(&self.shared),
                 expires_at_unix_ms,
@@ -385,20 +428,25 @@ impl PlaybackSession {
 
     /// Discard prepared audio when the timeline changes or playback stops.
     pub fn clear_staged_source(&self) {
-        let old = {
-            let mut slot = lock(&self.stage);
-            if let Some(stage) = slot.as_ref() {
-                stage.cancellation.cancel();
-                stage.buffer.cancel();
-            }
-            slot.take()
-        };
-        if let Some(old) = old {
-            self.shared.publish(CrossfadeEvent::StageInvalidated {
-                identity: old.identity.clone(),
-            });
-            old.cancel_and_join();
+        clear_stage(&self.shared, &self.stage);
+    }
+}
+
+/// Cancel the staged source in `slot`, if any, and publish its invalidation.
+pub(super) fn clear_stage(shared: &SessionShared, slot: &Mutex<Option<Arc<PreparedStage>>>) {
+    let old = {
+        let mut slot = lock(slot);
+        if let Some(stage) = slot.as_ref() {
+            stage.cancellation.cancel();
+            stage.buffer.cancel();
         }
+        slot.take()
+    };
+    if let Some(old) = old {
+        shared.publish(CrossfadeEvent::StageInvalidated {
+            identity: old.identity.clone(),
+        });
+        old.cancel_and_join();
     }
 }
 

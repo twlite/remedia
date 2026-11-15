@@ -38,6 +38,17 @@ pub struct NativeStreamInfo {
     pub metadata: HashMap<String, String>,
 }
 
+/// Where a seek landed. See the Rust `SeekOutcome`.
+#[napi(object)]
+pub struct NativeSeekOutcome {
+    /// The position asked for, in milliseconds.
+    pub requested_ms: f64,
+    /// The source position the audio continues from, in milliseconds.
+    pub applied_ms: f64,
+    /// A replacement decoder took over, so the output timeline continued instead of restarting.
+    pub replaced_source: bool,
+}
+
 #[napi(object)]
 pub struct NativePlaybackPosition {
     pub media_ms: Option<f64>,

@@ -43,6 +43,8 @@ pub(crate) async fn execute(
                 "protocolVersion": crate::protocol::PROTOCOL_VERSION,
                 "capabilities": {
                     "pluginOperations": server.plugin_hosts.capability(),
+                    // Per-guild opt-in; the node can always replace a source that cannot seek.
+                    "fallbackSeeking": { "available": true },
                     "crossfade": {
                         "configured": server.config.crossfade.enabled,
                         "available": server.config.crossfade.enabled,
@@ -188,6 +190,9 @@ pub(crate) async fn execute(
                         .playback
                         .configure_crossfade(Some(config))
                         .map_err(playback_error)?;
+                    guild
+                        .playback
+                        .configure_fallback_seeking(params.enable_fallback_seeking == Some(true));
                     let snapshot = guild.snapshot();
                     session.emit("guild.created", snapshot.clone());
                     return Ok(snapshot);
@@ -206,6 +211,9 @@ pub(crate) async fn execute(
             let guild = server
                 .create_guild(&session, params.guild_id)
                 .map_err(state_error)?;
+            guild
+                .playback
+                .configure_fallback_seeking(params.enable_fallback_seeking == Some(true));
             let snapshot = guild.snapshot();
             session.emit("guild.created", snapshot.clone());
             Ok(snapshot)
@@ -281,6 +289,9 @@ pub(crate) async fn execute(
             // If this request is dropped (timeout or socket loss) while the source resolves,
             // cancel the pending operation instead of leaving it running.
             let mut resolving = CancelOnDrop(Some(play_cancellation.clone()));
+            // A plugin-hosted track can be obtained again by running its operation once more, which
+            // fallback seeking needs because the first grant is single-use.
+            let reopener = reopener_for(&server, &params.source);
             let resolved = match resolve_source(
                 &server,
                 &connection,
@@ -345,11 +356,19 @@ pub(crate) async fn execute(
                 let cancellation_for_start = cancellation.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     let _operation = operation;
-                    playback.play_with_cancellation(
-                        source,
-                        NullOutput::new(),
-                        cancellation_for_start,
-                    )
+                    match reopener {
+                        Some(reopener) => playback.play_with_reopener(
+                            source,
+                            reopener,
+                            NullOutput::new(),
+                            cancellation_for_start,
+                        ),
+                        None => playback.play_with_cancellation(
+                            source,
+                            NullOutput::new(),
+                            cancellation_for_start,
+                        ),
+                    }
                 })
                 .await
                 .map_err(|_| RpcError::new("playback_failed", "playback worker failed to start"))?;
@@ -380,7 +399,15 @@ pub(crate) async fn execute(
             let cancellation_for_start = cancellation.clone();
             let result = tokio::task::spawn_blocking(move || {
                 let _operation = operation;
-                playback.play_with_cancellation(source, output, cancellation_for_start)
+                match reopener {
+                    Some(reopener) => playback.play_with_reopener(
+                        source,
+                        reopener,
+                        output,
+                        cancellation_for_start,
+                    ),
+                    None => playback.play_with_cancellation(source, output, cancellation_for_start),
+                }
             })
             .await
             .map_err(|_| RpcError::new("playback_failed", "playback worker failed to start"))?;
@@ -417,6 +444,7 @@ pub(crate) async fn execute(
         | "player.resume"
         | "player.stop"
         | "player.seek"
+        | "player.seek.cancel"
         | "player.filter.set"
         | "player.filter.clear"
         | "player.volume.set" => execute_player_control(server, connection, request).await,

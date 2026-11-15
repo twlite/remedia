@@ -216,3 +216,81 @@ async fn lifecycle_events_include_stable_generations_and_keep_protocol_v1_volume
     drop(socket);
     server.shutdown().await;
 }
+
+#[tokio::test]
+async fn fallback_seeking_is_a_per_guild_opt_in_advertised_by_the_node() {
+    let server = RunningServer::start(60, 4).await;
+    let mut socket = server.connect("bot-a", "password-a").await.unwrap();
+
+    let info = rpc(&mut socket, "info", "node.info", json!({})).await;
+    assert_eq!(
+        info["result"]["capabilities"]["fallbackSeeking"],
+        json!({"available": true})
+    );
+
+    create_client(&mut socket).await;
+
+    // Omitted and explicit false are the same: the option is off.
+    let default_guild = rpc(
+        &mut socket,
+        "default",
+        "guild.create",
+        json!({"guildId": "200000000000000020"}),
+    )
+    .await;
+    assert_eq!(default_guild["ok"], true, "{default_guild}");
+    assert_eq!(
+        default_guild["result"]["playback"]["fallbackSeeking"],
+        false
+    );
+
+    let disabled = rpc(
+        &mut socket,
+        "disabled",
+        "guild.create",
+        json!({"guildId": "200000000000000021", "enableFallbackSeeking": false}),
+    )
+    .await;
+    assert_eq!(disabled["result"]["playback"]["fallbackSeeking"], false);
+
+    let enabled = rpc(
+        &mut socket,
+        "enabled",
+        "guild.create",
+        json!({"guildId": "200000000000000022", "enableFallbackSeeking": true}),
+    )
+    .await;
+    assert_eq!(enabled["ok"], true, "{enabled}");
+    assert_eq!(enabled["result"]["playback"]["fallbackSeeking"], true);
+
+    let state = rpc(
+        &mut socket,
+        "state",
+        "player.state",
+        json!({"guildId": "200000000000000022"}),
+    )
+    .await;
+    assert_eq!(state["result"]["fallbackSeeking"], true);
+
+    // The option is a boolean and nothing else is accepted in its place.
+    let invalid = rpc(
+        &mut socket,
+        "invalid",
+        "guild.create",
+        json!({"guildId": "200000000000000023", "enableFallbackSeeking": "yes"}),
+    )
+    .await;
+    assert_eq!(invalid["error"]["code"], "invalid_request");
+
+    // A seek on an idle guild is still an invalid-state error, not an unsupported source.
+    let idle_seek = rpc(
+        &mut socket,
+        "idle-seek",
+        "player.seek",
+        json!({"guildId": "200000000000000022", "positionMs": 1000}),
+    )
+    .await;
+    assert_eq!(idle_seek["error"]["code"], "invalid_state");
+
+    server.shutdown().await;
+}

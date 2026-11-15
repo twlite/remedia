@@ -33,6 +33,21 @@ const CROSSFADE_CURVES: readonly CrossfadeCurve[] = ['equalPower', 'adaptive'];
  * Controls one playback session. Local sessions decode into a no-op output.
  * @typeParam Metadata - Application-owned metadata attached to playback generations.
  */
+/** Options for {@link PlaybackSession.seek}. */
+export interface SeekOptions {
+  /** Cancels a seek that has not taken effect yet. */
+  signal?: AbortSignal;
+}
+
+/** Settings for a local playback session. Every setting is off unless enabled. */
+export interface PlaybackSessionOptions {
+  /**
+   * Replace the active source when its decoder cannot seek, instead of rejecting the seek. See
+   * `PlaybackSession.configureFallbackSeeking()`. Defaults to false.
+   */
+  enableFallbackSeeking?: boolean;
+}
+
 export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
   PlaybackSessionEventMap<Metadata>
 > {
@@ -55,6 +70,7 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
   #latestGeneration = 0;
   #guildId: string | undefined;
   #crossfadeEnabled = false;
+  #seekSerial = 0;
   #fadeDurationMs = 5000;
   #crossfadeTimer: ReturnType<typeof setInterval> | undefined;
   #stageInput: ReadableInputHandle | undefined;
@@ -136,6 +152,32 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
       this.#native.playbackConfigureCrossfade(this.#playbackId, false, 0, 0);
       this.#crossfadeEnabled = false;
     }
+  }
+
+  /**
+   * Whether fallback seeking is enabled; it is off by default.
+   * @returns True when a seek the active decoder cannot perform may be served by a replacement source.
+   */
+  get fallbackSeeking(): boolean {
+    return this.#native.playbackFallbackSeeking(this.#playbackId);
+  }
+
+  /**
+   * Allow or forbid fallback seeking. It can be changed at any time and applies to the next seek.
+   *
+   * Some sources cannot reposition their decoder, such as an HTTP server that ignores range
+   * requests. A seek on one normally rejects as unsupported. With this enabled, the session keeps
+   * playing while it reopens the same track, decodes forward to the target plus the playback that
+   * happened meanwhile, and swaps the source with a 5 ms blend. `seek()` resolves when the swap
+   * has happened. A one-shot byte stream still rejects, and so does a source that fails to reopen;
+   * the current playback is never interrupted by a failed or superseded fallback.
+   * @param enabled - True to allow fallback seeking; false to restore the unsupported-seek rejection.
+   * @returns Nothing; throws if the session is disposed or `enabled` is not a boolean.
+   */
+  configureFallbackSeeking(enabled: boolean): void {
+    this.#assertActive();
+    if (typeof enabled !== 'boolean') throw new TypeError('enabled must be a boolean');
+    this.#native.playbackConfigureFallbackSeeking(this.#playbackId, enabled);
   }
 
   /** Current preparation snapshot, or null when no stage is pending. */
@@ -440,18 +482,50 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
    * Seek on the original media timeline. Binary Readable inputs support forward-only
    * seeking by decoding and discarding skipped audio; backwards seeking rejects.
    * Large forward jumps may wait for the producer to supply the skipped bytes.
+   *
+   * With `configureFallbackSeeking()` enabled, a URL or file whose decoder cannot seek is
+   * served by a replacement source instead: the promise resolves once the swap has happened,
+   * which can take seconds while the current source keeps playing. It rejects when a newer seek
+   * replaced this one, when the session stopped, or when the track could not be reopened.
+   *
+   * The `playbackSeeked` event reports the position the audio actually continues from. A
+   * fallback seek lands on the requested position plus the source time that elapsed while its
+   * replacement was prepared, so a seek to 90 s that took three seconds resumes near 93 s.
    * @param positionMs - Non-negative finite position on the original media timeline, in milliseconds.
+   * @param options - Optional cancellation. Aborting `signal` cancels a seek that has not taken
+   * effect yet, so it can never apply later, and rejects with the signal's reason. If the seek
+   * was already being applied it completes normally.
    * @returns Resolves after the backend accepts the seek; rejects for invalid positions or unsupported inputs.
    */
-  async seek(positionMs: number): Promise<void> {
+  async seek(positionMs: number, options: SeekOptions = {}): Promise<void> {
     this.#assertActive();
+    const { signal } = options;
+    signal?.throwIfAborted();
     const previousPositionMs = this.position.mediaMs;
-    await this.#native.seek(this.#playbackId, positionMs);
+    // Only the latest seek of this session can be cancelled, so a cancel for an older call that
+    // a newer one replaced must not reach the newer one.
+    const serial = ++this.#seekSerial;
+    const abort = (): void => {
+      if (this.#seekSerial === serial) this.#native.playbackCancelSeek(this.#playbackId);
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    let outcome;
+    try {
+      outcome = await this.#native.seek(this.#playbackId, positionMs);
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', abort);
+    }
     this.#drainCrossfadeEvents();
-    if (previousPositionMs !== positionMs || this.#crossfadeEnabled) {
+    const appliedMs = Math.round(outcome.appliedMs);
+    if (previousPositionMs !== appliedMs || this.#crossfadeEnabled) {
       this.emit(PlaybackEvent.playbackSeeked, {
         ...this.#eventContext(),
-        positionMs,
+        positionMs: appliedMs,
+        requestedPositionMs: Math.round(outcome.requestedMs),
+        fallback: outcome.replacedSource,
         previousPositionMs,
       });
     }

@@ -126,6 +126,47 @@ queue to the decoder, so default playback needs no FFmpeg flags and no `-seekabl
 The same strategy is available to Rust callers of `remedia-core` as `InputSource::sequential_http_url`
 (see [Decoding](/docs/core/decoding)). Ordinary URLs keep FFmpeg's seekable behavior.
 
+### Seeking with fallback seeking
+
+A grant has no offset or range contract, so a plugin cannot be asked to start at a position, and the
+grant cannot be read twice. A guild created with `enableFallbackSeeking: true` (see
+[fallback seeking](/docs/server/rpc-playback#fallback-seeking)) instead obtains a **new grant** for the
+seek: the node runs the same `hostId` / `pluginId` / `operation` / `input` again on the same host,
+redeems the new grant with one plain `GET`, and decodes it forward to the target while the first
+stream keeps playing.
+
+**A plugin operation can therefore run more than once for one track.** It runs once to start the
+track, and again for every seek that reaches the host: a seek that is later superseded, cancelled or
+failed has already run it. Operations that are not safe to repeat should not be used with this
+option, and a handler must return the same track for the same input. Each run is an ordinary
+operation:
+
+- **Same identity.** The input is forwarded unchanged and the request carries the same configured
+  credentials, with its own operation ID. The host's allow-list is applied again, and a host or
+  operation that has since been removed or become unavailable fails the seek.
+- **Same limits.** It counts against `maxPendingOperations` while it runs, `maxAttempts` applies to
+  an operation marked `replaySafe`, and the replacement counts against `maxActiveStreams` for as long
+  as it exists, alongside the playing stream. A host at its limit refuses the seek with the same plugin error code
+  as any operation and is not called; the playback is unaffected. The old stream's slot is released as
+  soon as its decoder is.
+- **Same media policy.** The result is checked against the same origin rules, size and content-type
+  limits, with redirects refused. Plugin credentials are never sent to the media origin.
+- **Cancellable.** Cancelling the seek (`player.seek.cancel`, a client deadline or abort, a newer
+  seek, stopping the guild) cancels the host request in flight, which the host sees as an abandoned
+  connection, and releases its pending-operation slot.
+- **Same track.** The new stream's codec, sample rate, channel count and (when known) duration must
+  match the one that is playing, or the seek fails and playback continues.
+- The new stream is read from its first byte. The replacement discards audio up to the target, so
+  the cost grows with the target position and the stream's bitrate; the `maxMediaBytes` limit applies
+  to the replacement's bytes too.
+- A forward seek behaves the same way: it no longer decodes and discards on the playback worker.
+- If the operation fails, declines, expires, or the host is unavailable, the seek fails with that
+  plugin error code and the original playback continues.
+- A staged source (`player.stage.next`) keeps the same ability after it is promoted.
+
+A plugin start-position or `Range` contract would remove the discard cost. It needs capability
+negotiation and validated `206` semantics in `@remedia/plugin-host` first; none exists today.
+
 ## Lifecycle and cancellation
 
 Operation requests share the guild's generation and cancellation model:
@@ -206,13 +247,13 @@ Messages never contain URLs, tokens, or operation input.
 4. Respect the operation `signal`. Return audio only (MP3, Ogg/Opus, and anything FFmpeg can decode).
 5. Keep `mediaTtlMs` long enough for the node to redeem immediately after the operation returns. The
    node redeems at once. The TTL does not limit how long playback may take.
-6. Do not rely on seeking, ranges or reopening. V1 grants support none of them.
+6. Do not rely on seeking or ranges. V1 grants support neither. A guild that opts in to fallback seeking runs your operation again to obtain a fresh grant, so keep it repeatable.
 
 ## Limitations
 
 - Operation sources are remote-only. Embedded `@remedia/node` rejects them explicitly.
 - They are not migrated between nodes. A guild stays on the node (and host affinity) it started on.
 - Backward seeking and seeking into already-consumed audio are unsupported for sequential grants.
-- No seekable or reopenable media contract exists yet. It would need explicit capability negotiation,
+- No seekable media contract exists yet, and a grant cannot be reopened. Only the node can obtain another one, by [running the operation again](#seeking-with-fallback-seeking) when a guild opts in. A start-position contract would need explicit capability negotiation,
   validated `Range`/`206`/`416` semantics and content validators in `@remedia/plugin-host` first.
 - A host can only be added or removed by editing configuration and restarting the node.

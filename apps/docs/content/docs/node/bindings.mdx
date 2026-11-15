@@ -100,6 +100,21 @@ Promise and remain separate from debug diagnostics.
 
 Read [playback positions](/docs/client/positions) before using `position` or `durationMs` in a user interface.
 
+### Fallback seeking
+
+A URL whose origin ignores `Range` requests cannot seek. Without the option a rewind rejects (the stream is not touched and keeps playing) and a forward seek reads and discards the skipped bytes while playback waits. `enableFallbackSeeking` serves the seek with a second decoder instead:
+
+```ts
+const playback = engine.createPlaybackSession({ enableFallbackSeeking: true });
+// or later: playback.configureFallbackSeeking(true); playback.fallbackSeeking === true
+await playback.play({ url });
+await playback.seek(90_000); // resolves once the replacement is playing
+```
+
+It is off by default and can be changed at any time; the next seek reads it. `DiscordSessionOptions.enableFallbackSeeking` sets it on a Discord session's playback. The current source keeps playing while the replacement is prepared, so progress events do not stall; the replacement resumes at the requested position plus the source time that elapsed meanwhile. `playbackSeeked` reports that applied position as `positionMs`, with `requestedPositionMs` and `fallback`.
+
+`seek(positionMs, { signal })` takes an `AbortSignal`. Aborting it cancels a seek that has not taken effect, so it can never apply later, and rejects with the signal's reason; a seek already being applied completes normally. The signal reaches the session's latest seek, so abort the signal of the call you want to cancel before starting another. See [fallback seeking](/docs/client/positions#fallback-seeking) for the contract, which rejections to expect, and [Rust fallback seeking](/docs/core/playback#fallback-seeking) for the mechanism. `{ file }` and `{ buffer }` seek normally, and a `{ stream }` input cannot be reopened, so it rejects as before.
+
 ## Session API
 
 | Member                                                     | Contract                                                                                                                               |
@@ -107,6 +122,7 @@ Read [playback positions](/docs/client/positions) before using `position` or `du
 | `play(source, options?)`                                   | Start encoded media. Options include local `customMetadata` and `signal`.                                                              |
 | `pause()`, `resume()`, `stop()`, `seek(ms)`, `wait()`      | Control or observe one source generation.                                                                                              |
 | `filters.set(graph)`, `filters.clear()`, `setVolume(gain)` | Change trusted processing and gain.                                                                                                    |
+| `configureFallbackSeeking(enabled)`, `fallbackSeeking`     | Allow or forbid [fallback seeking](#fallback-seeking) for the next seek; off by default.                                               |
 | `configureCrossfade(options)`                              | Configure an idle standalone playback session. `curve` is `equalPower` (default) or `adaptive`. Discord sessions use creation options. |
 | `stageNext(source, options)`, `clearStage()`               | Prepare or cancel the next source.                                                                                                     |
 | `stagedSource`                                             | Staging snapshot getter. The client SDK instead exposes `stagedSource()`.                                                              |

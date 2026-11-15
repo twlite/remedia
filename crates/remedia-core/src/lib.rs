@@ -39,11 +39,11 @@ pub use output::{
     EncodedOpusOutput, MediaOutput, NullOutput, NullOutputStats, NullOutputStatsHandle, OutputError,
 };
 pub use playback::{
-    CrossfadeConfig, CrossfadeEvent, MediaPosition, MediaPositionAccuracy, PlaybackError,
-    PlaybackPosition, PlaybackProcessingMode, PlaybackSession, PlaybackState, PlaybackWaiter,
-    StageIdentity, StageSnapshot, StageState,
+    CrossfadeConfig, CrossfadeEvent, MediaPosition, MediaPositionAccuracy, PendingSeek,
+    PlaybackError, PlaybackPosition, PlaybackProcessingMode, PlaybackSession, PlaybackState,
+    PlaybackWaiter, SeekCanceller, SeekOutcome, StageIdentity, StageSnapshot, StageState,
 };
-pub use source::{CancellationToken, InputSource};
+pub use source::{CancellationToken, InputSource, ReopenError, SourceReopener};
 
 /// Report the runtime versions of the five FFmpeg libraries linked by Remedia.
 ///

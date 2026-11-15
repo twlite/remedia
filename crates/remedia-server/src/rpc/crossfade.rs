@@ -114,6 +114,7 @@ pub(super) async fn execute(
                 id: scope_id,
                 token: token.clone(),
             };
+            let reopener = reopener_for(&server, &params.source);
             let resolved = match resolve_source(&server, &connection, params.source, &token).await {
                 Ok(resolved) => resolved,
                 Err(error) => {
@@ -148,7 +149,12 @@ pub(super) async fn execute(
             };
             let result = tokio::task::spawn_blocking(move || {
                 let _operation = operation;
-                playback.stage_next_with_expiration(source, identity, expires_at_ms)
+                match reopener {
+                    Some(reopener) => {
+                        playback.stage_next_with_reopener(source, reopener, identity, expires_at_ms)
+                    }
+                    None => playback.stage_next_with_expiration(source, identity, expires_at_ms),
+                }
             })
             .await
             .map_err(|_| RpcError::new("playback_failed", "staging worker failed"))?;

@@ -18,7 +18,7 @@ use crate::error::DecoderError;
 use crate::filter::{FilterGraphError, PcmFilterGraph, PcmProcessor, ProcessError};
 use crate::opus::EncodedOpusPacket;
 use crate::output::{MediaOutput, OutputError};
-use crate::source::{CancellationToken, InputSource};
+use crate::source::{CancellationToken, InputSource, SourceReopener};
 use crate::with_dispatch;
 
 /// Lifecycle state for one playback session.
@@ -94,6 +94,15 @@ pub enum PlaybackError {
     SeekPending,
     #[error("seeking is not supported by this source: {0}")]
     UnsupportedSeeking(String),
+    /// A fallback seek was replaced by a newer seek, or the track changed (a crossfade began or
+    /// the playback stopped being the one that was asked to seek) before its replacement source
+    /// was ready. Playback continued on the source that was already playing.
+    #[error("the seek was replaced before its replacement source was ready")]
+    SeekSuperseded,
+    /// The seek was cancelled before it took effect, by [`SeekCanceller::cancel`] or
+    /// [`PlaybackSession::cancel_seek`]. Playback continued on the source that was playing.
+    #[error("the seek was cancelled before it was applied")]
+    SeekCancelled,
     #[error("seek position {target:?} is beyond media duration {duration:?}")]
     SeekOutOfRange {
         target: Duration,
@@ -168,6 +177,52 @@ pub struct PlaybackSession {
     crossfade: Mutex<Option<CrossfadeConfig>>,
 }
 
+/// A seek that has been submitted to a session. See [`PlaybackSession::start_seek`].
+///
+/// Dropping it without waiting does not cancel the seek.
+pub struct PendingSeek {
+    response: mpsc::Receiver<Result<SeekOutcome, PlaybackError>>,
+    shared: Arc<SessionShared>,
+    stage: Arc<Mutex<Option<Arc<PreparedStage>>>>,
+    ticket: Arc<SeekTicket>,
+}
+
+impl PendingSeek {
+    /// A handle that cancels this seek from another thread, for example when the request that
+    /// asked for it times out.
+    pub fn canceller(&self) -> SeekCanceller {
+        SeekCanceller {
+            ticket: Arc::clone(&self.ticket),
+            shared: Arc::clone(&self.shared),
+        }
+    }
+
+    /// Block until the seek has been applied or rejected.
+    ///
+    /// Returns [`PlaybackError::SeekSuperseded`] when a newer seek replaced this one before its
+    /// replacement source was ready, [`PlaybackError::SeekCancelled`] when it was cancelled, and
+    /// [`PlaybackError::Cancelled`] when the playback was stopped. In every error case the source
+    /// that was already playing keeps playing.
+    pub fn wait(self) -> Result<(), PlaybackError> {
+        self.wait_outcome().map(|_| ())
+    }
+
+    /// Like [`wait`](Self::wait), and report where the seek landed.
+    pub fn wait_outcome(self) -> Result<SeekOutcome, PlaybackError> {
+        let outcome = self.response.recv().unwrap_or_else(|_| {
+            Err(lock(&self.shared.data)
+                .last_error
+                .clone()
+                .unwrap_or(PlaybackError::WorkerPanicked))
+        });
+        if outcome.is_ok() {
+            staging::clear_stage(&self.shared, &self.stage);
+        }
+
+        outcome
+    }
+}
+
 /// A completion wait bound to the playback generation active when it was
 /// created. Replacing a stopped source cannot make an older waiter follow the
 /// new source.
@@ -203,6 +258,12 @@ struct SessionData {
     cancellation: Option<CancellationToken>,
     output: Option<Arc<dyn MediaOutput>>,
     pending_seek: Option<SeekRequest>,
+    /// The most recently submitted seek, for `PlaybackSession::cancel_seek`.
+    seek_ticket: Option<Arc<SeekTicket>>,
+    /// Fallback seeking is allowed for this session (see `configure_fallback_seeking`).
+    fallback_seeking: bool,
+    /// A fallback replacement finished preparing (or failed); the worker should look at it.
+    fallback_signal: bool,
     filter_graph: Option<String>,
     pending_filter_graph: Option<FilterUpdate>,
     processor_initialized: bool,
@@ -212,7 +273,8 @@ struct SessionData {
 
 struct SeekRequest {
     position: Duration,
-    response: SyncSender<Result<(), PlaybackError>>,
+    response: SyncSender<Result<SeekOutcome, PlaybackError>>,
+    ticket: Arc<SeekTicket>,
 }
 
 struct FilterUpdate {
@@ -222,6 +284,7 @@ struct FilterUpdate {
 
 enum WorkerAction {
     ConfigureProcessing,
+    PollFallback,
     Decode,
     Deliver(DecodedPcmFrame),
     Seek(SeekRequest),
@@ -236,8 +299,12 @@ enum WorkerAction {
 mod tests;
 
 mod crossfade_worker;
+mod fallback;
+mod seek;
 mod session;
 mod staging;
+use seek::SeekTicket;
+pub use seek::{SeekCanceller, SeekOutcome};
 use staging::PreparedStage;
 pub use staging::{StageIdentity, StageSnapshot, StageState};
 
@@ -284,10 +351,16 @@ impl CrossfadeConfig {
 /// Events only emitted for explicitly enabled staged playback.
 #[derive(Clone, Debug)]
 pub enum CrossfadeEvent {
+    /// A seek changed the source timeline. `position_ms` is where the audio continues from;
+    /// for a fallback seek that is later than `requested_position_ms` by the source time that
+    /// elapsed while the replacement was prepared. `replaced_source` is set then, and the
+    /// output timeline continued rather than restarting at the position.
     TimelineChanged {
         previous_generation: u64,
         generation: u64,
         position_ms: u64,
+        requested_position_ms: u64,
+        replaced_source: bool,
     },
     PrepareRequested {
         generation: u64,

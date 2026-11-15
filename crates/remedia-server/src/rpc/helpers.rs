@@ -1,7 +1,7 @@
 //! RPC validation, error mapping, and response formatting.
 
 use super::*;
-use remedia_core::InputSource;
+use remedia_core::{InputSource, ReopenError, SourceReopener};
 
 pub(crate) fn require_client(
     connection: &ConnectionContext,
@@ -189,6 +189,92 @@ async fn resolve_source_inner(
     }
 }
 
+/// Obtains a plugin-hosted track again for fallback seeking.
+///
+/// A media grant is single-use and its origin rejects `Range` requests, so a second decoder needs
+/// a second grant. This runs the same operation, on the same host and under the same policy, that
+/// started the track; the plugin decides what it returns. It holds the server weakly so a session
+/// that outlives a shutdown cannot keep the server alive.
+struct OperationReopener {
+    server: std::sync::Weak<ServerInner>,
+    runtime: tokio::runtime::Handle,
+    host_id: String,
+    plugin_id: String,
+    operation: String,
+    input: Value,
+}
+
+impl SourceReopener for OperationReopener {
+    fn reopen(
+        &self,
+        cancellation: &remedia_core::CancellationToken,
+    ) -> Result<InputSource, ReopenError> {
+        let server = self
+            .server
+            .upgrade()
+            .ok_or_else(|| ReopenError::new("the server is shutting down"))?;
+        let scope = tokio_util::sync::CancellationToken::new();
+        let source = PlaySource::Operation {
+            host_id: self.host_id.clone(),
+            plugin_id: self.plugin_id.clone(),
+            operation: self.operation.clone(),
+            input: self.input.clone(),
+        };
+        let resolved = self.runtime.block_on(async {
+            // The playback's token is not a tokio token; poll it so a stop interrupts a plugin
+            // operation that is still running.
+            let cancelled = async {
+                while !cancellation.is_cancelled() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                scope.cancel();
+            };
+
+            tokio::select! {
+                biased;
+                () = cancelled => Err(ReopenError::new("cancelled")),
+                resolved = resolve_source_inner(&server, source, &scope) => {
+                    resolved.map_err(|error| ReopenError::new(error.message))
+                }
+            }
+        })?;
+
+        // The decoder that is about to open this stream owns it; if that never happens, dropping
+        // the stream's input closes the transfer.
+        if let Some(guard) = resolved.guard {
+            guard.disarm();
+        }
+
+        Ok(resolved.source)
+    }
+}
+
+/// How fallback seeking can obtain `source` again, when Remedia cannot do it from the resolved
+/// input alone. Only plugin operations qualify: files and URLs are reopened directly.
+pub(crate) fn reopener_for(
+    server: &Arc<ServerInner>,
+    source: &PlaySource,
+) -> Option<Arc<dyn SourceReopener>> {
+    let PlaySource::Operation {
+        host_id,
+        plugin_id,
+        operation,
+        input,
+    } = source
+    else {
+        return None;
+    };
+
+    Some(Arc::new(OperationReopener {
+        server: Arc::downgrade(server),
+        runtime: tokio::runtime::Handle::current(),
+        host_id: host_id.clone(),
+        plugin_id: plugin_id.clone(),
+        operation: operation.clone(),
+        input: input.clone(),
+    }))
+}
+
 pub(crate) fn plugin_error(error: PluginError) -> RpcError {
     RpcError::new(error.rpc_code(), error.detail)
 }
@@ -219,6 +305,9 @@ pub(super) fn playback_error(error: PlaybackError) -> RpcError {
     let message = match code {
         "invalid_state" => "playback operation is invalid in the current state",
         "unsupported" => "playback operation is unsupported for this source",
+        "cancelled" => {
+            "the seek was cancelled or replaced by a newer request before it was applied"
+        }
         _ => "playback operation failed; inspect server diagnostics for details",
     };
     RpcError::new(code, message)
@@ -231,6 +320,7 @@ pub(super) fn playback_error_code(error: &PlaybackError) -> &'static str {
             "unsupported"
         }
         PlaybackError::Cancelled => "invalid_state",
+        PlaybackError::SeekSuperseded | PlaybackError::SeekCancelled => "cancelled",
         _ => "playback_failed",
     }
 }

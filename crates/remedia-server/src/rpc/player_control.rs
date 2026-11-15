@@ -15,6 +15,16 @@ pub(super) async fn execute_player_control(
     let session = require_client(&connection)?;
     let guild = server.get_guild(&session, &guild_id).map_err(state_error)?;
 
+    // Cancelling a seek must work while that seek is still waiting, so it never queues behind
+    // the guild's operation lock.
+    if request.command == "player.seek.cancel" {
+        decode_params::<GuildParams>(request.params)?;
+        guild.ensure_open().map_err(state_error)?;
+        let cancelled = guild.playback.cancel_seek();
+
+        return Ok(json!({"cancelled": cancelled}));
+    }
+
     if request.command == "player.stop" {
         if let Some(cancellation) = lock(&guild.play_cancellation).as_ref() {
             cancellation.cancel();
@@ -113,31 +123,67 @@ pub(super) async fn execute_player_control(
             let playback = Arc::clone(&guild.playback);
             let position = Duration::from_millis(params.position_ms);
             let previous_position_ms = playback.position().media.map(|p| p.position.as_millis());
-            tokio::task::spawn_blocking(move || {
-                let _operation = operation;
-                playback.seek(position)
+            // A seek can take seconds when it is served by a replacement source, and a newer
+            // seek, a pause, a volume change or a stop must reach the guild meanwhile. So the
+            // operation lock covers submission only; the seek then waits on its own.
+            let pending = tokio::task::spawn_blocking(move || {
+                let pending = playback.start_seek(position);
+                drop(operation);
+                pending
             })
             .await
             .map_err(|_| RpcError::new("playback_failed", "playback worker failed"))?
             .map_err(playback_error)?;
-            if guild.playback.crossfade_config().is_none()
-                && previous_position_ms != Some(u128::from(params.position_ms))
-            {
-                session.emit(
-                    "player.seeked",
-                    json!({
-                        "guildId": guild.guild_id,
-                        "generation": guild.source_generation.load(Ordering::Acquire),
-                        "positionMs": params.position_ms,
-                        "previousPositionMs": previous_position_ms,
-                    }),
-                );
-            }
-            Ok(playback_snapshot(
+
+            // If this request ends before the seek does (the deadline passes, the connection
+            // drops), the seek is cancelled when it still can be, so it cannot take effect
+            // after the client was told it failed. A seek that is already being applied cannot
+            // be, and announces itself with `player.seeked` when it finishes.
+            let mut abandon = AbandonSeek(Some(pending.canceller()));
+            let events = Arc::clone(&session);
+            let waiting_guild = Arc::clone(&guild);
+            let completion = spawn_observed(
+                async move {
+                    let outcome = tokio::task::spawn_blocking(move || pending.wait_outcome())
+                        .await
+                        .map_err(|_| RpcError::new("playback_failed", "playback worker failed"))?
+                        .map_err(playback_error)?;
+                    let applied_ms = outcome.applied.as_millis();
+                    if waiting_guild.playback.crossfade_config().is_none()
+                        && previous_position_ms != Some(applied_ms)
+                    {
+                        events.emit(
+                            "player.seeked",
+                            json!({
+                                "guildId": waiting_guild.guild_id,
+                                "generation": waiting_guild.source_generation.load(Ordering::Acquire),
+                                "positionMs": applied_ms,
+                                "requestedPositionMs": outcome.requested.as_millis(),
+                                "previousPositionMs": previous_position_ms,
+                                "fallback": outcome.replaced_source,
+                            }),
+                        );
+                    }
+
+                    Ok::<_, RpcError>(outcome)
+                },
+                &server.observability,
+            );
+            let outcome = completion
+                .await
+                .map_err(|_| RpcError::new("playback_failed", "seek task failed"))??;
+            abandon.0 = None;
+
+            let mut result = playback_snapshot(
                 &guild.playback,
                 guild.source_generation.load(Ordering::Acquire),
             )["position"]
-                .clone())
+                .clone();
+            result["requestedPositionMs"] = json!(outcome.requested.as_millis());
+            result["appliedPositionMs"] = json!(outcome.applied.as_millis());
+            result["fallback"] = json!(outcome.replaced_source);
+
+            Ok(result)
         }
         "player.filter.set" => {
             let params: FilterSetParams = decode_params(request.params)?;
@@ -243,4 +289,15 @@ pub(super) async fn stop_playback(guild: &Arc<GuildSession>) -> Result<(), RpcEr
     .map_err(playback_error)?;
     lock(&guild.play_cancellation).take();
     Ok(())
+}
+
+/// Cancels a seek that no request is waiting for any more.
+struct AbandonSeek(Option<remedia_core::SeekCanceller>);
+
+impl Drop for AbandonSeek {
+    fn drop(&mut self) {
+        if let Some(canceller) = self.0.take() {
+            canceller.cancel();
+        }
+    }
 }

@@ -38,6 +38,7 @@ import type {
   VoiceConnectionState,
 } from './types.js';
 import type { GuildBackend, GuildBackendEvents, NodeAdapter } from './adapters.js';
+import type { SeekOptions } from './types.js';
 
 const PROTOCOL_VERSION = 1;
 const MAX_TERMINAL_EVENTS = 128;
@@ -287,6 +288,7 @@ export class RemoteNodeAdapter
   async createGuild(
     guildId: string,
     crossfade?: import('./types.js').SessionCrossfadeOptions | false,
+    enableFallbackSeeking?: boolean,
   ): Promise<GuildSnapshot> {
     this.#assertHealthy();
     if (this.#lostGuilds.has(guildId)) {
@@ -302,6 +304,7 @@ export class RemoteNodeAdapter
       await this.request<unknown>('guild.create', {
         guildId,
         ...(crossfade ? { crossfade } : {}),
+        ...(enableFallbackSeeking ? { enableFallbackSeeking: true } : {}),
       }),
       this.id,
     );
@@ -1204,7 +1207,19 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
           `node ${this.#node.id} does not support the ${requestedCurve} crossfade curve; use equalPower or a newer node`,
         );
       }
-      const guild = await this.#node.createGuild(this.#options.guildId, this.#options.crossfade);
+      if (
+        this.#options.enableFallbackSeeking &&
+        !this.#node.snapshot.capabilities?.fallbackSeeking.available
+      ) {
+        throw new Error(
+          `node ${this.#node.id} does not support fallback seeking; disable the option or use a newer node`,
+        );
+      }
+      const guild = await this.#node.createGuild(
+        this.#options.guildId,
+        this.#options.crossfade,
+        this.#options.enableFallbackSeeking,
+      );
       this.#guildCreated = true;
       this.#sessionId = guild.guildSessionId;
       this.#snapshot = parsePlaybackSnapshot(guild.playback, this.#node.id);
@@ -1405,9 +1420,16 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     await this.refresh().catch(() => undefined);
   }
 
-  async seek(positionMs: number): Promise<void> {
+  async seek(positionMs: number, options: SeekOptions = {}): Promise<void> {
     this.#assertGuildReady();
-    await this.#node.control(this.#options.guildId, 'player.seek', { positionMs });
+    // The signal and the request deadline both cancel the seek on the node (see `rpc.ts`), so a
+    // seek the caller gave up on cannot apply later. One already being applied still completes
+    // and announces itself with `player.seeked`.
+    await this.#node.request(
+      'player.seek',
+      { guildId: this.#options.guildId, positionMs },
+      options.signal ? { signal: options.signal } : {},
+    );
     await this.refresh();
   }
 
@@ -1702,10 +1724,17 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
       }
       const positionMs = asNonnegativeInteger(event.data.positionMs);
       if (positionMs !== undefined) {
-        this.#playbackClock.seek(positionMs, eventGeneration);
+        // `positionMs` is where the audio continues from. A replacement source (`fallback`)
+        // leaves the output timeline running, so only the source position moves; an ordinary
+        // seek restarts both at the target.
+        const fallback = event.data.fallback === true;
+        if (fallback) this.#playbackClock.jump(positionMs, eventGeneration);
+        else this.#playbackClock.seek(positionMs, eventGeneration);
         this.emit(PlaybackEvent.playbackSeeked, {
           ...this.#playbackIdentity(event.data),
           positionMs,
+          requestedPositionMs: asNonnegativeInteger(event.data.requestedPositionMs) ?? positionMs,
+          fallback,
           previousPositionMs: nullableNumber(event.data.previousPositionMs),
         });
       }
@@ -2033,6 +2062,7 @@ function parsePlaybackSnapshot(value: Record<string, unknown>, nodeId: string): 
     },
     durationMs: nullableNumber(value.durationMs),
     source: isRecord(value.source) ? toStreamInfo(value.source, nodeId) : null,
+    ...(value.fallbackSeeking === true ? { fallbackSeeking: true } : {}),
     ...(isRecord(value.crossfade) &&
     value.crossfade.enabled === true &&
     Number.isSafeInteger(value.crossfade.durationMs) &&
@@ -2216,8 +2246,16 @@ function parseNodeCapabilities(input: unknown): import('./types.js').NodeCapabil
     isRecord(input) ? input.pluginOperations : undefined,
   );
 
+  // Nodes that predate fallback seeking omit the capability.
+  const fallbackSeeking = {
+    available:
+      isRecord(input) &&
+      isRecord(input.fallbackSeeking) &&
+      input.fallbackSeeking.available === true,
+  };
+
   if (!isRecord(input) || !isRecord(input.crossfade))
-    return { crossfade: fallback, pluginOperations };
+    return { crossfade: fallback, fallbackSeeking, pluginOperations };
   const fade = input.crossfade;
   const configured = fade.configured === true;
   const available = fade.available === true && configured;
@@ -2249,6 +2287,7 @@ function parseNodeCapabilities(input: unknown): import('./types.js').NodeCapabil
       curve: curve ?? fallback.curve,
       curves,
     },
+    fallbackSeeking,
     pluginOperations,
   };
 }

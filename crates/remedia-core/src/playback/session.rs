@@ -39,6 +39,9 @@ impl PlaybackSession {
                     cancellation: None,
                     output: None,
                     pending_seek: None,
+                    seek_ticket: None,
+                    fallback_seeking: false,
+                    fallback_signal: false,
                     filter_graph: None,
                     pending_filter_graph: None,
                     processor_initialized: false,
@@ -78,6 +81,33 @@ impl PlaybackSession {
     pub fn play_with_cancellation<O: MediaOutput>(
         &self,
         source: InputSource,
+        output: O,
+        cancellation: CancellationToken,
+    ) -> Result<AudioStreamInfo, PlaybackError> {
+        self.play_inner(source, None, output, cancellation)
+    }
+
+    /// Open a source that Remedia cannot reopen on its own, together with the means to obtain
+    /// it again.
+    ///
+    /// This behaves like [`play_with_cancellation`](Self::play_with_cancellation). The
+    /// `reopener` is used only by [fallback seeking](Self::configure_fallback_seeking), which
+    /// needs a second, independent input for the same track. It is called on a background thread
+    /// and only after a seek the active decoder cannot perform itself.
+    pub fn play_with_reopener<O: MediaOutput>(
+        &self,
+        source: InputSource,
+        reopener: Arc<dyn SourceReopener>,
+        output: O,
+        cancellation: CancellationToken,
+    ) -> Result<AudioStreamInfo, PlaybackError> {
+        self.play_inner(source, Some(reopener), output, cancellation)
+    }
+
+    fn play_inner<O: MediaOutput>(
+        &self,
+        source: InputSource,
+        reopener: Option<Arc<dyn SourceReopener>>,
         output: O,
         cancellation: CancellationToken,
     ) -> Result<AudioStreamInfo, PlaybackError> {
@@ -146,6 +176,7 @@ impl PlaybackSession {
             data.cancellation = Some(cancellation.clone());
             data.output = Some(Arc::clone(&output));
             data.pending_seek = None;
+            data.seek_ticket = None;
             data.processor_initialized = false;
 
             let shared = Arc::clone(&self.shared);
@@ -154,6 +185,7 @@ impl PlaybackSession {
             let worker_observability = self.shared.observability.clone();
             let worker_crossfade = *lock(&self.crossfade);
             let worker_stage = Arc::clone(&self.stage);
+            let worker_reopen = fallback::Reopen::new(&source, reopener);
             let thread_result = thread::Builder::new()
                 .name(format!("remedia-playback-{generation}"))
                 .spawn(move || {
@@ -178,6 +210,7 @@ impl PlaybackSession {
                                 ready_tx,
                                 worker_stage,
                                 config,
+                                worker_reopen,
                             );
                         } else {
                             worker_entry(
@@ -187,6 +220,7 @@ impl PlaybackSession {
                                 worker_output,
                                 worker_cancellation,
                                 ready_tx,
+                                worker_reopen,
                             );
                         }
                         let data = lock(&span_shared.data);
@@ -304,6 +338,38 @@ impl PlaybackSession {
 
     pub fn crossfade_config(&self) -> Option<CrossfadeConfig> {
         *lock(&self.crossfade)
+    }
+
+    /// Allow or forbid fallback seeking. It is disabled by default and can be changed at any
+    /// time; the setting is read when a seek is applied.
+    ///
+    /// Some sources cannot reposition their decoder: an HTTP server that ignores `Range`
+    /// requests, or a format without a usable index. A seek on such a source normally fails with
+    /// [`PlaybackError::UnsupportedSeeking`]. With fallback seeking enabled, the session instead
+    /// keeps playing the current source while a background thread reopens the same track,
+    /// decodes forward and discards audio up to the target, then swaps the decoders at one exact
+    /// sample with a 5 ms blend. [`seek`](Self::seek) returns when the swap has happened.
+    ///
+    /// Preparation is accounted on the *effective* timeline. The replacement parks on the target
+    /// plus however far the source advanced while it was being prepared, so a seek to 90 s that
+    /// takes 3 s of playback to prepare resumes at about 93 s. The source timeline stops while
+    /// paused and runs faster than real time under a tempo filter, and the offset follows both.
+    ///
+    /// Only sources that can be opened a second time qualify: files, owned bytes, ordinary
+    /// HTTP(S) URLs, and any source started with
+    /// [`play_with_reopener`](Self::play_with_reopener). A one-shot byte stream or a single-use
+    /// URL still fails with `UnsupportedSeeking`, and the current playback is left untouched.
+    /// A failed, timed-out (60 s) or superseded fallback also leaves playback untouched.
+    ///
+    /// The replacement is decoded and re-encoded, so an Opus passthrough stream stays on the PCM
+    /// path after the swap.
+    pub fn configure_fallback_seeking(&self, enabled: bool) {
+        lock(&self.shared.data).fallback_seeking = enabled;
+    }
+
+    /// Whether fallback seeking is enabled for this session.
+    pub fn fallback_seeking(&self) -> bool {
+        lock(&self.shared.data).fallback_seeking
     }
 
     /// The logical source generation, including staged source promotion.

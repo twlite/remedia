@@ -100,6 +100,10 @@ intervening bytes. A requested position already passed by decoder read-ahead
 cannot be recovered. File and HTTP behavior is unchanged, and supported
 containers/codecs depend on the installed native FFmpeg libraries.
 
+An HTTP URL whose origin ignores `Range` requests can opt in to
+[fallback seeking](/docs/node/bindings#fallback-seeking), which opens the URL a second time instead
+of seeking in place. A Readable input is not reopenable, so it keeps the behavior above.
+
 ## Probe media without playback
 
 ```ts

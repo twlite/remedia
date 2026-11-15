@@ -43,8 +43,19 @@ impl DerefMut for OpenedInput {
 }
 
 impl OpenedInput {
-    pub(crate) const fn is_seekable(&self) -> bool {
-        self.seekable
+    /// Whether the underlying I/O can reposition itself. A `false` result is how FFmpeg reports
+    /// an HTTP server that does not answer `Range` requests: its demuxers then fail a seek,
+    /// possibly only after reconnecting repeatedly and losing the current read position.
+    pub(crate) fn supports_random_access(&self) -> bool {
+        if !self.seekable {
+            return false;
+        }
+
+        // SAFETY: the format context is open for as long as `self` is, and FFmpeg only
+        // replaces `pb` while closing the context. `seekable` is a plain integer field.
+        let pb = unsafe { (*self.deref().as_ptr()).pb };
+
+        pb.is_null() || unsafe { (*pb).seekable != 0 }
     }
 
     pub(crate) fn producer_failure(&self) -> Option<String> {

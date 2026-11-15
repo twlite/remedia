@@ -11,8 +11,8 @@ use remedia_discord::ConnectionState;
 use crate::native::NativeRemedia;
 use crate::runtime::{PlaybackEntry, lock, run_blocking};
 use crate::types::{
-    NativeCrossfadeEvent, NativeMediaSource, NativePlaybackPosition, NativeStageSnapshot,
-    NativeStreamInfo,
+    NativeCrossfadeEvent, NativeMediaSource, NativePlaybackPosition, NativeSeekOutcome,
+    NativeStageSnapshot, NativeStreamInfo,
 };
 use crate::util::{
     duration_from_millis, duration_millis, napi_error, native_stream_info, parse_source,
@@ -138,6 +138,33 @@ impl NativeRemedia {
         session
             .configure_crossfade(config)
             .map_err(|error| playback_error("could not configure crossfade", error))
+    }
+
+    /// Allow or forbid fallback seeking, which replaces the active source when its decoder cannot
+    /// seek. It is off by default and may be changed at any time.
+    #[napi]
+    pub fn playback_configure_fallback_seeking(
+        &self,
+        playback_id: String,
+        enabled: bool,
+    ) -> napi::Result<()> {
+        self.inner.ensure_open()?;
+        self.inner
+            .playback(&playback_id)?
+            .session
+            .configure_fallback_seeking(enabled);
+
+        Ok(())
+    }
+
+    /// Whether fallback seeking is enabled for this playback session.
+    #[napi]
+    pub fn playback_fallback_seeking(&self, playback_id: String) -> napi::Result<bool> {
+        Ok(self
+            .inner
+            .playback(&playback_id)?
+            .session
+            .fallback_seeking())
     }
 
     /// Open an independent decoder and stage a queue occurrence without
@@ -268,13 +295,31 @@ impl NativeRemedia {
             .map_err(|error| playback_error("could not resume playback", error))
     }
 
-    /// Seek to a media position in milliseconds.
+    /// Seek to a media position in milliseconds and report where the audio continues from.
     #[napi]
-    pub async fn seek(&self, playback_id: String, position_ms: f64) -> napi::Result<()> {
+    pub async fn seek(
+        &self,
+        playback_id: String,
+        position_ms: f64,
+    ) -> napi::Result<NativeSeekOutcome> {
         let position = duration_from_millis(position_ms)?;
-        self.with_playback_operation(&playback_id, move |session| session.seek(position))
+        self.with_playback_operation(&playback_id, move |session| session.seek_outcome(position))
             .await
+            .map(|outcome| NativeSeekOutcome {
+                requested_ms: outcome.requested.as_secs_f64() * 1_000.0,
+                applied_ms: outcome.applied.as_secs_f64() * 1_000.0,
+                replaced_source: outcome.replaced_source,
+            })
             .map_err(|error| playback_error("could not seek playback", error))
+    }
+
+    /// Cancel the playback's latest seek if it has not taken effect. Returns whether it was
+    /// cancelled; `false` means there was nothing to cancel or it was already being applied.
+    #[napi]
+    pub fn playback_cancel_seek(&self, playback_id: String) -> napi::Result<bool> {
+        self.inner.ensure_open()?;
+
+        Ok(self.inner.playback(&playback_id)?.session.cancel_seek())
     }
 
     /// Validate and replace the trusted native FFmpeg audio filtergraph.
@@ -475,6 +520,7 @@ fn native_crossfade_event(event: CrossfadeEvent) -> NativeCrossfadeEvent {
             previous_generation,
             generation,
             position_ms,
+            ..
         } => {
             value.kind = "timeline_changed".into();
             value.generation = generation.to_string();

@@ -5,13 +5,23 @@ import { NodeUnavailableError, ProtocolError, RemediaRpcError } from './errors.j
 
 /**
  * Commands whose server-side work can be interrupted. A client-side timeout or abort sends the
- * matching cancel command (with this request's ID) so the server stops work instead of
- * continuing after nobody is waiting for the result.
+ * matching cancel command so the server stops work instead of continuing after nobody is waiting
+ * for the result. Most are addressed by this request's ID; a seek is addressed by its guild, as
+ * a guild has one seek in flight that matters.
  */
-const CANCEL_COMMANDS: Readonly<Record<string, string>> = {
-  'media.probe': 'media.probe.cancel',
-  'plugin.list': 'plugin.cancel',
-  'plugin.execute': 'plugin.cancel',
+const CANCEL_COMMANDS: Readonly<
+  Record<
+    string,
+    (
+      requestId: string,
+      params: Readonly<Record<string, unknown>>,
+    ) => [string, Record<string, unknown>]
+  >
+> = {
+  'media.probe': (requestId) => ['media.probe.cancel', { requestId }],
+  'plugin.list': (requestId) => ['plugin.cancel', { requestId }],
+  'plugin.execute': (requestId) => ['plugin.cancel', { requestId }],
+  'player.seek': (_, params) => ['player.seek.cancel', { guildId: params.guildId }],
 };
 
 export interface RpcLifecycleEvent {
@@ -90,7 +100,7 @@ export class RpcClient {
         reject,
         timer: setTimeout(() => {
           this.#remove(id);
-          this.#cancelRemote(command, id);
+          this.#cancelRemote(command, id, params);
           reject(
             new RemediaRpcError(
               this.#options.nodeId,
@@ -105,7 +115,7 @@ export class RpcClient {
       if (options.signal) {
         pending.abort = () => {
           this.#remove(id);
-          this.#cancelRemote(command, id);
+          this.#cancelRemote(command, id, params);
           reject(abortError());
         };
         options.signal.addEventListener('abort', pending.abort, { once: true });
@@ -201,9 +211,13 @@ export class RpcClient {
   }
 
   /** Best effort: the request already failed locally, so a lost cancel only delays cleanup. */
-  #cancelRemote(command: string, requestId: string): void {
-    const cancel = CANCEL_COMMANDS[command];
-    if (cancel) void this.request(cancel, { requestId }).catch(() => {});
+  #cancelRemote(
+    command: string,
+    requestId: string,
+    params: Readonly<Record<string, unknown>>,
+  ): void {
+    const cancel = CANCEL_COMMANDS[command]?.(requestId, params);
+    if (cancel) void this.request(cancel[0], cancel[1]).catch(() => {});
   }
 
   #remove(id: string): void {

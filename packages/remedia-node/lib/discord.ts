@@ -15,7 +15,7 @@ import {
   type StageNextOptions,
   type StageSnapshot,
 } from './lifecycle.js';
-import { PlaybackSession } from './playback.js';
+import { PlaybackSession, type SeekOptions } from './playback.js';
 import { FilterControls, validateVolume } from './filters.js';
 import type { MediaSource } from './input.js';
 import type {
@@ -47,6 +47,11 @@ export interface DiscordSessionOptions {
   filterGraph?: string | null;
   /** Explicit PCM crossfade opt-in; disabled by default. */
   crossfade?: CrossfadeOptions | false;
+  /**
+   * Replace the active source when its decoder cannot seek, instead of rejecting the seek.
+   * Disabled by default. See `PlaybackSession.configureFallbackSeeking()`.
+   */
+  enableFallbackSeeking?: boolean;
 }
 
 /** Cancellation and timeout controls for obtaining credentials and establishing a voice transport. */
@@ -135,6 +140,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   #filterGraph: string | null = null;
   #volume = 1;
   #crossfade: DiscordSessionOptions['crossfade'];
+  #enableFallbackSeeking: boolean;
   #configurationWork: Promise<void> = Promise.resolve();
   #nativeStateTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -157,6 +163,12 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     this.userId = validateSnowflake('userId', options.userId);
     validateVolume(options.volume ?? 1);
     this.#crossfade = options.crossfade;
+    if (
+      options.enableFallbackSeeking !== undefined &&
+      typeof options.enableFallbackSeeking !== 'boolean'
+    )
+      throw new TypeError('enableFallbackSeeking must be a boolean');
+    this.#enableFallbackSeeking = options.enableFallbackSeeking === true;
     if (
       options.filterGraph !== undefined &&
       options.filterGraph !== null &&
@@ -456,11 +468,13 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
 
   /**
    * Seek on the original media timeline; non-seekable and one-shot sources may reject.
+   * See `PlaybackSession.seek()` for fallback seeking, the applied position and cancellation.
    * @param positionMs - Non-negative finite position on the original media timeline, in milliseconds.
+   * @param options - Optional cancellation; aborting the signal cancels a seek that has not taken effect.
    * @returns Resolves after the backend accepts the seek; rejects for invalid positions or unsupported inputs.
    */
-  seek(positionMs: number): Promise<void> {
-    return this.#requireExistingPlayback().seek(positionMs);
+  seek(positionMs: number, options?: SeekOptions): Promise<void> {
+    return this.#requireExistingPlayback().seek(positionMs, options);
   }
 
   /**
@@ -856,6 +870,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
         playback = createdPlayback;
         this.#playback = createdPlayback;
         if (this.#crossfade) createdPlayback.configureCrossfade(this.#crossfade);
+        if (this.#enableFallbackSeeking) createdPlayback.configureFallbackSeeking(true);
         await this.#serializeConfiguration(async () => {
           if (this.#playback !== createdPlayback) return;
           if (this.#filterGraph !== null) await createdPlayback.filters.set(this.#filterGraph);

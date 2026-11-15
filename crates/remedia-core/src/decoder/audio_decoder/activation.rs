@@ -81,11 +81,15 @@ impl AudioDecoder {
         self.finished = false;
         // While capturing, warm-up PCM must survive the decoder's discard of audio before the
         // transition boundary.
-        self.seek_target_sample = if capture.is_some() {
-            None
-        } else {
-            source_boundary
-        };
+        // Opening the codec after a demuxer seek must not forget the position the seek asked for.
+        let keep_seek_target = source_boundary.is_none() && preroll.is_empty() && capture.is_none();
+        if !keep_seek_target {
+            self.seek_target_sample = if capture.is_some() {
+                None
+            } else {
+                source_boundary
+            };
+        }
 
         if !preroll.is_empty() {
             tracing::debug!(

@@ -51,6 +51,8 @@ export interface FakeServerOptions {
   pluginForwarding?: FakePluginForwarding;
   /** Advertise exactly this `capabilities.crossfade` object, including legacy shapes without `curves`. */
   crossfadeCapability?: Record<string, unknown>;
+  /** Advertise exactly this `capabilities.fallbackSeeking` object; omit it to model an older node. */
+  fallbackSeekingCapability?: Record<string, unknown>;
 }
 
 /** Throw from a fake handler to answer with a specific protocol error code. */
@@ -93,6 +95,9 @@ export class FakeServerNode {
   readonly #pluginHosts: readonly string[] | undefined;
   readonly #pluginForwarding: FakePluginForwarding | undefined;
   readonly #crossfadeCapability: Record<string, unknown> | undefined;
+  readonly #fallbackSeekingCapability: Record<string, unknown> | undefined;
+  /** Parameters of every `guild.create` request received, in order. */
+  readonly guildCreateParams: Array<Record<string, unknown>> = [];
   /** Every `plugin.*` request received, in order, with the connection's request ID. */
   readonly pluginRequests: Array<{ id: string | null; command: string; params: unknown }> = [];
   /** Request IDs named by `plugin.cancel`. */
@@ -111,6 +116,12 @@ export class FakeServerNode {
   playerPlayRequests = 0;
   probeGate: (() => Promise<void>) | undefined;
   probeCancelRequests = 0;
+  /** Awaited before a `player.seek` is answered, to model a seek that is still preparing. */
+  seekGate: (() => Promise<void>) | undefined;
+  /** Parameters of every `player.seek.cancel` received. */
+  readonly seekCancels: Array<Record<string, unknown>> = [];
+  /** Answer a seek like fallback seeking: the audio continues this much after the target. */
+  fallbackSeekLandsAfterMs: number | undefined;
   voiceConnectRequests = 0;
   readonly voiceConnectionCredentials: Array<{
     sessionId: string;
@@ -140,6 +151,7 @@ export class FakeServerNode {
     this.#pluginHosts = options.pluginHosts ?? options.pluginForwarding?.hosts.map((h) => h.hostId);
     this.#pluginForwarding = options.pluginForwarding;
     this.#crossfadeCapability = options.crossfadeCapability;
+    this.#fallbackSeekingCapability = options.fallbackSeekingCapability;
     this.pluginExecute = options.pluginForwarding?.execute;
     this.#websocketServer = websocketServer;
     websocketServer.on('connection', (socket) => {
@@ -258,9 +270,12 @@ export class FakeServerNode {
             nodeId: this.nodeIdentity,
             version: 'test',
             protocolVersion: this.protocolVersion,
-            ...(this.#pluginHosts || this.#crossfadeCapability
+            ...(this.#pluginHosts || this.#crossfadeCapability || this.#fallbackSeekingCapability
               ? {
                   capabilities: {
+                    ...(this.#fallbackSeekingCapability
+                      ? { fallbackSeeking: this.#fallbackSeekingCapability }
+                      : {}),
                     crossfade: this.#crossfadeCapability ?? {
                       configured: false,
                       available: false,
@@ -391,6 +406,7 @@ export class FakeServerNode {
         }
         case 'guild.create': {
           this.guildCreateRequests += 1;
+          this.guildCreateParams.push(params);
           const session = this.#session(socket);
           const guildId = String(params.guildId);
           if (session.guilds.has(guildId)) {
@@ -577,18 +593,24 @@ export class FakeServerNode {
           result = { state };
           break;
         }
+        case 'player.seek.cancel':
+          this.seekCancels.push(params);
+          result = { cancelled: true };
+          break;
         case 'player.seek': {
+          await this.seekGate?.();
           const session = this.#session(socket);
           const guild = this.#guild(socket, String(params.guildId));
           const previousPositionMs = guild.playback.position.media?.positionMs ?? null;
-          guild.playback.position.media = {
-            positionMs: Number(params.positionMs),
-            accuracy: 'timestamp',
-          };
+          const requestedPositionMs = Number(params.positionMs);
+          const positionMs = requestedPositionMs + (this.fallbackSeekLandsAfterMs ?? 0);
+          guild.playback.position.media = { positionMs, accuracy: 'timestamp' };
           this.#event(session, 'player.seeked', {
             guildId: guild.guildId,
             generation: guild.playback.generation,
-            positionMs: Number(params.positionMs),
+            positionMs,
+            requestedPositionMs,
+            fallback: this.fallbackSeekLandsAfterMs !== undefined,
             previousPositionMs,
           });
           result = { ...guild.playback.position };
