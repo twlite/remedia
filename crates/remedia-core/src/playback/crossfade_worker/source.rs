@@ -123,30 +123,58 @@ impl ActiveSource {
         }
     }
 
+    /// The Opus encoder's partial frame at the start of a block of `block` samples that was just
+    /// read, when it is known.
+    pub(super) fn encoder_phase_before(&self, block: usize) -> Option<u64> {
+        self.encoder_phase
+            .map(|phase| (phase + 960 - (block as u64 % 960)) % 960)
+    }
+
+    /// Whether a replacement decoder's packets could follow this source's re-encoded audio: the
+    /// output encodes Opus, the stream is a plain Opus file whose pre-skip equals the encoder's
+    /// lookahead, and the encoder's frame phase is known.
+    pub(super) fn can_recover_packets(
+        &self,
+        output: &Arc<dyn MediaOutput>,
+        replacement: &AudioDecoder,
+    ) -> bool {
+        output.encoded_opus_output().is_some()
+            && self.encoder_phase.is_some()
+            && replacement.opus_passthrough_rejection().is_none()
+            && replacement.opus_pre_skip() == OPUS_ENCODER_LOOKAHEAD
+    }
+
     /// Continue this track on `decoder`, a second decoder on the same track that has already
     /// produced the audio up to `consumed`. `queued` is audio it decoded beyond that point.
     ///
     /// The output encoder is not touched: its state follows the audio, which does not change.
+    /// `block` is the length of the audio just handed to the output from the replacement, and
+    /// `position` the source sample it began at.
+    ///
+    /// With `recover`, the source may return to forwarding packets: it counts the encoder's warm-up
+    /// from this block, so the client's decoder has settled on the new audio before packets resume.
     pub(super) fn adopt_replacement(
         &mut self,
         decoder: Box<AudioDecoder>,
         queued: VecDeque<f32>,
         info: &AudioStreamInfo,
+        position: u64,
+        block: usize,
+        recover: bool,
     ) {
         if let ActiveInput::Prepared(stage) = &self.input {
             stage.cancel_and_join();
         }
 
-        // The replacement is decoded, so this source stays on the PCM path.
         self.pre_skip = decoder.opus_pre_skip();
+        self.stream_eligible = recover;
+        self.eligible = recover;
         self.input = ActiveInput::Direct {
             decoder,
             pcm: queued,
             ended: false,
         };
         self.encoded = false;
-        self.eligible = false;
-        self.stream_eligible = false;
         self.boundary = None;
         self.junction = false;
         self.prime = None;
@@ -154,12 +182,12 @@ impl ActiveSource {
         self.effective_end = None;
         self._cancel_link = None;
         self.duration_samples = info.duration.map(samples_from_duration);
-    }
-
-    /// Place the source position on `consumed`, for a replacement that starts elsewhere than
-    /// the source it replaced stopped.
-    pub(super) fn set_consumed(&mut self, consumed: u64) {
-        self.consumed = consumed;
+        // The new audio is the block just read; the audio before it belonged to the old source.
+        self.consumed = position + block as u64;
+        self.pcm_run = block as u64;
+        if recover {
+            self.boundary = Some(self.consumed);
+        }
     }
 
     /// Take over a promoted stage's decoder once its staged PCM is fully consumed, so a source
@@ -576,8 +604,10 @@ impl ActiveSource {
                 pcm,
                 ended,
             } => {
-                decoder.activate_decoder(&[], None)?;
+                // The demuxer is asked first, so a seek that fails leaves this source untouched,
+                // forwarded packets included.
                 decoder.seek(position)?;
+                decoder.activate_decoder(&[], None)?;
                 self.encoded = false;
                 // The first packet after a demuxer seek needs trimming, so it is decoded. Once
                 // that audio is consumed on a packet boundary the stream can forward packets

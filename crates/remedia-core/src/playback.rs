@@ -99,6 +99,10 @@ pub enum PlaybackError {
     /// was ready. Playback continued on the source that was already playing.
     #[error("the seek was replaced before its replacement source was ready")]
     SeekSuperseded,
+    /// The seek was cancelled before it took effect, by [`SeekCanceller::cancel`] or
+    /// [`PlaybackSession::cancel_seek`]. Playback continued on the source that was playing.
+    #[error("the seek was cancelled before it was applied")]
+    SeekCancelled,
     #[error("seek position {target:?} is beyond media duration {duration:?}")]
     SeekOutOfRange {
         target: Duration,
@@ -177,18 +181,34 @@ pub struct PlaybackSession {
 ///
 /// Dropping it without waiting does not cancel the seek.
 pub struct PendingSeek {
-    response: mpsc::Receiver<Result<(), PlaybackError>>,
+    response: mpsc::Receiver<Result<SeekOutcome, PlaybackError>>,
     shared: Arc<SessionShared>,
     stage: Arc<Mutex<Option<Arc<PreparedStage>>>>,
+    ticket: Arc<SeekTicket>,
 }
 
 impl PendingSeek {
+    /// A handle that cancels this seek from another thread, for example when the request that
+    /// asked for it times out.
+    pub fn canceller(&self) -> SeekCanceller {
+        SeekCanceller {
+            ticket: Arc::clone(&self.ticket),
+            shared: Arc::clone(&self.shared),
+        }
+    }
+
     /// Block until the seek has been applied or rejected.
     ///
     /// Returns [`PlaybackError::SeekSuperseded`] when a newer seek replaced this one before its
-    /// replacement source was ready, and [`PlaybackError::Cancelled`] when the playback was
-    /// stopped. In every error case the source that was already playing keeps playing.
+    /// replacement source was ready, [`PlaybackError::SeekCancelled`] when it was cancelled, and
+    /// [`PlaybackError::Cancelled`] when the playback was stopped. In every error case the source
+    /// that was already playing keeps playing.
     pub fn wait(self) -> Result<(), PlaybackError> {
+        self.wait_outcome().map(|_| ())
+    }
+
+    /// Like [`wait`](Self::wait), and report where the seek landed.
+    pub fn wait_outcome(self) -> Result<SeekOutcome, PlaybackError> {
         let outcome = self.response.recv().unwrap_or_else(|_| {
             Err(lock(&self.shared.data)
                 .last_error
@@ -238,6 +258,8 @@ struct SessionData {
     cancellation: Option<CancellationToken>,
     output: Option<Arc<dyn MediaOutput>>,
     pending_seek: Option<SeekRequest>,
+    /// The most recently submitted seek, for `PlaybackSession::cancel_seek`.
+    seek_ticket: Option<Arc<SeekTicket>>,
     /// Fallback seeking is allowed for this session (see `configure_fallback_seeking`).
     fallback_seeking: bool,
     /// A fallback replacement finished preparing (or failed); the worker should look at it.
@@ -251,7 +273,8 @@ struct SessionData {
 
 struct SeekRequest {
     position: Duration,
-    response: SyncSender<Result<(), PlaybackError>>,
+    response: SyncSender<Result<SeekOutcome, PlaybackError>>,
+    ticket: Arc<SeekTicket>,
 }
 
 struct FilterUpdate {
@@ -277,8 +300,11 @@ mod tests;
 
 mod crossfade_worker;
 mod fallback;
+mod seek;
 mod session;
 mod staging;
+use seek::SeekTicket;
+pub use seek::{SeekCanceller, SeekOutcome};
 use staging::PreparedStage;
 pub use staging::{StageIdentity, StageSnapshot, StageState};
 

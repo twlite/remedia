@@ -73,6 +73,34 @@ impl Reopen {
     }
 }
 
+/// Why `reopened` cannot be the track that is playing, if it cannot.
+///
+/// A reopener or an origin can answer with different media the second time: a plugin that picks
+/// a track at random, a URL whose content was replaced. Swapping that in would put the listener
+/// somewhere in a different recording, so the stream's shape and length must agree. Duration is
+/// allowed a second or one percent of slack, since container metadata differs between opens of
+/// an unchanged resource only by rounding. A duration that only one open can determine proves
+/// nothing, as when a one-shot stream is reopened as a complete file.
+fn track_difference(playing: &AudioStreamInfo, reopened: &AudioStreamInfo) -> Option<&'static str> {
+    if playing.codec != reopened.codec {
+        return Some("different codec");
+    }
+    if playing.sample_rate != reopened.sample_rate {
+        return Some("different sample rate");
+    }
+    if playing.channels != reopened.channels {
+        return Some("different channel count");
+    }
+
+    match (playing.duration, reopened.duration) {
+        (Some(left), Some(right)) => {
+            let slack = (left / 100).max(Duration::from_secs(1));
+            (left.abs_diff(right) > slack).then_some("different duration")
+        }
+        _ => None,
+    }
+}
+
 /// The source-timeline start of a decoded frame, in samples.
 pub(super) fn frame_start(frame: &DecodedPcmFrame) -> u64 {
     frame
@@ -232,6 +260,7 @@ impl FallbackSeek {
         reopen: &Reopen,
         request: SeekRequest,
         origin_sample: u64,
+        expected: Option<AudioStreamInfo>,
         playback_cancellation: &CancellationToken,
     ) -> Result<Self, (SeekRequest, PlaybackError)> {
         let target = request.position;
@@ -255,7 +284,13 @@ impl FallbackSeek {
             .name("remedia-fallback-seek".into())
             .spawn(move || {
                 with_dispatch(&observability, || {
-                    let result = prepare(&thread_reopen, &thread_shared, target, thread_link);
+                    let result = prepare(
+                        &thread_reopen,
+                        &thread_shared,
+                        target,
+                        expected.as_ref(),
+                        thread_link,
+                    );
                     *lock(&thread_shared.outcome) = Some(result);
                     let mut data = lock(&thread_session.data);
                     data.fallback_signal = true;
@@ -338,8 +373,31 @@ impl FallbackSeek {
         outcome
     }
 
+    /// Claim the seek for application. `false` if it was cancelled first, in which case the
+    /// swap must not happen.
+    pub(super) fn commit(&self) -> bool {
+        self.request
+            .as_ref()
+            .is_none_or(|request| request.ticket.commit())
+    }
+
+    pub(super) fn is_cancelled(&self) -> bool {
+        self.request
+            .as_ref()
+            .is_some_and(|request| request.ticket.is_cancelled())
+    }
+
+    /// The result to report once the replacement carries on from `applied_sample`.
+    pub(super) fn outcome(&self, applied_sample: u64) -> SeekOutcome {
+        SeekOutcome {
+            requested: self.target,
+            applied: duration_from_samples(applied_sample),
+            replaced_source: true,
+        }
+    }
+
     /// Answer the waiting `seek` call and release the preparation.
-    pub(super) fn finish(mut self, result: Result<(), PlaybackError>) {
+    pub(super) fn finish(mut self, result: Result<SeekOutcome, PlaybackError>) {
         if let Some(request) = self.request.take() {
             let _ = request.response.send(result);
         }
@@ -348,6 +406,11 @@ impl FallbackSeek {
     /// A newer request made this seek obsolete; playback continues on the active source.
     pub(super) fn supersede(self) {
         self.finish(Err(PlaybackError::SeekSuperseded));
+    }
+
+    /// The caller cancelled this seek before it took effect.
+    pub(super) fn cancelled(self) {
+        self.finish(Err(PlaybackError::SeekCancelled));
     }
 }
 
@@ -374,6 +437,7 @@ fn prepare(
     reopen: &Reopen,
     shared: &PreparationShared,
     target: Duration,
+    expected: Option<&AudioStreamInfo>,
     link: Arc<dyn crate::source::CancellationWake>,
 ) -> Result<Replacement, PlaybackError> {
     let cancellation = &shared.cancellation;
@@ -386,6 +450,11 @@ fn prepare(
         },
     )?;
     let info = decoder.info().clone();
+    if let Some(difference) = expected.and_then(|expected| track_difference(expected, &info)) {
+        return Err(PlaybackError::UnsupportedSeeking(format!(
+            "the reopened source is not the track that is playing ({difference})"
+        )));
+    }
 
     // Packets that end well before the target need no decoding, only reading.
     decoder.skip_packets_before(shared.required.load(Ordering::Acquire), SETTLE_SAMPLES)?;

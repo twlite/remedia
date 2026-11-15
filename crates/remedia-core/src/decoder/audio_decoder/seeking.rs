@@ -37,7 +37,12 @@ impl AudioDecoder {
         let target_sample = duration_to_sample_position(position).map_err(|_| {
             DecoderError::UnsupportedSeeking("the target exceeds the output timeline".to_owned())
         })?;
-        if !self.reader.input.is_seekable() {
+        // A source that cannot reposition itself is never handed to FFmpeg's seek. For an HTTP
+        // origin that ignores `Range` that attempt reconnects repeatedly, can fail after the
+        // read position is lost, and otherwise reads and discards on this thread anyway. Walking
+        // forward through decoded audio does the same work without the reconnects, and a target
+        // behind the decoder is refused before anything is touched.
+        if !self.reader.input.supports_random_access() {
             return self.seek_forward(target_sample, position, pending_frame);
         }
         if let Err(error) = self.reader.input.seek(timestamp, ..) {
@@ -153,7 +158,7 @@ impl AudioDecoder {
             .or_else(|| self.reader.source_boundary_sample());
         if first_available.is_some_and(|available| target_sample < available) {
             return Err(DecoderError::UnsupportedSeeking(
-                "cannot seek backwards in a one-shot byte stream".to_owned(),
+                "cannot seek backwards in a source that cannot be repositioned".to_owned(),
             ));
         }
 

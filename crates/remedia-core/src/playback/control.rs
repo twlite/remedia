@@ -250,6 +250,7 @@ pub(super) fn playback_error_kind(error: &PlaybackError) -> &'static str {
         PlaybackError::Cancelled => "cancelled",
         PlaybackError::SeekPending => "seek_pending",
         PlaybackError::SeekSuperseded => "seek_superseded",
+        PlaybackError::SeekCancelled => "seek_cancelled",
         PlaybackError::UnsupportedSeeking(_) => "unsupported_seeking",
         PlaybackError::SeekOutOfRange { .. } => "seek_out_of_range",
         PlaybackError::FilterGraph(_) => "filter_graph",

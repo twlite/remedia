@@ -179,7 +179,10 @@ fn worker_loop(
 
         if let Some(waiting) = fallback.as_ref() {
             waiting.set_playhead(current.consumed);
-            if transition.is_some() {
+            if waiting.is_cancelled() {
+                // The request that asked for this seek gave up on it.
+                fallback.take().expect("waiting seek").cancelled();
+            } else if transition.is_some() {
                 // A crossfade has begun, so this track is ending and the seek no longer applies.
                 fallback.take().expect("waiting seek").supersede();
             } else if waiting.timed_out() {
@@ -425,22 +428,53 @@ fn worker_loop(
         if let Some((done, mut replacement)) = switching.take() {
             let count = pcm.len() / 2;
             let start = current.consumed.saturating_sub(count as u64);
-            match splice(
-                &mut replacement,
-                &mut pcm,
-                done.position_for(start),
-                done.target(),
-            ) {
+            // An Opus stream that can return to packets needs its first packet boundary to
+            // coincide with a boundary of the encoder's frame; see the legacy worker. Moving the
+            // replacement's start forward by under 20 ms makes the two grids line up.
+            let recover = current.can_recover_packets(&output, &replacement.decoder);
+            let natural = if count > 0 {
+                Some(done.position_for(start))
+            } else {
+                replacement.start()
+            };
+            let position = natural.map(|natural| {
+                natural
+                    + if recover {
+                        let phase = current.encoder_phase_before(count).unwrap_or_default();
+                        (phase + 960 - natural % 960) % 960
+                    } else {
+                        0
+                    }
+            });
+            let spliced = match position {
+                Some(position) => splice(&mut replacement, &mut pcm, position, done.target()),
+                None => Err(PlaybackError::SeekOutOfRange {
+                    target: done.target(),
+                    duration: replacement.info.duration.unwrap_or_default(),
+                }),
+            };
+            match spliced {
+                // The request gave up while the replacement was being lined up.
+                Ok(_) if !done.commit() => {
+                    done.cancelled();
+                    if count == 0 {
+                        break;
+                    }
+                }
                 Ok(applied) => {
                     let info = replacement.info.clone();
                     let queued = replacement
                         .take_head()
                         .map(|frame| frame.frame.samples)
                         .unwrap_or_default();
-                    if count == 0 {
-                        current.set_consumed(applied);
-                    }
-                    current.adopt_replacement(replacement.decoder, queued.into(), &info);
+                    current.adopt_replacement(
+                        replacement.decoder,
+                        queued.into(),
+                        &info,
+                        applied,
+                        count,
+                        recover,
+                    );
                     finish_fallback_switch(
                         &shared,
                         stage_slot,
@@ -450,7 +484,8 @@ fn worker_loop(
                         &done,
                         applied,
                     );
-                    done.finish(Ok(()));
+                    let outcome = done.outcome(applied);
+                    done.finish(Ok(outcome));
                     if count == 0 {
                         continue;
                     }

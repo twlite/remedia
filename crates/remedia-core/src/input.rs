@@ -43,10 +43,6 @@ impl DerefMut for OpenedInput {
 }
 
 impl OpenedInput {
-    pub(crate) const fn is_seekable(&self) -> bool {
-        self.seekable
-    }
-
     /// Whether the underlying I/O can reposition itself. A `false` result is how FFmpeg reports
     /// an HTTP server that does not answer `Range` requests: its demuxers then fail a seek,
     /// possibly only after reconnecting repeatedly and losing the current read position.

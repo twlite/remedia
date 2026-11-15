@@ -89,6 +89,31 @@ impl PlaybackSession {
         self.start_seek(position)?.wait()
     }
 
+    /// Like [`seek`](Self::seek), and report where the audio continues from. The applied position
+    /// equals the requested one except for a fallback seek, which lands on the request plus the
+    /// source time that elapsed while its replacement was prepared.
+    pub fn seek_outcome(&self, position: Duration) -> Result<SeekOutcome, PlaybackError> {
+        self.start_seek(position)?.wait_outcome()
+    }
+
+    /// Cancel the most recently submitted seek if it has not taken effect.
+    ///
+    /// Returns `true` when that seek will never be applied; its waiting call fails with
+    /// [`PlaybackError::SeekCancelled`]. Returns `false` when there is nothing to cancel, or the
+    /// seek was already applied or is being applied. Prefer [`PendingSeek::canceller`] when a
+    /// particular seek must be cancelled, since a newer seek may have been submitted since.
+    pub fn cancel_seek(&self) -> bool {
+        let ticket = lock(&self.shared.data).seek_ticket.clone();
+
+        ticket.is_some_and(|ticket| {
+            SeekCanceller {
+                ticket,
+                shared: Arc::clone(&self.shared),
+            }
+            .cancel()
+        })
+    }
+
     /// Submit a seek and return without waiting for it to be applied.
     ///
     /// Validation and submission happen before this returns: an invalid state, an out-of-range
@@ -98,6 +123,7 @@ impl PlaybackSession {
     /// or a stop can reach a session whose previous seek is still preparing a replacement.
     pub fn start_seek(&self, position: Duration) -> Result<PendingSeek, PlaybackError> {
         let (response_tx, response_rx) = mpsc::sync_channel(1);
+        let ticket = Arc::new(SeekTicket::default());
         let playback_id = {
             let mut data = lock(&self.shared.data);
             if !matches!(data.state, PlaybackState::Playing | PlaybackState::Paused) {
@@ -121,7 +147,9 @@ impl PlaybackSession {
             data.pending_seek = Some(SeekRequest {
                 position,
                 response: response_tx,
+                ticket: Arc::clone(&ticket),
             });
+            data.seek_ticket = Some(Arc::clone(&ticket));
             self.shared.changed.notify_all();
             data.playback_id
         };
@@ -139,6 +167,7 @@ impl PlaybackSession {
             response: response_rx,
             shared: Arc::clone(&self.shared),
             stage: Arc::clone(&self.stage),
+            ticket,
         })
     }
 

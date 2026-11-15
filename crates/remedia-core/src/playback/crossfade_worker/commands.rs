@@ -31,12 +31,21 @@ pub(super) fn handle_commands(
                 previous.supersede();
             }
 
+            if request.ticket.is_cancelled() {
+                let _ = request.response.send(Err(PlaybackError::SeekCancelled));
+                continue;
+            }
+
             // A decoder that cannot reposition itself is never asked to: a failed attempt on an
             // HTTP source can drop the connection and lose the current position.
             let attempt = if fallback_allowed && !current.can_seek_in_place() {
                 Err(PlaybackError::UnsupportedSeeking(
                     "the source cannot reposition itself".to_owned(),
                 ))
+            } else if !request.ticket.commit() {
+                // From here the seek changes the source, so it can no longer be cancelled.
+                let _ = request.response.send(Err(PlaybackError::SeekCancelled));
+                continue;
             } else {
                 current.seek(request.position, cancellation)
             };
@@ -45,12 +54,15 @@ pub(super) fn handle_commands(
             {
                 // Nothing is torn down: the current source, its transition and the staged next
                 // track stay as they are until the replacement is ready.
+                request.ticket.uncommit();
                 let origin = current.consumed;
+                let expected = lock(&shared.data).info.clone();
                 match fallback::FallbackSeek::start(
                     shared,
                     current.reopen(),
                     request,
                     origin,
+                    expected,
                     cancellation,
                 ) {
                     Ok(started) => {
@@ -123,7 +135,11 @@ pub(super) fn handle_commands(
                 });
                 Ok(())
             });
-            let _ = request.response.send(result.clone());
+            let _ = request.response.send(result.clone().map(|()| SeekOutcome {
+                requested: request.position,
+                applied: request.position,
+                replaced_source: false,
+            }));
             if matches!(
                 &result,
                 Err(PlaybackError::UnsupportedSeeking(_))

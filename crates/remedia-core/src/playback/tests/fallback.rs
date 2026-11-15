@@ -16,14 +16,28 @@ const TRACK_MS: usize = 20_000;
 
 /// A mono 48 kHz WAV where every sample of millisecond `n` has the value `n`.
 fn ramp_wave() -> Vec<u8> {
+    ramp_wave_of(TRACK_MS)
+}
+
+/// A mono 16-bit WAV like [`pcm_wave`] at another sample rate.
+fn pcm_wave_at(samples: &[i16], rate: u32) -> Vec<u8> {
+    let mut wave = pcm_wave(samples);
+    wave[24..28].copy_from_slice(&rate.to_le_bytes());
+    wave[28..32].copy_from_slice(&(rate * 2).to_le_bytes());
+
+    wave
+}
+
+fn ramp_wave_of(milliseconds: usize) -> Vec<u8> {
     pcm_wave(
-        &(0..TRACK_MS * 48)
+        &(0..milliseconds * 48)
             .map(|index| (index / 48) as i16)
             .collect::<Vec<_>>(),
     )
 }
 
-/// An HTTP server that answers every request with the whole body and never honours `Range`.
+/// An HTTP server that answers every request with the whole body and, unless built with
+/// [`RangelessServer::start_ranged`], never honours `Range`.
 struct RangelessServer {
     url: String,
     connections: Arc<AtomicUsize>,
@@ -36,6 +50,15 @@ struct RangelessServer {
 
 impl RangelessServer {
     fn start(body: Vec<u8>) -> Self {
+        Self::serve(body, None)
+    }
+
+    /// An origin that honours `Range` with `206`. `advertise` also sends `Accept-Ranges: bytes`.
+    fn start_ranged(body: Vec<u8>, advertise: bool) -> Self {
+        Self::serve(body, Some(advertise))
+    }
+
+    fn serve(body: Vec<u8>, ranged: Option<bool>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = Self {
@@ -65,11 +88,21 @@ impl RangelessServer {
                     if reader.read_line(&mut line).unwrap_or(0) == 0 {
                         return;
                     }
+                    let mut range_start = None;
                     loop {
                         let mut header = String::new();
                         let read = reader.read_line(&mut header).unwrap_or(0);
                         if read == 0 || header == "\r\n" {
                             break;
+                        }
+                        if let Some(value) =
+                            header.to_ascii_lowercase().strip_prefix("range: bytes=")
+                        {
+                            range_start = value
+                                .trim()
+                                .split('-')
+                                .next()
+                                .and_then(|start| start.parse::<usize>().ok());
                         }
                     }
 
@@ -85,12 +118,32 @@ impl RangelessServer {
                         thread::sleep(Duration::from_millis(2));
                     }
 
+                    let (status, offset) = match (ranged, range_start) {
+                        (Some(_), Some(start)) if start < body.len() => {
+                            ("206 Partial Content", start)
+                        }
+                        _ => ("200 OK", 0),
+                    };
+                    let accept = if ranged == Some(true) {
+                        "Accept-Ranges: bytes\r\n"
+                    } else {
+                        ""
+                    };
+                    let content_range = if status.starts_with("206") {
+                        format!(
+                            "Content-Range: bytes {offset}-{}/{}\r\n",
+                            body.len() - 1,
+                            body.len()
+                        )
+                    } else {
+                        String::new()
+                    };
                     let header = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        body.len()
+                        "HTTP/1.1 {status}\r\nContent-Type: audio/wav\r\n{accept}{content_range}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len() - offset
                     );
                     if stream.write_all(header.as_bytes()).is_ok() {
-                        let _ = stream.write_all(&body);
+                        let _ = stream.write_all(&body[offset..]);
                     }
                 });
             }
@@ -158,7 +211,7 @@ fn delivered(gate: &GateHandle) -> Vec<(u64, i64, usize)> {
 fn frame_lengths(accepted: &[(u64, f32)]) -> Vec<usize> {
     let mut lengths: Vec<usize> = accepted
         .windows(2)
-        .map(|pair| (pair[1].0 - pair[0].0) as usize)
+        .map(|pair| pair[1].0.checked_sub(pair[0].0).unwrap_or(4_096) as usize)
         .collect();
     lengths.push(*lengths.last().unwrap_or(&960));
     lengths
@@ -223,6 +276,25 @@ fn cut_at(frames: &[(u64, i64, usize)], jump: usize) -> i64 {
 /// `jump` is the blend frame; the new source's audio is where the next frame says it should be.
 fn resumed_at(frames: &[(u64, i64, usize)], jump: usize) -> i64 {
     frames[jump].1 - frames[jump - 1].2 as i64 / 48
+}
+
+/// The session's reported media position follows the audio the output received, to within the
+/// frame that is still being written. A swap that left it on the old source's timeline would be
+/// off by the whole seek.
+fn assert_position_follows_audio(session: &PlaybackSession, frames: &[(u64, i64, usize)]) {
+    let last = frames.last().expect("frames were delivered");
+    let delivered = last.1 + last.2 as i64 / 48;
+    let reported = session
+        .position()
+        .media
+        .expect("a media position is reported")
+        .position
+        .as_millis() as i64;
+
+    assert!(
+        (reported - delivered).abs() <= 100,
+        "reported {reported} ms, but the output received audio up to {delivered} ms"
+    );
 }
 
 fn assert_output_timeline_is_contiguous(frames: &[(u64, i64, usize)]) {
@@ -355,6 +427,7 @@ fn the_replacement_resumes_where_the_listener_would_be_by_now() {
         session.duration(),
         Some(Duration::from_millis(TRACK_MS as u64))
     );
+    assert_position_follows_audio(&session, &frames);
     session.stop().unwrap();
 }
 
@@ -867,6 +940,7 @@ fn the_crossfade_worker_replaces_the_source_and_publishes_the_new_timeline() {
         resumed_at(&frames, jump)
     );
 
+    assert_position_follows_audio(&session, &frames);
     assert!(
         session.source_generation() > generation,
         "the timeline changed"
@@ -1288,32 +1362,34 @@ mod passthrough {
     //! An Opus stream forwarded as packets is converted to PCM for the swap, without a gap.
 
     use super::super::preskip::{
-        TRANSIENTS, assert_timeline_is_contiguous, client_pcm, reference_pcm, source_packets,
+        TRANSIENTS, assert_timeline_is_contiguous, client_pcm, longest_forwarded_run,
+        reference_pcm, source_packets,
     };
     use super::*;
     use crate::opus::{EncodedOpusPacket, OpusEncoderOutput};
 
     /// The media sample in `reference` (stereo interleaved) whose surroundings best match
-    /// `window`, searched at millisecond steps and then refined to one sample.
+    /// `window`. Every sample offset is tried, because noise-like content only correlates at
+    /// the exact one; a candidate is dropped as soon as it is worse than the best so far.
     fn locate(reference: &[f32], window: &[f32]) -> usize {
         let frames = window.len() / 2;
-        let error = |start: usize, stride: usize| -> f32 {
-            (0..frames)
-                .step_by(stride)
-                .map(|frame| {
-                    (reference[(start + frame) * 2] - window[frame * 2]).abs()
-                        + (reference[(start + frame) * 2 + 1] - window[frame * 2 + 1]).abs()
-                })
-                .sum()
-        };
         let last = reference.len() / 2 - frames;
-        let coarse = (0..last)
-            .step_by(48)
-            .min_by(|left, right| error(*left, 8).total_cmp(&error(*right, 8)))
-            .unwrap();
-        (coarse.saturating_sub(48)..(coarse + 48).min(last))
-            .min_by(|left, right| error(*left, 1).total_cmp(&error(*right, 1)))
-            .unwrap()
+        let mut best = (f32::MAX, 0);
+        for start in 0..last {
+            let mut error = 0.0;
+            for frame in (0..frames).step_by(4) {
+                error += (reference[(start + frame) * 2] - window[frame * 2]).abs()
+                    + (reference[(start + frame) * 2 + 1] - window[frame * 2 + 1]).abs();
+                if error >= best.0 {
+                    break;
+                }
+            }
+            if error < best.0 {
+                best = (error, start);
+            }
+        }
+
+        best.1
     }
 
     fn media_ms(packets: &[EncodedOpusPacket]) -> u64 {
@@ -1326,6 +1402,15 @@ mod passthrough {
 
     #[test]
     fn forwarded_packets_keep_flowing_while_preparing_and_the_swap_lands_on_the_target() {
+        swap_an_opus_stream(false);
+    }
+
+    #[test]
+    fn the_crossfade_worker_also_returns_to_packets_after_the_swap() {
+        swap_an_opus_stream(true);
+    }
+
+    fn swap_an_opus_stream(crossfade: bool) {
         let server = RangelessServer::start(TRANSIENTS.to_vec());
         let reference = reference_pcm(TRANSIENTS);
         let source = source_packets(TRANSIENTS);
@@ -1333,6 +1418,11 @@ mod passthrough {
         let (sink, handle) = StepPacketSink::new();
         let session = Arc::new(PlaybackSession::new());
         session.configure_fallback_seeking(true);
+        if crossfade {
+            session
+                .configure_crossfade(Some(CrossfadeConfig::new(1_000, 5_000).unwrap()))
+                .unwrap();
+        }
         session
             .play(server.source(), OpusEncoderOutput::new(sink).unwrap())
             .unwrap();
@@ -1389,19 +1479,437 @@ mod passthrough {
         // across the conversion to PCM and the swap.
         assert_timeline_is_contiguous(&packets[..packets.len() - 3]);
 
-        // The client decodes what the swap sent. Find where in the track it is, 600 ms after
-        // the seam, and check it is the target plus the playback that happened meanwhile.
+        // The client decodes what the swap sent. The first packet that is not one of the
+        // source's own is where the conversion to PCM began, a few frames before the swap.
+        // Locate the track position the client is at 600 ms after it, and check that it is the
+        // target plus the playback that happened while the replacement was prepared.
+        let swap = packets
+            .iter()
+            .enumerate()
+            .skip(at_request)
+            .find(|(_, packet)| {
+                !source
+                    .iter()
+                    .any(|s| s.packet.data().unwrap() == packet.bytes)
+            })
+            .map(|(index, _)| index)
+            .expect("the stream was converted for the swap");
         let client = client_pcm(&packets);
-        let swap_ms = media_ms(&packets[..(at_request + 40).min(packets.len())]);
-        let window_start = (swap_ms as usize + 600) * 48;
-        let window = &client[window_start * 2..(window_start + 2_400) * 2];
+        let swap_samples: usize = packets[..swap]
+            .iter()
+            .map(|packet| packet.samples_per_channel as usize)
+            .sum();
+        let window_start = swap_samples + 600 * 48;
+        let window = &client[window_start * 2..(window_start + 1_200) * 2];
         let found_ms = locate(&reference, window) as i64 / 48 - 600;
-        let elapsed_ms = media_ms(&packets[..(at_request + 40 + 10).min(packets.len())]) as i64
-            - media_ms(&packets[..at_request]) as i64;
+        let elapsed_ms =
+            media_ms(&packets[..swap]) as i64 - media_ms(&packets[..at_request]) as i64;
         assert!(
             (500..=500 + elapsed_ms + 400).contains(&found_ms),
             "the replacement is at {found_ms} ms; the target was 500 ms and {elapsed_ms} ms of \
              the old stream played while it was prepared"
         );
+
+        // The replacement's own packets resume after the swap, without decoding the rest of the
+        // track: the stream does not stay on the PCM path.
+        let (resumed_at, _, forwarded) = longest_forwarded_run(&packets, &source, 100);
+        assert!(
+            forwarded > 100,
+            "only {forwarded} source packets were forwarded"
+        );
+        assert!(
+            resumed_at > swap,
+            "packets resume after the swap, at {resumed_at}"
+        );
+
+        // Ten packets after they resume, the client's decoder has converged on the original
+        // stream and decodes it to what FFmpeg decodes.
+        let settled: usize = packets[..resumed_at + 10]
+            .iter()
+            .map(|packet| packet.samples_per_channel as usize)
+            .sum();
+        let block = &client[settled * 2..(settled + 24_000) * 2];
+        let origin = locate(&reference, &block[..2_400]);
+        let worst = (0..block.len())
+            .map(|index| (block[index] - reference[origin * 2 + index]).abs())
+            .fold(0.0, f32::max);
+        assert!(worst < 2e-3, "largest difference {worst} at {origin}");
+
+        // Once they have, the client plays exactly the replacement's audio: a window 1.5 s on is
+        // where the first one was, plus the time between them.
+        let later_start = swap_samples + 1_500 * 48;
+        let later = locate(
+            &reference,
+            &client[later_start * 2..(later_start + 1_200) * 2],
+        ) as i64
+            / 48;
+        assert!(
+            (later - (found_ms + 600 + 1_500 - 600)).abs() <= 25,
+            "the audio continues without a jump: {later} ms after {found_ms} ms"
+        );
+    }
+}
+
+mod disabled {
+    //! Without the option a seek that cannot be done must leave the stream usable. FFmpeg's own
+    //! seek on an origin that ignores `Range` reconnects repeatedly and can lose the read position.
+
+    use super::super::preskip::TRANSIENTS;
+    use super::*;
+    use crate::opus::OpusEncoderOutput;
+
+    #[test]
+    fn a_rewind_on_an_origin_that_ignores_range_is_refused_and_the_stream_plays_on() {
+        let server = RangelessServer::start(ramp_wave());
+        let session = Arc::new(PlaybackSession::new());
+        let (output, gate) = GateOutput::new();
+        session.play(server.source(), output).unwrap();
+        consume(&gate, 120);
+        let before = delivered(&gate).len();
+
+        let seek = start_seek(&session, &gate, 100);
+        let result = pump_until(&gate, seek);
+
+        assert!(
+            matches!(result, Err(PlaybackError::UnsupportedSeeking(_))),
+            "{result:?}"
+        );
+        assert_eq!(server.connections(), 1, "no reconnect was attempted");
+        consume(&gate, 20);
+        let frames = delivered(&gate);
+        assert!(frames.len() > before + 20, "playback went on delivering");
+        for pair in frames.windows(2) {
+            assert!(continues(&pair[0], &pair[1]), "{pair:?}");
+        }
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn a_forward_seek_walks_the_stream_instead_of_reconnecting() {
+        let server = RangelessServer::start(ramp_wave());
+        let session = Arc::new(PlaybackSession::new());
+        let (output, gate) = GateOutput::new();
+        session.play(server.source(), output).unwrap();
+        consume(&gate, 5);
+
+        let seek = start_seek(&session, &gate, 8_000);
+        assert_applied(pump_until(&gate, seek));
+        consume(&gate, 5);
+
+        assert_eq!(server.connections(), 1);
+        let frames = delivered(&gate);
+        let jump = find_jump(&frames, 1_000);
+        // The first audio after the jump is the target to the frame.
+        assert!(
+            (8_000..8_200).contains(&frames[jump].1),
+            "landed at {}",
+            frames[jump].1
+        );
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn an_origin_that_honours_range_still_seeks_in_place() {
+        for advertise in [true, false] {
+            for fallback in [false, true] {
+                let server = RangelessServer::start_ranged(ramp_wave(), advertise);
+                let session = Arc::new(PlaybackSession::new());
+                session.configure_fallback_seeking(fallback);
+                let (output, gate) = GateOutput::new();
+                session.play(server.source(), output).unwrap();
+                consume(&gate, 120);
+
+                let seek = start_seek(&session, &gate, 1_000);
+                let pending = pump_until(&gate, seek);
+
+                assert_applied(pending);
+                consume(&gate, 5);
+                let frames = delivered(&gate);
+                let jump = (1..frames.len())
+                    .find(|index| frames[*index].1 + 1_000 < frames[index - 1].1)
+                    .expect("the rewind shows as a jump back");
+                assert!(
+                    (1_000..1_200).contains(&frames[jump].1),
+                    "advertise={advertise} fallback={fallback}: landed at {}",
+                    frames[jump].1
+                );
+                // The demuxer did it: a replacement would have started its position at the
+                // target plus the playback that happened meanwhile, not on it.
+                session.stop().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_seek_keeps_an_opus_stream_on_forwarded_packets() {
+        let server = RangelessServer::start(TRANSIENTS.to_vec());
+        let (sink, handle) = StepPacketSink::new();
+        let session = Arc::new(PlaybackSession::new());
+        session
+            .play(server.source(), OpusEncoderOutput::new(sink).unwrap())
+            .unwrap();
+        assert_eq!(
+            session.processing_mode(),
+            Some(PlaybackProcessingMode::Passthrough)
+        );
+        handle.release(150);
+        assert!(handle.wait_for_calls(151));
+
+        let seeking = Arc::clone(&session);
+        let seek = thread::spawn(move || seeking.seek(Duration::from_millis(100)));
+        let deadline = Instant::now() + TEST_TIMEOUT;
+        while !seek.is_finished() {
+            assert!(Instant::now() < deadline, "the seek never answered");
+            handle.release(1);
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(matches!(
+            seek.join().unwrap(),
+            Err(PlaybackError::UnsupportedSeeking(_))
+        ));
+
+        // Nothing about the stream changed: still forwarding source packets, one connection,
+        // and the timeline continues.
+        assert_eq!(server.connections(), 1);
+        assert_eq!(
+            session.processing_mode(),
+            Some(PlaybackProcessingMode::Passthrough)
+        );
+        let before = handle.snapshot().packets.len();
+        handle.release(40);
+        assert!(handle.wait_for_calls(before + 40));
+        let packets = handle.snapshot().packets;
+        let source = super::super::preskip::source_packets(TRANSIENTS);
+        assert!(
+            packets[before..].iter().all(|packet| source
+                .iter()
+                .any(|s| s.packet.data().unwrap() == packet.bytes)),
+            "packets are still forwarded unchanged"
+        );
+        assert_eq!(handle.snapshot().flushes, 0);
+        session.stop().unwrap();
+    }
+}
+
+mod cancellation {
+    //! A seek that gave up (a timed-out request, an aborted signal) must not apply later.
+
+    use super::*;
+
+    fn reopenable_session(server: &RangelessServer) -> (Arc<PlaybackSession>, GateHandle) {
+        let (session, gate) = playing(server);
+        consume(&gate, 20);
+
+        (session, gate)
+    }
+
+    #[test]
+    fn cancelling_a_preparing_seek_means_it_never_applies() {
+        let server = RangelessServer::start(ramp_wave());
+        let (session, gate) = reopenable_session(&server);
+        server.hold_new_connections();
+
+        let pending = {
+            assert!(gate.wait_for_calls(gate.snapshot().accepted.len() + 1));
+            session.start_seek(Duration::from_millis(10_000)).unwrap()
+        };
+        let canceller = pending.canceller();
+        consume(&gate, 1);
+        assert!(
+            server.wait_for_connections(2),
+            "the replacement is preparing"
+        );
+
+        assert!(canceller.cancel(), "a preparing seek can be cancelled");
+        let waiter = thread::spawn(move || pending.wait());
+        assert!(matches!(
+            pump_until(&gate, waiter),
+            Err(PlaybackError::SeekCancelled)
+        ));
+
+        // Letting the origin answer now changes nothing: the replacement was dropped.
+        server.release();
+        consume(&gate, 40);
+        let frames = delivered(&gate);
+        assert!(
+            frames.iter().all(|frame| frame.1 < 9_000),
+            "audio from the cancelled seek must never play"
+        );
+        for pair in frames.windows(2) {
+            assert!(continues(&pair[0], &pair[1]), "{pair:?}");
+        }
+        assert_eq!(session.state(), PlaybackState::Playing);
+        assert!(!canceller.cancel(), "there is nothing left to cancel");
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn a_session_can_cancel_its_latest_seek() {
+        let server = RangelessServer::start(ramp_wave());
+        let (session, gate) = reopenable_session(&server);
+        server.hold_new_connections();
+
+        let pending = {
+            assert!(gate.wait_for_calls(gate.snapshot().accepted.len() + 1));
+            session.start_seek(Duration::from_millis(10_000)).unwrap()
+        };
+        consume(&gate, 1);
+        assert!(server.wait_for_connections(2));
+
+        assert!(session.cancel_seek());
+        assert!(!session.cancel_seek(), "already cancelled");
+        let waiter = thread::spawn(move || pending.wait());
+        assert!(matches!(
+            pump_until(&gate, waiter),
+            Err(PlaybackError::SeekCancelled)
+        ));
+        server.release();
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn a_seek_cancelled_before_the_worker_reaches_it_never_applies() {
+        let server = RangelessServer::start(ramp_wave());
+        let (session, gate) = reopenable_session(&server);
+
+        // The worker is blocked writing, so the request is still queued.
+        assert!(gate.wait_for_calls(gate.snapshot().accepted.len() + 1));
+        let pending = session.start_seek(Duration::from_millis(10_000)).unwrap();
+        assert!(pending.canceller().cancel());
+        consume(&gate, 5);
+
+        let waiter = thread::spawn(move || pending.wait());
+        assert!(matches!(
+            pump_until(&gate, waiter),
+            Err(PlaybackError::SeekCancelled)
+        ));
+        assert_eq!(server.connections(), 1, "no replacement was ever opened");
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn a_cancel_that_arrives_after_the_swap_is_told_it_was_too_late() {
+        let server = RangelessServer::start(ramp_wave());
+        let (session, gate) = reopenable_session(&server);
+
+        let pending = {
+            assert!(gate.wait_for_calls(gate.snapshot().accepted.len() + 1));
+            session.start_seek(Duration::from_millis(10_000)).unwrap()
+        };
+        let canceller = pending.canceller();
+        let waiter = thread::spawn(move || pending.wait_outcome());
+        let outcome = pump_until(&gate, waiter).expect("the seek was applied");
+
+        assert!(!canceller.cancel(), "an applied seek cannot be cancelled");
+        assert!(outcome.replaced_source);
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn the_outcome_reports_the_position_the_seek_landed_on() {
+        let server = RangelessServer::start(ramp_wave());
+        let (session, gate) = reopenable_session(&server);
+        server.hold_new_connections();
+
+        let pending = {
+            assert!(gate.wait_for_calls(gate.snapshot().accepted.len() + 1));
+            session.start_seek(Duration::from_millis(10_000)).unwrap()
+        };
+        let waiter = thread::spawn(move || pending.wait_outcome());
+        consume(&gate, 1);
+        assert!(server.wait_for_connections(2));
+        consume(&gate, 30);
+        server.release();
+        let outcome = pump_until(&gate, waiter).expect("applied");
+        consume(&gate, 10);
+
+        // The request was 10 s; the old source played on while the replacement was prepared,
+        // so the audio continues from later, and the outcome says where.
+        assert_eq!(outcome.requested, Duration::from_millis(10_000));
+        assert!(outcome.replaced_source);
+        let frames = delivered(&gate);
+        let jump = find_jump(&frames, 1_000);
+        let applied = outcome.applied.as_millis() as i64;
+        assert!(applied > 10_000 + 400, "compensated: {applied}");
+        assert!(
+            (resumed_at(&frames, jump) - applied).abs() <= 2,
+            "applied {applied}, heard {}",
+            resumed_at(&frames, jump)
+        );
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn an_ordinary_seek_reports_the_position_it_was_given() {
+        let wave = TempWave::constant(480_000, 4096);
+        let session = Arc::new(PlaybackSession::new());
+        let (output, gate) = GateOutput::new();
+        session.play(wave.source(), output).unwrap();
+        consume(&gate, 3);
+
+        let waiter = {
+            assert!(gate.wait_for_calls(gate.snapshot().accepted.len() + 1));
+            let pending = session.start_seek(Duration::from_millis(2_500)).unwrap();
+            thread::spawn(move || pending.wait_outcome())
+        };
+        let outcome = pump_until(&gate, waiter).expect("applied");
+
+        assert_eq!(outcome.requested, Duration::from_millis(2_500));
+        assert_eq!(outcome.applied, outcome.requested);
+        assert!(!outcome.replaced_source);
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn a_reopened_source_that_is_a_different_track_is_refused() {
+        struct Substitute(Vec<u8>);
+
+        impl SourceReopener for Substitute {
+            fn reopen(&self, _: &CancellationToken) -> Result<InputSource, ReopenError> {
+                Ok(InputSource::bytes(self.0.clone()))
+            }
+        }
+
+        let wave = ramp_wave();
+        let (input, writer) = InputSource::byte_stream(16 * 1024).unwrap();
+        let feeder = thread::spawn(move || {
+            for chunk in wave.chunks(4096) {
+                if writer.write(chunk).is_err() {
+                    return;
+                }
+            }
+            let _ = writer.finish();
+        });
+        let session = Arc::new(PlaybackSession::new());
+        session.configure_fallback_seeking(true);
+        let (output, gate) = GateOutput::new();
+        // The stream reports no duration; the substitute is a quarter of the length but
+        // that alone proves nothing. A different sample rate does.
+        let other = pcm_wave_at(&[0; 48_000], 44_100);
+        session
+            .play_with_reopener(
+                input,
+                Arc::new(Substitute(other)),
+                output,
+                CancellationToken::new(),
+            )
+            .unwrap();
+        consume(&gate, 60);
+
+        let seek = start_seek(&session, &gate, 100);
+        let result = pump_until(&gate, seek);
+
+        match result {
+            Err(PlaybackError::UnsupportedSeeking(message)) => {
+                assert!(
+                    message.contains("not the track that is playing"),
+                    "{message}"
+                );
+            }
+            other => panic!("unexpected result {other:?}"),
+        }
+        assert_eq!(session.state(), PlaybackState::Playing);
+        session.stop().unwrap();
+        let _ = feeder.join();
     }
 }

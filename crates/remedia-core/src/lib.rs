@@ -41,7 +41,7 @@ pub use output::{
 pub use playback::{
     CrossfadeConfig, CrossfadeEvent, MediaPosition, MediaPositionAccuracy, PendingSeek,
     PlaybackError, PlaybackPosition, PlaybackProcessingMode, PlaybackSession, PlaybackState,
-    PlaybackWaiter, StageIdentity, StageSnapshot, StageState,
+    PlaybackWaiter, SeekCanceller, SeekOutcome, StageIdentity, StageSnapshot, StageState,
 };
 pub use source::{CancellationToken, InputSource, ReopenError, SourceReopener};
 

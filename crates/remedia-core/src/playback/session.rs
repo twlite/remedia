@@ -39,6 +39,7 @@ impl PlaybackSession {
                     cancellation: None,
                     output: None,
                     pending_seek: None,
+                    seek_ticket: None,
                     fallback_seeking: false,
                     fallback_signal: false,
                     filter_graph: None,
@@ -175,6 +176,7 @@ impl PlaybackSession {
             data.cancellation = Some(cancellation.clone());
             data.output = Some(Arc::clone(&output));
             data.pending_seek = None;
+            data.seek_ticket = None;
             data.processor_initialized = false;
 
             let shared = Arc::clone(&self.shared);
