@@ -10,7 +10,7 @@ import {
   rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 
 const base = '--enable-static --disable-shared --enable-gpl --enable-version3 --disable-autodetect';
@@ -406,6 +406,66 @@ test('core build metadata supplies Schannel libraries to every MSVC target', () 
         target,
       );
     }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Windows source capture normalizes the runner path and preserves source/configuration files', (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX-hosted Git Bash path fixture');
+  const directory = mkdtempSync(join(tmpdir(), 'remedia source capture '));
+  try {
+    const work = join(directory, 'runner temp');
+    const bin = join(directory, 'bin');
+    const target = 'i686-pc-windows-msvc';
+    mkdirSync(bin);
+    const cygpath = join(bin, 'cygpath');
+    writeFileSync(
+      cygpath,
+      '#!/bin/sh\n[ "$1" = -u ] || exit 1\nprintf "%s\\n" "$REMEDIA_TEST_SOURCE_ROOT"\n',
+    );
+    chmodSync(cygpath, 0o755);
+    const fixtureFiles = {
+      'ports/ffmpeg/portfile.cmake': 'pinned FFmpeg build recipe',
+      'buildtrees/ffmpeg/x86-rel/config.h':
+        '#define CONFIG_GPL 1\n#define CONFIG_VERSION3 1\n#define CONFIG_NONFREE 0\n',
+      'downloads/ffmpeg-source.tar.xz': 'verified source download fixture',
+      'installed/x86-windows-static-md/lib/avcodec.lib':
+        'compiled artifact excluded from vcpkg source',
+    };
+    for (const [name, content] of Object.entries(fixtureFiles)) {
+      const path = join(work, 'remedia-vcpkg', name);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, content);
+    }
+    const script = resolve('.github/scripts/capture-native-source.sh');
+    const result = spawnSync('bash', [script], {
+      cwd: directory,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        RUNNER_TEMP: 'D:\\a\\_temp',
+        RUST_TARGET: target,
+        REMEDIA_TEST_SOURCE_ROOT: work,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const archive = join(work, `native-source-${target}.tar.gz`);
+    for (const [name, expected] of [
+      ['./vcpkg-source/ports/ffmpeg/portfile.cmake', fixtureFiles['ports/ffmpeg/portfile.cmake']],
+      ['./ffmpeg-port/portfile.cmake', fixtureFiles['ports/ffmpeg/portfile.cmake']],
+      ['./ffmpeg-build/x86-rel/config.h', fixtureFiles['buildtrees/ffmpeg/x86-rel/config.h']],
+      ['./downloads/ffmpeg-source.tar.xz', fixtureFiles['downloads/ffmpeg-source.tar.xz']],
+    ]) {
+      const extracted = spawnSync('tar', ['-xOf', archive, name], { encoding: 'utf8' });
+      assert.equal(extracted.status, 0, extracted.stderr);
+      assert.equal(extracted.stdout, expected);
+    }
+    const entries = spawnSync('tar', ['-tzf', archive], { encoding: 'utf8' });
+    assert.equal(entries.status, 0, entries.stderr);
+    assert.ok(!entries.stdout.includes('/installed/'));
+    assert.equal(existsSync(join(directory, 'D:\\a\\_temp')), false);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
