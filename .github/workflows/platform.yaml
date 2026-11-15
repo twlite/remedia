@@ -430,7 +430,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
-          tool: cargo-zigbuild
+          tool: cargo-zigbuild@0.24.1
       - name: Set up Android SDK command-line tools
         if: inputs.os == 'android'
         uses: android-actions/setup-android@v4

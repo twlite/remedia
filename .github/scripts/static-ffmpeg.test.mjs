@@ -252,3 +252,55 @@ test('Windows jobs select the configured MSVC host and target linker directories
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('cross recipes leave musl Rust linking to cargo-zigbuild and retain target C tools', (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX recipe');
+  const directory = mkdtempSync(join(tmpdir(), 'remedia musl linker '));
+  try {
+    const recipe = readFileSync('.github/scripts/build-ffmpeg-cross.sh', 'utf8');
+    const block = recipe.slice(
+      recipe.indexOf('  target_env='),
+      recipe.indexOf('  configure_args=('),
+    );
+    assert.ok(block.includes('GITHUB_ENV'));
+    for (const [target, zigTriple] of [
+      ['x86_64-unknown-linux-musl', 'x86_64-linux-musl'],
+      ['aarch64-unknown-linux-musl', 'aarch64-linux-musl'],
+      ['armv7-unknown-linux-gnueabihf', ''],
+      ['aarch64-linux-android', ''],
+      ['armv7-linux-androideabi', ''],
+    ]) {
+      const output = join(directory, target);
+      const result = spawnSync('bash', ['-c', 'set -euo pipefail\n' + block], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          target,
+          zig_triple: zigTriple,
+          local_cc: '/target tools/cc',
+          local_ar: '/target tools/ar',
+          GITHUB_ENV: output,
+        },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const environment = Object.fromEntries(
+        readFileSync(output, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => {
+            const equals = line.indexOf('=');
+            return [line.slice(0, equals), line.slice(equals + 1)];
+          }),
+      );
+      const normalized = target.replaceAll('-', '_');
+      for (const variant of [target, normalized, normalized.toUpperCase()]) {
+        assert.equal(environment[`CC_${variant}`], '/target tools/cc');
+        assert.equal(environment[`AR_${variant}`], '/target tools/ar');
+      }
+      const linker = `CARGO_TARGET_${normalized.toUpperCase()}_LINKER`;
+      assert.equal(environment[linker], zigTriple ? undefined : '/target tools/cc');
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

@@ -143,7 +143,12 @@ EOF
     printf 'CC_%s=%s\n' "$name" "$local_cc" >> "$GITHUB_ENV"
     printf 'AR_%s=%s\n' "$name" "$local_ar" >> "$GITHUB_ENV"
   done
-  printf 'CARGO_TARGET_%s_LINKER=%s\n' "$target_env_upper" "$linker" >> "$GITHUB_ENV"
+  # cargo-zigbuild must own the musl Rust linker: its wrapper removes Rust's
+  # self-contained CRT objects before Zig supplies its own startup objects.
+  # CC/AR above still select the target compilers for FFmpeg, OpenSSL and cc-rs.
+  if [[ -z "$zig_triple" ]]; then
+    printf 'CARGO_TARGET_%s_LINKER=%s\n' "$target_env_upper" "$linker" >> "$GITHUB_ENV"
+  fi
 
   configure_args=(
     "--prefix=$prefix"
