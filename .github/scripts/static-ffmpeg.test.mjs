@@ -366,3 +366,47 @@ test('Windows jobs expose vcpkg metadata at the location used by the pinned Rust
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('core build metadata supplies Schannel libraries to every MSVC target', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'remedia schannel linkage '));
+  try {
+    const binary = join(directory, `core-build${process.platform === 'win32' ? '.exe' : ''}`);
+    const compile = spawnSync(
+      'rustc',
+      ['--crate-name', 'remedia_core_build_probe', 'crates/remedia-core/build.rs', '-o', binary],
+      { encoding: 'utf8' },
+    );
+    assert.equal(compile.status, 0, compile.stderr);
+    for (const [target, os, environment] of [
+      ['i686-pc-windows-msvc', 'windows', 'msvc'],
+      ['x86_64-pc-windows-msvc', 'windows', 'msvc'],
+      ['aarch64-pc-windows-msvc', 'windows', 'msvc'],
+      ['x86_64-pc-windows-gnu', 'windows', 'gnu'],
+      ['x86_64-unknown-linux-musl', 'linux', 'musl'],
+      ['aarch64-apple-darwin', 'macos', ''],
+    ]) {
+      const result = spawnSync(binary, [], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          TARGET: target,
+          CARGO_CFG_TARGET_OS: os,
+          CARGO_CFG_TARGET_ENV: environment,
+        },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const libraries = result.stdout
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('cargo:rustc-link-lib='));
+      assert.deepEqual(
+        libraries,
+        environment === 'msvc'
+          ? ['cargo:rustc-link-lib=ncrypt', 'cargo:rustc-link-lib=crypt32']
+          : [],
+        target,
+      );
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
