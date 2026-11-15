@@ -116,7 +116,8 @@ jobs:
           $port = $port.Replace('set(OPTIONS "--enable-pic', ('set(OPTIONS "' + $audioOptions + ' --enable-pic'))
           [IO.File]::WriteAllText($portFile, $port, [Text.UTF8Encoding]::new($false))
           $triplet = if ($env:RUST_TARGET -eq 'i686-pc-windows-msvc') { 'x86-windows-static-md' } elseif ($env:RUST_TARGET -eq 'aarch64-pc-windows-msvc') { 'arm64-windows-static-md' } else { 'x64-windows-static-md' }
-          $installRoot = Join-Path $env:RUNNER_TEMP 'remedia-vcpkg-installed'
+          # vcpkg-rs 0.2.15 resolves metadata under VCPKG_ROOT/installed.
+          $installRoot = Join-Path $vcpkgRoot 'installed'
           $manifestRoot = Join-Path $env:GITHUB_WORKSPACE '.github\native-deps\windows-cross'
           $env:VCPKG_ROOT = $vcpkgRoot
           $env:VCPKG_DEFAULT_TRIPLET = $triplet
@@ -130,6 +131,7 @@ jobs:
           "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
           "VCPKG_INSTALL_ROOT=$installRoot" >> $env:GITHUB_ENV
           "VCPKG_TARGET_TRIPLET=$triplet" >> $env:GITHUB_ENV
+          "VCPKGRS_TRIPLET=$triplet" >> $env:GITHUB_ENV
           # Git for Windows also provides a link.exe (GNU coreutils). Pin
           # Cargo's linker to MSVC instead of relying on PATH resolution.
           $msvcTarget = if ($triplet -like 'x86-*') { 'x86' } elseif ($triplet -like 'arm64-*') { 'arm64' } else { 'x64' }
@@ -510,7 +512,8 @@ jobs:
           $port = $port.Replace('set(OPTIONS "--enable-pic', ('set(OPTIONS "' + $audioOptions + ' --enable-pic'))
           [IO.File]::WriteAllText($portFile, $port, [Text.UTF8Encoding]::new($false))
           $triplet = if ($env:RUST_TARGET -eq 'i686-pc-windows-msvc') { 'x86-windows-static-md' } elseif ($env:RUST_TARGET -eq 'aarch64-pc-windows-msvc') { 'arm64-windows-static-md' } else { 'x64-windows-static-md' }
-          $installRoot = Join-Path $env:RUNNER_TEMP 'remedia-vcpkg-installed'
+          # vcpkg-rs 0.2.15 resolves metadata under VCPKG_ROOT/installed.
+          $installRoot = Join-Path $vcpkgRoot 'installed'
           $manifestRoot = Join-Path $env:GITHUB_WORKSPACE '.github\native-deps\windows-cross'
           $env:VCPKG_ROOT = $vcpkgRoot
           $env:VCPKG_DEFAULT_TRIPLET = $triplet
@@ -524,6 +527,7 @@ jobs:
           "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
           "VCPKG_INSTALL_ROOT=$installRoot" >> $env:GITHUB_ENV
           "VCPKG_TARGET_TRIPLET=$triplet" >> $env:GITHUB_ENV
+          "VCPKGRS_TRIPLET=$triplet" >> $env:GITHUB_ENV
           # Git for Windows also provides a link.exe (GNU coreutils). Pin
           # Cargo's linker to MSVC instead of relying on PATH resolution.
           $msvcTarget = if ($triplet -like 'x86-*') { 'x86' } elseif ($triplet -like 'arm64-*') { 'arm64' } else { 'x64' }

@@ -304,3 +304,65 @@ test('cross recipes leave musl Rust linking to cargo-zigbuild and retain target 
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('Windows jobs expose vcpkg metadata at the location used by the pinned Rust helper', (t) => {
+  if (spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).error)
+    return t.skip('pwsh unavailable');
+  const directory = mkdtempSync(join(tmpdir(), 'remedia vcpkg metadata '));
+  try {
+    const workflow = readFileSync('.github/workflows/platform.yaml', 'utf8');
+    const snippets = [
+      ...workflow.matchAll(/          \$triplet =[^]*?(?=          # Git for Windows)/g),
+    ].map(([script]) => script);
+    assert.equal(snippets.length, 2);
+    for (const [target, triplet] of [
+      ['i686-pc-windows-msvc', 'x86-windows-static-md'],
+      ['x86_64-pc-windows-msvc', 'x64-windows-static-md'],
+      ['aarch64-pc-windows-msvc', 'arm64-windows-static-md'],
+    ]) {
+      for (const snippet of snippets) {
+        const script = join(directory, 'metadata.ps1');
+        const output = join(directory, 'environment');
+        const root = join(directory, 'remedia-vcpkg');
+        writeFileSync(output, '');
+        // Execute path selection and environment exports, without downloading or
+        // building FFmpeg; both sections surround the existing vcpkg invocation.
+        const configuration = snippet.slice(0, snippet.indexOf('          Push-Location'));
+        const exports = snippet.slice(snippet.indexOf('          "VCPKG_ROOT='));
+        writeFileSync(
+          script,
+          '$ErrorActionPreference = "Stop"\n$vcpkgRoot = $env:TEST_VCPKG_ROOT\n' +
+            configuration +
+            exports,
+        );
+        const result = spawnSync('pwsh', ['-NoProfile', '-File', script], {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            TEST_VCPKG_ROOT: root,
+            RUNNER_TEMP: directory,
+            GITHUB_WORKSPACE: directory,
+            RUST_TARGET: target,
+            GITHUB_ENV: output,
+          },
+        });
+        assert.equal(result.status, 0, result.stderr);
+        const environment = Object.fromEntries(
+          readFileSync(output, 'utf8')
+            .trim()
+            .split('\n')
+            .map((line) => {
+              const equals = line.indexOf('=');
+              return [line.slice(0, equals), line.slice(equals + 1)];
+            }),
+        );
+        assert.equal(environment.VCPKG_ROOT, root);
+        assert.equal(environment.VCPKG_INSTALL_ROOT, join(root, 'installed'));
+        assert.equal(environment.VCPKG_TARGET_TRIPLET, triplet);
+        assert.equal(environment.VCPKGRS_TRIPLET, triplet);
+      }
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
