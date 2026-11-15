@@ -758,6 +758,20 @@ test(
       { encoding: 'utf8' },
     ).stdout.trim();
     const psQuote = (value) => `'${value.replaceAll("'", "''")}'`;
+    const actualPwsh = spawnSync(
+      realShell,
+      ['-NoProfile', '-Command', '(Get-Command pwsh).Source'],
+      { encoding: 'utf8' },
+    );
+    assert.equal(actualPwsh.status, 0, actualPwsh.stderr);
+    // Keep the Windows/PowerShell module paths needed by the real installer,
+    // but hide the real pwsh executable when testing the 5.1 fallback.
+    const pwshDir = resolve(dirname(actualPwsh.stdout.trim())).toLowerCase();
+    const realPath = process.env.Path ?? process.env.PATH;
+    const pathWithoutPwsh = realPath
+      .split(';')
+      .filter((entry) => resolve(entry.trim().replace(/^"|"$/g, '')).toLowerCase() !== pwshDir)
+      .join(';');
 
     try {
       const payload = join(box.base, 'payload');
@@ -778,7 +792,13 @@ test(
         bootstrap,
         `param([string]$Installer, [switch]$NoFFmpeg)
 function Invoke-RestMethod { param($Uri, $Headers) Get-Content -LiteralPath ${psQuote(metadata)} -Raw | ConvertFrom-Json }
-& $Installer -NoFFmpeg:$NoFFmpeg
+try {
+  & $Installer -NoFFmpeg:$NoFFmpeg
+  if (-not $?) { exit 1 }
+} catch {
+  [Console]::Error.WriteLine($_.ToString())
+  exit 1
+}
 `,
       );
       // A real executable is needed because Rust Command does not execute .cmd files.
@@ -852,8 +872,8 @@ fn main() {
         assert.equal(detected.status, 0, detected.stderr);
         env.FIXTURE_SHELL = detected.stdout.trim();
         if (shell === 'pwsh') writeFileSync(join(box.fakeBin, 'pwsh.exe'), proxyBytes);
-        // In the fallback case hide the system pwsh from the updater's PATH.
-        env.PATH = `${box.fakeBin};${process.env.SystemRoot}\\System32`;
+        // Keep module/cmdlet discovery intact while hiding the real pwsh.
+        env.PATH = `${box.fakeBin};${pathWithoutPwsh}`;
         setRelease('0.1.0');
         const initial = spawnSync(
           env.FIXTURE_SHELL,
