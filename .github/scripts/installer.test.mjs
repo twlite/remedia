@@ -861,6 +861,14 @@ fn main() {
           { encoding: 'utf8', env },
         );
         assert.equal(initial.status, 0, initial.stdout + initial.stderr);
+        assert.ok(
+          existsSync(pointer),
+          `Installer finished without creating ${pointer}
+initial stdout: ${initial.stdout}
+initial stderr: ${initial.stderr}
+install dir exists: ${existsSync(box.installDir)}
+install dir entries: ${existsSync(box.installDir) ? readdirSync(box.installDir).join(', ') : '(missing)'}`,
+        );
         const versionProbe = runWrapper('--version');
         assert.equal(
           versionProbe.status,
