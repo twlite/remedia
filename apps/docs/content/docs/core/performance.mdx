@@ -97,13 +97,33 @@ I/O and output handoffs, decoder ownership, readiness notification, and comparis
 against the paced baseline before adoption.
 
 Crossfade-enabled direct sources use eligible Opus passthrough outside overlaps.
-Promoted staged sources retain PCM ownership and continue transcoding. Ordinary
+A promoted eligible Opus source hands its decoder to the playback worker after the
+overlap and resumes packets; other promoted sources keep PCM ownership and continue
+transcoding. A seek also returns an eligible Opus source to packets after the one packet
+that contains the target. Ordinary
 sessions retain adaptive Opus passthrough and live processing transitions described
 in [Playback sessions](/docs/core/playback). Direct-source transitions use bounded codec preroll and exact packet boundary
-accounting. Staged compressed restoration remains a conservative PCM fallback.
+accounting.
 
 Encoder state remains serialized with packet submission to preserve ordering and
 seek barriers. Staging cancellation still joins its worker before exposing terminal
 completion. Long-running crossfades, AAC, stalled HTTP sources, command latency,
 per-stage CPU/I/O attribution, queue occupancy, and live RTP/DAVE reliability need
 additional performance workloads beyond this benchmark.
+
+## Opus pre-skip, packet recovery, and release builds
+
+The measured effect of forwarding real FFmpeg/libopus Opus files (pre-skip 312), recovering
+packets after seeks and crossfade promotions, the packet-path allocation changes, memory owners of a
+staged session, link-time optimization, and the optimizations that were measured and rejected are in
+[`benchmarks/phase3.md`](https://github.com/twlite/remedia/blob/main/benchmarks/phase3.md), with the exact
+commands in [`benchmarks/README.md`](https://github.com/twlite/remedia/blob/main/benchmarks/README.md).
+Headline numbers at 512 paced sessions on one Apple M5 host: real Opus playback used 86% less CPU and
+48% less peak RSS; the same with a seek every 3 s used 64% less CPU; and two crossfade promotions per
+session used 55% less CPU, 27% less RSS, and 25% fewer threads. Sources that cannot be forwarded
+(MP3, AAC, filtered or gain-adjusted Opus) are unchanged.
+
+Release builds use fat link-time optimization. Measured, it changes run time by only about 1-2%,
+inside the noise, because most CPU is spent in libopus and FFmpeg, which are outside Rust's LTO.
+Its effect is on the binary: the server runtime is 13.4 MB instead of 21.4 MB (thin LTO: 18.8 MB),
+for a clean release build that takes 79 s instead of 33 s (thin: 45 s).

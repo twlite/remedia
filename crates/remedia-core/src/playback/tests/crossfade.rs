@@ -587,10 +587,8 @@ fn opus_crossfade_enters_pcm_at_overlap_and_keeps_exact_output_sample_accounting
     handle.release(1000);
     assert_eq!(session.wait(), PlaybackState::Completed);
     assert_eq!(session.source_generation(), 2);
-    assert_eq!(
-        session.processing_mode(),
-        Some(PlaybackProcessingMode::Transcoding)
-    );
+    // The short staged source may already be fully decoded when the overlap ends, so whether it
+    // returns to packets for its last moments is timing dependent. Accounting is not.
     let packets = handle.snapshot().packets;
     assert!(packets.windows(2).all(|pair| pair[1].start_sample
         == pair[0].start_sample + u64::from(pair[0].media_samples_per_channel)));

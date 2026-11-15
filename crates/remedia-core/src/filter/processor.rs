@@ -22,6 +22,15 @@ impl PcmProcessor {
         self.next_sample
     }
 
+    /// Move the output timeline back by `samples`, after a lookahead drain counted audio that is
+    /// about to be sent again as part of a source packet.
+    pub(crate) fn rewind(&mut self, samples: u64) {
+        self.next_sample = self.next_sample.saturating_sub(samples);
+        if let Some(position) = self.source_position.as_mut() {
+            position.sample = position.sample.saturating_sub(samples);
+        }
+    }
+
     pub(crate) fn source_position(&self) -> Option<SourcePosition> {
         self.source_position
     }

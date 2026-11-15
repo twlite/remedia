@@ -61,9 +61,13 @@ impl OpusEncoderConfig {
 ///
 /// `samples_per_channel` is the encoded Opus frame duration. The encoder emits
 /// 960 samples per channel (20 ms) for every packet. `media_samples_per_channel`
-/// counts source audio represented by the packet; it can be shorter only for
-/// the final zero-padded frame. `start_sample` is the start on the normalized
-/// 48 kHz media timeline.
+/// counts source audio represented by the packet. It is shorter than
+/// `samples_per_channel` for the final zero-padded frame, for the first frame
+/// after a seek that begins with under 20 ms of leading silence, and for a forwarded
+/// source packet whose first samples are decoder pre-roll (Opus pre-skip). Those
+/// samples count toward RTP time but not media time. `start_sample` is the start on
+/// the normalized 48 kHz media timeline, and successive packets are contiguous in
+/// media samples.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncodedOpusPacket {
     pub bytes: Vec<u8>,
@@ -150,6 +154,23 @@ struct EncoderState {
     partial: [f32; OPUS_FRAME_SCALARS],
     partial_scalars: usize,
     partial_start_sample: Option<u64>,
+    /// Leading silence (per channel) that `align_encoder_frames` placed at the start of the
+    /// partial frame. It is encoded but is not media.
+    partial_lead_samples: usize,
+    /// Frames still to encode without producing a packet, because their audio was already played
+    /// as source packets (see `begin_seamless_pcm`).
+    suppressed_frames: u32,
+    /// Live PCM has been fed since `begin_seamless_pcm`, but no packet has been sent yet, so the
+    /// client has not heard any of it.
+    primed_unflushed: bool,
+    /// Samples subtracted from a sent packet's `start_sample`. After `begin_seamless_pcm` the
+    /// encoder's output lags its input by its lookahead, so a packet's heard position is that
+    /// many samples before its input position; this keeps the accounting in heard media.
+    start_bias: u64,
+    /// How many live samples per channel were fed since `begin_seamless_pcm`.
+    primed_live_samples: usize,
+    /// The partial frame holds only that alignment silence; no real PCM has followed it yet.
+    partial_is_alignment_only: bool,
     next_input_sample: Option<u64>,
     finished: bool,
 }
@@ -196,6 +217,12 @@ impl OpusEncoderOutput {
                 partial: [0.0; OPUS_FRAME_SCALARS],
                 partial_scalars: 0,
                 partial_start_sample: None,
+                partial_lead_samples: 0,
+                suppressed_frames: 0,
+                primed_unflushed: false,
+                start_bias: 0,
+                primed_live_samples: 0,
+                partial_is_alignment_only: false,
                 next_input_sample: None,
                 finished: false,
             }),
@@ -252,12 +279,17 @@ impl OpusEncoderOutput {
         }
     }
 
+    /// Encode one frame and hand it to the sink, unless `suppress` is set. A suppressed frame is
+    /// still encoded, so the encoder's state advances, but its audio has already been played as
+    /// source packets and no packet is produced.
+    #[allow(clippy::too_many_arguments)]
     fn encode_and_send(
         encoder: &mut Encoder,
         pcm: &[f32],
         encoded_samples_per_channel: usize,
         media_samples_per_channel: usize,
         start_sample: u64,
+        suppress: bool,
         sink: &dyn OpusPacketSink,
         cancellation: &CancellationToken,
     ) -> Result<(), OutputError> {
@@ -273,6 +305,9 @@ impl OpusEncoderOutput {
             );
             OutputError::with_source(error)
         })?;
+        if suppress {
+            return Ok(());
+        }
         let bytes = scratch[..len].to_vec();
         let media_samples_per_channel = u32::try_from(media_samples_per_channel)
             .map_err(|_| OutputError::new("Opus frame sample count exceeds u32"))?;
@@ -317,6 +352,12 @@ impl OpusEncoderOutput {
         if state.finished {
             return Err(OutputError::new("PCM frame written after output finished"));
         }
+        if scalar_count != 0 {
+            state.partial_is_alignment_only = false;
+        }
+        if state.primed_unflushed {
+            state.primed_live_samples += frame.samples_per_channel;
+        }
         if let Some(expected) = state.next_input_sample
             && expected != frame.start_sample
         {
@@ -345,6 +386,8 @@ impl OpusEncoderOutput {
                     .partial_start_sample
                     .take()
                     .unwrap_or(frame.start_sample);
+                let suppress = state.suppressed_frames > 0;
+                let start_sample = start_sample.saturating_sub(state.start_bias);
                 Self::encode_and_send(
                     state
                         .encoder
@@ -354,9 +397,12 @@ impl OpusEncoderOutput {
                     OPUS_FRAME_SAMPLES,
                     OPUS_FRAME_SAMPLES,
                     start_sample,
+                    suppress,
                     sink,
                     cancellation,
                 )?;
+                state.suppressed_frames = state.suppressed_frames.saturating_sub(1);
+                state.primed_unflushed &= suppress;
                 source_offset += OPUS_FRAME_SCALARS;
                 continue;
             }
@@ -373,6 +419,8 @@ impl OpusEncoderOutput {
                     .partial_start_sample
                     .take()
                     .unwrap_or(frame.start_sample);
+                let suppress = state.suppressed_frames > 0;
+                let start_sample = start_sample.saturating_sub(state.start_bias);
                 Self::encode_and_send(
                     state
                         .encoder
@@ -380,12 +428,16 @@ impl OpusEncoderOutput {
                         .ok_or_else(|| OutputError::new("Opus encoder is not initialized"))?,
                     &state.partial,
                     OPUS_FRAME_SAMPLES,
-                    OPUS_FRAME_SAMPLES,
+                    OPUS_FRAME_SAMPLES - state.partial_lead_samples,
                     start_sample,
+                    suppress,
                     sink,
                     cancellation,
                 )?;
+                state.suppressed_frames = state.suppressed_frames.saturating_sub(1);
+                state.primed_unflushed &= suppress;
                 state.partial_scalars = 0;
+                state.partial_lead_samples = 0;
             }
         }
 
@@ -409,6 +461,18 @@ fn duration_from_samples(samples: u64) -> Duration {
     let remainder = samples % rate;
     let nanoseconds = (u128::from(remainder) * 1_000_000_000 / u128::from(rate)) as u32;
     Duration::new(seconds, nanoseconds)
+}
+
+impl EncoderState {
+    /// Drop grid-alignment silence that no real audio ever followed.
+    fn discard_alignment_padding(&mut self) {
+        if self.partial_is_alignment_only {
+            self.partial_scalars = 0;
+            self.partial_start_sample = None;
+            self.partial_lead_samples = 0;
+            self.partial_is_alignment_only = false;
+        }
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

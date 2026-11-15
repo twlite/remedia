@@ -8,6 +8,30 @@ impl AudioDecoder {
         preroll: &[DemuxedAudioPacket],
         source_boundary: Option<u64>,
     ) -> Result<(), DecoderError> {
+        self.activate_decoder_inner(preroll, source_boundary, None)
+    }
+
+    /// Like [`activate_decoder`](Self::activate_decoder), but returns the PCM the warm-up
+    /// packets decode to instead of discarding it, along with the media sample it starts at.
+    ///
+    /// The PCM is what a client already heard when those packets were forwarded, so an Opus
+    /// encoder can be conditioned on it (see `EncodedOpusOutput::begin_seamless_pcm`).
+    pub(crate) fn activate_decoder_capturing(
+        &mut self,
+        preroll: &[DemuxedAudioPacket],
+        source_boundary: u64,
+    ) -> Result<(Vec<f32>, Option<u64>), DecoderError> {
+        let mut captured = (Vec::new(), None);
+        self.activate_decoder_inner(preroll, Some(source_boundary), Some(&mut captured))?;
+        Ok(captured)
+    }
+
+    fn activate_decoder_inner(
+        &mut self,
+        preroll: &[DemuxedAudioPacket],
+        source_boundary: Option<u64>,
+        mut capture: Option<&mut (Vec<f32>, Option<u64>)>,
+    ) -> Result<(), DecoderError> {
         self.check_cancelled()?;
         if self.decoder.is_some() {
             return Ok(());
@@ -55,7 +79,13 @@ impl AudioDecoder {
         };
         self.decoder = Some(decoder);
         self.finished = false;
-        self.seek_target_sample = source_boundary;
+        // While capturing, warm-up PCM must survive the decoder's discard of audio before the
+        // transition boundary.
+        self.seek_target_sample = if capture.is_some() {
+            None
+        } else {
+            source_boundary
+        };
 
         if !preroll.is_empty() {
             tracing::debug!(
@@ -70,6 +100,16 @@ impl AudioDecoder {
         for packet in preroll {
             self.send_packet(&packet.packet)?;
             self.drain_decoder()?;
+        }
+        if let Some(capture) = capture.as_mut() {
+            capture.1 = preroll
+                .first()
+                .and_then(|packet| packet.source_start_sample);
+            for frame in self.pending_frames.drain(..) {
+                capture.0.extend_from_slice(&frame.frame.samples);
+            }
+            self.next_sample_position = None;
+            self.seek_target_sample = source_boundary;
         }
         if !preroll.is_empty() {
             tracing::debug!(

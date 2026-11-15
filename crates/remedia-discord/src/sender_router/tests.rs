@@ -182,6 +182,55 @@ fn active_output_waits_for_replacement_and_delivers_only_new_packets_to_it() {
 }
 
 #[test]
+fn a_packet_rejected_by_a_lost_transport_is_retried_unchanged_on_the_replacement() {
+    let old_voice = TestVoiceConnection::new(47);
+    let replacement_voice = TestVoiceConnection::new(47);
+    let router = DiscordOpusSenderRouter::new();
+    router.attach(old_voice.connection().opus_sender());
+    let sender = Arc::new(router.sink());
+    let cancellation = CancellationToken::new();
+    sender.send_packet(packet(0), &cancellation).unwrap();
+    old_voice.wait_for_packets(1);
+
+    // The sink still targets the old transport when it fails: the send is rejected after the
+    // packet was handed over, so the router must hand the very same packet back and retry it.
+    old_voice.lose_transport();
+    let retrying_sender = Arc::clone(&sender);
+    let retrying_cancellation = cancellation.clone();
+    let (delivered, delivered_rx) = mpsc::channel();
+    let retry = thread::spawn(move || {
+        let mut rejected = packet(960);
+        rejected.bytes = (0..80).collect();
+        delivered
+            .send(retrying_sender.send_packet(rejected, &retrying_cancellation))
+            .unwrap();
+    });
+    assert!(
+        delivered_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err(),
+        "delivery waits for a replacement instead of failing"
+    );
+
+    router.attach(replacement_voice.connection().opus_sender());
+    delivered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the rejected packet is retried on the replacement")
+        .unwrap();
+    retry.join().unwrap();
+
+    let received = replacement_voice.wait_for_packets(1);
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0].1.start_sample, 960);
+    assert_eq!(received[0].1.bytes, (0..80).collect::<Vec<u8>>());
+    assert_eq!(
+        old_voice.packets().len(),
+        1,
+        "the old transport kept nothing new"
+    );
+}
+
+#[test]
 fn pause_and_resume_controls_survive_the_routed_sender() {
     let voice = TestVoiceConnection::new(44);
     let router = DiscordOpusSenderRouter::new();
@@ -290,4 +339,40 @@ fn pcm_wave(samples: &[i16]) -> Vec<u8> {
         bytes.extend_from_slice(&sample.to_le_bytes());
     }
     bytes
+}
+
+/// `cargo test --release -p remedia-discord routed_delivery_cost -- --ignored --nocapture`
+///
+/// Heap allocations the router adds to one normal packet delivery, excluding the queue's own
+/// storage on the consumer thread.
+#[test]
+#[ignore = "benchmark; run explicitly with --ignored --nocapture"]
+fn routed_delivery_cost() {
+    const PACKETS: u64 = 20_000;
+    let voice = TestVoiceConnection::new(48);
+    let router = DiscordOpusSenderRouter::new();
+    router.attach(voice.connection().opus_sender());
+    let sender = router.sink();
+    let cancellation = CancellationToken::new();
+    let mut batch: Vec<EncodedOpusPacket> = (0..PACKETS)
+        .map(|index| {
+            let mut packet = packet(index * 960);
+            packet.bytes = (0..90).collect();
+            packet
+        })
+        .collect();
+    batch.reverse();
+
+    let started = std::time::Instant::now();
+    let ((), allocations) = crate::test_alloc::count_allocations(|| {
+        while let Some(packet) = batch.pop() {
+            sender.send_packet(packet, &cancellation).unwrap();
+        }
+    });
+    println!(
+        "routed delivery: {:.2} allocations/packet, {:.0} ns/packet",
+        allocations as f64 / PACKETS as f64,
+        started.elapsed().as_nanos() as f64 / PACKETS as f64
+    );
+    voice.wait_for_packets(PACKETS as usize);
 }

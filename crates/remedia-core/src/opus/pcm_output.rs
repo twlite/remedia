@@ -37,6 +37,11 @@ impl MediaOutput for OpusEncoderOutput {
         }
         state.partial_scalars = 0;
         state.partial_start_sample = None;
+        state.partial_lead_samples = 0;
+        state.suppressed_frames = 0;
+        state.primed_unflushed = false;
+        state.start_bias = 0;
+        state.partial_is_alignment_only = false;
         state.next_input_sample = Some(sample_position);
         state.finished = false;
         Ok(())
@@ -86,8 +91,61 @@ impl MediaOutput for OpusEncoderOutput {
         if state.finished {
             return Err(OutputError::new("Opus output finished more than once"));
         }
+        state.discard_alignment_padding();
+        if state.primed_unflushed {
+            // No packet has been sent since the encoder was primed, so the live audio is still in
+            // its lookahead and the client has not heard it. Finish the frame that only carries
+            // audio the client already has without sending it, then push the lookahead out with a
+            // frame of silence that reports just the live samples as media.
+            let live = state
+                .primed_live_samples
+                .min(crate::decoder::OPUS_ENCODER_LOOKAHEAD as usize);
+            // The live samples start where the client's audio ends: one lookahead before the
+            // encoder's input position minus whatever was already fed.
+            let start_sample = state
+                .next_input_sample
+                .unwrap_or(0)
+                .saturating_sub(state.primed_live_samples as u64);
+            let partial_scalars = state.partial_scalars;
+            let mut padded = state.partial;
+            let silence = [0.0_f32; OPUS_FRAME_SCALARS];
+            let encoder = state
+                .encoder
+                .as_mut()
+                .ok_or_else(|| OutputError::new("Opus encoder is not initialized"))?;
+            if partial_scalars != 0 {
+                padded[partial_scalars..].fill(0.0);
+                Self::encode_and_send(
+                    encoder,
+                    &padded,
+                    OPUS_FRAME_SAMPLES,
+                    0,
+                    start_sample,
+                    true,
+                    &*self.sink,
+                    cancellation,
+                )?;
+            }
+            if live != 0 {
+                Self::encode_and_send(
+                    encoder,
+                    &silence,
+                    OPUS_FRAME_SAMPLES,
+                    live,
+                    start_sample,
+                    false,
+                    &*self.sink,
+                    cancellation,
+                )?;
+            }
+            state.suppressed_frames = 0;
+            state.primed_unflushed = false;
+            state.partial_scalars = 0;
+            state.partial_lead_samples = 0;
+            state.partial_start_sample = None;
+        }
         if state.partial_scalars != 0 {
-            let media_samples = state.partial_scalars / 2;
+            let media_samples = state.partial_scalars / 2 - state.partial_lead_samples;
             let partial_scalars = state.partial_scalars;
             state.partial[partial_scalars..].fill(0.0);
             let start_sample = state.partial_start_sample.take().unwrap_or(0);
@@ -112,10 +170,12 @@ impl MediaOutput for OpusEncoderOutput {
                 OPUS_FRAME_SAMPLES,
                 media_samples,
                 start_sample,
+                false,
                 &*self.sink,
                 cancellation,
             )?;
             state.partial_scalars = 0;
+            state.partial_lead_samples = 0;
         }
         self.sink.finish(cancellation)?;
         state.finished = true;

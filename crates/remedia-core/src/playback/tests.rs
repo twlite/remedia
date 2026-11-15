@@ -5,8 +5,6 @@ use std::sync::{Arc, Barrier, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use remedia_observability::{Observability, ObservabilityConfig};
-
 use super::{
     MediaPositionAccuracy, PlaybackError, PlaybackProcessingMode, PlaybackSession, PlaybackState,
     SessionData, SessionShared, lock, wait,
@@ -451,6 +449,12 @@ mod seeking;
 mod processing;
 
 mod crossfade;
+
+mod preskip;
+
+mod audit;
+
+mod cleanup;
 
 mod packet_sink;
 use packet_sink::*;

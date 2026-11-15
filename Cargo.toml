@@ -7,6 +7,11 @@ license = "MIT"
 edition = "2024"
 rust-version = "1.88"
 
+# Whole-program optimization across the engine, bindings, and statically linked codecs' Rust
+# glue. Release builds link more slowly; development and test profiles are unchanged.
+[profile.release]
+lto = "fat"
+
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 correctness = { level = "deny", priority = -1 }

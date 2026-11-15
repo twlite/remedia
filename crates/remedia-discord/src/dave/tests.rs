@@ -89,7 +89,7 @@ fn sole_member_reset_reinitializes_mls_without_epoch_transition_id() {
 }
 
 /// A local voice gateway producing signed, spec-compliant external add proposals.
-struct TestGateway {
+pub(crate) struct TestGateway {
     provider: OpenMlsRustCrypto,
     signer: SignatureKeyPair,
     sender: ExternalSender,
@@ -219,7 +219,7 @@ fn assert_encrypted_roundtrip(sender: &mut DaveProtocol, receiver: &mut DaveProt
 }
 
 /// Epoch 2 avoids conflating same-epoch announcements with the special epoch 1 reset.
-fn established_group() -> (TestGateway, DaveProtocol, DaveProtocol) {
+pub(crate) fn established_group() -> (TestGateway, DaveProtocol, DaveProtocol) {
     let gateway = TestGateway::new();
     let mut a = gateway.member(100);
     let mut b = gateway.member(101);
@@ -438,4 +438,97 @@ fn transition_messages_still_require_transition_ids() {
     }
     assert!(member.pending_transitions.is_empty());
     assert!(!member.is_ready());
+}
+
+#[test]
+fn rtp_packets_reuse_one_datagram_buffer_and_decrypt_to_the_source_opus_packet() {
+    use crate::crypto::{AUTH_TAG_BYTES, EncryptionMode, TRANSPORT_NONCE_BYTES, TransportCipher};
+    use crate::rtp::{RTP_HEADER_BYTES, RtpSender, serialize_rtp_header};
+    use remedia_core::EncodedOpusPacket;
+
+    let (_, mut sender, mut receiver) = established_group();
+    let key = [0x42; 32];
+
+    for mode in [EncryptionMode::Aes256Gcm, EncryptionMode::XChaCha20Poly1305] {
+        let mut rtp =
+            RtpSender::new(0xA1B2_C3D4, u16::MAX, u32::MAX - 959, 77, mode, &key).unwrap();
+        let cipher = TransportCipher::new(mode, &key).unwrap();
+        let packet = EncodedOpusPacket {
+            bytes: (0..90).collect(),
+            samples_per_channel: 960,
+            media_samples_per_channel: 960,
+            start_sample: 0,
+        };
+
+        let first = rtp.encode_packet(&packet, &mut sender).unwrap().to_vec();
+        let first_buffer = rtp.encode_packet(&packet, &mut sender).unwrap().as_ptr();
+        let second_buffer = rtp.encode_packet(&packet, &mut sender).unwrap().as_ptr();
+        assert_eq!(
+            first_buffer, second_buffer,
+            "{mode:?} must reuse its datagram buffer"
+        );
+
+        let header: [u8; RTP_HEADER_BYTES] = first[..RTP_HEADER_BYTES].try_into().unwrap();
+        assert_eq!(
+            header,
+            serialize_rtp_header(u16::MAX, u32::MAX - 959, 0xA1B2_C3D4)
+        );
+        assert_eq!(
+            &first[first.len() - TRANSPORT_NONCE_BYTES..],
+            &77_u32.to_be_bytes()
+        );
+        assert!(first.len() > RTP_HEADER_BYTES + AUTH_TAG_BYTES + TRANSPORT_NONCE_BYTES);
+
+        let dave_payload = cipher
+            .decrypt_payload(&header, &first[RTP_HEADER_BYTES..])
+            .unwrap();
+        let opus = receiver
+            .session
+            .decrypt(sender.user_id, davey::MediaType::AUDIO, &dave_payload)
+            .unwrap();
+        assert_eq!(opus, packet.bytes);
+    }
+}
+
+/// `cargo test --release -p remedia-discord packetization_cost -- --ignored --nocapture`
+///
+/// Reports heap allocations and wall time per RTP datagram built from a 90-byte Opus packet
+/// under an established DAVE group. DAVE's own encryption allocates inside `davey` and is
+/// included in both figures.
+#[test]
+#[ignore = "benchmark; run explicitly with --ignored --nocapture"]
+fn packetization_cost() {
+    use crate::crypto::EncryptionMode;
+    use crate::rtp::RtpSender;
+    use remedia_core::EncodedOpusPacket;
+    use std::time::Instant;
+
+    const PACKETS: u64 = 50_000;
+    let (_, mut sender, _receiver) = established_group();
+    let packet = EncodedOpusPacket {
+        bytes: (0..90).collect(),
+        samples_per_channel: 960,
+        media_samples_per_channel: 960,
+        start_sample: 0,
+    };
+    for mode in [EncryptionMode::Aes256Gcm, EncryptionMode::XChaCha20Poly1305] {
+        let mut rtp = RtpSender::new(1, 0, 0, 0, mode, &[9; 32]).unwrap();
+        for _ in 0..1_000 {
+            let datagram = rtp.encode_packet(&packet, &mut sender).unwrap();
+            std::hint::black_box(datagram.len());
+        }
+        let started = Instant::now();
+        let ((), allocations) = crate::test_alloc::count_allocations(|| {
+            for _ in 0..PACKETS {
+                let datagram = rtp.encode_packet(&packet, &mut sender).unwrap();
+                std::hint::black_box(datagram.len());
+            }
+        });
+        let elapsed = started.elapsed();
+        println!(
+            "rtp {mode:?}: {:.2} allocations/packet, {:.0} ns/packet",
+            allocations as f64 / PACKETS as f64,
+            elapsed.as_nanos() as f64 / PACKETS as f64
+        );
+    }
 }

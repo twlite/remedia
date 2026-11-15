@@ -141,6 +141,35 @@ pub trait EncodedOpusOutput: Send + Sync {
         cancellation: &CancellationToken,
     ) -> Result<(), OutputError>;
 
+    /// Start the encoder's next PCM frame on the 20 ms grid of media sample positions that are
+    /// multiples of 960, by giving it fewer than 20 ms of leading silence that is not media.
+    ///
+    /// Call it after a flush or at the start of playback, before PCM is written. The first packet
+    /// reports its shorter media duration, and the encoder has no partial frame once playback
+    /// reaches a multiple of 960, which is what a seamless return to source packets needs. Outputs
+    /// without an encoder keep this no-op default.
+    fn align_encoder_frames(&self, _next_sample_position: u64) -> Result<(), OutputError> {
+        Ok(())
+    }
+
+    /// Start PCM encoding after a stretch of forwarded source packets without a break in the
+    /// audio a client hears.
+    ///
+    /// `history_pcm` is interleaved stereo that was just played as source packets and ends where
+    /// live PCM continues (`live_start_sample`). Its length must be a multiple of 960 samples per
+    /// channel plus 648, and the encoder (which delays its output by its 312-sample lookahead)
+    /// is conditioned on it and then drops every packet whose audio the client already has.
+    /// Returns `Ok(false)` when the output cannot do this, and the caller starts PCM the usual
+    /// way. Outputs without an encoder keep this default.
+    fn begin_seamless_pcm(
+        &self,
+        _history_pcm: &[f32],
+        _live_start_sample: u64,
+        _cancellation: &CancellationToken,
+    ) -> Result<bool, OutputError> {
+        Ok(false)
+    }
+
     /// Close a partial PCM encoder frame at a safe packet boundary before
     /// switching back to encoded packets. Implementations must preserve sink
     /// ordering and must not seek, flush, or replace the underlying transport.

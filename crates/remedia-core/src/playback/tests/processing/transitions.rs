@@ -246,3 +246,39 @@ fn one_opus_source_switches_between_passthrough_and_live_filtering() {
             .all(|source_payload| source_payload != &packet.bytes)
     }));
 }
+
+#[test]
+fn seeking_with_a_filter_active_stays_in_pcm_until_the_filter_is_removed() {
+    let (sink, handle) = StepPacketSink::new();
+    let session = Arc::new(PlaybackSession::new());
+    session.set_volume(0.5).unwrap();
+    session
+        .play(
+            InputSource::bytes(
+                include_bytes!("../../../../tests/fixtures/generated-opus-passthrough.ogg")
+                    .to_vec(),
+            ),
+            OpusEncoderOutput::new(sink).unwrap(),
+        )
+        .unwrap();
+    assert!(handle.wait_for_calls(1));
+    assert_eq!(
+        session.processing_mode(),
+        Some(PlaybackProcessingMode::Transcoding)
+    );
+    let seeking_session = Arc::clone(&session);
+    let (response_tx, response_rx) = mpsc::sync_channel(1);
+    let seeker = thread::spawn(move || {
+        let _ = response_tx.send(seeking_session.seek(Duration::from_millis(500)));
+    });
+    assert!(handle.wait_for_pending_seek(&session));
+    handle.release(1);
+    response_rx.recv_timeout(TEST_TIMEOUT).unwrap().unwrap();
+    seeker.join().unwrap();
+    handle.release(1_000);
+    assert_eq!(session.wait(), PlaybackState::Completed);
+    assert_eq!(
+        session.processing_mode(),
+        Some(PlaybackProcessingMode::Transcoding)
+    );
+}

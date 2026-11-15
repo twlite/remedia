@@ -241,7 +241,7 @@ pub(super) async fn send_transport_packet(
         }
     };
     let bytes_len = bytes.len();
-    let send_result = time::timeout(Duration::from_secs(2), udp.send_to(&bytes, server))
+    let send_result = time::timeout(Duration::from_secs(2), udp.send_to(bytes, server))
         .await
         .map_err(|_| VoiceError::Timeout("sending an RTP packet"))
         .and_then(|result| result.map_err(VoiceError::from));

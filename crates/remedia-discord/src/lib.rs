@@ -12,6 +12,11 @@ mod error;
 mod protocol;
 mod rtp;
 mod sender_router;
+#[cfg(test)]
+mod test_alloc;
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: test_alloc::CountingAllocator = test_alloc::CountingAllocator;
 
 use remedia_observability::ObservabilityHandle;
 

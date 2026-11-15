@@ -102,3 +102,65 @@ performance measurements or evidence that the remaining redesign is implemented.
 Adaptive playback, native resource collection, longer command workloads, and the
 new measurements are documented in [phase2.md](phase2.md). Original stage-one
 results above are preserved.
+
+## Phase 3: resource pass (pre-skip, seek and promotion recovery, packet path, LTO)
+
+Everything here is reproducible from the repository plus FFmpeg's command-line tool, which is used
+**only to generate fixtures once**; the engine and the benchmark never spawn it.
+
+### Fixtures
+
+```sh
+mkdir -p /tmp/remedia-fx && cd /tmp/remedia-fx
+# 60 s of deterministic music-like stereo (tones, vibrato, pseudo-random noise)
+ffmpeg -f lavfi -i "aevalsrc=0.2*sin(2*PI*220*t)*sin(2*PI*0.5*t)+0.15*sin(2*PI*330*t+sin(2*PI*3*t))+0.1*sin(2*PI*(440+30*sin(0.3*t))*t)|0.2*sin(2*PI*277*t)*sin(2*PI*0.7*t)+0.15*sin(2*PI*392*t)+0.1*random(0)-0.05:s=48000:d=60" -c:a pcm_s16le src.wav
+ffmpeg -i src.wav -c:a libopus -b:a 128k music60.opus        # real file: pre-skip 312
+ffmpeg -i src.wav -c:a libmp3lame -b:a 192k music60.mp3
+ffmpeg -i src.wav -c:a aac -b:a 128k music60.m4a
+ffmpeg -t 15 -i music60.opus -c copy music15.opus            # real, 15 s, for crossfade transitions
+# Files rewritten to pre-skip 0 (what the original phase-2 benchmarks measured):
+python3 benchmarks/make_opus_fixture.py music60.opus music60-pt.opus
+python3 benchmarks/make_opus_fixture.py music15.opus music15-pt.opus
+```
+
+### Build variants
+
+```sh
+export PKG_CONFIG_PATH=/opt/homebrew/opt/ffmpeg/lib/pkgconfig   # this host; adjust elsewhere
+for mode in off thin fat; do
+  CARGO_PROFILE_RELEASE_LTO=$mode CARGO_TARGET_DIR=/tmp/tgt-$mode \
+    cargo build --release -p remedia-core --example concurrent_playback_benchmark
+done
+# The base commit with fat LTO, to separate the LTO effect from the code changes:
+git worktree add /tmp/wt-base 0491ffd   # harness commit; the engine is unchanged from b690b33
+(cd /tmp/wt-base && CARGO_PROFILE_RELEASE_LTO=fat CARGO_TARGET_DIR=/tmp/tgt-basefat \
+   cargo build --release -p remedia-core --example concurrent_playback_benchmark)
+```
+
+### Running
+
+`resource_matrix.py` runs each case in a fresh process and records `wait4` CPU and peak RSS
+(exact, per process), the in-process one-second resource samples (steady-state CPU, macOS
+physical footprint, thread count), the share of time the sessions spent in passthrough, and sink
+delay percentiles. `--alloc` adds Rust heap counters in separate rows.
+
+```sh
+python3 benchmarks/resource_matrix.py --binary /tmp/tgt-fat/release/examples/concurrent_playback_benchmark \
+  --fixtures /tmp/remedia-fx --label after-fat --repeats 3 --output after-fat.jsonl
+python3 benchmarks/summarize_resources.py before.jsonl after.jsonl --title "Title"
+```
+
+Cases (all paced, 20 s unless noted): `opus-passthrough`, `opus-crossfade-idle`, `opus-volume`,
+`opus-seek` (a random seek per session every 3 s, 30 s), `opus-transition` (two crossfade promotions
+per session, 36 s), the `opus-real-*` variants of the same on real files, `mp3-transcode`,
+`aac-transcode`, `mp3-filter` and `mp3-stream` (a bounded byte-stream producer like a plugin).
+The example's allocation counter is enabled with `alloc`; it counts Rust allocations only, because
+FFmpeg and libopus allocate natively.
+
+Packet-path microbenchmarks (RTP datagram construction and routed delivery) are ignored tests:
+
+```sh
+cargo test --release -p remedia-discord -- packetization_cost routed_delivery_cost --ignored --nocapture --test-threads=1
+```
+
+Results and their interpretation are in [phase3.md](phase3.md).

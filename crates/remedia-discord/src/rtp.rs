@@ -1,6 +1,6 @@
 use remedia_core::EncodedOpusPacket;
 
-use crate::crypto::{EncryptionMode, TransportCipher};
+use crate::crypto::{AUTH_TAG_BYTES, EncryptionMode, TRANSPORT_NONCE_BYTES, TransportCipher};
 use crate::dave::DaveProtocol;
 use crate::error::VoiceError;
 
@@ -40,6 +40,9 @@ pub(crate) struct RtpSender {
     clock: RtpClock,
     nonce: u32,
     cipher: TransportCipher,
+    /// Reused datagram storage. Its capacity settles at the largest packet seen, so steady-state
+    /// packetization performs no heap allocation.
+    datagram: Vec<u8>,
 }
 
 impl RtpSender {
@@ -59,24 +62,27 @@ impl RtpSender {
             },
             nonce,
             cipher: TransportCipher::new(mode, secret_key)?,
+            datagram: Vec::with_capacity(MAX_UDP_PACKET_BYTES),
         })
     }
 
+    /// Packetize and encrypt `packet`, returning the datagram to transmit.
+    ///
+    /// The returned slice borrows this sender's reusable buffer and is valid until the next call.
+    /// Neither the RTP clock nor the nonce advances unless the whole datagram was built.
     pub(crate) fn encode_packet(
         &mut self,
         packet: &EncodedOpusPacket,
         dave: &mut DaveProtocol,
-    ) -> Result<Vec<u8>, VoiceError> {
+    ) -> Result<&[u8], VoiceError> {
         validate_opus_packet(packet)?;
         if !dave.is_ready() {
             return Err(VoiceError::DaveNotReady);
         }
         let dave_payload = dave.encrypt_opus(&packet.bytes)?;
         let header = serialize_rtp_header(self.clock.sequence, self.clock.timestamp, self.ssrc);
-        let encrypted_payload =
-            self.cipher
-                .encrypt_payload(&header, self.nonce, dave_payload.as_ref())?;
-        let packet_size = header.len() + encrypted_payload.len();
+        let packet_size =
+            RTP_HEADER_BYTES + dave_payload.len() + AUTH_TAG_BYTES + TRANSPORT_NONCE_BYTES;
         if packet_size > MAX_UDP_PACKET_BYTES {
             return Err(VoiceError::PacketTooLarge {
                 actual: packet_size,
@@ -84,12 +90,15 @@ impl RtpSender {
             });
         }
 
-        let mut bytes = Vec::with_capacity(packet_size);
-        bytes.extend_from_slice(&header);
-        bytes.extend_from_slice(&encrypted_payload);
+        self.datagram.clear();
+        self.datagram.extend_from_slice(&header);
+        self.datagram.extend_from_slice(&dave_payload);
+        self.cipher
+            .seal_in_place(&header, self.nonce, &mut self.datagram, RTP_HEADER_BYTES)?;
+        debug_assert_eq!(self.datagram.len(), packet_size);
         self.clock.advance_sent(packet.samples_per_channel);
         self.nonce = self.nonce.wrapping_add(1);
-        Ok(bytes)
+        Ok(&self.datagram)
     }
 
     pub(crate) fn skip_packet_duration(&mut self, samples_per_channel: u32) {

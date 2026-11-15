@@ -49,6 +49,12 @@ pub(super) fn handle_commands(
                     .reset(sample)
                     .map_err(|e| PlaybackError::FilterGraph(Arc::new(e)))?;
                 output.flush_samples(sample, cancellation)?;
+                if current.may_resume_encoded()
+                    && let Some(encoded) = output.encoded_opus_output()
+                {
+                    encoded.align_encoder_frames(sample)?;
+                    current.mark_encoder_aligned(sample);
+                }
                 let mut state = lock(&shared.data);
                 state.submitted_sample = sample;
                 state.submitted_position = request.position;
@@ -84,7 +90,9 @@ pub(super) fn handle_commands(
         if let Some(update) = data.pending_filter_graph.take() {
             drop(data);
             if current.encoded_mode() {
-                if let Err(error) = current.enter_pcm() {
+                if let Err(error) =
+                    current.enter_pcm_seamless(output, processor.next_sample(), cancellation)
+                {
                     let _ = update.response.send(Err(error.clone()));
                     return Err(error);
                 }
@@ -96,6 +104,7 @@ pub(super) fn handle_commands(
                 .map_err(PlaybackError::from);
             if result.is_ok() {
                 processor.replace(update.graph);
+                current.forget_encoder_phase();
             }
             let _ = update.response.send(result.clone());
             result?;
