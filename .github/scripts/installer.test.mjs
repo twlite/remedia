@@ -758,6 +758,20 @@ test(
       { encoding: 'utf8' },
     ).stdout.trim();
     const psQuote = (value) => `'${value.replaceAll("'", "''")}'`;
+    const actualPwsh = spawnSync(
+      realShell,
+      ['-NoProfile', '-Command', '(Get-Command pwsh).Source'],
+      { encoding: 'utf8' },
+    );
+    assert.equal(actualPwsh.status, 0, actualPwsh.stderr);
+    // Keep the Windows/PowerShell module paths needed by the real installer,
+    // but hide the real pwsh executable when testing the 5.1 fallback.
+    const pwshDir = resolve(dirname(actualPwsh.stdout.trim())).toLowerCase();
+    const realPath = process.env.Path ?? process.env.PATH;
+    const pathWithoutPwsh = realPath
+      .split(';')
+      .filter((entry) => resolve(entry.trim().replace(/^"|"$/g, '')).toLowerCase() !== pwshDir)
+      .join(';');
 
     try {
       const payload = join(box.base, 'payload');
@@ -778,7 +792,13 @@ test(
         bootstrap,
         `param([string]$Installer, [switch]$NoFFmpeg)
 function Invoke-RestMethod { param($Uri, $Headers) Get-Content -LiteralPath ${psQuote(metadata)} -Raw | ConvertFrom-Json }
-& $Installer -NoFFmpeg:$NoFFmpeg
+try {
+  & $Installer -NoFFmpeg:$NoFFmpeg
+  if (-not $?) { exit 1 }
+} catch {
+  [Console]::Error.WriteLine($_.ToString())
+  exit 1
+}
 `,
       );
       // A real executable is needed because Rust Command does not execute .cmd files.
@@ -840,7 +860,12 @@ fn main() {
         spawnSync(
           process.env.ComSpec || 'cmd.exe',
           ['/d', '/s', '/c', `""${join(box.installDir, 'bin/remedia.cmd')}" ${args}"`],
-          { encoding: 'utf8', env: { ...env, ...extraEnv } },
+          {
+            encoding: 'utf8',
+            env: { ...env, ...extraEnv },
+            // The /S /C command is already correctly quoted for cmd.exe.
+            windowsVerbatimArguments: true,
+          },
         );
 
       for (const shell of ['powershell.exe', 'pwsh']) {
@@ -852,8 +877,8 @@ fn main() {
         assert.equal(detected.status, 0, detected.stderr);
         env.FIXTURE_SHELL = detected.stdout.trim();
         if (shell === 'pwsh') writeFileSync(join(box.fakeBin, 'pwsh.exe'), proxyBytes);
-        // In the fallback case hide the system pwsh from the updater's PATH.
-        env.PATH = `${box.fakeBin};${process.env.SystemRoot}\\System32`;
+        // Keep module/cmdlet discovery intact while hiding the real pwsh.
+        env.PATH = `${box.fakeBin};${pathWithoutPwsh}`;
         setRelease('0.1.0');
         const initial = spawnSync(
           env.FIXTURE_SHELL,
@@ -861,12 +886,30 @@ fn main() {
           { encoding: 'utf8', env },
         );
         assert.equal(initial.status, 0, initial.stdout + initial.stderr);
-        assert.equal(runWrapper('--version').status, 0);
+        assert.ok(
+          existsSync(pointer),
+          `Installer finished without creating ${pointer}
+initial stdout: ${initial.stdout}
+initial stderr: ${initial.stderr}
+install dir exists: ${existsSync(box.installDir)}
+install dir entries: ${existsSync(box.installDir) ? readdirSync(box.installDir).join(', ') : '(missing)'}`,
+        );
+        const versionProbe = runWrapper('--version');
+        assert.equal(
+          versionProbe.status,
+          0,
+          `Installed CLI --version failed with status ${versionProbe.status}
+stdout: ${versionProbe.stdout}
+stderr: ${versionProbe.stderr}
+spawn error: ${versionProbe.error ?? 'none'}
+installation: ${box.installDir}
+pointer: ${existsSync(pointer) ? readFileSync(pointer, 'utf8') : '(missing)'}`,
+        );
         assert.equal(
           spawnSync(
             process.env.ComSpec || 'cmd.exe',
             ['/d', '/s', '/c', `""${join(box.installDir, 'bin/remedia-server.cmd')}" --version"`],
-            { env },
+            { env, windowsVerbatimArguments: true },
           ).status,
           0,
         );
