@@ -3,6 +3,44 @@ title: 'Rust crossfade lifecycle'
 description: Preparation, bounded staging, promotion, mixing curves, and cancellation in the playback worker.
 ---
 
+## Automatic smart scheduling
+
+Smart scheduling is automatic whenever crossfade is enabled, with either curve. There are no
+silence thresholds or analysis settings to configure. The curve still controls how the overlap
+is mixed, including the adaptive curve's existing loudness adjustment.
+
+For known-duration local files and owned encoded buffers, a staged next source enables a
+best-effort background tail probe. It seeks into at most the final `durationMs + 15000` ms
+(maximum 45 seconds), uses 10 ms stereo RMS windows with smoothing and an adaptive noise gate,
+and requires confirmed EOF and at least 1.5 seconds of sustained near-silence. The gate is
+both far below the observed music level and below -65 dBFS; quiet music alone is insufficient.
+The endpoint retains a 250 ms safety margin after the smoothed audible ending. Crossfade starts
+one configured overlap duration before that endpoint. Quiet outros and reverb above the gate
+remain audible through the ordinary mixing curve.
+
+The probe keeps only bounded window statistics (about 41 KiB), rather than buffered track PCM.
+It starts only when a next source has been staged. Eligible outgoing Opus remains in passthrough
+until the selected overlap boundary; tail probing adds bounded decoding work on a separate worker,
+not continuous full-track decoding. No source is reopened during promotion.
+
+HTTP URLs, plugin streams and one-shot inputs are **not reopened for tail analysis**, even when
+HTTP seeking might work. This avoids consuming single-use grants or fetching expired resources.
+They retain duration-based outgoing scheduling. Unknown-duration sources retain ordinary EOF
+completion: sustained silence alone cannot prove that a live stream or intentional pause has ended.
+Analysis errors, uncertain results and results arriving after their proposed overlap boundary also
+retain the duration-based schedule. Playback never waits for analysis.
+
+Staged PCM is also checked for genuine leading padding, using the existing decoder for every input
+kind. Within the first two seconds, at least 300 ms of near-digital silence followed by a clear
+onset can be skipped, retaining 50 ms of pre-roll. Quiet intros, ambiguous onsets, longer padding,
+and entirely silent inputs are preserved. Prefix inspection is bounded; it can delay stage readiness
+but never blocks outgoing playback. The two-second staging buffer and backpressure remain in use.
+
+Reported durations remain the original media durations. Incoming media progress includes skipped
+padding, while the continuous output clock counts only delivered samples. Seek invalidates the
+probe and stage; pause freezes the playback clock, and stop cancels and joins analysis workers.
+Queue identities, revisions, expiry checks and promotion events keep their existing meaning.
+
 ## Crossfade playback
 
 Crossfade is disabled by default. Opted-in sessions can pass through eligible Opus

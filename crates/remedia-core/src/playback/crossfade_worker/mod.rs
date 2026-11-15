@@ -82,7 +82,7 @@ fn worker_loop(
 ) {
     let _stage_cleanup = StageCleanup(stage_slot);
     let opened = AudioDecoder::open_for_playback(
-        source,
+        source.clone(),
         DecoderOptions {
             cancellation: cancellation.clone(),
             ..DecoderOptions::default()
@@ -99,7 +99,7 @@ fn worker_loop(
     };
     let info = decoder.info().clone();
     let mut outgoing_info = info.clone();
-    let mut current = ActiveSource::decoder(decoder);
+    let mut current = ActiveSource::decoder(decoder, source);
     let graph = {
         let mut data = lock(&shared.data);
         data.processor_initialized = true;
@@ -168,7 +168,9 @@ fn worker_loop(
             fade_decided = false;
         }
         let source_generation = lock(&shared.data).source_generation;
-        if let Some(duration) = current.duration_samples {
+        let scheduled_end =
+            current.scheduling_end(lock(stage_slot).is_some(), fade_samples.samples() as u64);
+        if let Some(duration) = scheduled_end {
             let remaining = duration.saturating_sub(current.consumed);
             let trigger = fade_samples.samples() as u64 + u64::from(config.prepare_before_ms) * 48;
             if !preparation_requested && remaining <= trigger {
@@ -190,7 +192,11 @@ fn worker_loop(
                             && stage.snapshot().state == StageState::Ready
                             && stage.snapshot().info.as_ref().is_some_and(|info| {
                                 info.duration.is_none_or(|duration| {
-                                    samples_from_duration(duration) >= fade_samples.samples() as u64
+                                    samples_from_duration(duration).saturating_sub(
+                                        stage
+                                            .trimmed_samples
+                                            .load(std::sync::atomic::Ordering::Acquire),
+                                    ) >= fade_samples.samples() as u64
                                 })
                             })
                     }) {
@@ -226,7 +232,9 @@ fn worker_loop(
                             fading: PcmCrossfade::with_curve(fade_samples, config.curve),
                             previous_generation: source_generation,
                             incoming_generation,
-                            incoming_consumed: 0,
+                            incoming_consumed: next
+                                .trimmed_samples
+                                .load(std::sync::atomic::Ordering::Acquire),
                             outgoing_info: outgoing_info.clone(),
                             transferred: false,
                         });
@@ -236,8 +244,7 @@ fn worker_loop(
         }
 
         // Split the outgoing frame at the exact sample where the fade starts.
-        let until_fade = current
-            .duration_samples
+        let until_fade = scheduled_end
             .map(|duration| {
                 duration
                     .saturating_sub(fade_samples.samples() as u64)
@@ -249,7 +256,7 @@ fn worker_loop(
             .as_ref()
             .map(|t| FRAME_SAMPLES.min(t.fading.remaining_samples()))
             .unwrap_or(FRAME_SAMPLES.min(until_fade));
-        let before_overlap = current.duration_samples.map(|duration| {
+        let before_overlap = scheduled_end.map(|duration| {
             duration
                 .saturating_sub(fade_samples.samples() as u64)
                 .saturating_sub(current.consumed)
@@ -445,6 +452,7 @@ fn worker_loop(
 
 mod commands;
 mod source;
+mod tail;
 
 use commands::handle_commands;
 use source::ActiveSource;

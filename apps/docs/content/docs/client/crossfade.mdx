@@ -5,6 +5,18 @@ description: Prepare the next source, handle promotion, and keep queue decisions
 
 Enable crossfade when a session is created, then stage the next source in response to `prepareRequested`. The engine owns transition timing. Your application owns the queue and resolves fresh media sources.
 
+## Automatic smart scheduling
+
+Enabling crossfade automatically enables conservative content-aware scheduling for both curves.
+For local files and owned buffers, bounded background analysis can move the overlap earlier to
+avoid a confirmed silent tail. Staged PCM can skip short, genuine leading padding while preserving
+quiet intros. Original media durations remain unchanged; incoming progress includes skipped padding.
+
+HTTP and plugin sources are never reopened for analysis. Uncertain, failed or late analysis falls
+back to duration-based timing; unknown-duration inputs keep ordinary EOF completion. Playback never
+waits for analysis. See [smart scheduling](/docs/core/crossfade#automatic-smart-scheduling) for source
+support, confidence rules, resource bounds and lifecycle details. No additional options are required.
+
 ## Enable a session
 
 Remote nodes must advertise `capabilities.crossfade.available`. The operator must enable [server crossfade policy](/docs/server/configuration#crossfade-capability), and the session must opt in. Embedded sessions take the creation options directly.

@@ -30,6 +30,7 @@ pub(super) struct PreparedStage {
     pub(super) identity: StageIdentity,
     pub(super) buffer: Arc<StagedPcmBuffer>,
     pub(super) source: InputSource,
+    pub(super) trimmed_samples: std::sync::atomic::AtomicU64,
     shared: Arc<SessionShared>,
     expires_at_unix_ms: Option<u64>,
     cancellation: CancellationToken,
@@ -48,6 +49,7 @@ impl PreparedStage {
         let stage = Arc::new(Self {
             identity,
             source: source.clone(),
+            trimmed_samples: std::sync::atomic::AtomicU64::new(0),
             shared,
             expires_at_unix_ms,
             buffer: Arc::new(StagedPcmBuffer::with_capacity_ms(2_000).expect("valid buffer")),
@@ -76,20 +78,53 @@ impl PreparedStage {
                 },
             )?;
             *lock(&self.info) = Some(decoder.info().clone());
+            let mut prefix = Vec::new();
+            let mut prefix_done = false;
+            let mut prefix_checked = 0;
             while !self.cancellation.is_cancelled() {
                 match decoder.next_frame()? {
                     Some(frame) => {
-                        if self.buffer.push(&frame.samples).is_err() {
-                            return Ok(());
-                        }
-                        if !ready_sent && self.buffer.buffered_samples() >= 48_000 {
-                            ready_sent = true;
-                            self.shared.publish(CrossfadeEvent::StageReady {
-                                identity: self.identity.clone(),
-                            });
+                        let samples =
+                            if !prefix_done {
+                                prefix.extend_from_slice(&frame.samples);
+                                // At most two seconds. Any non-padding sample ends
+                                // inspection; quiet music is returned unchanged.
+                                let padding =
+                                    prefix[prefix_checked..].as_chunks::<960>().0.iter().all(
+                                        |hop| {
+                                            hop.iter().all(|s| s.is_finite() && s.abs() <= 0.000_03)
+                                        },
+                                    );
+                                prefix_checked = prefix.len() / 960 * 960;
+                                if prefix.len() < 2 * 96_000 && padding {
+                                    continue;
+                                }
+                                prefix_done = true;
+                                let trim = crate::crossfade::scheduling::leading_trim(&prefix);
+                                self.trimmed_samples
+                                    .store(trim as u64, std::sync::atomic::Ordering::Release);
+                                prefix.drain(..trim * 2);
+                                std::mem::take(&mut prefix)
+                            } else {
+                                frame.samples
+                            };
+                        for block in samples.chunks(1920) {
+                            if self.buffer.push(block).is_err() {
+                                return Ok(());
+                            }
+                            if !ready_sent && self.buffer.buffered_samples() >= 48_000 {
+                                ready_sent = true;
+                                self.shared.publish(CrossfadeEvent::StageReady {
+                                    identity: self.identity.clone(),
+                                });
+                            }
                         }
                     }
                     None => {
+                        // No confirmed onset: preserve an all-silent/short input.
+                        if !prefix.is_empty() && self.buffer.push(&prefix).is_err() {
+                            return Ok(());
+                        }
                         self.buffer.finish();
                         if !ready_sent && self.buffer.buffered_samples() > 0 {
                             self.shared.publish(CrossfadeEvent::StageReady {

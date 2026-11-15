@@ -15,6 +15,7 @@ mod buffer;
 mod curves;
 mod limiter;
 mod mixer;
+pub(crate) mod scheduling;
 
 #[cfg(test)]
 mod fixtures;

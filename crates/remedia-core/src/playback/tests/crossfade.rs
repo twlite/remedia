@@ -902,3 +902,87 @@ fn adaptive_overlap_of_opposed_sources_never_boosts_the_cancellation() {
         "adaptive output must stay within the loudest source"
     );
 }
+
+#[test]
+fn smart_crossfade_removes_confirmed_tail_and_preserves_trimmed_source_progress() {
+    use super::super::{CrossfadeConfig, CrossfadeEvent, StageIdentity, StageState};
+
+    for curve in [CrossfadeCurve::EqualPower, CrossfadeCurve::Adaptive] {
+        let mut samples = vec![8_000; 6 * 48_000];
+        samples.extend(vec![0; 4 * 48_000]);
+        let outgoing = TempWave::from_samples(samples);
+        let mut samples = vec![0; 48_000];
+        samples.extend(vec![-8_000; 9 * 48_000]);
+        let incoming = TempWave::from_samples(samples);
+        let session = PlaybackSession::new();
+        session
+            .configure_crossfade(Some(
+                CrossfadeConfig::new(1_000, 5_000)
+                    .unwrap()
+                    .with_curve(curve),
+            ))
+            .unwrap();
+        let (output, gate) = GateOutput::new();
+        session.play(outgoing.source(), output).unwrap();
+        assert!(gate.wait_for_calls(1));
+        session
+            .stage_next(
+                incoming.source(),
+                StageIdentity {
+                    expected_generation: session.source_generation(),
+                    entry_id: "smart".into(),
+                    queue_revision: 1,
+                    source_revision: 0,
+                },
+            )
+            .unwrap();
+        let deadline = Instant::now() + TEST_TIMEOUT;
+        while session.staged_source().unwrap().state != StageState::Ready
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(2));
+        }
+        let prepared = lock(&session.stage).as_ref().cloned().unwrap();
+        assert!((44_000..=46_000).contains(&prepared.trimmed_samples.load(Ordering::Acquire)));
+        let mut started_at = None;
+        for call in 1..450 {
+            gate.release(1);
+            assert!(gate.wait_for_calls(call + 1));
+            if session
+                .take_crossfade_events()
+                .iter()
+                .any(|event| matches!(event, CrossfadeEvent::TransitionStarted { .. }))
+            {
+                started_at = Some(call);
+                break;
+            }
+            // Let the independent probe and bounded producer make progress.
+            thread::sleep(Duration::from_millis(1));
+        }
+        let start = started_at.expect("smart transition started");
+        assert!((260..=290).contains(&start), "start frame {start}");
+        advance_buffered_fade(&gate, &prepared, start + 1, start + 60);
+        gate.release(1_000);
+        assert_eq!(session.wait(), PlaybackState::Completed);
+        assert_eq!(session.source_generation(), 2);
+        assert_eq!(session.duration(), Some(Duration::from_secs(10)));
+        let media = session
+            .position()
+            .media
+            .expect("incoming media progress")
+            .position;
+        assert!((Duration::from_millis(9_980)..=Duration::from_millis(10_020)).contains(&media));
+        let result = gate.snapshot();
+        let total: u64 = result.accepted.len() as u64 * 960;
+        assert!(
+            (680_000..730_000).contains(&total),
+            "output samples {total}"
+        );
+        assert!(
+            result
+                .accepted
+                .windows(2)
+                .all(|pair| (1..=960).contains(&(pair[1].0 - pair[0].0)))
+        );
+    }
+}

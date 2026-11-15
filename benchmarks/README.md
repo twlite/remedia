@@ -8,6 +8,9 @@ requested scheduler or adaptive crossfade redesign.
 See [adaptive-crossfade.md](adaptive-crossfade.md) for the crossfade curve comparison and mixer cost, which
 has its own example and does not use the runner below.
 
+See [smart-crossfade.md](smart-crossfade.md) for content-aware scheduling accuracy, CPU and allocation measurements,
+and the passthrough preservation workload.
+
 ## Reproduction
 
 ```sh

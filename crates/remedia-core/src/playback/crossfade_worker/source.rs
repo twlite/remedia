@@ -15,6 +15,9 @@ enum ActiveInput {
 
 pub(super) struct ActiveSource {
     input: ActiveInput,
+    source: InputSource,
+    probe: Option<super::tail::TailProbe>,
+    effective_end: Option<u64>,
     encoded: bool,
     eligible: bool,
     boundary: Option<u64>,
@@ -23,10 +26,13 @@ pub(super) struct ActiveSource {
 }
 
 impl ActiveSource {
-    pub(super) fn decoder(decoder: AudioDecoder) -> Self {
+    pub(super) fn decoder(decoder: AudioDecoder, source: InputSource) -> Self {
         let eligible = decoder.opus_passthrough_rejection().is_none();
         let duration_samples = decoder.info().duration.map(samples_from_duration);
         Self {
+            source,
+            probe: None,
+            effective_end: None,
             input: ActiveInput::Direct {
                 decoder: Box::new(decoder),
                 pcm: VecDeque::new(),
@@ -46,6 +52,9 @@ impl ActiveSource {
         info: &AudioStreamInfo,
     ) -> Self {
         Self {
+            source: stage.source.clone(),
+            probe: None,
+            effective_end: None,
             input: ActiveInput::Prepared(stage),
             encoded: false,
             eligible: false,
@@ -53,6 +62,27 @@ impl ActiveSource {
             consumed,
             duration_samples: info.duration.map(samples_from_duration),
         }
+    }
+
+    pub(super) fn scheduling_end(&mut self, staged: bool, fade: u64) -> Option<u64> {
+        if staged
+            && self.probe.is_none()
+            && matches!(self.source, InputSource::File(_) | InputSource::Bytes(_))
+            && let Some(duration) = self.duration_samples
+        {
+            self.probe = Some(super::tail::TailProbe::start(
+                self.source.clone(),
+                duration,
+                fade,
+            ));
+        }
+        if self.effective_end.is_none()
+            && let Some(end) = self.probe.as_ref().and_then(|probe| probe.endpoint())
+            && end.saturating_sub(fade) >= self.consumed
+        {
+            self.effective_end = Some(end);
+        }
+        self.effective_end.or(self.duration_samples)
     }
 
     pub(super) fn enter_pcm(&mut self) -> Result<(), PlaybackError> {
@@ -260,6 +290,8 @@ impl ActiveSource {
         };
         self.eligible = false;
         self.encoded = false;
+        self.probe = None;
+        self.effective_end = None;
         self.consumed = samples_from_duration(position);
         Ok(())
     }
@@ -270,5 +302,48 @@ impl Drop for ActiveSource {
         if let ActiveInput::Prepared(stage) = &self.input {
             stage.cancel_and_join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_and_unknown_duration_sources_do_not_start_probes() {
+        let fixture = include_bytes!("../../../tests/fixtures/generated-opus-passthrough.ogg");
+        for source in [
+            InputSource::http_url("https://invalid.example/expiring"),
+            InputSource::sequential_http_url("https://invalid.example/single-use"),
+        ] {
+            let decoder = AudioDecoder::open_for_playback(
+                InputSource::bytes(fixture.to_vec()),
+                DecoderOptions::default(),
+            )
+            .unwrap();
+            let mut active = ActiveSource::decoder(decoder, source);
+            let duration = active.duration_samples;
+            assert_eq!(active.scheduling_end(true, 48_000), duration);
+            assert!(active.probe.is_none());
+            active.duration_samples = None;
+            assert_eq!(active.scheduling_end(true, 48_000), None);
+            assert!(active.probe.is_none());
+        }
+    }
+
+    #[test]
+    fn no_stage_keeps_local_opus_eligible_without_analysis() {
+        let fixture = include_bytes!("../../../tests/fixtures/generated-opus-passthrough.ogg");
+        let source = InputSource::bytes(fixture.to_vec());
+        let decoder =
+            AudioDecoder::open_for_playback(source.clone(), DecoderOptions::default()).unwrap();
+        let mut active = ActiveSource::decoder(decoder, source);
+        assert!(active.passthrough_eligible());
+        assert_eq!(
+            active.scheduling_end(false, 48_000),
+            active.duration_samples
+        );
+        assert!(active.probe.is_none());
+        assert!(active.passthrough_eligible());
     }
 }

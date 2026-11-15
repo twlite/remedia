@@ -242,6 +242,9 @@ use staging::PreparedStage;
 pub use staging::{StageIdentity, StageSnapshot, StageState};
 
 /// Session-scoped transition settings, validated before configuration.
+/// Enabling crossfade also enables conservative smart scheduling and staged
+/// leading-padding detection. Inconclusive analysis retains duration-based
+/// timing. Network sources are never reopened for tail analysis.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CrossfadeConfig {
     /// Overlap duration in milliseconds, 1000 through 30000.
