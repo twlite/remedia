@@ -190,32 +190,12 @@ fn serve(body: Arc<Vec<u8>>, bytes_per_second: Option<u64>) -> Origin {
     }
 }
 
-/// User plus system CPU time of this process, in seconds.
+/// User plus system CPU time of this process, in seconds. Zero where the platform does not
+/// report it.
 fn cpu_seconds() -> f64 {
-    #[repr(C)]
-    #[derive(Default)]
-    struct Timeval {
-        seconds: i64,
-        microseconds: i32,
-    }
-    #[repr(C)]
-    #[derive(Default)]
-    struct Usage {
-        user: Timeval,
-        system: Timeval,
-        rest: [i64; 14],
-    }
-    unsafe extern "C" {
-        fn getrusage(who: i32, usage: *mut Usage) -> i32;
-    }
-    let mut usage = Usage::default();
-    // SAFETY: `usage` is a valid, correctly sized `rusage` and RUSAGE_SELF is 0.
-    unsafe { getrusage(0, &mut usage) };
+    let cpu = remedia_resources::collect().cpu;
 
-    usage.user.seconds as f64
-        + usage.user.microseconds as f64 / 1e6
-        + usage.system.seconds as f64
-        + usage.system.microseconds as f64 / 1e6
+    (cpu.user_time_ms.unwrap_or(0.0) + cpu.system_time_ms.unwrap_or(0.0)) / 1_000.0
 }
 
 struct Arguments {

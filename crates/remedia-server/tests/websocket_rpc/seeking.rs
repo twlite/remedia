@@ -231,7 +231,7 @@ async fn a_fallback_seek_reports_where_it_landed_in_the_response_and_the_event()
 #[tokio::test]
 async fn a_seek_that_outlives_its_deadline_is_cancelled_and_never_applies() {
     let server =
-        RunningServer::start_configured(60, 4, false, json!([]), json!({"requestTimeoutMs": 1000}))
+        RunningServer::start_configured(60, 4, false, json!([]), json!({"requestTimeoutMs": 4000}))
             .await;
     let origin = Origin::start(silent_wave(200));
     let mut socket = playing(&server, &origin, GUILD, true, 3_000).await;

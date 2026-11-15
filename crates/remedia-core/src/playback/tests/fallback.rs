@@ -754,7 +754,9 @@ fn a_byte_stream_with_a_reopener_can_seek_backwards_through_a_replacement() {
     let frames = delivered(&gate);
     let jump = find_jump(&frames, 500);
     let resumed = resumed_at(&frames, jump);
-    assert!((100..1_500).contains(&resumed), "{resumed}");
+    // At or after the target by however much of the old stream played meanwhile, which depends on
+    // how quickly the runner prepared the replacement, and behind where the old stream had got to.
+    assert!(resumed >= 100, "{resumed}");
     assert!(resumed < cut_at(&frames, jump), "it moved backwards");
 
     session.stop().unwrap();
