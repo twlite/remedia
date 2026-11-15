@@ -1,4 +1,5 @@
 use std::io;
+use std::sync::OnceLock;
 
 use opentelemetry::metrics::MeterProvider as _;
 use opentelemetry::trace::TracerProvider as _;
@@ -17,6 +18,17 @@ use crate::diagnostics::{DiagnosticReceiver, DiagnosticsLayer};
 use crate::metrics::RemediaMetrics;
 
 const DIAGNOSTIC_QUEUE_CAPACITY: usize = 256;
+
+/// Keeps `tracing-core` out of its single-dispatcher callsite fast path for the process lifetime.
+///
+/// With exactly one registered `Dispatch`, `tracing-core` computes a new callsite's cached
+/// interest from the *registering thread's* current dispatcher instead of from every registered
+/// dispatcher. Remedia's dispatchers are scoped, never global, so a thread outside any scope
+/// (for example a session using the default handle, or application code) that reaches a callsite
+/// first would cache "never" and permanently silence it for the one real dispatcher. Registering
+/// a permanent no-op dispatcher guarantees at least two live dispatchers, so interest is always
+/// combined across all of them.
+static CALLSITE_INTEREST_GUARD: OnceLock<Dispatch> = OnceLock::new();
 const CONSOLE_QUEUE_CAPACITY: usize = 1024;
 const OTEL_FILTER: &str = "remedia_core=info,remedia_discord=info,remedia_observability=info";
 
@@ -127,6 +139,8 @@ impl Observability {
         if let Some(otel) = otel_layer {
             layers = Box::new(layers.and_then(otel));
         }
+        CALLSITE_INTEREST_GUARD
+            .get_or_init(|| Dispatch::new(tracing::subscriber::NoSubscriber::default()));
         let dispatch = Dispatch::new(Registry::default().with(layers));
         let handle = ObservabilityHandle {
             dispatch: Some(dispatch.clone()),
