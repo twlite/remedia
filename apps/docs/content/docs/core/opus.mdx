@@ -179,9 +179,22 @@ When [fallback seeking](/docs/core/playback#fallback-seeking) swaps in a replace
 stream that is being forwarded as packets keeps being forwarded unchanged while the replacement is
 prepared. Once it is ready, the stream is converted to PCM with the seamless entry above, so the
 encoder is primed with what the client just heard, then the decoders are swapped at one sample.
-Returning to packets after a swap is not implemented, so the stream stays on the PCM path (decoded
-and re-encoded, at a CPU cost close to a gain change) until the next source. The output timeline is
-contiguous across the whole sequence.
+
+The stream then returns to packets, as after a seek, from the replacement's own packets. The one
+extra requirement is alignment. The encoder's partial 20 ms frame and the replacement's packet grid
+advance together, so they coincide at a packet boundary only when the replacement's first sample has
+the encoder's phase. Its start is therefore moved forward by under 20 ms (the seek's position
+already carries tens of milliseconds of preparation time) so that they do. The encoder then runs
+for six frames, so the client's decoder has settled on the re-encoded audio, and the usual lookahead
+junction hands over to source packets. This needs a stream whose pre-skip equals the encoder
+lookahead (312), an Opus output, and a known encoder phase; any other stream stays on PCM, as it
+does after an ordinary seek.
+
+Measured on a 15-minute 128 kbit/s Opus track over a range-ignoring origin, the stream is back on
+packets about 150 ms after the swap and costs the same CPU as before the seek (1.0% of a core), where
+staying on the PCM path costs 3.7-3.9%. The timeline is contiguous across conversion, swap and
+recovery, and the packets after it decode, in a fresh libopus decoder, to what FFmpeg decodes. The
+crossfade worker does the same.
 
 ### Reported position and what the listener hears
 

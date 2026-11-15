@@ -101,21 +101,31 @@ submitted position because FFmpeg and the playback worker read ahead. A seek
 past EOF returns `SeekOutOfRange`. A stalled producer keeps the seek waiting
 until data arrives or the operation is cancelled.
 
+The same holds for an HTTP origin that ignores `Range` requests. FFmpeg reports its I/O as
+non-seekable, and Remedia then never hands it to FFmpeg's seek: that attempt reconnects repeatedly
+(in measurements, 4-7 times and three times the file's size in transfer for a seek into a 15-minute
+Opus track) and can leave the read position lost, so no audio follows. A forward target walks the
+decoded stream in place, like a byte stream; a rewind is refused with `UnsupportedSeeking` before
+anything is touched. A seek that fails for any reason leaves the stream as it was, including
+forwarded Opus packets: the demuxer is asked first and nothing else is changed until it agrees.
+
 A source that cannot seek at all can be served by a replacement instead; see
 [Fallback seeking](#fallback-seeking).
 
 ## Fallback seeking
 
 Some sources cannot reposition their decoder: an HTTP origin that ignores `Range` requests, a format
-without a usable index, or a one-shot stream whose producer can issue a new one. A seek on such a
-source normally fails with `UnsupportedSeeking`, or on a plain HTTP URL makes FFmpeg reconnect
-repeatedly (and, for a forward target, read and discard the skipped bytes **on the playback
-worker**, which stalls playback). With fallback seeking enabled, the session leaves the active
-decoder alone and prepares a replacement instead.
+without a usable index, or a one-shot stream whose producer can issue a new one. Without the option, a
+rewind on such a source is refused and a forward seek walks the stream on the playback worker (see
+[Seeking and position](#seeking-and-position)). With fallback seeking enabled, the session leaves the
+active decoder alone and prepares a replacement instead.
 
 ```rust
 session.configure_fallback_seeking(true); // off by default; may be changed at any time
 session.seek(Duration::from_secs(90))?;   // returns when the replacement is audible
+
+let outcome = session.seek_outcome(Duration::from_secs(90))?;
+// outcome.requested == 90 s; outcome.applied is where the audio continues from, for example 93 s
 ```
 
 The mechanism:
@@ -138,6 +148,38 @@ The mechanism:
    position to the replacement's; it never moves backwards because of preparation latency. The
    stream metadata and duration are refreshed from the replacement.
 
+### Where the seek landed
+
+`seek_outcome()` and `PendingSeek::wait_outcome()` return a `SeekOutcome { requested, applied,
+replaced_source }`. For an ordinary seek `applied == requested`. For a fallback seek `applied` is the
+requested position plus the source time that elapsed during preparation, and `replaced_source` is
+set. The output timeline did not restart then (`submitted` position keeps counting), so a caller that
+keeps its own clock moves its _media_ position to `applied` and leaves elapsed output time alone.
+`position().media` and the crossfade `TimelineChanged` event (`position_ms`, `requested_position_ms`,
+`replaced_source`) report the same position, in a crossfade session as well.
+
+### Cancelling a seek
+
+A seek has a ticket that the worker commits immediately before it changes anything audible.
+`PendingSeek::canceller()` returns a `SeekCanceller`, and `PlaybackSession::cancel_seek()` cancels
+the latest seek:
+
+```rust
+let pending = session.start_seek(position)?;
+let canceller = pending.canceller();
+// ... the request that asked for this seek times out ...
+if canceller.cancel() {
+    // guaranteed: the seek will never be applied; pending.wait() fails with SeekCancelled
+} else {
+    // too late: it was already being applied, and pending.wait() reports its outcome
+}
+```
+
+The answer is exact, not best effort: a cancel that wins the race means the seek can no longer
+happen, and one that loses says so. A queued seek and a preparing replacement can both be cancelled;
+an ordinary in-place seek is applied the moment the worker reaches it, so there is little to cancel.
+The playing source is never interrupted by a cancel.
+
 Anything that goes wrong leaves the original stream playing normally:
 
 | Situation                                                         | Result                                                                           |
@@ -154,6 +196,13 @@ At most one preparation exists per session. It owns one extra decoder, one extra
 a thread, all released on every path above; staging is not involved, so memory stays bounded.
 
 ### What can be reopened
+
+A reopened source must still be the track that is playing. Before it is used, its codec, sample
+rate and channel count must equal the playing stream's, and so must its duration (to within one
+second or one percent) when both are known; a plugin that answers differently the second time, or a
+URL whose content was replaced, fails the seek instead of dropping the listener into another
+recording. A duration only one of them can determine proves nothing, so a one-shot stream whose
+length was unknown can be reopened as a complete file.
 
 | Source              | Fallback seeking                                                                           |
 | ------------------- | ------------------------------------------------------------------------------------------ |
@@ -209,8 +258,9 @@ pending.wait()?;                              // PendingSeek::wait
 - **Opus passthrough.** Swapping decoders blends decoded audio, so forwarded packets are left
   first using the seamless entry described in [Opus passthrough](/docs/core/opus#gain-and-filter-changes).
   Packets keep flowing unchanged while the replacement is _preparing_; the conversion happens only
-  once it is ready. The replacement is decoded, so the stream stays on the PCM path until the next
-  source. `processing_mode()` reports `Transcoding` after the swap.
+  once it is ready. After the swap the stream returns to the replacement's own packets through the
+  usual recovery, see [Opus: fallback seeking](/docs/core/opus#fallback-seeking). `processing_mode()`
+  reports `Transcoding` meanwhile (about 150 ms in the benchmark) and `Passthrough` again afterwards.
 - **Crossfade.** The swap publishes a `TimelineChanged` event, advances the source generation and
   invalidates the staged next track, exactly as an ordinary seek does. A transition that starts
   before the replacement is ready supersedes the seek.

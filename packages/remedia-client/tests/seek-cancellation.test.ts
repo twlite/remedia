@@ -8,6 +8,15 @@ const BOT_ID = '100000000000000001';
 const GUILD_ID = '200000000000000001';
 const CHANNEL_ID = '300000000000000001';
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+
+  return { promise, resolve };
+}
+
 async function adapter(server: FakeServerNode, requestTimeoutMs = 2_000) {
   const node = new RemoteNodeAdapter({
     botUserId: BOT_ID,
@@ -28,7 +37,7 @@ async function adapter(server: FakeServerNode, requestTimeoutMs = 2_000) {
 describe('cancelling a seek on a remote node', () => {
   it('sends the guild-addressed cancel when the caller aborts', async () => {
     const server = await FakeServerNode.listen({ id: 'seek-abort' });
-    const release = Promise.withResolvers<void>();
+    const release = deferred();
     server.seekGate = () => release.promise;
     const node = await adapter(server);
     try {
@@ -53,7 +62,7 @@ describe('cancelling a seek on a remote node', () => {
 
   it('sends it when the request deadline passes, so the seek cannot apply later', async () => {
     const server = await FakeServerNode.listen({ id: 'seek-deadline' });
-    const release = Promise.withResolvers<void>();
+    const release = deferred();
     server.seekGate = () => release.promise;
     const node = await adapter(server, 150);
     try {

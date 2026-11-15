@@ -63,6 +63,31 @@ await session.seek(90_000); // resolves when the replacement is audible
 
 Positions account for the preparation time. The replacement resumes at the requested position **plus the source time that played while it was prepared**: a seek to 90 s that takes three seconds resumes near 93 s. The offset stops while the session is paused and grows faster than wall-clock time under a tempo filter. The reported position jumps once at the swap and does not step backwards because of preparation latency.
 
-A newer `seek()` replaces one that is still preparing, and the older call rejects (`cancelled` on a remote node); so does a stop or a crossfade that begins first. Any failure, such as a source that cannot be reopened or a target past its end, rejects while the original stream keeps playing. A one-shot `{ stream }` source cannot be reopened and still rejects; a plugin operation source is reopened by running its operation again (see [plugin operations](/docs/server/plugin-operations#seeking-with-fallback-seeking)). A remote node must advertise `capabilities.fallbackSeeking.available`; a session that requests the option on a node that does not fails to start rather than silently ignoring it. After the swap an Opus stream is decoded and re-encoded until the next source.
+`playbackSeeked` reports where the audio actually continues from:
+
+```ts
+session.on('playbackSeeked', (event) => {
+  event.positionMs; // 93_000: applied. Use this for progress.
+  event.requestedPositionMs; // 90_000: what was asked for
+  event.fallback; // true: a replacement took over; the output timeline did not restart
+  event.previousPositionMs;
+});
+```
+
+For an ordinary seek `positionMs` equals `requestedPositionMs`. A fallback seek does not restart the output timeline, so the SDK's clock moves only the _media_ position to `positionMs` and keeps counting elapsed output time (`getPlaybackTime()`); `getMediaTime()` continues from the new position at the active tempo, so a session playing at `atempo=2` advances its media time twice as fast from 93 s. An ordinary seek restarts both at the target.
+
+**Cancelling.** A newer `seek()` replaces one that is still preparing, and the older call rejects (`cancelled` on a remote node); so does a stop or a crossfade that begins first. You can also cancel one yourself:
+
+```ts
+const controller = new AbortController();
+const seeking = session.seek(90_000, { signal: controller.signal });
+controller.abort(); // rejects with the signal's reason; the seek can never apply later
+```
+
+The same happens when a remote node's request deadline (`requestTimeoutMs`, 15 s by default) passes: the SDK sends `player.seek.cancel` for the guild, so a seek the caller was told had failed does not apply afterwards. A seek already being applied when the cancel arrives cannot be stopped and finishes; its `playbackSeeked` event says so, which is how a caller that saw a timeout learns the position moved. Set `requestTimeoutMs` above the preparation time you expect (a distant seek on a slow origin takes as long as the transfer to the target).
+
+Any failure, such as a source that cannot be reopened, a track that comes back different, or a target past its end, rejects while the original stream keeps playing. A one-shot `{ stream }` source cannot be reopened and still rejects; a plugin operation source is reopened by running its operation again, so the operation can run more than once for one track (see [plugin operations](/docs/server/plugin-operations#seeking-with-fallback-seeking)). A remote node must advertise `capabilities.fallbackSeeking.available`; a session that requests the option on a node that does not fails to start rather than silently ignoring it. After the swap an Opus stream is decoded and re-encoded for about 150 ms and then returns to forwarding packets.
+
+Without the option, a rewind on a source that cannot seek is refused without touching the stream, and a failed seek never interrupts playback.
 
 Seeking may invalidate a staged crossfade source and change its generation. Resolve a fresh stage in response to the next preparation request. For sample-level behavior, see [Rust seeking](/docs/core/playback#seeking-and-position) and [filter timing](/docs/core/filters).

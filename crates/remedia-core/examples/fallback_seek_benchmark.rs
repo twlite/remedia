@@ -23,7 +23,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use remedia_core::{
-    CancellationToken, InputSource, MediaOutput, OutputError, PcmFrame, PlaybackSession,
+    CancellationToken, EncodedOpusPacket, InputSource, MediaOutput, OpusEncoderOutput,
+    OpusPacketSink, OutputError, PcmFrame, PlaybackProcessingMode, PlaybackSession,
 };
 
 /// Audio the output keeps queued ahead of the clock, like a voice sender's jitter buffer.
@@ -218,6 +219,7 @@ fn cpu_seconds() -> f64 {
 }
 
 struct Arguments {
+    opus: bool,
     track: PathBuf,
     targets: Vec<u64>,
     rate_mbit: Option<f64>,
@@ -228,6 +230,7 @@ fn parse() -> Result<Arguments, Box<dyn Error>> {
     let mut track = None;
     let mut targets = vec![5_000, 30_000, 120_000];
     let mut rate_mbit = None;
+    let mut opus = false;
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
@@ -239,6 +242,7 @@ fn parse() -> Result<Arguments, Box<dyn Error>> {
                     .map(str::parse)
                     .collect::<Result<_, _>>()?;
             }
+            "--opus" => opus = true,
             "--rate-mbit" => {
                 rate_mbit = Some(
                     arguments
@@ -252,6 +256,7 @@ fn parse() -> Result<Arguments, Box<dyn Error>> {
     }
 
     Ok(Arguments {
+        opus,
         track: track
             .ok_or("usage: fallback_seek_benchmark <track> [--targets-ms a,b,c] [--rate-mbit n]")?,
         targets,
@@ -368,6 +373,116 @@ fn run(
     Ok(())
 }
 
+/// A voice sender's view of encoded packets: it accepts 20 ms packets in real time with 200 ms
+/// queued, and accepts Opus packets forwarded as they are.
+#[derive(Clone)]
+struct PacedSink(Arc<Mutex<Pacing>>);
+
+impl OpusPacketSink for PacedSink {
+    fn supports_passthrough_packet(&self, _packet: &EncodedOpusPacket) -> bool {
+        true
+    }
+
+    fn send_packet(
+        &self,
+        packet: EncodedOpusPacket,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OutputError> {
+        PacedOutput(Arc::clone(&self.0)).write_frame(
+            PcmFrame {
+                samples: Vec::new(),
+                samples_per_channel: packet.samples_per_channel as usize,
+                start_sample: packet.start_sample,
+            },
+            cancellation,
+        )
+    }
+
+    fn flush(
+        &self,
+        position: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OutputError> {
+        PacedOutput(Arc::clone(&self.0)).flush(position, cancellation)
+    }
+
+    fn finish(&self, _cancellation: &CancellationToken) -> Result<(), OutputError> {
+        Ok(())
+    }
+
+    fn cancel(&self) {}
+}
+
+/// CPU seconds this process spends per second over `window`.
+fn cpu_rate(window: Duration) -> f64 {
+    let before = cpu_seconds();
+    thread::sleep(window);
+
+    (cpu_seconds() - before) / window.as_secs_f64()
+}
+
+/// An Opus track played to an Opus output over the range-ignoring origin: how long the stream
+/// takes to return to forwarding packets after a fallback seek, and what that is worth in CPU.
+fn run_opus(arguments: &Arguments, origin: &Origin) -> Result<(), Box<dyn Error>> {
+    let measuring = Duration::from_secs(5);
+    for target in &arguments.targets {
+        let session = PlaybackSession::new();
+        session.configure_fallback_seeking(true);
+        let (_, pacing) = PacedOutput::new();
+        let output = OpusEncoderOutput::new(PacedSink(Arc::clone(&pacing)))?;
+        session.play(InputSource::http_url(&origin.url), output)?;
+        thread::sleep(arguments.settle);
+        let forwarding_cpu = cpu_rate(measuring);
+        let forwarding = session.processing_mode();
+
+        let before = snapshot(&pacing);
+        let started = Instant::now();
+        let applied = session
+            .seek(Duration::from_millis(*target))
+            .map_err(|e| e.to_string());
+        let latency = started.elapsed();
+        // How long until packets are forwarded again.
+        let mut recovery = None;
+        while started.elapsed() < Duration::from_secs(10) {
+            if session.processing_mode() == Some(PlaybackProcessingMode::Passthrough) {
+                recovery = Some(started.elapsed());
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        let during = window(&pacing, &before);
+        thread::sleep(Duration::from_secs(1));
+        let recovered_cpu = cpu_rate(measuring);
+        let recovered = session.processing_mode();
+
+        // The cost of staying on the PCM path: gain other than 1.0 forces decode and re-encode.
+        session.set_volume(0.99)?;
+        thread::sleep(Duration::from_secs(1));
+        let transcoding_cpu = cpu_rate(measuring);
+        println!(
+            "{}",
+            serde_json::json!({
+                "mode": "opus",
+                "targetMs": target,
+                "applied": applied.is_ok(),
+                "error": applied.err(),
+                "latencyMs": latency.as_secs_f64() * 1000.0,
+                "backToPacketsMs": recovery.map(|d| d.as_secs_f64() * 1000.0),
+                "modeBefore": format!("{forwarding:?}"),
+                "modeAfter": format!("{recovered:?}"),
+                "cpuPerSecondForwarding": forwarding_cpu,
+                "cpuPerSecondRecovered": recovered_cpu,
+                "cpuPerSecondTranscoding": transcoding_cpu,
+                "underrunsAroundSeek": during.underruns,
+                "worstGapMs": during.worst_gap_ms,
+            })
+        );
+        session.stop()?;
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments = parse()?;
     let body = Arc::new(std::fs::read(&arguments.track)?);
@@ -375,6 +490,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .rate_mbit
         .map(|mbit| (mbit * 1_000_000.0 / 8.0) as u64);
     let origin = serve(Arc::clone(&body), rate);
+    if arguments.opus {
+        return run_opus(&arguments, &origin);
+    }
 
     // Without the option the same seek on the same origin takes FFmpeg's own path.
     run(

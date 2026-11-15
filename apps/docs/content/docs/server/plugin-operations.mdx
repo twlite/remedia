@@ -133,17 +133,32 @@ grant cannot be read twice. A guild created with `enableFallbackSeeking: true` (
 [fallback seeking](/docs/server/rpc-playback#fallback-seeking)) instead obtains a **new grant** for the
 seek: the node runs the same `hostId` / `pluginId` / `operation` / `input` again on the same host,
 redeems the new grant with one plain `GET`, and decodes it forward to the target while the first
-stream keeps playing. Then:
+stream keeps playing.
 
-- The operation runs a second time (and each time the guild seeks). Operations that are not safe to
-  repeat should not be used with this option. The replacement counts against `maxActiveStreams`
-  while it exists, alongside the playing stream, so a guild at the limit fails the seek, not the
-  playback.
-- The result is checked against the same media policy as the first: origin rules, size and
-  content-type limits, redirects refused. Plugin credentials are never sent to the media origin.
+**A plugin operation can therefore run more than once for one track.** It runs once to start the
+track, and again for every seek that reaches the host: a seek that is later superseded, cancelled or
+failed has already run it. Operations that are not safe to repeat should not be used with this
+option, and a handler must return the same track for the same input. Each run is an ordinary
+operation:
+
+- **Same identity.** The input is forwarded unchanged and the request carries the same configured
+  credentials, with its own operation ID. The host's allow-list is applied again, and a host or
+  operation that has since been removed or become unavailable fails the seek.
+- **Same limits.** It counts against `maxPendingOperations` while it runs, `maxAttempts` applies to
+  an operation marked `replaySafe`, and the replacement counts against `maxActiveStreams` for as long
+  as it exists, alongside the playing stream. A host at its limit refuses the seek with the same plugin error code
+  as any operation and is not called; the playback is unaffected. The old stream's slot is released as
+  soon as its decoder is.
+- **Same media policy.** The result is checked against the same origin rules, size and content-type
+  limits, with redirects refused. Plugin credentials are never sent to the media origin.
+- **Cancellable.** Cancelling the seek (`player.seek.cancel`, a client deadline or abort, a newer
+  seek, stopping the guild) cancels the host request in flight, which the host sees as an abandoned
+  connection, and releases its pending-operation slot.
+- **Same track.** The new stream's codec, sample rate, channel count and (when known) duration must
+  match the one that is playing, or the seek fails and playback continues.
 - The new stream is read from its first byte. The replacement discards audio up to the target, so
-  the cost grows with the target position and the stream's bitrate; the `maxMediaBytes` limit
-  applies to the replacement's bytes too.
+  the cost grows with the target position and the stream's bitrate; the `maxMediaBytes` limit applies
+  to the replacement's bytes too.
 - A forward seek behaves the same way: it no longer decodes and discards on the playback worker.
 - If the operation fails, declines, expires, or the host is unavailable, the seek fails with that
   plugin error code and the original playback continues.

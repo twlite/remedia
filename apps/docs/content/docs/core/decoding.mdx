@@ -189,7 +189,8 @@ cargo run -p remedia-core --example decode -- url https://example.com/audio.mp3
 
 The example prints source metadata and the decoded sample count and duration. The decoder supports
 seeking when the input demuxer can seek. An input that cannot be repositioned (an HTTP origin that
-ignores `Range` requests, or a one-shot stream) can still be sought during playback by opening a
+ignores `Range` requests, or a one-shot stream) rejects a rewind without touching the stream, and walks
+forward through decoded audio for a forward seek. It can also be sought during playback by opening a
 second decoder on the same track; see [fallback seeking](/docs/core/playback#fallback-seeking)
 and the `SourceReopener` trait, which lets a producer issue a new stream. Playback sessions and generic PCM outputs are documented
 separately. Device output and remote stream uploads are not implemented. Filters and Opus encoding

@@ -142,9 +142,13 @@ host against a loopback HTTP origin that ignores `Range`, with a 15-minute Opus 
   for 13 minutes, 1.5 s for 13 minutes of MP3. Extra work is one connection and one decoder.
 - CPU is 4-93 ms per seek. Compressed packets that end more than a second before the target are
   dropped without being decoded.
-- Without the option the same Opus seeks all failed after 4-7 reconnects and 29-36 MB of transfer for
-  a 9.8 MB file, and no audio reached the output in the following 300 ms. An MP3 seek succeeded by reading the skipped bytes on
-  the playback worker.
+- Before a seek that cannot be done stopped being handed to FFmpeg, the same Opus seeks without the option
+  all failed after 4-7 reconnects and 29-36 MB of transfer for a 9.8 MB file, and no audio reached the
+  output in the following 300 ms. Now a rewind is refused in a few milliseconds without a connection and
+  a forward seek walks the stream in place (680 ms of CPU for 13 minutes of Opus, about six times the
+  fallback's, because it decodes what it discards).
+- After a swap an Opus stream is back on forwarded packets in about 150 ms and costs 1.0% of a core
+  again, against 3.7-3.9% if it stayed on the PCM path.
 
 Commands, tables and caveats are in
 [`benchmarks/fallback-seeking.md`](https://github.com/twlite/remedia/blob/main/benchmarks/fallback-seeking.md).

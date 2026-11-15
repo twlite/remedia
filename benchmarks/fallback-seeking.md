@@ -74,6 +74,42 @@ MP3, 192 kbit/s, 15 minutes:
 For comparison a local file seeks in 5-30 ms with 0-23 ms of CPU, and the same MP3 seek in place
 on the range-ignoring origin took 5-34 ms but on the playback worker.
 
+### Without the option, after the disabled-mode fix
+
+The Opus rows above were measured before a seek that cannot be done stopped being handed to FFmpeg.
+Rerun at 100 Mbit/s (`data/fallback-seeking-opus-recovery.jsonl`, `run: disabled-mode-rerun`), the
+same origin without the option now behaves like this:
+
+| Seek (Opus, 15 min) | Result                                                                                              |
+| ------------------- | --------------------------------------------------------------------------------------------------- |
+| Rewind to 0.5 s     | Refused in 4 ms with `UnsupportedSeeking`; no connection; 15 frames kept flowing in the next 300 ms |
+| Forward to 5 s      | Applied in place in 18 ms; no reconnect                                                             |
+| Forward to 300 s    | Applied in place in 290 ms with 282 ms of CPU, on the playback worker; no reconnect                 |
+| Forward to 780 s    | Applied in place in 680 ms with 677 ms of CPU, on the playback worker; no reconnect                 |
+
+Before, every Opus seek on this origin failed after 4-7 reconnects and ~30 MB of transfer and no
+audio followed. The in-place walk decodes every frame it discards, which is why its CPU is about six
+times the fallback's (109 ms at 780 s): fallback seeking also skips packets without decoding them.
+
+### Returning to Opus packets after the swap
+
+`--opus` plays the Opus track to an Opus output (a paced packet sink) and measures, around a fallback
+seek, how long the stream takes to be back on forwarded packets and what each state costs:
+
+```sh
+target/release/examples/fallback_seek_benchmark long.ogg --opus --targets-ms 5000,60000,300000
+```
+
+| Target | Swap latency | Back on packets | CPU/s forwarding | CPU/s after recovery | CPU/s transcoding | Underruns |
+| ------ | ------------ | --------------- | ---------------- | -------------------- | ----------------- | --------- |
+| 5 s    | 27 ms        | 146 ms          | 0.99%            | 1.00%                | 3.88%             | 0         |
+| 60 s   | 31 ms        | 150 ms          | 1.00%            | 1.00%                | 3.68%             | 0         |
+| 300 s  | 33 ms        | 155 ms          | 0.96%            | 0.97%                | 3.77%             | 0         |
+
+Before recovery was implemented the stream stayed on the PCM path until the next track, which costs the
+third column's 3.7-3.9% of a core per playing Opus session, 3.8 times the forwarding cost, for the
+rest of a possibly hour-long track.
+
 ### What the numbers say
 
 - **Playback is not interrupted.** Every row has zero underruns and a worst inter-frame gap equal to

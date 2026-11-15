@@ -64,21 +64,48 @@ decoder and one connection for the duration of a seek, bounded as described in
 [the core guide](/docs/core/playback#fallback-seeking).
 
 With it enabled, `player.seek` on a source that cannot seek in place does not fail. The server
-keeps playing, prepares a replacement and responds when it is audible, with the usual position
-snapshot and a `player.seeked` event. That takes seconds for a distant target on a slow origin, so:
+keeps playing, prepares a replacement and responds when it is audible. That takes seconds for a
+distant target on a slow origin, which has consequences for the request:
 
-- Choose a client request timeout above your expected preparation time. A `request_timeout` response
-  does not cancel the seek: it can still complete afterwards, and a `player.seeked` event follows.
-- The server holds the guild's playback lock only while submitting the seek. A second `player.seek`,
-  `player.pause` or `player.stop` is accepted while the first is preparing. Only the latest seek can
-  replace the source: the older one answers `cancelled`, and so does a seek that a crossfade began
-  before. A seek still waiting when the guild is stopped answers `invalid_state`.
-- A seek that fails (the source could not be opened again, the target is past its end, the origin
-  did not catch up within 60 s) answers the same `unsupported`, `playback_failed` or
-  `invalid_state` codes as before and leaves the original stream playing.
-- The replacement resumes at the requested position **plus the source time that elapsed while it was
-  prepared**. A seek to 90 s that takes three seconds resumes near 93 s. Pausing stops that clock,
-  and a tempo filter speeds it up with the audio.
+**Where it landed.** The replacement resumes at the requested position **plus the source time that
+elapsed while it was prepared**: a seek to 90 s that takes three seconds resumes near 93 s. Pausing
+stops that clock, and a tempo filter speeds it up with the audio. The result and the `player.seeked`
+event both say where the audio actually continues from:
+
+| Field                 | Meaning                                                                                                                |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `positionMs`          | `player.seeked`: the position the audio continues from (the applied position)                                          |
+| `appliedPositionMs`   | `player.seek` result: the same value                                                                                   |
+| `requestedPositionMs` | What the client asked for (both)                                                                                       |
+| `fallback`            | `true` when a replacement source took over. The output timeline then continued; only the source position jumped (both) |
+| `previousPositionMs`  | `player.seeked`: the source position before the seek                                                                   |
+
+Crossfade guilds publish the same fields on the `player.seeked` they derive from the transition
+timeline. `positionMs` equals the requested position for an ordinary seek.
+
+**Deadlines and cancellation.** A seek never applies behind the client's back.
+
+- If the request ends before the seek does (the deadline passes with `request_timeout`, or the
+  connection drops), the server cancels the seek if it still can. A cancelled seek is guaranteed
+  never to apply. One that is already being applied cannot be cancelled and announces itself with a
+  `player.seeked` event when it finishes, so a `request_timeout` is always followed either by nothing
+  or by that event.
+- `player.seek.cancel` (`{guildId}`) cancels the guild's latest seek on demand and answers
+  `{"cancelled": true|false}`: `true` means it will never apply, `false` that there was nothing to
+  cancel or it was too late. The cancelled `player.seek` answers `cancelled`. It does not wait for
+  the guild's lock, so it works while a seek is outstanding.
+- Choose a client `requestTimeoutMs` above your expected preparation time. The client SDK sends
+  `player.seek.cancel` itself when its deadline passes or an `AbortSignal` aborts.
+
+**Concurrency.** The guild's playback lock covers submitting the seek only. Another `player.seek`,
+`player.pause`, `player.stop`, `player.volume.set`, `player.filter.set` and `player.state`, and every
+command for other guilds, are served while a seek prepares. Only the latest seek can replace the
+source: an older one answers `cancelled`, and so does one that a crossfade began before. A seek still
+waiting when the guild is stopped answers `invalid_state`.
+
+**Failures** (the source could not be opened again, the reopened source is a different track, the
+target is past its end, the origin did not catch up within 60 s) answer `unsupported`,
+`playback_failed` or `invalid_state` and leave the original stream playing.
 
 A plugin operation source is reopened by running its operation again on the same host, under the
 same limits and media policy; see [Playing audio through plugins](/docs/server/plugin-operations#seeking-with-fallback-seeking).
