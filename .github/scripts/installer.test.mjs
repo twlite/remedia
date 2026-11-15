@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn as spawnProcess, spawnSync as spawnProcessSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -23,6 +23,17 @@ const installSh = join(root, 'scripts/install.sh');
 const installPs1 = join(root, 'scripts/install.ps1');
 const windows = process.platform === 'win32';
 const unixInstallerPlatform = process.platform === 'linux' || process.platform === 'darwin';
+
+// These tests need child output, not console windows. Hiding the window also avoids
+// PowerShell's taskbar jump-list heap corruption on Windows ARM64:
+// https://github.com/dotnet/runtime/issues/131636
+function spawn(command, args, options = {}) {
+  return spawnProcess(command, args, { ...options, windowsHide: true });
+}
+
+function spawnSync(command, args, options = {}) {
+  return spawnProcessSync(command, args, { ...options, windowsHide: true });
+}
 
 // Match the Windows installer: avoid Git's GNU tar interpreting C:\... as a remote archive.
 const windowsTar = process.env.SystemRoot && join(process.env.SystemRoot, 'System32', 'tar.exe');
