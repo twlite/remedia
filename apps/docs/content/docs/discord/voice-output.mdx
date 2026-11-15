@@ -157,6 +157,16 @@ output generation, and drops queued pre-seek packets. Packets already sent canno
 be recalled. RTP sequence and timestamp counters remain continuous across seek
 and source replacement.
 
+### Packet construction cost
+
+An RTP datagram is built in one buffer owned by the connection and reused for every packet:
+the header and the DAVE-encrypted payload are written once, sealed in place with the transport
+cipher, and the tag and nonce counter are appended. In steady state this adds no allocation of its
+own; measured against the previous implementation it went from five heap allocations per packet to
+one, which is `davey`'s own DAVE encryption output. The playback-scoped sender hands each packet
+to the transport by value and gets it back unchanged if the transport was lost or replaced, so a
+migration retries the same packet on the replacement without copying it for every send.
+
 ### Packet pacing and backpressure
 
 Packets are paced from their encoded sample duration using a monotonic clock.

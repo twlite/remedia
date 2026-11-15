@@ -15,13 +15,15 @@ before a source selects a path. The final selection remains inspectable after
 completion.
 
 Passthrough is enabled only when the selected stream is Opus at 48 kHz with a
-supported mono/stereo family-zero OpusHead with zero pre-skip and output gain,
-matching channel metadata, no initial/trailing padding, and packet payloads, durations, and sizes
-accepted by the output. The packet duration is parsed from the Opus payload.
+supported mono/stereo family-zero OpusHead with no output gain and a pre-skip that is
+either zero or shorter than one packet and agrees with the container (see
+[Opus pre-skip](#opus-pre-skip)), matching channel metadata, no trailing padding, and packet
+payloads, durations, and sizes accepted by the output. The packet duration is parsed from the Opus payload.
 Packets with FFmpeg skip-sample side data or container duration indicating
 trimming fall back to PCM. Active filtergraphs, any gain other than exactly
-`1.0`, non-Opus input, seek, and outputs without encoded-Opus support require
-transcoding. Unsupported input is a normal fallback. See [audio decoding](/docs/core/decoding)
+`1.0`, non-Opus input, and outputs without encoded-Opus support require
+transcoding. A seek decodes only the packet that contains the target; see
+[Seamless return to packets](#seamless-return-to-packets). Unsupported input is a normal fallback. See [audio decoding](/docs/core/decoding)
 for the complete conservative compatibility policy.
 
 If a live filter or gain change cannot initialize the PCM decoder, the active
@@ -40,6 +42,10 @@ The next unread source packet is then decoded and processed. This policy also
 works with one-shot non-seekable streams and does not promise identical
 warm-up behavior for every Opus implementation. The history is cleared on
 seeking and source replacement.
+
+Returning from PCM to source packets has a second requirement that gain and filter changes do
+not satisfy on their own: the encoder's lookahead must be drained first. See
+[Seamless return to packets](#seamless-return-to-packets).
 
 When processing requirements are removed, the worker completes pending decoded
 frames and any partial encoder PCM before forwarding the next source packet. A remaining partial PCM block is padded to the shortest legal Opus packet
@@ -81,8 +87,9 @@ contexts only if the session needs PCM. The public `AudioDecoder` pull API conti
 and return PCM as before.
 
 The passthrough path is conservative. It requires an Opus stream with a supported OpusHead (48 kHz,
-mono or stereo, family-zero mapping, zero pre-skip, and zero OpusHead output gain), matching
-stream/OpusHead channel counts, no initial or trailing padding, and complete Opus packets whose
+mono or stereo, family-zero mapping, a pre-skip shorter than one packet that the container and the
+OpusHead agree on, and zero OpusHead output gain), matching stream/OpusHead channel counts, no
+trailing padding, and complete Opus packets whose
 actual duration and output compatibility checks succeed. Packets with skip-sample side data or a container duration shorter than the encoded
 Opus packet are decoded instead.
 
@@ -95,7 +102,68 @@ a rolling maximum of 120 ms and 512 KiB of preceding Opus packets into a newly i
 inputs. It is not a claim that every possible Opus stream has identical decoder preroll needs.
 
 Decoded warm-up samples before the transition boundary are discarded. The transition never reopens
-a URL or restarts a one-shot byte stream. Seeking still uses FFmpeg decoding to trim an arbitrary
-target precisely and disables passthrough for the remainder of that source. See
+a URL or restarts a one-shot byte stream. Seeking uses FFmpeg decoding to trim an arbitrary
+target precisely, then returns to passthrough at the next packet boundary. See
 [RFC 7845](https://www.rfc-editor.org/rfc/rfc7845.html) for Ogg Opus pre-roll and granule-position
 semantics.
+
+## Opus pre-skip
+
+Every file written by libopus or FFmpeg carries a **pre-skip** (312 samples, 6.5 ms, for the
+encoder's lookahead). RFC 7845 asks a player to discard that many decoded samples at the start of
+the stream. Before this support, such a stream was never forwarded as packets: it was decoded and
+re-encoded for its whole length.
+
+Remedia now forwards these streams. Discord clients cannot be told to skip samples, so the first
+packet is forwarded **unchanged** and the pre-skip is accounted for instead of ignored:
+
+- The first packet is `samples_per_channel` 960 with `media_samples_per_channel` 648. The 312
+  pre-roll samples count toward RTP time but not toward media time, so `start_sample` values
+  stay contiguous and the reported source position is exact. A client plays exactly what a
+  player that ignores pre-skip would play: FFmpeg's own decode, delayed by 312 samples. Tests
+  decode Remedia's output with a fresh libopus decoder and compare it with FFmpeg's decode of
+  the same file: the audio is identical apart from that delay and decoder rounding.
+- The pre-skip is read from the Ogg `skip_samples` side data or, for Matroska/WebM, from the
+  codec parameters, and must match the OpusHead. A pre-skip of one packet or more is not modeled
+  and keeps the stream on the PCM path.
+- Before forwarding, the first packet is decoded once to confirm that the pre-skip region is
+  **encoder delay**: either no louder than about -60 dBFS, or at most 10% of the peak of the audio
+  that follows in the packet. An abrupt start produces pre-echo of about -30 dB relative to the
+  onset, which is the same pre-echo the PCM path's own encoder emits. A stream whose "pre-roll" is
+  as loud as its audio was mislabeled and is decoded, where FFmpeg trims it exactly.
+- The last packet of such a file normally carries end trimming and is therefore decoded and
+  re-encoded, as before.
+
+Streams whose pre-skip is 0 are unaffected.
+
+## Seamless return to packets
+
+A fresh libopus encoder delays its output by its 312-sample lookahead; this is why Opus streams
+carry a pre-skip of that size. Re-encoded PCM therefore lags the packet timeline by 312 samples,
+and a client decoder that is handed an original packet right after re-encoded audio starts cold:
+measured against FFmpeg's decode, switching immediately left a hole at the seam and a residual of
+about -1 dB that took eight packets to fall below -40 dB.
+
+Wherever Remedia switches from re-encoded PCM back to source packets after a **seek** or a
+crossfade **promotion**, it therefore:
+
+1. requires the stream's pre-skip to equal the encoder lookahead (312, true of libopus and FFmpeg
+   output); any other stream keeps decoding after a seek or promotion, as it did before;
+2. keeps the encoder running for at least six 20 ms frames, so a freshly reset encoder has
+   settled and the client's decoder state has converged on the re-encoded audio;
+3. tracks the encoder's partial frame. After a seek the first frame starts on the 20 ms grid with
+   fewer than 20 ms of leading silence that is not media (`align_encoder_frames`); the packet
+   reports the shorter media duration;
+4. decodes the next packet, feeds the encoder only its first 312 samples to drain the lookahead,
+   puts that packet back in the demuxer, and forwards it unchanged. The samples fed twice are
+   counted once in the media position.
+
+On real FFmpeg files the first block after the seam measures between -18 and -33 dB relative to
+the signal after a seek, and -25 dB after a promotion, which is the level of the encoder's own
+re-encoding noise; blocks settle below -45 dB within eight packets. Gain and filter changes keep
+the existing transition behavior and its documented short artifact.
+
+A seek decodes only the packet that contains the target (FFmpeg trims it to the exact sample),
+then about six more packets, then forwards source packets again. A seek to a position that is not
+a multiple of 960 samples starts the first output packet at the target; its leading silence is
+shorter than one packet.

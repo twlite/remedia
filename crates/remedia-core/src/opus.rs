@@ -61,9 +61,13 @@ impl OpusEncoderConfig {
 ///
 /// `samples_per_channel` is the encoded Opus frame duration. The encoder emits
 /// 960 samples per channel (20 ms) for every packet. `media_samples_per_channel`
-/// counts source audio represented by the packet; it can be shorter only for
-/// the final zero-padded frame. `start_sample` is the start on the normalized
-/// 48 kHz media timeline.
+/// counts source audio represented by the packet. It is shorter than
+/// `samples_per_channel` for the final zero-padded frame, for the first frame
+/// after a seek that begins with under 20 ms of leading silence, and for a forwarded
+/// source packet whose first samples are decoder pre-roll (Opus pre-skip). Those
+/// samples count toward RTP time but not media time. `start_sample` is the start on
+/// the normalized 48 kHz media timeline, and successive packets are contiguous in
+/// media samples.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncodedOpusPacket {
     pub bytes: Vec<u8>,

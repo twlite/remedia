@@ -34,6 +34,24 @@ frames and does not pace encoding. A final incomplete frame is zero-padded to
 amount of source audio represented. A seek drops partial PCM and resets the
 native encoder before sending frames from the new timeline.
 
+`EncodedOpusPacket::media_samples_per_channel` is the audio the packet represents
+and may be less than `samples_per_channel` (its RTP duration) in three cases: the
+zero-padded final frame, the first packet after a seek that starts on the 20 ms grid
+(under 20 ms of leading silence), and a forwarded source packet whose first
+decoder pre-roll samples are not media (see [Opus pre-skip](/docs/core/opus#opus-pre-skip)).
+Successive packets' `start_sample` values are always contiguous in media samples.
+Sinks that only measure time should use `samples_per_channel`; sinks that track
+position should use `start_sample` plus `media_samples_per_channel`.
+
+### Encoder alignment for packet recovery
+
+`EncodedOpusOutput` has a defaulted method,
+`align_encoder_frames(next_sample_position)`, that the playback worker calls after a seek.
+It gives the encoder's first frame fewer than 20 ms of leading silence so its frames fall on
+multiples of 960 media samples, which lets playback return to forwarded source packets without
+a padded partial frame ([details](/docs/core/opus#seamless-return-to-packets)). Outputs without
+an encoder keep the no-op default and need not change.
+
 Each Opus output owns its encoder and sink. The sink contract is synchronous and
 backpressured: implementations should use bounded storage and make `cancel`
 safe alongside a blocked send. The adapter does not expose Discord types and can

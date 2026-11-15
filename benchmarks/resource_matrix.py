@@ -17,6 +17,10 @@ CASES = {
     'opus-volume': ('music60-pt.opus', 'volume', 20),
     'opus-seek': ('music60-pt.opus', 'seek', 30),
     'opus-transition': ('music15-pt.opus', 'transition', 36),
+    # Real FFmpeg/libopus files carry a 312-sample pre-skip; the -pt files above were rewritten to 0.
+    'opus-real-passthrough': ('music60.opus', 'passthrough', 20),
+    'opus-real-seek': ('music60.opus', 'seek', 30),
+    'opus-real-transition': ('music15.opus', 'transition', 36),
     'mp3-transcode': ('music60.mp3', 'passthrough', 20),
     'aac-transcode': ('music60.m4a', 'passthrough', 20),
     'mp3-filter': ('music60.mp3', 'filter', 20),

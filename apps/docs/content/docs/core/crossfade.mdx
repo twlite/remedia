@@ -49,12 +49,40 @@ from bounded compressed history and trims to the exact source boundary. The sour
 mix with a sample-accurate [curve](#crossfade-curves), `equalPower` by default. One output and Opus encoder
 remain open across promotions.
 
-Prepared sources keep their existing producer and
-bounded PCM buffer after promotion. They continue transcoding rather than reopen
-the source or bypass decoded samples. Direct sources can restore passthrough after
-temporary volume processing only at matching source and encoder packet boundaries. A gain update that leaves passthrough waits for PCM activation. Restoration can
-complete later when the direct source reaches a safe boundary. Seeking disables passthrough restoration for that direct source. Ordinary sessions retain their existing Opus
-passthrough selection and allocate no staging decoder or PCM buffer.
+A promoted source starts out owned by its staging thread, which decodes into the bounded PCM
+buffer. When the promoted stream is an Opus file or buffer (`InputSource::file` or
+`InputSource::bytes`) whose pre-skip equals the encoder lookahead of 312 samples, and the session
+wants packets (no filter, gain exactly `1.0`, an output with encoded-Opus support), the staging
+thread parks its decoder at the next frame boundary once the overlap is complete. The playback
+worker plays out the PCM already staged, adopts the decoder, drains the encoder's lookahead with
+the first 312 samples of the next packet, and forwards whole source packets from there (see
+[Seamless return to packets](/docs/core/opus#seamless-return-to-packets)). No source is reopened.
+The staging thread then exits and its buffer is released for the rest of the track, so a promoted
+Opus file costs one thread and no staged PCM, like a track that was never staged. Handoff is
+skipped if the staging thread reached the end of a very short track first. Cancelling the
+playback also cancels an adopted decoder.
+
+Two small adjustments make the seam possible:
+
+- The encoder's partial frame must hold 648 samples when the staged audio runs out. The mixer
+  knows how many samples the encoder has been fed, so at the start of the overlap it discards the
+  incoming samples (fewer than 960, under 20 ms) that would leave it misaligned. They are read at
+  the very start of the fade-in, where the incoming gain is zero, and are not played.
+- The leading silence removed from a staged source is rounded down to a multiple of 960 samples,
+  so at most 959 samples of near-silence more are kept.
+
+HTTP(S) URLs and byte streams are deliberately excluded. Their staged PCM is the cushion that
+hides a stalled remote read for up to two seconds; after a handoff only the three-packet output
+queue would remain. Those promoted sources keep transcoding, exactly as before.
+
+Other promoted sources (for example MP3 or AAC) keep their producer and bounded PCM buffer and
+continue transcoding rather than reopen the source or bypass decoded samples. Direct sources
+can restore passthrough after temporary volume processing, and after a
+[seek](/docs/core/opus#seamless-return-to-packets), only at matching source and encoder packet
+boundaries (for a stream whose pre-skip equals the encoder lookahead, also after the lookahead is
+drained). A gain update that leaves passthrough waits for PCM activation. Restoration
+can complete later when the source reaches a safe boundary. Ordinary sessions retain their
+existing Opus passthrough selection and allocate no staging decoder or PCM buffer.
 
 ### Crossfade curves
 
