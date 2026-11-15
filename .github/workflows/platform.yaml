@@ -55,33 +55,14 @@ jobs:
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@v2.9.3
         with:
-          shared-key: ${{ inputs.target }}-ffmpeg9-bundled-opus
-          key: release-no-incremental-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'crates/remedia-core/Cargo.toml', 'packages/remedia-node/Cargo.toml', '.github/native-deps/ffmpeg9.yml', '.github/native-deps/ffmpeg9-windows.yml') }}
+          shared-key: ${{ inputs.target }}-ffmpeg9-static-gpl3
+          key: release-no-incremental-${{ hashFiles('.github/scripts/build-ffmpeg*.sh', '.github/native-deps/ffmpeg-audio-options.txt', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'crates/remedia-core/Cargo.toml', 'packages/remedia-node/Cargo.toml', '.github/native-deps/ffmpeg9.yml', '.github/native-deps/ffmpeg9-windows.yml') }}
       - name: Install Linux build tools
         if: inputs.os == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends clang libclang-dev
-      - name: Install Linux FFmpeg 9
-        if: inputs.os == 'linux'
-        uses: mamba-org/setup-micromamba@v3
-        with:
-          environment-file: .github/native-deps/ffmpeg9.yml
-          environment-name: remedia-ffmpeg9
-          init-shell: bash
-          cache-environment: true
-          cache-environment-key: ffmpeg9-${{ inputs.target }}-${{ hashFiles('.github/native-deps/ffmpeg9.yml') }}
-          cache-downloads: true
-      - name: Install Windows FFmpeg 9 and libclang
-        if: inputs.os == 'windows'
-        uses: mamba-org/setup-micromamba@v3
-        with:
-          environment-file: .github/native-deps/ffmpeg9-windows.yml
-          environment-name: remedia-ffmpeg9
-          init-shell: powershell
-          cache-environment: true
-          cache-environment-key: ffmpeg9-${{ inputs.target }}-${{ hashFiles('.github/native-deps/ffmpeg9-windows.yml') }}
-          cache-downloads: true
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev pkg-config nasm
+
       - name: Validate Windows installer syntax
         if: inputs.os == 'windows'
         shell: pwsh
@@ -93,63 +74,98 @@ jobs:
       - name: Set up the MSVC environment
         if: inputs.os == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
-      - name: Select the MSVC linker explicitly
-        if: inputs.os == 'windows'
-        shell: pwsh
-        run: |
-          $linkerDirectory = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64'
-          $msvcLinker = Join-Path $linkerDirectory 'link.exe'
-          if (!(Test-Path $msvcLinker)) { throw "MSVC linker not found at $msvcLinker" }
-          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$msvcLinker" >> $env:GITHUB_ENV
-          "PATH=$linkerDirectory;$env:PATH" >> $env:GITHUB_ENV
-          Write-Host "Using MSVC linker: $msvcLinker"
-      - name: Install macOS FFmpeg 9
+        with:
+          arch: ${{ inputs.target == 'aarch64-pc-windows-msvc' && 'arm64' || 'x64' }}
+      - name: Install macOS build tools
         if: inputs.os == 'macos'
-        run: brew install ffmpeg pkg-config llvm@19
-      - name: Configure Linux native library paths
-        if: inputs.os == 'linux'
-        shell: micromamba-shell {0}
+        run: brew install pkg-config nasm llvm@19
+
+      - name: Install Windows build-time libclang
+        if: inputs.os == 'windows'
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: .github/native-deps/clang-windows.yml
+          environment-name: remedia-build-tools
+          init-shell: powershell
+          cache-environment: true
+          cache-environment-key: remedia-clang-${{ inputs.target }}-${{ hashFiles('.github/native-deps/clang-windows.yml') }}
+          cache-downloads: true
+      - name: Install pinned vcpkg and target-specific FFmpeg 9 (Windows)
+        if: inputs.os == 'windows'
+        shell: pwsh
+        env:
+          RUST_TARGET: ${{ inputs.target }}
         run: |
-          set -euo pipefail
-          echo "FFMPEG_DIR=$CONDA_PREFIX" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$CONDA_PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
-          libclang_path="$(find /usr/lib/llvm-* -name libclang.so -print -quit)"
-          test -n "$libclang_path"
-          echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
-      - name: Configure Windows native library paths
+          $vcpkgRoot = Join-Path $env:RUNNER_TEMP 'remedia-vcpkg'
+          # vcpkg versioned ports resolve historical Git tree objects, which are
+          # unavailable in a depth=1 checkout even when the baseline commit exists.
+          git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg full clone failed' }
+          git -C $vcpkgRoot checkout --detach 14439b1e7cdaac4c6f466fee3deede319fcece8f
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg pinned checkout failed' }
+          & (Join-Path $vcpkgRoot 'bootstrap-vcpkg.bat') -disableMetrics
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg bootstrap failed' }
+
+          $portFile = Join-Path $vcpkgRoot 'ports/ffmpeg/portfile.cmake'
+          $audioOptions = (Get-Content (Join-Path $env:GITHUB_WORKSPACE '.github/native-deps/ffmpeg-audio-options.txt')) -join ' '
+          $port = Get-Content -Raw $portFile
+          $port = $port.Replace('set(OPTIONS "--enable-pic', ('set(OPTIONS "' + $audioOptions + ' --enable-pic'))
+          Set-Content -NoNewline $portFile $port
+          $triplet = if ($env:RUST_TARGET -eq 'i686-pc-windows-msvc') { 'x86-windows-static-md' } elseif ($env:RUST_TARGET -eq 'aarch64-pc-windows-msvc') { 'arm64-windows-static-md' } else { 'x64-windows-static-md' }
+          $installRoot = Join-Path $env:RUNNER_TEMP 'remedia-vcpkg-installed'
+          $manifestRoot = Join-Path $env:GITHUB_WORKSPACE '.github\native-deps\windows-cross'
+          $env:VCPKG_ROOT = $vcpkgRoot
+          $env:VCPKG_DEFAULT_TRIPLET = $triplet
+          Push-Location $manifestRoot
+          try {
+            & (Join-Path $vcpkgRoot 'vcpkg.exe') install --triplet $triplet --overlay-ports="$vcpkgRoot/ports" --x-install-root=$installRoot
+            if ($LASTEXITCODE -ne 0) { throw "vcpkg FFmpeg install failed for $triplet" }
+          } finally {
+            Pop-Location
+          }
+          "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
+          "VCPKG_INSTALL_ROOT=$installRoot" >> $env:GITHUB_ENV
+          "VCPKG_TARGET_TRIPLET=$triplet" >> $env:GITHUB_ENV
+          # Git for Windows also provides a link.exe (GNU coreutils). Pin
+          # Cargo's linker to MSVC instead of relying on PATH resolution.
+          $msvcTarget = if ($triplet -like 'x86-*') { 'x86' } elseif ($triplet -like 'arm64-*') { 'arm64' } else { 'x64' }
+          $msvcLinker = Join-Path $env:VCToolsInstallDir "bin\\Host$env:PROCESSOR_ARCHITECTURE\\$msvcTarget\\link.exe"
+          if (!(Test-Path -LiteralPath $msvcLinker)) { throw "MSVC linker not found: $msvcLinker" }
+          $rustTriple = $env:RUST_TARGET.ToUpper().Replace('-', '_')
+          "CARGO_TARGET_${rustTriple}_LINKER=$msvcLinker" >> $env:GITHUB_ENV
+      - name: Configure Windows target FFmpeg and host libclang paths
         if: inputs.os == 'windows'
         shell: pwsh
         run: |
-          $ffmpegRoot = Join-Path $env:CONDA_PREFIX 'Library'
+          $ffmpegRoot = Join-Path $env:VCPKG_INSTALL_ROOT $env:VCPKG_TARGET_TRIPLET
           $pkgConfigPath = Join-Path $ffmpegRoot 'lib\pkgconfig'
           $libclangPath = Join-Path $env:CONDA_PREFIX 'Library\bin'
           $libclangDll = Join-Path $libclangPath 'libclang.dll'
           if (!(Test-Path -LiteralPath $libclangDll)) {
-            $versionedLibclangDll = Get-ChildItem -LiteralPath $libclangPath -Filter 'libclang-*.dll' -File |
+            $versionedDll = Get-ChildItem -LiteralPath $libclangPath -Filter 'libclang-*.dll' -File |
               Where-Object { $_.Name -match '^libclang-\d+\.dll$' } |
               Select-Object -First 1
-            if (!$versionedLibclangDll) {
-              throw "Neither libclang.dll nor a versioned libclang DLL was found in $libclangPath"
-            }
-            Copy-Item -LiteralPath $versionedLibclangDll.FullName -Destination $libclangDll -ErrorAction Stop
+            if (!$versionedDll) { throw "No libclang DLL found in $libclangPath" }
+            Copy-Item -LiteralPath $versionedDll.FullName -Destination $libclangDll -ErrorAction Stop
           }
-          "FFMPEG_DIR=$ffmpegRoot" >> $env:GITHUB_ENV
+          if (!(Test-Path (Join-Path $ffmpegRoot 'include\libavcodec\avcodec.h'))) {
+            throw "Target FFmpeg headers are missing from $ffmpegRoot"
+          }
+          "REMEDIA_STATIC_FFMPEG_DIR=$ffmpegRoot" >> $env:GITHUB_ENV
           "PKG_CONFIG_PATH=$pkgConfigPath" >> $env:GITHUB_ENV
+          "PKG_CONFIG_LIBDIR=$pkgConfigPath" >> $env:GITHUB_ENV
           "LIBCLANG_PATH=$libclangPath" >> $env:GITHUB_ENV
-          "PATH=$libclangPath;$env:PATH" >> $env:GITHUB_ENV
-      - name: Configure macOS native library paths
-        if: inputs.os == 'macos'
+          "PATH=$(Join-Path $ffmpegRoot 'bin');$libclangPath;$env:PATH" >> $env:GITHUB_ENV
+      - name: Build pinned static FFmpeg (POSIX)
+        if: inputs.os != 'windows'
         shell: bash
         run: |
-          set -euo pipefail
-          ffmpeg_prefix="$(brew --prefix ffmpeg)"
-          llvm_prefix="$(brew --prefix llvm@19)"
-          echo "FFMPEG_DIR=$ffmpeg_prefix" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$ffmpeg_prefix/lib/pkgconfig" >> "$GITHUB_ENV"
-          echo "LIBCLANG_PATH=$llvm_prefix/lib" >> "$GITHUB_ENV"
-          echo "DYLD_LIBRARY_PATH=$ffmpeg_prefix/lib:${DYLD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
-          echo "$ffmpeg_prefix/bin" >> "$GITHUB_PATH"
+          if [ "${{ inputs.os }}" = macos ]; then
+            echo "LIBCLANG_PATH=$(brew --prefix llvm@19)/lib" >> "$GITHUB_ENV"
+          else
+            echo "LIBCLANG_PATH=$(dirname "$(find /usr/lib/llvm-* -name libclang.so -print -quit)")" >> "$GITHUB_ENV"
+          fi
+          bash .github/scripts/build-ffmpeg-static.sh
       - uses: pnpm/action-setup@v6.1.0
         with:
           version: 12.16.1
@@ -163,7 +179,7 @@ jobs:
         run: node --test .github/scripts/installer.test.mjs .github/scripts/normalize-macos-addon.test.mjs
       - name: Verify FFmpeg 9 native dependencies (Linux)
         if: inputs.os == 'linux'
-        shell: micromamba-shell {0}
+        shell: bash
         run: node .github/scripts/verify-native-deps.mjs --build
       - name: Verify FFmpeg 9 native dependencies (macOS)
         if: inputs.os == 'macos'
@@ -174,7 +190,7 @@ jobs:
         run: node .github/scripts/verify-native-deps.mjs --build
       - name: Verify the native Rust target (Linux)
         if: inputs.os == 'linux'
-        shell: micromamba-shell {0}
+        shell: bash
         env:
           RUST_TARGET: ${{ inputs.target }}
         run: |
@@ -200,14 +216,14 @@ jobs:
           if ($rustHost -ne $env:RUST_TARGET) { throw "Expected $env:RUST_TARGET but found $rustHost" }
       - name: Run Rust workspace tests in release profile
         if: inputs.os == 'linux'
-        shell: micromamba-shell {0}
+        shell: bash
         run: cargo test --workspace --release --locked
       - name: Run Rust workspace tests in release profile (macOS and Windows)
         if: inputs.os != 'linux'
         run: cargo test --workspace --release --locked
       - name: Build standalone server
         if: inputs.os == 'linux'
-        shell: micromamba-shell {0}
+        shell: bash
         run: cargo build --release --locked -p remedia-server --bins
       - name: Build standalone server (macOS)
         if: inputs.os == 'macos'
@@ -225,7 +241,7 @@ jobs:
       - name: Build N-API addon
         if: inputs.os == 'linux'
         working-directory: packages/remedia-node
-        shell: micromamba-shell {0}
+        shell: bash
         env:
           RUST_TARGET: ${{ inputs.target }}
         run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target "$RUST_TARGET"
@@ -245,7 +261,7 @@ jobs:
         run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target $env:RUST_TARGET
       - name: Rewrite macOS FFmpeg install names to @rpath
         if: inputs.os == 'macos'
-        run: node .github/scripts/normalize-macos-addon.mjs
+        run: node .github/scripts/audit-static-ffmpeg.mjs packages/remedia-node/node.*.node
       - name: Build FFmpeg-free bootstrap addon
         shell: bash
         env:
@@ -289,6 +305,16 @@ jobs:
             ${{ runner.temp }}/remedia-server/remedia-server-runtime-${{ inputs.target }}${{ inputs.server_suffix }}
           if-no-files-found: error
           retention-days: 7
+      - name: Capture corresponding native dependency source
+        shell: bash
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: bash .github/scripts/capture-native-source.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-source-${{ inputs.target }}
+          path: ${{ runner.temp }}/native-source-${{ inputs.target }}.tar.gz
+          if-no-files-found: error
 
   test:
     if: inputs.tier == 'supported'
@@ -309,32 +335,13 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.release_version }}
         run: node .github/scripts/release.mjs sync
-      - name: Install Linux FFmpeg 9 runtime libraries
-        if: inputs.os == 'linux'
-        uses: mamba-org/setup-micromamba@v3
-        with:
-          environment-file: .github/native-deps/ffmpeg9.yml
-          environment-name: remedia-ffmpeg9
-          init-shell: bash
-          cache-environment: true
-          cache-environment-key: ffmpeg9-${{ inputs.target }}-${{ hashFiles('.github/native-deps/ffmpeg9.yml') }}
-          cache-downloads: true
-      - name: Install Windows FFmpeg 9 runtime libraries
-        if: inputs.os == 'windows'
-        uses: mamba-org/setup-micromamba@v3
-        with:
-          environment-file: .github/native-deps/ffmpeg9-windows-runtime.yml
-          environment-name: remedia-ffmpeg9
-          init-shell: powershell
-          cache-environment: true
-          cache-environment-key: ffmpeg9-runtime-${{ inputs.target }}-${{ hashFiles('.github/native-deps/ffmpeg9-windows-runtime.yml') }}
-          cache-downloads: true
+
       - name: Set up the MSVC environment
         if: inputs.os == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
-      - name: Install macOS FFmpeg 9 runtime libraries
-        if: inputs.os == 'macos'
-        run: brew install ffmpeg pkg-config
+        with:
+          arch: ${{ inputs.target == 'aarch64-pc-windows-msvc' && 'arm64' || 'x64' }}
+
       - uses: pnpm/action-setup@v6.1.0
         with:
           version: 12.16.1
@@ -352,30 +359,7 @@ jobs:
         with:
           name: server-${{ inputs.target }}
           path: ${{ runner.temp }}/remedia-server
-      - name: Configure Linux native library paths
-        if: inputs.os == 'linux'
-        shell: micromamba-shell {0}
-        run: |
-          echo "FFMPEG_DIR=$CONDA_PREFIX" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$CONDA_PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
-      - name: Configure Windows native library paths
-        if: inputs.os == 'windows'
-        shell: pwsh
-        run: |
-          $ffmpegRoot = Join-Path $env:CONDA_PREFIX 'Library'
-          "FFMPEG_DIR=$ffmpegRoot" >> $env:GITHUB_ENV
-          "PKG_CONFIG_PATH=$(Join-Path $ffmpegRoot 'lib\pkgconfig')" >> $env:GITHUB_ENV
-          "PATH=$(Join-Path $ffmpegRoot 'bin');$env:PATH" >> $env:GITHUB_ENV
-      - name: Configure macOS native library paths
-        if: inputs.os == 'macos'
-        shell: bash
-        run: |
-          ffmpeg_prefix="$(brew --prefix ffmpeg)"
-          echo "FFMPEG_DIR=$ffmpeg_prefix" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$ffmpeg_prefix/lib/pkgconfig" >> "$GITHUB_ENV"
-          echo "DYLD_LIBRARY_PATH=$ffmpeg_prefix/lib:${DYLD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
-          echo "$ffmpeg_prefix/bin" >> "$GITHUB_PATH"
+
       - name: Make the downloaded server executable
         if: inputs.os != 'windows'
         shell: bash
@@ -385,17 +369,7 @@ jobs:
         run: |
           chmod +x "$RUNNER_TEMP/remedia-server/remedia-server-$RUST_TARGET$SERVER_SUFFIX"
           chmod +x "$RUNNER_TEMP/remedia-server/remedia-server-runtime-$RUST_TARGET$SERVER_SUFFIX"
-      - name: Verify installed FFmpeg 9 dependencies (Linux)
-        if: inputs.os == 'linux'
-        shell: micromamba-shell {0}
-        run: node .github/scripts/verify-native-deps.mjs --runtime
-      - name: Verify installed FFmpeg 9 dependencies (macOS)
-        if: inputs.os == 'macos'
-        run: node .github/scripts/verify-native-deps.mjs --runtime
-      - name: Verify installed FFmpeg 9 dependencies (Windows)
-        if: inputs.os == 'windows'
-        shell: pwsh
-        run: node .github/scripts/verify-native-deps.mjs --runtime
+
       - name: Verify downloaded native binary architecture and dependencies
         env:
           REMEDIA_SERVER_BINARY: ${{ runner.temp }}/remedia-server/remedia-server-${{ inputs.target }}${{ inputs.server_suffix }}
@@ -494,7 +468,7 @@ jobs:
         if: inputs.os == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: ${{ inputs.target == 'i686-pc-windows-msvc' && 'x86' || 'arm64' }}
+          arch: ${{ inputs.target == 'i686-pc-windows-msvc' && 'x86' || inputs.target == 'aarch64-pc-windows-msvc' && 'arm64' || 'x64' }}
       - name: Install Windows build-time libclang
         if: inputs.os == 'windows'
         uses: mamba-org/setup-micromamba@v3
@@ -505,12 +479,6 @@ jobs:
           cache-environment: true
           cache-environment-key: remedia-clang-${{ inputs.target }}-${{ hashFiles('.github/native-deps/clang-windows.yml') }}
           cache-downloads: true
-      - name: Cache target-specific vcpkg FFmpeg 9 libraries (Windows)
-        if: inputs.os == 'windows'
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/remedia-vcpkg-installed
-          key: vcpkg-ffmpeg9-14439b1-${{ inputs.target }}-${{ hashFiles('.github/native-deps/windows-cross/vcpkg.json') }}
       - name: Install pinned vcpkg and target-specific FFmpeg 9 (Windows)
         if: inputs.os == 'windows'
         shell: pwsh
@@ -527,14 +495,19 @@ jobs:
           & (Join-Path $vcpkgRoot 'bootstrap-vcpkg.bat') -disableMetrics
           if ($LASTEXITCODE -ne 0) { throw 'vcpkg bootstrap failed' }
 
-          $triplet = if ($env:RUST_TARGET -eq 'i686-pc-windows-msvc') { 'x86-windows' } else { 'arm64-windows' }
+          $portFile = Join-Path $vcpkgRoot 'ports/ffmpeg/portfile.cmake'
+          $audioOptions = (Get-Content (Join-Path $env:GITHUB_WORKSPACE '.github/native-deps/ffmpeg-audio-options.txt')) -join ' '
+          $port = Get-Content -Raw $portFile
+          $port = $port.Replace('set(OPTIONS "--enable-pic', ('set(OPTIONS "' + $audioOptions + ' --enable-pic'))
+          Set-Content -NoNewline $portFile $port
+          $triplet = if ($env:RUST_TARGET -eq 'i686-pc-windows-msvc') { 'x86-windows-static-md' } elseif ($env:RUST_TARGET -eq 'aarch64-pc-windows-msvc') { 'arm64-windows-static-md' } else { 'x64-windows-static-md' }
           $installRoot = Join-Path $env:RUNNER_TEMP 'remedia-vcpkg-installed'
           $manifestRoot = Join-Path $env:GITHUB_WORKSPACE '.github\native-deps\windows-cross'
           $env:VCPKG_ROOT = $vcpkgRoot
           $env:VCPKG_DEFAULT_TRIPLET = $triplet
           Push-Location $manifestRoot
           try {
-            & (Join-Path $vcpkgRoot 'vcpkg.exe') install --triplet $triplet --x-install-root=$installRoot
+            & (Join-Path $vcpkgRoot 'vcpkg.exe') install --triplet $triplet --overlay-ports="$vcpkgRoot/ports" --x-install-root=$installRoot
             if ($LASTEXITCODE -ne 0) { throw "vcpkg FFmpeg install failed for $triplet" }
           } finally {
             Pop-Location
@@ -544,10 +517,10 @@ jobs:
           "VCPKG_TARGET_TRIPLET=$triplet" >> $env:GITHUB_ENV
           # Git for Windows also provides a link.exe (GNU coreutils). Pin
           # Cargo's linker to MSVC instead of relying on PATH resolution.
-          $msvcTarget = if ($triplet -eq 'x86-windows') { 'x86' } else { 'arm64' }
-          $msvcLinker = Join-Path $env:VCToolsInstallDir "bin\\Hostx64\\$msvcTarget\\link.exe"
+          $msvcTarget = if ($triplet -like 'x86-*') { 'x86' } elseif ($triplet -like 'arm64-*') { 'arm64' } else { 'x64' }
+          $msvcLinker = Join-Path $env:VCToolsInstallDir "bin\\Host$env:PROCESSOR_ARCHITECTURE\\$msvcTarget\\link.exe"
           if (!(Test-Path -LiteralPath $msvcLinker)) { throw "MSVC linker not found: $msvcLinker" }
-          $rustTriple = if ($triplet -eq 'x86-windows') { 'I686_PC_WINDOWS_MSVC' } else { 'AARCH64_PC_WINDOWS_MSVC' }
+          $rustTriple = $env:RUST_TARGET.ToUpper().Replace('-', '_')
           "CARGO_TARGET_${rustTriple}_LINKER=$msvcLinker" >> $env:GITHUB_ENV
       - name: Configure Windows target FFmpeg and host libclang paths
         if: inputs.os == 'windows'
@@ -567,7 +540,7 @@ jobs:
           if (!(Test-Path (Join-Path $ffmpegRoot 'include\libavcodec\avcodec.h'))) {
             throw "Target FFmpeg headers are missing from $ffmpegRoot"
           }
-          "FFMPEG_DIR=$ffmpegRoot" >> $env:GITHUB_ENV
+          "REMEDIA_STATIC_FFMPEG_DIR=$ffmpegRoot" >> $env:GITHUB_ENV
           "PKG_CONFIG_PATH=$pkgConfigPath" >> $env:GITHUB_ENV
           "PKG_CONFIG_LIBDIR=$pkgConfigPath" >> $env:GITHUB_ENV
           "LIBCLANG_PATH=$libclangPath" >> $env:GITHUB_ENV
@@ -592,12 +565,6 @@ jobs:
       - name: Install workspace dependencies for the target build probe
         if: inputs.os != 'freebsd'
         run: pnpm install --frozen-lockfile
-      - name: Cache target-specific FFmpeg 9 libraries (Linux and Android)
-        if: inputs.os == 'linux' || inputs.os == 'android'
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/remedia-ffmpeg-${{ inputs.target }}
-          key: ffmpeg9-cross-${{ inputs.target }}-${{ hashFiles('.github/scripts/build-ffmpeg-cross.sh') }}-946fcce
       - name: Build target-specific FFmpeg 9 libraries (Linux and Android)
         if: inputs.os == 'linux' || inputs.os == 'android'
         shell: bash
@@ -639,6 +606,13 @@ jobs:
         if: inputs.os == 'windows'
         shell: pwsh
         run: node .github/scripts/verify-native-deps.mjs --build
+      - name: Investigate Windows x86 server compilation
+        continue-on-error: true
+        if: inputs.target == 'i686-pc-windows-msvc'
+        shell: pwsh
+        run: cargo build --release --locked -p remedia-server --bins --target $env:RUST_TARGET
+        env:
+          RUST_TARGET: ${{ inputs.target }}
       - name: Build Windows N-API addon for distribution
         if: inputs.os == 'windows'
         working-directory: packages/remedia-node
@@ -646,6 +620,48 @@ jobs:
         env:
           RUST_TARGET: ${{ inputs.target }}
         run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target $env:RUST_TARGET
+      - name: Build additional standalone Linux servers
+        if: contains(inputs.target, 'musl')
+        shell: bash
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: |
+          case "$RUST_TARGET" in
+            *-musl) cargo zigbuild --release --locked -p remedia-server --bins --target "$RUST_TARGET" ;;
+            *) cargo build --release --locked -p remedia-server --bins --target "$RUST_TARGET" ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/additional-servers"
+          for name in remedia-server remedia-server-runtime; do
+            cp "target/$RUST_TARGET/release/$name" "$RUNNER_TEMP/additional-servers/$name-$RUST_TARGET"
+          done
+      - name: Investigate ARMv7 server compilation
+        if: inputs.target == 'armv7-unknown-linux-gnueabihf'
+        continue-on-error: true
+        shell: bash
+        run: cargo build --release --locked -p remedia-server --bins --target armv7-unknown-linux-gnueabihf
+      - name: Verify musl server startup in a clean Alpine container
+        if: contains(inputs.target, 'musl')
+        shell: bash
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: |
+          docker run --rm -v "$RUNNER_TEMP/additional-servers:/artifacts:ro" alpine:3.22 sh -ec '
+            /artifacts/remedia-server-'"$RUST_TARGET"' --version
+            /artifacts/remedia-server-runtime-'"$RUST_TARGET"' --library-versions
+          '
+      - name: Load musl addon and decode in a clean Node container
+        if: contains(inputs.target, 'musl')
+        shell: bash
+        run: |
+          docker run --rm -v "$PWD:/workspace:ro" -w /workspace node:24.11.1-alpine3.22 sh -ec '
+            node .github/scripts/smoke-static-addon.mjs packages/remedia-node/node.*.node
+          '
+      - uses: actions/upload-artifact@v7
+        if: contains(inputs.target, 'musl')
+        with:
+          name: server-${{ inputs.target }}
+          path: ${{ runner.temp }}/additional-servers/*
+          if-no-files-found: error
       - name: Build FFmpeg-free bootstrap addon for distribution
         if: inputs.os != 'freebsd'
         shell: bash
@@ -656,6 +672,22 @@ jobs:
             *-musl) node .github/scripts/build-bootstrap.mjs --target "$RUST_TARGET" --cross-compile ;;
             *) node .github/scripts/build-bootstrap.mjs --target "$RUST_TARGET" ;;
           esac
+      - name: Capture corresponding native dependency source
+        if: inputs.os != 'freebsd'
+        shell: bash
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: bash .github/scripts/capture-native-source.sh
+      - uses: actions/upload-artifact@v7
+        if: inputs.os != 'freebsd'
+        with:
+          name: native-source-${{ inputs.target }}
+          path: ${{ runner.temp }}/native-source-${{ inputs.target }}.tar.gz
+          if-no-files-found: error
+      - name: Audit cross-built native dependencies
+        if: inputs.os != 'freebsd'
+        shell: bash
+        run: node .github/scripts/audit-static-ffmpeg.mjs packages/remedia-node/node.*.node
       - name: Upload cross-built native bindings for npm
         if: inputs.os != 'freebsd'
         uses: actions/upload-artifact@v7
@@ -687,34 +719,18 @@ jobs:
           set -euo pipefail
           sudo pkg update -f
           sudo pkg install -y curl git node24 npm-node24 cmake pkgconf llvm19 gmake nasm
-          # The FreeBSD 15 package repositories do not contain the ffmpeg9
-          # package. Compile the same pinned FFmpeg 9.0.2 revision used by the
-          # cross-platform jobs instead of installing an unrelated FFmpeg major.
-          ffmpeg_source="$HOME/remedia-ffmpeg-9"
-          git init -q "$ffmpeg_source"
-          git -C "$ffmpeg_source" remote add origin https://github.com/FFmpeg/FFmpeg.git
-          git -C "$ffmpeg_source" fetch --quiet --depth=1 origin 946fcce07b6dcd0331c8cc609192aeff5e1924f8
-          git -C "$ffmpeg_source" checkout --quiet --detach FETCH_HEAD
-          (
-            cd "$ffmpeg_source"
-            ./configure --cc=cc --host-cc=cc --prefix=/usr/local --enable-shared --disable-static --disable-programs --disable-doc --disable-debug --disable-autodetect --enable-network --enable-pic
-            gmake -j3
-            sudo gmake install
-          )
-          # FreeBSD places upstream pkg-config files under lib/pkgconfig;
-          # initialize the search path before verifying the new installation.
-          export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/libdata/pkgconfig
-          test "$(pkg-config --modversion libavcodec | cut -d. -f1)" = 63
-          test "$(pkg-config --modversion libavformat | cut -d. -f1)" = 63
-          test "$(pkg-config --modversion libavutil | cut -d. -f1)" = 61
-          test "$(pkg-config --modversion libavfilter | cut -d. -f1)" = 12
-          test "$(pkg-config --modversion libswresample | cut -d. -f1)" = 7
+          export RUNNER_TEMP="$HOME/remedia-build"
+          export GITHUB_ENV="$RUNNER_TEMP/environment"
+          mkdir -p "$RUNNER_TEMP"
+          MAKE=gmake bash .github/scripts/build-ffmpeg-static.sh
+          export PKG_CONFIG_PATH="$RUNNER_TEMP/remedia-static/install/lib/pkgconfig"
+          ffmpeg_source="$RUNNER_TEMP/remedia-static/ffmpeg"
           curl https://sh.rustup.rs -sSf --output rustup.sh
           sh rustup.sh -y --profile minimal --default-toolchain 1.99.1
           source "$HOME/.cargo/env"
           sudo npm install --global pnpm@12.16.1 --ignore-scripts
-          export FFMPEG_DIR=/usr/local
-          export PKG_CONFIG_PATH=/usr/local/libdata/pkgconfig:/usr/local/lib/pkgconfig
+          export REMEDIA_STATIC_FFMPEG_DIR="$RUNNER_TEMP/remedia-static/install"
+          export PKG_CONFIG_PATH="$RUNNER_TEMP/remedia-static/install/lib/pkgconfig"
           export LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH:-}
           export LIBCLANG_PATH="$(dirname "$(find /usr/local -name libclang.so -print -quit)")"
           if [ -n "$RELEASE_VERSION" ]; then
@@ -725,12 +741,15 @@ jobs:
           cargo build --release --locked -p remedia-server --bins
           pnpm --filter @remedia/node exec napi build --platform --esm --js native.js --dts native.d.ts --release --target x86_64-unknown-freebsd
           node .github/scripts/build-bootstrap.mjs --target x86_64-unknown-freebsd
+          node .github/scripts/audit-static-ffmpeg.mjs packages/remedia-node/node.freebsd-x64.node target/release/remedia-server target/release/remedia-server-runtime
           pnpm --filter @remedia/node build:types
           pnpm --filter @remedia/client build
           pnpm --filter @remedia/node test:bindings
           pnpm --filter @remedia/client test
           pnpm --filter @remedia/client test:hybrid
           REMEDIA_SERVER_BINARY="$PWD/target/release/remedia-server" pnpm --filter @remedia/client test:server
+          RUST_TARGET=x86_64-unknown-freebsd bash .github/scripts/capture-native-source.sh
+          cp "$RUNNER_TEMP/native-source-x86_64-unknown-freebsd.tar.gz" .
       - name: Upload runtime-tested FreeBSD N-API release binding
         if: inputs.os == 'freebsd'
         uses: actions/upload-artifact@v7
@@ -741,3 +760,9 @@ jobs:
             packages/remedia-node/bootstrap.freebsd-x64.node
           if-no-files-found: error
           retention-days: 7
+      - uses: actions/upload-artifact@v7
+        if: inputs.os == 'freebsd'
+        with:
+          name: native-source-${{ inputs.target }}
+          path: native-source-x86_64-unknown-freebsd.tar.gz
+          if-no-files-found: error

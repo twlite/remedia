@@ -5,32 +5,27 @@ description: Build the engine, bootstrap loader, and TypeScript declarations fro
 
 ## Building from source
 
-Use the repository's pinned Rust toolchain, Node.js 22.18 or newer, and pnpm
-12.16.1. Building the native addon requires the FFmpeg development libraries
-used by `remedia-core`. The Opus encoder is built from bundled source and linked
-statically, so a separate system libopus development package is not required.
-From the repository root:
+Use the pinned repository toolchain and pnpm version. POSIX builds require a C
+compiler, make, NASM, pkg-config, Python 3 and libclang. Run:
 
 ```sh
-pnpm install --frozen-lockfile
-pnpm --filter @remedia/node test
+bash .github/scripts/build-ffmpeg-static.sh
+export PKG_CONFIG_PATH="/tmp/remedia-static/install/lib/pkgconfig"
+# Set LIBCLANG_PATH to the directory containing your build-time libclang library.
 pnpm --filter @remedia/node build
 ```
 
-The test command builds a debug addon and runs local Node integration tests.
-`build` creates the release addon and TypeScript declarations. The N-API loader
-and native declarations are generated from Rust source by `@napi-rs/cli`.
+The prefix defaults to `$RUNNER_TEMP/remedia-static/install`, or `/tmp/remedia-static/install`;
+`FFMPEG_DIR` can choose a recipe output prefix but must be unset for Cargo builds,
+so pkg-config supplies all static transitive link dependencies. The recipe uses
+Secure Transport on macOS and pinned OpenSSL 3.6.0 on Linux.
 
-Both scripts also build the FFmpeg-free **bootstrap** addon (`bootstrap/` crate,
-output `bootstrap.<platform>.node`) and, on macOS, rewrite the engine addon's FFmpeg
-install names to `@rpath` (`.github/scripts/normalize-macos-addon.mjs`) so that FFmpeg
-discovery can choose the installation at run time. `FFMPEG_DIR` and `PKG_CONFIG_PATH`
-select the FFmpeg you compile **against**. They are not used when the package runs. If
-`pkg-config` finds more than one FFmpeg (for example Homebrew's `ffmpeg` and
-an older `ffmpeg@N` formula), set them explicitly so the addon links FFmpeg 9.
+Windows uses the pinned vcpkg manifest in `.github/native-deps/windows-cross`,
+with a static-md triplet matching the Rust target and build-time libclang. See
+`.github/workflows/platform.yaml` for the exact compiler environment and cross recipes.
+No build tools are required to use a prebuilt package.
 
-Windows builds use the dynamic MSVC CRT to match bundled Opus's CMake defaults.
-Opus itself remains statically linked. A Windows runtime machine needs a
-compatible Microsoft Visual C++ v14 runtime if it is not already installed.
-The N-API package does not bundle that runtime or guarantee static CRT
-linkage. FFmpeg's DLLs remain separate runtime dependencies.
+The generated native.js and native.d.ts files must be regenerated from Rust by
+`napi build`. Bootstrap artifacts remain packaged for compatibility, but the addon
+no longer uses them to discover external FFmpeg. The static dependency audit rejects
+media shared libraries. See [distribution](/docs/node/distribution) for licensing.

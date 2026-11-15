@@ -10,7 +10,7 @@ remedia-server doctor --config ./remedia.config.json --env-file .env
 ```
 
 The doctor prints the embedded release version and Git commit SHA for both the CLI and server,
-OS and architecture, executable path, and the **actual loaded** FFmpeg library versions for
+OS and architecture, executable path, and the **actual bundled** FFmpeg version, license, configure flags, available decoders, filters, protocols and library versions for
 avcodec, avformat, avutil, avfilter, and swresample. It compares their ABI majors with the
 FFmpeg 9 requirements (63, 63, 61, 12, 7).
 
@@ -63,7 +63,7 @@ Linux, macOS, and Windows expose native process measurements. The table labels p
 
 `remedia --version` and `remedia-server --version` show the embedded release version and Git
 commit SHA. They also probe the separate native runtime for libavcodec, libavformat, libavutil,
-libavfilter and libswresample versions. If the runtime or FFmpeg is missing, the build identity
+libavfilter and libswresample versions. If the runtime is missing, the build identity
 still prints and the command succeeds with an unavailable-libraries message.
 The server uses the same embedded version in `node.info` and `node.stats`, with an additional
 `commit` field. Existing protocol fields are unchanged.

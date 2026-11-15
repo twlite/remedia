@@ -25,7 +25,14 @@ function fixture() {
       );
     }
   }
-  for (const name of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt'])
+  for (const name of [
+    'LICENSE',
+    'THIRD_PARTY_NOTICES.md',
+    'THIRD_PARTY_LICENSES.txt',
+    'LICENSES.md',
+    'COPYING.GPLv3',
+    'corresponding-source.tar.gz',
+  ])
     writeFileSync(join(servers, name), 'notice fixture');
   return { root, assets: releaseAssets(bindings, servers) };
 }
@@ -83,7 +90,7 @@ test('uploads every addon, server, archive, and notice while retaining the draft
   const { root, assets } = fixture();
   try {
     assert.equal(assets.filter((asset) => asset.name.endsWith('.node')).length, 13);
-    assert.equal(assets.length, 26);
+    assert.equal(assets.length, 35);
     const mock = mockApi(assets, { version: '0.1.0-beta.1' });
     let uploadedPaths;
     await uploadDraft('0.1.0-beta.1', assets, {

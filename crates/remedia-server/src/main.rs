@@ -60,10 +60,10 @@ enum Commands {
     /// Registers independent @remedia/plugin-host deployments; it does not install plugin code.
     #[command(subcommand)]
     Plugins(plugins_cli::PluginsCommand),
-    /// Install the latest published server and compatible FFmpeg runtime.
+    /// Install the latest published self-contained server.
     #[command(alias = "upgrade")]
     Update {
-        /// Keep the current FFmpeg installation.
+        /// Retained compatibility option; bundled releases need no separate FFmpeg setup.
         #[arg(long)]
         no_ffmpeg: bool,
     },

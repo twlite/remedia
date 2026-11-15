@@ -53,7 +53,7 @@ export const RELEASE_TARGETS = [
     os: 'linux',
     cpu: 'x64',
     libc: 'musl',
-    server: false,
+    server: true,
   },
   {
     triple: 'aarch64-unknown-linux-musl',
@@ -61,7 +61,7 @@ export const RELEASE_TARGETS = [
     os: 'linux',
     cpu: 'arm64',
     libc: 'musl',
-    server: false,
+    server: true,
   },
   {
     triple: 'armv7-unknown-linux-gnueabihf',
@@ -83,7 +83,8 @@ export const RELEASE_TARGETS = [
     suffix: 'win32-arm64-msvc',
     os: 'win32',
     cpu: 'arm64',
-    server: false,
+    server: true,
+    extension: '.exe',
   },
   {
     triple: 'aarch64-linux-android',
@@ -211,7 +212,8 @@ export function assertPackedManifest(manifest, { name, version, kind }) {
         manifest.version,
     );
   }
-  if (manifest.license !== 'MIT') throw new Error(name + ' must declare license MIT.');
+  const license = name.startsWith(npmName) ? 'SEE LICENSE IN LICENSES.md' : 'MIT';
+  if (manifest.license !== license) throw new Error(name + ' must declare license ' + license);
   if (manifest.private === true)
     throw new Error('Refusing to publish private package ' + name + '.');
 
@@ -346,13 +348,21 @@ export function assertTarContents(tarball, manifest, kind) {
     'package/LICENSE',
     'package/THIRD_PARTY_NOTICES.md',
     'package/THIRD_PARTY_LICENSES.txt',
+    ...(kind === 'platform' || kind === 'node'
+      ? ['package/LICENSES.md', 'package/COPYING.GPLv3']
+      : []),
   );
   for (const file of required) {
     if (!entries.includes(file)) {
       throw new Error('Packed ' + manifest.name + ' is missing required file ' + file + '.');
     }
   }
-  for (const file of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt']) {
+  for (const file of [
+    'LICENSE',
+    'THIRD_PARTY_NOTICES.md',
+    'THIRD_PARTY_LICENSES.txt',
+    ...(kind === 'platform' || kind === 'node' ? ['LICENSES.md', 'COPYING.GPLv3'] : []),
+  ]) {
     const actual = execFileSync('tar', ['-xOf', tarball, 'package/' + file]);
     if (!actual.equals(readFileSync(join(rootDir, file))))
       throw new Error('Packed notice differs: ' + file);
@@ -415,7 +425,13 @@ export function verifyReleaseArtifacts(bindingsDirectory, serversDirectory) {
 
 export function stageReleaseLicenses(directory, workspaceRoot = rootDir) {
   mkdirSync(directory, { recursive: true });
-  for (const file of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt']) {
+  for (const file of [
+    'LICENSE',
+    'THIRD_PARTY_NOTICES.md',
+    'THIRD_PARTY_LICENSES.txt',
+    'LICENSES.md',
+    'COPYING.GPLv3',
+  ]) {
     copyFileSync(join(workspaceRoot, file), join(directory, file));
   }
 }
@@ -436,8 +452,16 @@ export function packServerArchives(serversDirectory, workspaceRoot = rootDir) {
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
       'THIRD_PARTY_LICENSES.txt',
+      'LICENSES.md',
+      'COPYING.GPLv3',
     ]);
-    for (const file of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt']) {
+    for (const file of [
+      'LICENSE',
+      'THIRD_PARTY_NOTICES.md',
+      'THIRD_PARTY_LICENSES.txt',
+      'LICENSES.md',
+      'COPYING.GPLv3',
+    ]) {
       const actual = execFileSync('tar', ['-xOf', archive, file]);
       if (!actual.equals(readFileSync(join(workspaceRoot, file)))) {
         throw new Error('Server archive has mismatched ' + file + ': ' + archive);
@@ -511,7 +535,7 @@ export function packRelease(
     // so it ships in the same platform package, next to the engine addon it belongs to.
     const bootstrapFile = bootstrapFileName(platformManifest.main);
     copyFileSync(target.bootstrap, join(directory, bootstrapFile));
-    platformManifest.license = 'MIT';
+    platformManifest.license = 'SEE LICENSE IN LICENSES.md';
     platformManifest.files = [
       ...new Set([
         ...(platformManifest.files ?? [platformManifest.main]),
@@ -519,6 +543,8 @@ export function packRelease(
         'LICENSE',
         'THIRD_PARTY_NOTICES.md',
         'THIRD_PARTY_LICENSES.txt',
+        'LICENSES.md',
+        'COPYING.GPLv3',
       ]),
     ];
     writeFileSync(platformManifestPath, JSON.stringify(platformManifest, null, 2) + '\n');

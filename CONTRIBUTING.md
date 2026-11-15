@@ -4,108 +4,10 @@ Remedia is under development. Contributions that improve the existing code or ma
 easier to build and maintain are welcome. Playback, transport, server, and binding features should
 follow the intended boundaries in [`docs/architecture.md`](docs/architecture.md).
 
-## Prerequisites
+## Native build prerequisites
 
-- Rust through rustup. The workspace declares Rust 1.88 as its minimum supported version; this
-  repository pins Rust 1.99.1 for development and requests `rustfmt` and `clippy` in
-  `rust-toolchain.toml`. Rustup installs the selected toolchain when first needed.
-- Node.js 22.18 or newer.
-- pnpm 12.16.1, selected by the root `package.json`.
-- Git.
-
-`remedia-core` dynamically links FFmpeg libraries through `ffmpeg-next` and `ffmpeg-sys-next`. Its
-Opus adapter builds libopus from bundled source and links it statically. Playback filters use
-libavfilter. Install development headers for libavformat, libavcodec, libavutil, libavfilter, and
-libswresample, plus `pkg-config` and Clang/libclang for the bindings build. Remedia does not require
-system libopus headers or libraries.
-The CI workflow lists all 13 requested Rust targets. The five primary targets below run native integration tests. The release packer requires addon
-artifacts for all 13 targets, including the additional cross-build targets.
-
-| Target                  | CI level     | Native verification                                                                            |
-| ----------------------- | ------------ | ---------------------------------------------------------------------------------------------- |
-| Linux x86_64 GNU        | Required     | Native FFmpeg 9 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
-| Linux ARM64 GNU         | Required     | Native FFmpeg 9 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
-| macOS x86_64            | Required     | Native FFmpeg 9 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
-| macOS ARM64             | Required     | Native FFmpeg 9 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
-| Windows x86_64 MSVC     | Required     | Native FFmpeg 9 build, Rust tests, N-API and server runtime tests on Node.js 22.18, 24, and 26 |
-| Linux x86_64 musl       | Experimental | Build-only; pinned FFmpeg 9.0.2 cross-build with Zig; runtime compatibility is unverified      |
-| Linux ARM64 musl        | Experimental | Build-only; pinned FFmpeg 9.0.2 cross-build with Zig; runtime compatibility is unverified      |
-| Linux ARMv7 GNU         | Experimental | Build-only; pinned FFmpeg 9.0.2 uses the hard-float GNU cross toolchain and sysroot            |
-| Windows x86 MSVC        | Experimental | Build-only; target-specific FFmpeg 9.0.2 x86 libraries use pinned vcpkg                        |
-| Windows ARM64 MSVC      | Experimental | Build-only cross-compile; target-specific FFmpeg 9.0.2 ARM64 libraries use pinned vcpkg        |
-| Android ARM64 and ARMv7 | Experimental | Build-only; pinned NDK 27.2, API 24 linkers, and target-built FFmpeg 9.0.2                     |
-| FreeBSD x86_64          | Experimental | FreeBSD 15.1 VM builds FFmpeg 9 and runs native build and runtime tests                        |
-
-All 13 N-API targets are included in npm release packaging. Standalone server binaries cover only
-the five primary targets. WASI is not in the workflow. Build-only coverage does not establish native
-runtime compatibility.
-
-Remedia targets the FFmpeg 9 ABI and dynamically links FFmpeg. Its Opus adapter builds libopus from
-the locked bundled source and statically links it into native binaries. FFmpeg executables are used
-only for dependency/version checks; Remedia does not spawn them for playback. The CI dependency
-specifications are in `.github/native-deps/` and pin FFmpeg 9.0.2 and pkg-config 0.29.2 for Linux
-and Windows. The Linux and Android cross-build recipe is in
-`.github/scripts/build-ffmpeg-cross.sh`; Windows x86 and ARM64 use the pinned target triplets in
-`.github/native-deps/windows-cross/vcpkg.json`. Experimental targets are not runtime-verified except
-for the FreeBSD VM job, and their artifacts are published as additional platform packages. A successful
-cross-build alone does not establish that the target runtime can load the addon or its FFmpeg shared
-libraries.
-
-### macOS
-
-Install Xcode Command Line Tools, versioned FFmpeg 9, and LLVM 19.1.7 for the
-repository's bindgen version:
-
-```sh
-brew install ffmpeg pkg-config llvm@19
-export FFMPEG_DIR="$(brew --prefix ffmpeg)"
-export PKG_CONFIG_PATH="$FFMPEG_DIR/lib/pkgconfig"
-export LIBCLANG_PATH="$(brew --prefix llvm@19)/lib"
-export DYLD_LIBRARY_PATH="$FFMPEG_DIR/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-```
-
-The versioned formula keeps the FFmpeg major version explicit. After a Homebrew upgrade, rerun the
-`brew --prefix` assignments in the current shell; do not retain a path into a versioned Cellar
-directory. Keep the versioned LLVM 19 formula installed and confirm that its prefix contains
-`lib/libclang.dylib` if bindgen reports missing or incompatible FFmpeg layouts.
-
-### Linux
-
-Install Clang/libclang, then create the pinned dynamic FFmpeg environment used by CI:
-
-```sh
-sudo apt-get install clang libclang-dev
-micromamba create --name remedia-ffmpeg9 --file .github/native-deps/ffmpeg9.yml
-micromamba activate remedia-ffmpeg9
-export FFMPEG_DIR="$CONDA_PREFIX"
-export PKG_CONFIG_PATH="$CONDA_PREFIX/lib/pkgconfig"
-export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-```
-
-The FFmpeg packages in the Ubuntu runner's default repositories may have a different major version;
-use the pinned environment rather than mixing system FFmpeg headers with another runtime library.
-
-### Windows
-
-Install Visual Studio 2022 Build Tools with the MSVC C++ workload, Rust's MSVC toolchain, and
-micromamba. Use the pinned x64 development packages:
-
-```powershell
-micromamba create --name remedia-ffmpeg9 --file .github/native-deps/ffmpeg9-windows.yml
-micromamba activate remedia-ffmpeg9
-$env:FFMPEG_DIR = Join-Path $env:CONDA_PREFIX 'Library'
-$env:PKG_CONFIG_PATH = Join-Path $env:FFMPEG_DIR 'lib\pkgconfig'
-$env:LIBCLANG_PATH = Join-Path $env:CONDA_PREFIX 'Library\bin'
-$env:PATH = (Join-Path $env:FFMPEG_DIR 'bin') + ';' + $env:PATH
-```
-
-The supported x64 FFmpeg package must include MSVC import libraries, headers, and matching x64 DLLs.
-Keep the runtime DLL directory on `PATH` when running tests and applications. Experimental x86 and
-ARM64 builds use isolated, target-specific vcpkg triplets; never reuse the x64 libraries for those
-targets. MinGW libraries are not compatible with the MSVC target. Windows builds use MSVC's dynamic
-CRT to match the bundled Opus CMake configuration. If the runtime machine does not already have a
-compatible Microsoft Visual C++ v14 runtime, install the current Visual C++ Redistributable.
-Remedia does not bundle that runtime, and the N-API package does not promise static CRT linkage.
+Use the pinned static recipes described above. Install a C compiler, make, NASM,
+pkg-config, and libclang. Runtime users do not need these tools.
 
 ## Set up the repository
 
@@ -167,46 +69,9 @@ TypeScript output in `dist/`.
 
 #### FFmpeg loading in `@remedia/node`
 
-The engine addon links FFmpeg dynamically, so the operating system resolves FFmpeg before any of
-its code runs. `packages/remedia-node/bootstrap/` is a second, tiny N-API crate with **no FFmpeg
-dependency**. `lib/native-binding.ts` loads `bootstrap.<platform>.node`, asks
-`lib/ffmpeg-runtime.ts` to pick an installation (`REMEDIA_FFMPEG_DIR`, then system, then
-`~/.remedia/ffmpeg9`), has the bootstrap open its five libraries by absolute path, and only then
-imports the napi-rs generated `native.js`. Do not edit `native.js`; the sequencing lives in
-maintained code. `pnpm --filter @remedia/node build:native[:debug]` builds the engine, rewrites its
-FFmpeg install names to `@rpath` on macOS (`.github/scripts/normalize-macos-addon.mjs`; dyld will
-not substitute a different file for an absolute install name, and re-signs are required on arm64),
-and builds the bootstrap (`.github/scripts/build-bootstrap.mjs`, which accepts `--target` and
-`--cross-compile`). If you call `napi build` yourself on macOS, run the normalize script
-afterwards. `FFMPEG_DIR`/`PKG_CONFIG_PATH` choose what you compile against; make them explicit when
-more than one FFmpeg is installed. The unit tests in `tests/ffmpeg-runtime.test.ts` need no FFmpeg;
-`tests/fresh-process.test.ts` spawns a Node process with all loader variables removed and skips
-itself where no FFmpeg is reachable without them (set `REMEDIA_REQUIRE_FRESH_PROCESS=1` to make that
-a failure, `REMEDIA_TEST_HOME` to choose the home directory, and `REMEDIA_EXPECT_FFMPEG_SOURCE` to
-assert the selected source). `.github/scripts/smoke-packed-package.mjs <target>` repeats the check
-against the packed npm tarballs, and `.github/scripts/installer.test.mjs` tests both installers
-with a fake micromamba (`pnpm test:release`).
-The Discord harness runs TypeScript directly with `tsx`; its `typecheck` script uses `tsc --noEmit`,
-and its local queue tests run with Node's built-in test runner. To start the bot, run
-`pnpm --filter discord-app start`. This builds the native Node package first and reads
-`DISCORD_TOKEN` and `APPLICATION_ID` from `apps/discord/.env`.
-`@remedia/client` is pure TypeScript ESM. Remote-only consumers do not need the native addon;
-`@remedia/node` is an optional peer dependency for embedded nodes. Its default `test` command excludes
-the native hybrid and Rust-server integration files. Run `pnpm --filter @remedia/client test:hybrid`
-to require and test a built native addon. Run `pnpm --filter @remedia/client test:server` to test
-against a real local server, including a real `@remedia/plugin-host` deployment (it builds that package
-first); it uses `REMEDIA_SERVER_BINARY` when provided and otherwise runs `cargo run` for convenience.
-Run `pnpm --filter @remedia/client test:plugin-host` for only the plugin-host scenarios. CI always invokes both explicit integration commands, with a previously
-built addon and server executable, so a missing environment variable cannot silently skip either
-test.
-
-Compiling `@remedia/node` from source requires the pinned Rust toolchain, target-compatible FFmpeg 9
-development libraries, and libclang. The bundled Opus source is built and statically linked by
-Cargo. Installing a prebuilt platform addon from the
-published package does not need those build tools and does not install FFmpeg during package
-installation. The published N-API package does not bundle FFmpeg or compile native code during
-npm/pnpm installation. Consumers must install FFmpeg 9 shared runtime libraries for a supported
-target; see the [Node.js distribution guide](apps/docs/content/docs/node/distribution.mdx).
+The engine addon statically links the pinned FFmpeg build. No bootstrap discovery
+or macOS install-name rewriting is needed. The dependency audit rejects external
+media libraries. Build scripts regenerate native.js and native.d.ts from Rust.
 
 ## CI change selection
 

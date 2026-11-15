@@ -8,16 +8,18 @@ tools_dir="${RUNNER_TEMP:?RUNNER_TEMP must be set}/remedia-target-tools-${target
 ffmpeg_commit='946fcce07b6dcd0331c8cc609192aeff5e1924f8'
 marker="$prefix/.remedia-ffmpeg-build"
 
-if [[ -f "$marker" ]] && [[ "$(cat "$marker")" == "$ffmpeg_commit:$target" ]]; then
+if [[ -f "$marker" ]] && [[ "$(cat "$marker")" == "$ffmpeg_commit:$target:static-gpl3-v1" ]]; then
   echo "Using cached FFmpeg 9.0.2 target libraries at $prefix"
 else
-  rm -rf "$prefix" "$source_dir"
+  rm -rf "$prefix" "$source_dir" "$source_dir-openssl"
   mkdir -p "$prefix" "$tools_dir"
 
   git init -q "$source_dir"
   git -C "$source_dir" remote add origin https://github.com/FFmpeg/FFmpeg.git
   git -C "$source_dir" fetch --quiet --depth=1 origin "$ffmpeg_commit"
   git -C "$source_dir" checkout --quiet --detach FETCH_HEAD
+
+  export SOURCE_DATE_EPOCH="$(git -C "$source_dir" show -s --format=%ct HEAD)"
 
   local_cc=''
   local_ar=''
@@ -157,8 +159,10 @@ EOF
     "--ranlib=$local_ranlib"
     "--strip=$local_strip"
     --host-cc=cc
-    --enable-shared
-    --disable-static
+    --disable-shared
+    --enable-gpl
+    --enable-version3
+    --enable-static
     --disable-programs
     --disable-doc
     --disable-debug
@@ -178,16 +182,35 @@ EOF
     configure_args+=("--sysroot=$target_sysroot")
   fi
 
+  while IFS= read -r option; do configure_args+=("$option"); done < "$GITHUB_WORKSPACE/.github/native-deps/ffmpeg-audio-options.txt"
+  openssl_source="$source_dir-openssl"
+  git init -q "$openssl_source"
+  git -C "$openssl_source" remote add origin https://github.com/openssl/openssl.git
+  git -C "$openssl_source" fetch -q --depth=1 origin 7b371d80d959ec9ab4139d09d78e83c090de9779
+  git -C "$openssl_source" checkout -q --detach FETCH_HEAD
+  case "$target" in
+    x86_64-*) openssl_target=linux-x86_64 ;;
+    aarch64-*) openssl_target=linux-aarch64 ;;
+    armv7-*) openssl_target=linux-armv4 ;;
+  esac
+  # Explicit target compiler wrappers carry sysroot/API settings for Android and musl.
+  (cd "$openssl_source"; CC="$local_cc" AR="$local_ar" RANLIB="$local_ranlib" ./Configure "$openssl_target" --prefix="$prefix" --libdir=lib --openssldir=/etc/ssl no-shared no-tests no-module -fPIC; make -j"${FFMPEG_BUILD_JOBS:-2}"; make install_sw)
+  export PKG_CONFIG_PATH="$prefix/lib/pkgconfig"
+  export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig"
+  export PKG_CONFIG_ALLOW_CROSS=1
+  configure_args+=(--enable-openssl "--extra-ldflags=-L$prefix/lib" "--extra-cflags=-I$prefix/include")
+
   pushd "$source_dir" >/dev/null
   if ! ./configure "${configure_args[@]}"; then
     cat ffbuild/config.log >&2 || true
     exit 1
   fi
+  node "$GITHUB_WORKSPACE/.github/scripts/audit-ffmpeg-config.mjs" ffbuild/config.mak
   make -j"${FFMPEG_BUILD_JOBS:-2}"
   make install
   popd >/dev/null
 
-  printf '%s:%s\n' "$ffmpeg_commit" "$target" > "$marker"
+  printf '%s:%s:static-gpl3-v1\n' "$ffmpeg_commit" "$target" > "$marker"
 fi
 
 export FFMPEG_DIR="$prefix"
@@ -214,7 +237,7 @@ done
 
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   {
-    echo "FFMPEG_DIR=$prefix"
+    echo "REMEDIA_STATIC_FFMPEG_DIR=$prefix"
     echo "PKG_CONFIG_PATH=$prefix/lib/pkgconfig"
     echo "PKG_CONFIG_LIBDIR=$prefix/lib/pkgconfig"
     echo 'PKG_CONFIG_ALLOW_CROSS=1'

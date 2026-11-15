@@ -101,6 +101,15 @@ async fn run(cli: RuntimeCli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn print_library_versions() {
+    let (version, license, configuration) = remedia_core::ffmpeg_build_info();
+    println!("Bundled FFmpeg: {version}\nLicense: {license}\nConfiguration: {configuration}");
+    let (decoders, filters, protocols) = remedia_core::ffmpeg_capabilities();
+    println!(
+        "Audio decoders: {}\nFilters: {}\nInput protocols: {}",
+        decoders.join(", "),
+        filters.join(", "),
+        protocols.join(", ")
+    );
     for (name, packed) in remedia_core::ffmpeg_runtime_versions() {
         println!(
             "lib{name}: {}.{}.{}",
@@ -126,7 +135,8 @@ async fn doctor(cli: &RuntimeCli) -> ExitCode {
     if let Ok(executable) = std::env::current_exe() {
         println!("Executable: {}", executable.display());
     }
-    println!("FFmpeg libraries loaded by the native runtime:");
+    print_library_versions();
+    println!("Bundled FFmpeg capability libraries:");
     let expected = [63, 63, 61, 12, 7];
     let mut abi_ok = true;
     for ((name, packed), major) in remedia_core::ffmpeg_runtime_versions()
@@ -153,7 +163,7 @@ async fn doctor(cli: &RuntimeCli) -> ExitCode {
     }
     if !abi_ok {
         eprintln!(
-            "FFmpeg: FAIL (loaded library ABI majors do not match FFmpeg 9). Select matching libraries through your OS loader search paths."
+            "FFmpeg: FAIL (bundled library ABI majors do not match FFmpeg 9). Reinstall this release."
         );
     }
 

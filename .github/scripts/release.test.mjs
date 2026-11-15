@@ -36,7 +36,7 @@ function packageSet(directory, version) {
       kind: 'platform',
       tarball,
       manifest: {
-        license: 'MIT',
+        license: 'SEE LICENSE IN LICENSES.md',
         name,
         version,
         os: [target.os],
@@ -62,7 +62,7 @@ function packageSet(directory, version) {
       kind: 'node',
       tarball: rootTarball,
       manifest: {
-        license: 'MIT',
+        license: 'SEE LICENSE IN LICENSES.md',
         name: '@remedia/node',
         version,
         optionalDependencies,
@@ -102,7 +102,7 @@ test('the release list exactly matches all configured napi targets', () => {
   );
   assert.equal(RELEASE_TARGETS.length, 13);
   const targetsWithServerBinaries = RELEASE_TARGETS.filter((target) => target.server !== false);
-  assert.equal(targetsWithServerBinaries.length, 5);
+  assert.equal(targetsWithServerBinaries.length, 8);
 });
 
 test('accepts the napi-rs ARMv7 GNU package manifest without a libc field', () => {
@@ -110,7 +110,7 @@ test('accepts the napi-rs ARMv7 GNU package manifest without a libc field', () =
   assert.ok(target);
   assert.equal(target.libc, undefined);
   const manifest = {
-    license: 'MIT',
+    license: 'SEE LICENSE IN LICENSES.md',
     name: '@remedia/node-linux-arm-gnueabihf',
     version: '0.1.0',
     os: ['linux'],
@@ -217,7 +217,7 @@ test('synchronizes npm workspace versions without rewriting workspace protocols'
         JSON.stringify(
           packagePath.includes('client')
             ? {
-                license: 'MIT',
+                license: 'SEE LICENSE IN LICENSES.md',
                 name: '@remedia/client',
                 version: '0.1.0',
                 peerDependencies: { '@remedia/node': 'workspace:*' },
@@ -274,7 +274,7 @@ test('validates packed workspace dependency resolution and required N-API packag
     () =>
       assertPackedManifest(
         {
-          license: 'MIT',
+          license: 'SEE LICENSE IN LICENSES.md',
           name: '@remedia/node',
           version: '1.0.0',
           optionalDependencies: {},
@@ -319,7 +319,13 @@ test('matches release server artifacts to the target-triple filenames staged by 
       assert.ok(
         entries.includes('remedia-server-runtime-' + target.triple + (target.extension ?? '')),
       );
-      for (const file of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt']) {
+      for (const file of [
+        'LICENSE',
+        'THIRD_PARTY_NOTICES.md',
+        'THIRD_PARTY_LICENSES.txt',
+        'LICENSES.md',
+        'COPYING.GPLv3',
+      ]) {
         assert.deepEqual(
           execFileSync('tar', ['-xOf', archive, file]),
           readFileSync(path.resolve(file)),
@@ -594,7 +600,7 @@ test('actual workspace tarballs carry exact root licenses and notices', () => {
       const version = JSON.parse(readFileSync(path.join(packageDirectory, 'package.json'))).version;
       const tarball = path.join(directory, 'remedia-' + name + '-' + version + '.tgz');
       const manifest = JSON.parse(execFileSync('tar', ['-xOf', tarball, 'package/package.json']));
-      assert.equal(manifest.license, 'MIT');
+      assert.equal(manifest.license, name === 'node' ? 'SEE LICENSE IN LICENSES.md' : 'MIT');
       assertTarContents(tarball, manifest, name);
     }
   } finally {

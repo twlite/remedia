@@ -2,8 +2,7 @@
 
 # Standalone Remedia server image.
 #
-# The image installs a published, SHA-256-verified release and a verified FFmpeg 9
-# shared-library runtime. It never compiles Remedia and never downloads anything at
+# The image installs a published, SHA-256-verified release with statically linked FFmpeg 9. It never compiles Remedia and never downloads anything at
 # container startup. Build it from the repository root (see docker/compose.yaml):
 #
 #   docker build -f docker/Dockerfile --build-arg REMEDIA_VERSION=0.1.0-dev.6 -t remedia-server .
@@ -19,9 +18,7 @@ ARG DEBIAN_IMAGE=debian:trixie-slim
 # Stage 1: run the repository's own installer into /opt/remedia.
 #
 # scripts/install.sh already resolves the release asset for this machine, verifies the
-# archive against GitHub's published SHA-256 digest, checks the archive's contents, and
-# provisions FFmpeg 9.0.2 through micromamba/conda-forge while verifying all five
-# required shared-library ABI majors. Reusing it keeps one implementation of that logic.
+# archive against GitHub's SHA-256 digest and installs bundled native binaries. Reusing it keeps one implementation of that logic.
 # This stage runs on the *target* platform (natively, or emulated by buildx), so the
 # installer's uname-based asset selection always matches the platform being built.
 # ---------------------------------------------------------------------------
@@ -32,9 +29,9 @@ ARG TARGETARCH
 # must be reproducible from its build arguments.
 ARG REMEDIA_VERSION=0.1.0-dev.6
 
-# bzip2 is needed by the installer to unpack micromamba; curl for GitHub and conda-forge.
+# curl downloads the verified release archive.
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends bzip2 ca-certificates curl \
+    && apt-get install --yes --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY scripts/install.sh /usr/local/share/remedia-install.sh
@@ -42,7 +39,7 @@ COPY scripts/install.sh /usr/local/share/remedia-install.sh
 # An optional BuildKit secret named github_token raises GitHub's anonymous API rate limit
 # (60 requests per hour per IP) for the installer's release lookup. It is made available
 # to curl only for api.github.com through ~/.netrc, so it is never sent to conda-forge or
-# micromamba hosts, and both files are deleted before the layer is committed.
+# other hosts, and both files are deleted before the layer is committed.
 RUN --mount=type=secret,id=github_token \
     set -eu; \
     case "$TARGETARCH" in \
@@ -61,14 +58,7 @@ RUN --mount=type=secret,id=github_token \
         printf 'netrc\n' > "$HOME/.curlrc" ); \
     fi; \
     REMEDIA_INSTALL_DIR=/opt/remedia REMEDIA_VERSION="$REMEDIA_VERSION" sh /usr/local/share/remedia-install.sh; \
-    rm -f "$HOME/.netrc" "$HOME/.curlrc"; \
-    # Keep only what the server loads. The conda FFmpeg environment also contains the
-    # ffmpeg/ffprobe/ffplay executables, headers and build metadata, none of which Remedia
-    # uses (it links the shared libraries and never starts an FFmpeg subprocess).
-    cd /opt/remedia/ffmpeg9; \
-    rm -f bin/ffmpeg bin/ffprobe bin/ffplay; \
-    rm -rf include lib/pkgconfig lib/cmake share/man share/doc share/info share/gtk-doc; \
-    find lib -name '*.a' -delete
+    rm -f "$HOME/.netrc" "$HOME/.curlrc"
 
 # ---------------------------------------------------------------------------
 # Stage 2: the runtime image.
@@ -78,9 +68,9 @@ FROM ${DEBIAN_IMAGE} AS runtime
 ARG REMEDIA_VERSION=0.1.0-dev.6
 
 LABEL org.opencontainers.image.title="Remedia server" \
-      org.opencontainers.image.description="Standalone Remedia audio server (WebSocket RPC) with FFmpeg 9 shared libraries" \
+      org.opencontainers.image.description="Standalone Remedia audio server (WebSocket RPC) with statically linked FFmpeg 9" \
       org.opencontainers.image.source="https://github.com/twlite/remedia" \
-      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.licenses="GPL-3.0-or-later" \
       org.opencontainers.image.version="${REMEDIA_VERSION}"
 
 # CA certificates are required for HTTPS media and plugin hosts (the server uses rustls
@@ -96,7 +86,6 @@ RUN apt-get update \
 
 # Binaries, FFmpeg and licences are owned by root and read-only to the service account.
 COPY --from=installer /opt/remedia/libexec /opt/remedia/libexec
-COPY --from=installer /opt/remedia/ffmpeg9 /opt/remedia/ffmpeg9
 COPY --from=installer /opt/remedia/licenses /opt/remedia/licenses
 
 # `remedia` is the documented command; `remedia-server` is the same lightweight CLI. The
@@ -114,15 +103,10 @@ RUN if [ -f /opt/remedia/libexec/current.txt ]; then \
 # must resolve (including FFmpeg's transitive dependencies), and the loaded FFmpeg
 # versions must match the required ABI majors. `doctor` needs a valid configuration, so a
 # throwaway one is generated; the placeholder value below is not a credential.
-ENV LD_LIBRARY_PATH=/opt/remedia/ffmpeg9/lib
 RUN set -eu; \
     remedia --version; \
     missing="$(ldd /opt/remedia/libexec/remedia-server-runtime | grep 'not found' || true)"; \
     [ -z "$missing" ] || { echo "Unresolved libraries:" >&2; echo "$missing" >&2; exit 1; }; \
-    for library in /opt/remedia/ffmpeg9/lib/libav*.so.* /opt/remedia/ffmpeg9/lib/libswresample.so.*; do \
-      missing="$(ldd "$library" | grep 'not found' || true)"; \
-      [ -z "$missing" ] || { echo "Unresolved libraries for $library:" >&2; echo "$missing" >&2; exit 1; }; \
-    done; \
     cd "$(mktemp -d)"; \
     remedia --generate-config-file ./check.json >/dev/null; \
     REMEDIA_RPC_PASSWORD=build-time-placeholder remedia doctor --config ./check.json

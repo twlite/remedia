@@ -22,7 +22,7 @@ The standalone release contains two executables in the same directory:
 - `remedia-server` is a lightweight CLI that does **not** link FFmpeg.
 - `remedia-server-runtime` owns playback, WebSocket serving, and native FFmpeg 9 libraries.
 
-These commands work without the FFmpeg shared libraries installed:
+All release commands use bundled FFmpeg; no separate FFmpeg installation is required:
 
 ```sh
 remedia-server --help

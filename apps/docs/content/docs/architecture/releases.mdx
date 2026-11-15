@@ -23,3 +23,22 @@ The release publisher verifies this package is present before publishing and reu
 already published exact version when resuming an interrupted release. Configure npm Trusted
 Publishing for `@remedia/plugin-host` with the same `twlite/remedia` repository and `ci.yaml`
 workflow as the other release packages. Publishing uses npm OIDC Trusted Publishing.
+
+## Static native artifacts and source
+
+The existing platform workflow builds pinned GPL-enabled static FFmpeg 9, retains
+all 13 addon targets, and packages server candidates for Windows ARM64 and Linux
+x64/ARM64 musl in addition to the five original server targets. Windows ARM64 uses
+an ARM64 runner; musl startup and addon decoding run in native-architecture Alpine
+containers. Android and other cross targets remain provisional. ARMv7, Windows
+x86 and FreeBSD server builds are investigated without publishing untested server
+assets as supported releases.
+
+A matching native dependency source bundle is required for every target. The
+release packer combines these with the exact Remedia revision, release patch,
+vendored Cargo dependencies, license inventory, configuration records and build
+scripts into `corresponding-source.tar.gz`. Upload and finalization gates require
+that archive alongside binary assets. FFmpeg configuration and dependency-license
+allowlists fail closed on nonfree or unaudited additions; binary import checks
+reject external FFmpeg, Opus and OpenSSL libraries. CI success does not establish
+legal compliance. See [licensing](/docs/licensing).

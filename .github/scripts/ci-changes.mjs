@@ -5,7 +5,15 @@ import { pathToFileURL } from 'node:url';
 export function needsChecks(paths) {
   return paths.some((path) => {
     if (path.startsWith('apps/docs/content/')) return true;
-    if (['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt'].includes(path))
+    if (
+      [
+        'LICENSE',
+        'LICENSES.md',
+        'COPYING.GPLv3',
+        'THIRD_PARTY_NOTICES.md',
+        'THIRD_PARTY_LICENSES.txt',
+      ].includes(path)
+    )
       return true;
     if (/\.md$/i.test(path)) return false;
     return (

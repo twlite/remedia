@@ -7,14 +7,8 @@ Run the engine inside your bot's Node.js process. You need Node.js 22.18 or newe
 
 ## 1. Install FFmpeg 9
 
-The engine needs FFmpeg 9 shared libraries on this machine. The official installer is the quickest
-way and needs no environment variables afterwards:
-
-```sh
-curl -fsSL https://remedia.twlite.dev/install.sh | sh -s -- --ffmpeg-only
-```
-
-On Windows PowerShell, and for other options, see [Install FFmpeg 9](/docs/node/ffmpeg-9).
+The native addon bundles FFmpeg 9; no external media libraries need installation.
+See [bundled FFmpeg and licensing](/docs/node/ffmpeg-9).
 
 ## 2. Install the package
 

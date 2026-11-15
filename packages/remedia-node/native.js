@@ -773,6 +773,7 @@ if (
   }
 }
 
-const { NativeRemedia } = nativeBinding
+const { NativeRemedia, bundledFfmpegInfo } = nativeBinding
 export { NativeRemedia }
+export { bundledFfmpegInfo }
 export const __napiBindingTarget = __napiLoadedBindingTarget

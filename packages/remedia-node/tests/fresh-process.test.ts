@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, test } from 'vitest';
-
-import { FFMPEG_LIBRARIES, layoutDirectories, libraryFileName } from '../lib/ffmpeg-runtime.js';
 
 const distEntry = fileURLToPath(new URL('../dist/index.js', import.meta.url));
 const fixture = fileURLToPath(
@@ -54,6 +52,7 @@ console.log(JSON.stringify({
   directory: runtime.directory,
   libraries: runtime.libraries.map((library) => library.name + ' ' + library.version),
   codec: info.codec,
+  build: runtime,
   env: Object.keys(process.env).filter((key) => /^(LD_|DYLD_|REMEDIA_)/.test(key)),
 }));
 `;
@@ -81,93 +80,47 @@ function run(env: NodeJS.ProcessEnv) {
   });
 }
 
-function hasManagedFfmpeg(home: string): boolean {
-  const prefix = join(home, '.remedia', 'ffmpeg9');
-
-  return layoutDirectories(prefix, process.platform).some((layout) =>
-    FFMPEG_LIBRARIES.every(({ name, major }) =>
-      existsSync(join(layout, libraryFileName(name, major, process.platform))),
-    ),
-  );
-}
-
 describe('a fresh Node.js process without FFmpeg loader configuration', () => {
-  test('loads the engine, decodes media and reports the selected FFmpeg runtime', (context) => {
-    // Uses the real home directory, so it exercises whatever installation the machine has:
-    // the system's, or the installer-managed ~/.remedia/ffmpeg9.
-    const result = run(cleanEnvironment(process.env.REMEDIA_TEST_HOME ?? homedir()));
-
-    // Some machines only have FFmpeg reachable through loader variables (for example a build
-    // environment's LD_LIBRARY_PATH), which this test deliberately removes. CI that installs
-    // FFmpeg for this purpose sets REMEDIA_REQUIRE_FRESH_PROCESS so that a skip becomes a failure.
-    if (
-      result.status !== 0 &&
-      !process.env.REMEDIA_REQUIRE_FRESH_PROCESS &&
-      /FfmpegLoadError/.test(result.stderr) &&
-      !/abi-mismatch|architecture-mismatch|unresolved-dependency/.test(result.stderr)
-    ) {
-      context.skip();
-    }
+  test('loads the engine, decodes media and reports the selected FFmpeg runtime', () => {
+    const result = run(cleanEnvironment(directory));
 
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
 
     const report = JSON.parse(result.stdout.trim().split('\n').at(-1)!) as {
       source: string;
-      directory: string;
+      directory: string | null;
       libraries: string[];
       codec: string;
       env: string[];
+      build: {
+        license: string;
+        configuration: string;
+        capabilities: { decoders: string[]; filters: string[]; protocols: string[] };
+      };
     };
 
     assert.deepEqual(report.env, [], 'the child must have no loader variables');
     assert.equal(report.libraries.length, 5);
-    assert.ok(report.directory.length > 0);
+    assert.equal(report.directory, null);
+    assert.equal(report.source, 'bundled');
     assert.equal(report.codec, 'mp3');
-
-    // CI sets this to prove the installer-managed prefix is what a default setup resolves to.
-    if (process.env.REMEDIA_EXPECT_FFMPEG_SOURCE) {
-      assert.equal(report.source, process.env.REMEDIA_EXPECT_FFMPEG_SOURCE);
-    }
+    assert.match(report.build.license, /GPL version 3/);
+    assert.ok(report.build.configuration.includes('--enable-gpl'));
+    assert.ok(!report.build.configuration.includes('--enable-nonfree'));
+    assert.ok(report.build.capabilities.decoders.includes('pcm_s16le'));
+    assert.ok(report.build.capabilities.decoders.includes('opus'));
+    assert.ok(report.build.capabilities.filters.includes('atempo'));
+    assert.ok(report.build.capabilities.filters.includes('aresample'));
+    assert.ok(report.build.capabilities.protocols.includes('https'));
   });
 
-  test.skipIf(!hasManagedFfmpeg(process.env.REMEDIA_TEST_HOME ?? homedir()))(
-    'REMEDIA_FFMPEG_DIR selects the installation explicitly',
-    () => {
-      const home = process.env.REMEDIA_TEST_HOME ?? homedir();
-      const result = run(
-        cleanEnvironment(home, { REMEDIA_FFMPEG_DIR: join(home, '.remedia', 'ffmpeg9') }),
-      );
-
-      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-
-      const report = JSON.parse(result.stdout.trim().split('\n').at(-1)!) as { source: string };
-
-      assert.equal(report.source, 'explicit');
-    },
-  );
-
-  test('an invalid REMEDIA_FFMPEG_DIR fails the import with an actionable message', () => {
+  test('ignores external FFmpeg overrides because media libraries are bundled', () => {
     const result = run(
-      cleanEnvironment(homedir(), { REMEDIA_FFMPEG_DIR: join(directory, 'nope') }),
+      cleanEnvironment(directory, { REMEDIA_FFMPEG_DIR: join(directory, 'missing') }),
     );
 
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /REMEDIA_FFMPEG_DIR does not point to a loadable FFmpeg 9/);
-    assert.match(result.stderr, /not-found/);
-    assert.match(result.stderr, /--ffmpeg-only|-FFmpegOnly/);
-  });
-
-  test('an installation with a different ABI major is rejected, never silently replaced', () => {
-    const wrong = join(directory, 'ffmpeg 7');
-    const library = layoutDirectories(wrong, process.platform)[0]!;
-
-    mkdirSync(library, { recursive: true });
-    writeFileSync(join(library, libraryFileName('avcodec', 61, process.platform)), 'not ffmpeg 9');
-
-    const result = run(cleanEnvironment(homedir(), { REMEDIA_FFMPEG_DIR: wrong }));
-
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /abi-mismatch/);
-    assert.match(result.stderr, /libavcodec ABI 61 \(requires 63\)/);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const report = JSON.parse(result.stdout.trim().split('\n').at(-1)!) as { source: string };
+    assert.equal(report.source, 'bundled');
   });
 });
