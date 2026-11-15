@@ -348,6 +348,14 @@ impl TestVoiceConnection {
         lock(&self.packets).clone()
     }
 
+    /// Make the transport reject further packets, as if its socket had been lost.
+    pub(crate) fn lose_transport(&self) {
+        self.connection
+            .inner
+            .state
+            .send_replace(ConnectionState::Disconnected);
+    }
+
     /// Wait for the mock receiver to record queued packets, not merely for
     /// send_packet() to return after enqueueing them.
     pub(crate) fn wait_for_packets(&self, count: usize) -> Vec<(u64, EncodedOpusPacket)> {

@@ -439,3 +439,53 @@ fn transition_messages_still_require_transition_ids() {
     assert!(member.pending_transitions.is_empty());
     assert!(!member.is_ready());
 }
+
+#[test]
+fn rtp_packets_reuse_one_datagram_buffer_and_decrypt_to_the_source_opus_packet() {
+    use crate::crypto::{AUTH_TAG_BYTES, EncryptionMode, TRANSPORT_NONCE_BYTES, TransportCipher};
+    use crate::rtp::{RTP_HEADER_BYTES, RtpSender, serialize_rtp_header};
+    use remedia_core::EncodedOpusPacket;
+
+    let (_, mut sender, mut receiver) = established_group();
+    let key = [0x42; 32];
+
+    for mode in [EncryptionMode::Aes256Gcm, EncryptionMode::XChaCha20Poly1305] {
+        let mut rtp =
+            RtpSender::new(0xA1B2_C3D4, u16::MAX, u32::MAX - 959, 77, mode, &key).unwrap();
+        let cipher = TransportCipher::new(mode, &key).unwrap();
+        let packet = EncodedOpusPacket {
+            bytes: (0..90).collect(),
+            samples_per_channel: 960,
+            media_samples_per_channel: 960,
+            start_sample: 0,
+        };
+
+        let first = rtp.encode_packet(&packet, &mut sender).unwrap().to_vec();
+        let first_buffer = rtp.encode_packet(&packet, &mut sender).unwrap().as_ptr();
+        let second_buffer = rtp.encode_packet(&packet, &mut sender).unwrap().as_ptr();
+        assert_eq!(
+            first_buffer, second_buffer,
+            "{mode:?} must reuse its datagram buffer"
+        );
+
+        let header: [u8; RTP_HEADER_BYTES] = first[..RTP_HEADER_BYTES].try_into().unwrap();
+        assert_eq!(
+            header,
+            serialize_rtp_header(u16::MAX, u32::MAX - 959, 0xA1B2_C3D4)
+        );
+        assert_eq!(
+            &first[first.len() - TRANSPORT_NONCE_BYTES..],
+            &77_u32.to_be_bytes()
+        );
+        assert!(first.len() > RTP_HEADER_BYTES + AUTH_TAG_BYTES + TRANSPORT_NONCE_BYTES);
+
+        let dave_payload = cipher
+            .decrypt_payload(&header, &first[RTP_HEADER_BYTES..])
+            .unwrap();
+        let opus = receiver
+            .session
+            .decrypt(sender.user_id, davey::MediaType::AUDIO, &dave_payload)
+            .unwrap();
+        assert_eq!(opus, packet.bytes);
+    }
+}

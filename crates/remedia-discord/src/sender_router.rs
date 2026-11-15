@@ -226,7 +226,7 @@ impl RoutedOpusSender {
     fn with_target<T>(
         &self,
         cancellation: &CancellationToken,
-        action: impl Fn(&DiscordOpusSender) -> Result<T, OutputError>,
+        mut action: impl FnMut(&DiscordOpusSender) -> Result<T, OutputError>,
     ) -> Result<T, OutputError> {
         loop {
             if self.cancelled.load(Ordering::Acquire) || cancellation.is_cancelled() {
@@ -285,8 +285,20 @@ impl OpusPacketSink for RoutedOpusSender {
         packet: EncodedOpusPacket,
         cancellation: &CancellationToken,
     ) -> Result<(), OutputError> {
+        // The packet is moved into the first attempt. A rejected attempt hands it back, so the
+        // normal delivery path allocates nothing and a transport migration retries the same
+        // packet on the replacement transport without a defensive clone.
+        let mut pending = Some(packet);
         self.with_target(cancellation, |target| {
-            target.send_packet(packet.clone(), cancellation)
+            let packet = pending
+                .take()
+                .ok_or_else(|| OutputError::new("packet was consumed by a failed delivery"))?;
+            target
+                .try_send_packet(packet, cancellation)
+                .map_err(|(error, returned)| {
+                    pending = Some(returned);
+                    error
+                })
         })
     }
 

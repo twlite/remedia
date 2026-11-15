@@ -112,16 +112,23 @@ impl DiscordOpusSender {
     }
 }
 
-impl OpusPacketSink for DiscordOpusSender {
-    fn send_packet(
+impl DiscordOpusSender {
+    /// Queue `packet`, returning it unchanged with the error when it was not accepted.
+    ///
+    /// A router can therefore retry the same allocation on a replacement transport instead of
+    /// cloning every packet just in case the first attempt fails.
+    pub(crate) fn try_send_packet(
         &self,
         packet: EncodedOpusPacket,
         cancellation: &CoreCancellationToken,
-    ) -> Result<(), OutputError> {
-        validate_opus_packet(&packet).map_err(OutputError::with_source)?;
-        let generation = self
-            .ensure_current(cancellation)
-            .map_err(OutputError::with_source)?;
+    ) -> Result<(), (OutputError, EncodedOpusPacket)> {
+        if let Err(error) = validate_opus_packet(&packet) {
+            return Err((OutputError::with_source(error), packet));
+        }
+        let generation = match self.ensure_current(cancellation) {
+            Ok(generation) => generation,
+            Err(error) => return Err((OutputError::with_source(error), packet)),
+        };
         let id = self
             .inner
             .next_packet_id
@@ -135,10 +142,13 @@ impl OpusPacketSink for DiscordOpusSender {
         };
         loop {
             if cancellation.is_cancelled() || self.cancelled.load(Ordering::Acquire) {
-                return Err(OutputError::Cancelled);
+                return Err((OutputError::Cancelled, queued.packet));
             }
             if self.inner.generation.load(Ordering::Acquire) != generation {
-                return Err(OutputError::with_source(VoiceError::Superseded));
+                return Err((
+                    OutputError::with_source(VoiceError::Superseded),
+                    queued.packet,
+                ));
             }
             match self
                 .inner
@@ -152,11 +162,25 @@ impl OpusPacketSink for DiscordOpusSender {
                     return Ok(());
                 }
                 Err(flume::SendTimeoutError::Timeout(returned)) => queued = returned,
-                Err(flume::SendTimeoutError::Disconnected(_)) => {
-                    return Err(OutputError::with_source(VoiceError::Disconnected));
+                Err(flume::SendTimeoutError::Disconnected(returned)) => {
+                    return Err((
+                        OutputError::with_source(VoiceError::Disconnected),
+                        returned.packet,
+                    ));
                 }
             }
         }
+    }
+}
+
+impl OpusPacketSink for DiscordOpusSender {
+    fn send_packet(
+        &self,
+        packet: EncodedOpusPacket,
+        cancellation: &CoreCancellationToken,
+    ) -> Result<(), OutputError> {
+        self.try_send_packet(packet, cancellation)
+            .map_err(|(error, _)| error)
     }
 
     fn supports_passthrough_packet(&self, packet: &EncodedOpusPacket) -> bool {

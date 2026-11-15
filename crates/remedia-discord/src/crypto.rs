@@ -5,8 +5,7 @@ use chacha20poly1305::XChaCha20Poly1305;
 use crate::error::VoiceError;
 
 pub(crate) const TRANSPORT_NONCE_BYTES: usize = 4;
-#[cfg(test)]
-const AUTH_TAG_BYTES: usize = 16;
+pub(crate) const AUTH_TAG_BYTES: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EncryptionMode {
@@ -58,42 +57,60 @@ impl TransportCipher {
         }
     }
 
-    /// Encrypt a payload using RTP header bytes as authenticated data.
-    /// The packet suffix follows Discord's RTP-size format: tag then the
-    /// network-order 32-bit nonce counter.
+    /// Encrypt `packet[payload_start..]` in place, using `rtp_header` as authenticated data, and
+    /// append the RTP-size suffix: the authentication tag followed by the network-order 32-bit
+    /// nonce counter.
+    ///
+    /// The caller owns the buffer, so a steady-state sender can reuse one allocation for every
+    /// packet. On error `packet` holds unspecified bytes and must not be transmitted.
+    pub(crate) fn seal_in_place(
+        &self,
+        rtp_header: &[u8; 12],
+        nonce_counter: u32,
+        packet: &mut Vec<u8>,
+        payload_start: usize,
+    ) -> Result<(), VoiceError> {
+        let nonce_suffix = nonce_counter.to_be_bytes();
+        let payload = packet
+            .get_mut(payload_start..)
+            .ok_or_else(|| VoiceError::Encryption("RTP payload offset is out of range".into()))?;
+        match self {
+            Self::Aes256Gcm(cipher) => {
+                let mut nonce = aes_gcm::Nonce::default();
+                nonce[..TRANSPORT_NONCE_BYTES].copy_from_slice(&nonce_suffix);
+                let tag = cipher
+                    .encrypt_inout_detached(&nonce, rtp_header, InOutBuf::from(payload))
+                    .map_err(|error| VoiceError::Encryption(error.to_string()))?;
+                packet.extend_from_slice(&tag);
+            }
+            Self::XChaCha20Poly1305(cipher) => {
+                let mut nonce = chacha20poly1305::XNonce::default();
+                nonce[..TRANSPORT_NONCE_BYTES].copy_from_slice(&nonce_suffix);
+                let tag = cipher
+                    .encrypt_inout_detached(&nonce, rtp_header, InOutBuf::from(payload))
+                    .map_err(|error| VoiceError::Encryption(error.to_string()))?;
+                packet.extend_from_slice(&tag);
+            }
+        }
+        packet.extend_from_slice(&nonce_suffix);
+        Ok(())
+    }
+
+    /// Allocating convenience wrapper over [`Self::seal_in_place`] for tests.
+    #[cfg(test)]
     pub(crate) fn encrypt_payload(
         &self,
         rtp_header: &[u8; 12],
         nonce_counter: u32,
         payload: &[u8],
     ) -> Result<Vec<u8>, VoiceError> {
-        let mut ciphertext = payload.to_vec();
-        let nonce_suffix = nonce_counter.to_be_bytes();
-        let tag = match self {
-            Self::Aes256Gcm(cipher) => {
-                let mut nonce = aes_gcm::Nonce::default();
-                nonce[..TRANSPORT_NONCE_BYTES].copy_from_slice(&nonce_suffix);
-                cipher
-                    .encrypt_inout_detached(&nonce, rtp_header, InOutBuf::from(&mut ciphertext[..]))
-                    .map_err(|error| VoiceError::Encryption(error.to_string()))?
-                    .to_vec()
-            }
-            Self::XChaCha20Poly1305(cipher) => {
-                let mut nonce = chacha20poly1305::XNonce::default();
-                nonce[..TRANSPORT_NONCE_BYTES].copy_from_slice(&nonce_suffix);
-                cipher
-                    .encrypt_inout_detached(&nonce, rtp_header, InOutBuf::from(&mut ciphertext[..]))
-                    .map_err(|error| VoiceError::Encryption(error.to_string()))?
-                    .to_vec()
-            }
-        };
-        ciphertext.extend_from_slice(&tag);
-        ciphertext.extend_from_slice(&nonce_suffix);
-        Ok(ciphertext)
+        let mut sealed = payload.to_vec();
+        self.seal_in_place(rtp_header, nonce_counter, &mut sealed, 0)?;
+        Ok(sealed)
     }
 
     #[cfg(test)]
-    fn decrypt_payload(
+    pub(crate) fn decrypt_payload(
         &self,
         rtp_header: &[u8; 12],
         encrypted: &[u8],
@@ -169,6 +186,50 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn sealing_into_a_presized_buffer_allocates_nothing_and_keeps_the_wire_layout() {
+        let key = [0x33; 32];
+        let header = [0x80, 0x78, 0, 9, 0, 0, 3, 192, 1, 2, 3, 4];
+        let payload = [7_u8; 120];
+
+        for mode in [EncryptionMode::Aes256Gcm, EncryptionMode::XChaCha20Poly1305] {
+            let cipher = TransportCipher::new(mode, &key).unwrap();
+            let mut packet = Vec::with_capacity(1_200);
+            packet.extend_from_slice(&header);
+            packet.extend_from_slice(&payload);
+
+            let (sealed, allocations) = crate::test_alloc::count_allocations(|| {
+                cipher.seal_in_place(&header, 41, &mut packet, header.len())
+            });
+
+            sealed.unwrap();
+            assert_eq!(
+                allocations, 0,
+                "{mode:?} sealing must reuse the caller's buffer"
+            );
+            assert_eq!(&packet[..header.len()], &header);
+            assert_eq!(
+                packet.len(),
+                header.len() + payload.len() + AUTH_TAG_BYTES + TRANSPORT_NONCE_BYTES
+            );
+            assert_eq!(
+                cipher
+                    .decrypt_payload(&header, &packet[header.len()..])
+                    .unwrap(),
+                payload
+            );
+        }
+    }
+
+    #[test]
+    fn sealing_rejects_an_offset_beyond_the_buffer_without_modifying_it() {
+        let cipher = TransportCipher::new(EncryptionMode::Aes256Gcm, &[1; 32]).unwrap();
+        let mut packet = vec![1, 2, 3];
+
+        assert!(cipher.seal_in_place(&[0; 12], 0, &mut packet, 4).is_err());
+        assert_eq!(packet, [1, 2, 3]);
     }
 
     #[test]
