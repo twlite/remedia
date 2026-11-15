@@ -159,6 +159,7 @@ EOF
     "--ranlib=$local_ranlib"
     "--strip=$local_strip"
     --host-cc=cc
+    --pkg-config-flags=--static
     --disable-shared
     --enable-gpl
     --enable-version3

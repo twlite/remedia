@@ -19,7 +19,7 @@ fetch_source ffmpeg https://github.com/FFmpeg/FFmpeg.git 946fcce07b6dcd0331c8cc6
 export SOURCE_DATE_EPOCH="$(git -C "$work/ffmpeg" show -s --format=%ct HEAD)"
 args=("--cc=${CC:-cc}" "--host-cc=${HOST_CC:-cc}" --prefix="$prefix" --enable-static --disable-shared --enable-gpl --enable-version3
   --disable-autodetect --disable-programs --disable-doc --disable-debug --enable-pic
-  --enable-network --disable-avdevice)
+  --enable-network --disable-avdevice --pkg-config-flags=--static)
 case "$(uname -s)" in
   Darwin) args+=(--enable-securetransport) ;;
   *)

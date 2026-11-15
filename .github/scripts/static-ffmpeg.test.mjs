@@ -174,6 +174,32 @@ for (const [compiler, hostCompiler] of [
       const configureArguments = readFileSync(log, 'utf8').split('\n');
       assert.ok(configureArguments.includes(`--cc=${compiler || 'cc'}`));
       assert.ok(configureArguments.includes(`--host-cc=${hostCompiler || 'cc'}`));
+
+      // Static OpenSSL's pthread dependency is private pkg-config metadata. Resolve
+      // an actual .pc fixture using the flags passed by the recipe, rather than
+      // relying on pthread symbols being merged into libc on the test host.
+      const packageDirectory = join(directory, 'pkgconfig');
+      mkdirSync(packageDirectory);
+      writeFileSync(
+        join(packageDirectory, 'openssl.pc'),
+        'Name: OpenSSL fixture\nDescription: Static transitive dependency regression\nVersion: 3.6.0\nLibs: -lssl -lcrypto\nLibs.private: -pthread\n',
+      );
+      const flags = configureArguments
+        .filter((argument) => argument.startsWith('--pkg-config-flags='))
+        .flatMap((argument) => argument.slice('--pkg-config-flags='.length).split(' '));
+      const dependencies = spawnSync('pkg-config', ['--libs', ...flags, 'openssl'], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PKG_CONFIG_PATH: packageDirectory,
+          PKG_CONFIG_LIBDIR: packageDirectory,
+        },
+      });
+      assert.equal(dependencies.status, 0, dependencies.stderr);
+      assert.ok(
+        dependencies.stdout.split(/\s+/).includes('-pthread'),
+        'the OpenSSL link probe must receive private pthread linkage',
+      );
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
