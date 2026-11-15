@@ -80,20 +80,6 @@ pub trait MediaOutput: Send + Sync + 'static {
         self.flush(duration_from_sample_position(sample_position), cancellation)
     }
 
-    /// Like [`Self::flush_samples`], for a seek after which the caller intends to return to
-    /// encoded Opus packets that sit on a 960-sample (20 ms) source grid.
-    ///
-    /// An Opus-capable output may start its first encoded frame on that grid by giving it up to
-    /// 19.98 ms of leading silence, so a later switch back to source packets needs no padded
-    /// partial frame mid-stream. The default is a plain [`Self::flush_samples`].
-    fn flush_samples_frame_aligned(
-        &self,
-        sample_position: u64,
-        cancellation: &CancellationToken,
-    ) -> Result<(), OutputError> {
-        self.flush_samples(sample_position, cancellation)
-    }
-
     /// Notify the output that a replacement filtergraph will supply the next
     /// PCM samples. Implementations should preserve their timeline and accepted
     /// audio; unlike [`Self::flush_samples`], this is not a seek or transport
@@ -154,6 +140,17 @@ pub trait EncodedOpusOutput: Send + Sync {
         packet: EncodedOpusPacket,
         cancellation: &CancellationToken,
     ) -> Result<(), OutputError>;
+
+    /// Start the encoder's next PCM frame on the 20 ms grid of media sample positions that are
+    /// multiples of 960, by giving it fewer than 20 ms of leading silence that is not media.
+    ///
+    /// Call it after a flush or at the start of playback, before PCM is written. The first packet
+    /// reports its shorter media duration, and the encoder has no partial frame once playback
+    /// reaches a multiple of 960, which is what a seamless return to source packets needs. Outputs
+    /// without an encoder keep this no-op default.
+    fn align_encoder_frames(&self, _next_sample_position: u64) -> Result<(), OutputError> {
+        Ok(())
+    }
 
     /// Close a partial PCM encoder frame at a safe packet boundary before
     /// switching back to encoded packets. Implementations must preserve sink

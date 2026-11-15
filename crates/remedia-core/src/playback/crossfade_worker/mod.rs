@@ -15,6 +15,8 @@ struct Transition {
     incoming_generation: u64,
     incoming_consumed: u64,
     outgoing_info: AudioStreamInfo,
+    /// Samples in the output encoder's partial frame when the overlap began, if known.
+    encoder_phase_start: Option<u64>,
     transferred: bool,
 }
 
@@ -136,6 +138,8 @@ fn worker_loop(
     let fade_samples =
         CrossfadeWindow::from_millis(config.duration_ms).expect("validated crossfade settings");
     let mut transition: Option<Transition> = None;
+    // Incoming PCM for one overlap block, reused across blocks instead of allocating per block.
+    let mut incoming_scratch: Vec<f32> = Vec::new();
     let mut preparation_requested = false;
     let mut fade_decided = false;
 
@@ -225,6 +229,27 @@ fn worker_loop(
                             data.info = Some(info.clone());
                             data.duration = info.duration;
                         }
+                        // A promoted Opus file can resume packets only if the encoder's partial
+                        // frame lines up with the incoming packet grid when its staged audio runs
+                        // out. Skip the few incoming samples (under 20 ms, at the very start of
+                        // the fade-in where the incoming gain is zero) that make it so.
+                        let encoder_phase_start = current.encoder_phase_now();
+                        let trimmed = next
+                            .trimmed_samples
+                            .load(std::sync::atomic::Ordering::Acquire);
+                        let mut skipped = 0;
+                        if next.passthrough_eligible()
+                            && let Some(phase) = encoder_phase_start
+                        {
+                            let wanted = (phase + 960 - trimmed % 960) % 960;
+                            if wanted > 0
+                                && next
+                                    .buffer
+                                    .try_pop_exact_into(wanted as usize, &mut incoming_scratch)
+                            {
+                                skipped = wanted;
+                            }
+                        }
                         transition = Some(Transition {
                             next: Arc::clone(&next),
                             info,
@@ -232,10 +257,9 @@ fn worker_loop(
                             fading: PcmCrossfade::with_curve(fade_samples, config.curve),
                             previous_generation: source_generation,
                             incoming_generation,
-                            incoming_consumed: next
-                                .trimmed_samples
-                                .load(std::sync::atomic::Ordering::Acquire),
+                            incoming_consumed: trimmed + skipped,
                             outgoing_info: outgoing_info.clone(),
+                            encoder_phase_start,
                             transferred: false,
                         });
                     }
@@ -325,9 +349,12 @@ fn worker_loop(
         let mut transition_failed = false;
         if let Some(active) = transition.as_mut() {
             let count = pcm.len() / 2;
-            let incoming = active.next.buffer.try_pop_exact(count);
-            if let Some(incoming) = incoming.filter(|frame| frame.len() == pcm.len()) {
-                if let Err(error) = active.fading.mix(&mut pcm, &incoming) {
+            if active
+                .next
+                .buffer
+                .try_pop_exact_into(count, &mut incoming_scratch)
+            {
+                if let Err(error) = active.fading.mix(&mut pcm, &incoming_scratch) {
                     tracing::error!(?error, "crossfade mixer rejected an overlapping frame");
                     fail_session(
                         &shared,
@@ -410,6 +437,12 @@ fn worker_loop(
                 Arc::clone(&finished.next),
                 finished.incoming_consumed,
                 &finished.info,
+            );
+            current.inherit_encoder_state(
+                finished.fading.consumed_samples() as u64,
+                finished
+                    .encoder_phase_start
+                    .map(|phase| (phase + finished.fading.consumed_samples() as u64) % 960),
             );
             outgoing_info = finished.info.clone();
             preparation_requested = false;

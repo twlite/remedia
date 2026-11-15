@@ -88,7 +88,9 @@ fn non_opus_stream_falls_back_to_pcm_and_native_opus_encoding() {
 }
 
 #[test]
-fn opus_with_encoder_preskip_falls_back_instead_of_forwarding_trimmed_packets() {
+fn synthetic_opus_with_a_declared_preskip_is_forwarded_with_its_pre_roll_excluded_from_media() {
+    // This fixture declares a 312-sample pre-skip. Its audio is a tone that starts at zero, so the
+    // pre-roll is quiet and the first packet can be forwarded unchanged.
     let source_bytes =
         include_bytes!("../../../tests/fixtures/generated-opus-trimmed.ogg").to_vec();
     let reader = AudioDecoder::open_for_playback(
@@ -96,7 +98,8 @@ fn opus_with_encoder_preskip_falls_back_instead_of_forwarding_trimmed_packets() 
         DecoderOptions::default(),
     )
     .unwrap();
-    assert!(reader.opus_passthrough_rejection().is_some());
+    assert_eq!(reader.opus_passthrough_rejection(), None);
+    assert_eq!(reader.opus_pre_skip(), 312);
 
     let (sink, handle) = StepPacketSink::new();
     handle.release(1_000);
@@ -108,7 +111,12 @@ fn opus_with_encoder_preskip_falls_back_instead_of_forwarding_trimmed_packets() 
         )
         .unwrap();
     assert_eq!(session.wait(), PlaybackState::Completed);
-    assert!(!handle.snapshot().packets.is_empty());
+    let packets = handle.snapshot().packets;
+    assert_eq!(packets[0].samples_per_channel, 960);
+    assert_eq!(packets[0].media_samples_per_channel, 648);
+    assert!(packets.windows(2).all(|pair| {
+        pair[1].start_sample == pair[0].start_sample + u64::from(pair[0].media_samples_per_channel)
+    }));
 }
 
 #[test]

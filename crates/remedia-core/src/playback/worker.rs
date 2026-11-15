@@ -1,4 +1,5 @@
 use super::*;
+use crate::decoder::{OPUS_ENCODER_LOOKAHEAD, OPUS_RECOVERY_WARM_FRAMES};
 
 pub(super) fn worker_entry(
     shared: Arc<SessionShared>,
@@ -59,7 +60,10 @@ pub(super) fn worker_loop(
     // trimmed. `passthrough_eligible` records whether the stream could otherwise forward packets,
     // and `seek_recovery` tracks the return to whole source packets after that first frame.
     let mut passthrough_eligible = can_passthrough;
-    let mut seek_recovery = SeekRecovery::default();
+    let mut seek_recovery = SeekRecovery {
+        pre_skip: decoder.opus_pre_skip(),
+        ..SeekRecovery::default()
+    };
     loop {
         if seek_recovery.ready(
             &shared,
@@ -70,15 +74,29 @@ pub(super) fn worker_loop(
             input_finished,
             deferred_filter_update.is_some(),
         ) {
-            can_passthrough = true;
+            // The encoder lags its input by its lookahead, so it must be given the first
+            // samples of the next packet before that packet is forwarded in their place.
             seek_recovery.pending = false;
-            lock(&shared.data).passthrough_available = true;
-            tracing::debug!(
-                name: "core.playback.passthrough_recovery_ready",
-                target: "remedia_core::playback",
-                playback_id,
-                "decoded the first post-seek packet; source packets can be forwarded again"
-            );
+            match decoder.overshoot_next_packet(OPUS_ENCODER_LOOKAHEAD as usize) {
+                Ok(Some(head)) => {
+                    pending_frame = Some(head);
+                    seek_recovery.junction = true;
+                    tracing::debug!(
+                        name: "core.playback.passthrough_recovery_junction",
+                        target: "remedia_core::playback",
+                        playback_id,
+                        "draining the encoder lookahead before forwarding source packets again"
+                    );
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    if is_stopped(&shared, generation) {
+                        return;
+                    }
+                    fail_session(&shared, generation, error.into(), &cancellation, &output);
+                    return;
+                }
+            }
         }
         match next_worker_action(
             &shared,
@@ -134,7 +152,7 @@ pub(super) fn worker_loop(
                                     continue;
                                 };
                                 let start_sample = match processor.record_passthrough_packet(
-                                    packet_info.samples_per_channel,
+                                    packet_info.media_samples_per_channel,
                                     packet.source_start_sample,
                                     packet.source_position_estimated,
                                 ) {
@@ -200,9 +218,9 @@ pub(super) fn worker_loop(
                                 );
                                 decoder.queue_compressed_packet(packet);
                                 can_passthrough = false;
+                                lock(&shared.data).passthrough_available = false;
                                 passthrough_eligible = false;
                                 seek_recovery.pending = false;
-                                lock(&shared.data).passthrough_available = false;
                             }
                         }
                         Ok(None) => input_finished = true,
@@ -252,7 +270,33 @@ pub(super) fn worker_loop(
                         )
                     },
                 ) {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        if std::mem::take(&mut seek_recovery.junction) {
+                            // The encoder's lookahead is drained and the packet is back in the
+                            // demuxer. Switch now, before anything can decode it a second time;
+                            // a later gain or filter change takes the ordinary path out.
+                            can_passthrough = true;
+                            lock(&shared.data).passthrough_available = true;
+                            if (processing::ProcessingTransition {
+                                shared: &shared,
+                                generation,
+                                output: &output,
+                                cancellation: &cancellation,
+                                playback_id,
+                                decoder: &mut decoder,
+                                processor: &mut processor,
+                                can_passthrough,
+                                passthrough_mode: &mut passthrough_mode,
+                                pending_frame: &mut pending_frame,
+                                deferred_filter_update: &mut deferred_filter_update,
+                            })
+                            .apply()
+                            .is_break()
+                            {
+                                return;
+                            }
+                        }
+                    }
                     Err(ProcessError::Output(_)) if is_stopped(&shared, generation) => return,
                     Err(ProcessError::Output(error)) => {
                         fail_session(
@@ -406,7 +450,8 @@ pub(super) fn worker_loop(
                 // the next packet boundary so FFmpeg can discard pre-target
                 // samples exactly, then `seek_recovery` restores passthrough.
                 can_passthrough = false;
-                seek_recovery.pending = passthrough_eligible;
+                seek_recovery.pending = passthrough_eligible && seek_recovery.can_resume();
+                seek_recovery.junction = false;
                 seek_recovery.delivered_frames = 0;
                 {
                     let mut data = lock(&shared.data);
@@ -430,11 +475,15 @@ pub(super) fn worker_loop(
                             );
                             return;
                         }
-                        let flushed = if seek_recovery.pending {
-                            output.flush_samples_frame_aligned(target_sample, &cancellation)
-                        } else {
-                            output.flush_samples(target_sample, &cancellation)
-                        };
+                        let flushed =
+                            output
+                                .flush_samples(target_sample, &cancellation)
+                                .and_then(|()| match output.encoded_opus_output() {
+                                    Some(encoded) if seek_recovery.pending => {
+                                        encoded.align_encoder_frames(target_sample)
+                                    }
+                                    _ => Ok(()),
+                                });
                         match flushed {
                             Ok(()) => {
                                 let played = safe_played_position(&output);
@@ -621,16 +670,26 @@ mod processing;
 /// Tracks the return to Opus packet passthrough after a seek.
 ///
 /// The demuxer lands on a packet at or before the target, so that packet is decoded and trimmed
-/// to the exact target sample. Once its audio has been delivered and nothing decoded is pending,
-/// the next demuxed packet starts exactly where the delivered PCM ended and whole packets can be
-/// forwarded again, provided the encoder's 20 ms frame grid is aligned with the source's.
+/// to the exact target sample. Source packets are forwarded again only once the switch is
+/// seamless: the encoder has settled on the re-encoded audio, the decoded audio ends exactly on a
+/// packet boundary, and the encoder lookahead can be drained with the next packet's first
+/// samples. That needs the stream's pre-skip to equal the encoder's lookahead; any other stream
+/// keeps decoding, as it did before.
 #[derive(Default)]
 struct SeekRecovery {
     pending: bool,
     delivered_frames: u32,
+    /// The first samples of the next packet are in `pending_frame` to drain the encoder.
+    junction: bool,
+    /// The stream's pre-skip: source packets begin where `(media sample + pre_skip) % 960 == 0`.
+    pre_skip: u32,
 }
 
 impl SeekRecovery {
+    fn can_resume(&self) -> bool {
+        self.pre_skip == OPUS_ENCODER_LOOKAHEAD
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn ready(
         &self,
@@ -643,13 +702,14 @@ impl SeekRecovery {
         deferred_filter: bool,
     ) -> bool {
         if !self.pending
-            || self.delivered_frames == 0
+            || !self.can_resume()
+            || self.delivered_frames < OPUS_RECOVERY_WARM_FRAMES
             || passthrough_mode
             || input_finished
             || deferred_filter
             || pending_frame.is_some()
             || decoder.has_pending_frames()
-            || !processor.next_sample().is_multiple_of(960)
+            || !(processor.next_sample() + u64::from(self.pre_skip)).is_multiple_of(960)
         {
             return false;
         }
@@ -664,6 +724,6 @@ impl SeekRecovery {
         }
 
         let data = lock(&shared.data);
-        data.filter_graph.is_none() && data.volume == 1.0 && data.state != PlaybackState::Stopping
+        data.filter_graph.is_none() && data.volume == 1.0 && data.state == PlaybackState::Playing
     }
 }

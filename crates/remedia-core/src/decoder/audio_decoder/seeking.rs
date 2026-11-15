@@ -55,6 +55,7 @@ impl AudioDecoder {
         self.next_sample_position = None;
         self.seek_target_sample = Some(target_sample);
         self.reader.demux_finished = false;
+        self.reader.first_packet_pending = false;
         self.reader.pending_packets.clear();
         self.reader.next_source_sample = Some(target_sample);
         self.reader.clear_packet_history();

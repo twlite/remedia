@@ -489,3 +489,46 @@ fn rtp_packets_reuse_one_datagram_buffer_and_decrypt_to_the_source_opus_packet()
         assert_eq!(opus, packet.bytes);
     }
 }
+
+/// `cargo test --release -p remedia-discord packetization_cost -- --ignored --nocapture`
+///
+/// Reports heap allocations and wall time per RTP datagram built from a 90-byte Opus packet
+/// under an established DAVE group. DAVE's own encryption allocates inside `davey` and is
+/// included in both figures.
+#[test]
+#[ignore = "benchmark; run explicitly with --ignored --nocapture"]
+fn packetization_cost() {
+    use crate::crypto::EncryptionMode;
+    use crate::rtp::RtpSender;
+    use remedia_core::EncodedOpusPacket;
+    use std::time::Instant;
+
+    const PACKETS: u64 = 50_000;
+    let (_, mut sender, _receiver) = established_group();
+    let packet = EncodedOpusPacket {
+        bytes: (0..90).collect(),
+        samples_per_channel: 960,
+        media_samples_per_channel: 960,
+        start_sample: 0,
+    };
+    for mode in [EncryptionMode::Aes256Gcm, EncryptionMode::XChaCha20Poly1305] {
+        let mut rtp = RtpSender::new(1, 0, 0, 0, mode, &[9; 32]).unwrap();
+        for _ in 0..1_000 {
+            let datagram = rtp.encode_packet(&packet, &mut sender).unwrap();
+            std::hint::black_box(datagram.len());
+        }
+        let started = Instant::now();
+        let ((), allocations) = crate::test_alloc::count_allocations(|| {
+            for _ in 0..PACKETS {
+                let datagram = rtp.encode_packet(&packet, &mut sender).unwrap();
+                std::hint::black_box(datagram.len());
+            }
+        });
+        let elapsed = started.elapsed();
+        println!(
+            "rtp {mode:?}: {:.2} allocations/packet, {:.0} ns/packet",
+            allocations as f64 / PACKETS as f64,
+            elapsed.as_nanos() as f64 / PACKETS as f64
+        );
+    }
+}

@@ -452,5 +452,7 @@ mod processing;
 
 mod crossfade;
 
+mod preskip;
+
 mod packet_sink;
 use packet_sink::*;

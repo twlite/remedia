@@ -44,7 +44,12 @@ impl StagedPcmBuffer {
                 .ok()?;
         Some(Self {
             capacity_scalars,
-            state: Mutex::new(StagedPcmState::default()),
+            // Reserve exactly the bounded capacity. Growing by doubling would settle on a
+            // power of two (1 MiB for the usual 2 s), and the ring touches all of it.
+            state: Mutex::new(StagedPcmState {
+                pcm: VecDeque::with_capacity(capacity_scalars),
+                ..StagedPcmState::default()
+            }),
             writable: Condvar::new(),
             readable: Condvar::new(),
         })
@@ -85,6 +90,31 @@ impl StagedPcmBuffer {
             self.readable.notify_all();
         }
         Ok(())
+    }
+
+    /// Pop exactly `samples_per_channel` frames into `destination`, replacing its contents and
+    /// reusing its allocation. Returns false without changing `destination` when not enough
+    /// audio is ready, or when the request exceeds the buffer's capacity.
+    pub fn try_pop_exact_into(
+        &self,
+        samples_per_channel: usize,
+        destination: &mut Vec<f32>,
+    ) -> bool {
+        let Some(scalars) = samples_per_channel.checked_mul(2) else {
+            return false;
+        };
+        if scalars > self.capacity_scalars {
+            return false;
+        }
+        let mut state = self.lock();
+        if state.cancelled || state.pcm.len() < scalars {
+            return false;
+        }
+        destination.clear();
+        destination.extend(state.pcm.drain(..scalars));
+        drop(state);
+        self.writable.notify_all();
+        true
     }
 
     /// Return exactly `samples_per_channel` frames without blocking, or
@@ -185,6 +215,46 @@ mod tests {
         buffer.finish();
         assert!(buffer.is_finished());
         assert_eq!(buffer.push(&frames), Err(StageBufferError::Closed));
+    }
+
+    #[test]
+    fn exact_pop_into_reuses_the_destination_and_matches_the_allocating_pop() {
+        let buffer = StagedPcmBuffer::with_capacity_ms(100).unwrap();
+        let frames: Vec<f32> = (0..9_600).map(|index| index as f32).collect();
+        buffer.push(&frames).unwrap();
+
+        let mut destination = Vec::with_capacity(2_000);
+        let pointer = destination.as_ptr();
+        assert!(buffer.try_pop_exact_into(960, &mut destination));
+        assert_eq!(destination, frames[..1_920]);
+        assert_eq!(
+            destination.as_ptr(),
+            pointer,
+            "the caller's allocation is reused"
+        );
+
+        // The same data through the allocating API, for equivalence.
+        assert_eq!(buffer.try_pop_exact(960).unwrap(), frames[1_920..3_840]);
+
+        let before = destination.clone();
+        assert!(!buffer.try_pop_exact_into(4_800, &mut destination));
+        assert_eq!(
+            destination, before,
+            "a refused pop leaves the destination alone"
+        );
+        assert!(!buffer.try_pop_exact_into(4_801, &mut destination));
+    }
+
+    #[test]
+    fn staged_buffer_storage_is_exactly_its_bounded_capacity() {
+        let buffer = StagedPcmBuffer::with_capacity_ms(2_000).unwrap();
+        assert_eq!(buffer.lock().pcm.capacity(), 192_000);
+        buffer.push(&vec![0.0; 192_000]).unwrap();
+        assert_eq!(
+            buffer.lock().pcm.capacity(),
+            192_000,
+            "a full buffer never reallocates"
+        );
     }
 
     #[test]

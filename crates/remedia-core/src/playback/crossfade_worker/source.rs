@@ -1,6 +1,7 @@
 //! Ownership and reading of direct or promoted prepared inputs.
 
 use super::*;
+use crate::decoder::{OPUS_ENCODER_LOOKAHEAD, OPUS_RECOVERY_WARM_FRAMES};
 
 /// Either the original FFmpeg decoder, or a prebuffered producer that has been
 /// promoted without opening another network stream or restarting the encoder.
@@ -24,6 +25,15 @@ pub(super) struct ActiveSource {
     /// `eligible`, this survives a seek and a packet that merely would not fit before an overlap.
     stream_eligible: bool,
     boundary: Option<u64>,
+    /// The stream's Opus pre-skip: its packets begin where `(media sample + pre_skip) % 960 == 0`.
+    pre_skip: u32,
+    /// Samples fed to the Opus encoder since it last started from an empty state.
+    pcm_run: u64,
+    /// Samples held in the output encoder's partial 20 ms frame, when known. A return to source
+    /// packets needs it to be the 648 samples that the next packet's first 312 complete.
+    encoder_phase: Option<u64>,
+    /// The first samples of the next packet are queued in `pcm` to drain the encoder lookahead.
+    junction: bool,
     /// Keeps a promoted source's cancellation linked to the session after its decoder was adopted.
     _cancel_link: Option<Arc<dyn crate::source::CancellationWake>>,
     pub(super) consumed: u64,
@@ -33,6 +43,7 @@ pub(super) struct ActiveSource {
 impl ActiveSource {
     pub(super) fn decoder(decoder: AudioDecoder, source: InputSource) -> Self {
         let eligible = decoder.opus_passthrough_rejection().is_none();
+        let pre_skip = decoder.opus_pre_skip();
         let duration_samples = decoder.info().duration.map(samples_from_duration);
         Self {
             source,
@@ -47,6 +58,10 @@ impl ActiveSource {
             eligible,
             stream_eligible: eligible,
             boundary: None,
+            pre_skip,
+            pcm_run: 0,
+            encoder_phase: Some(0),
+            junction: false,
             _cancel_link: None,
             consumed: 0,
             duration_samples,
@@ -67,6 +82,10 @@ impl ActiveSource {
             eligible: false,
             stream_eligible: false,
             boundary: None,
+            pre_skip: 0,
+            pcm_run: 0,
+            encoder_phase: Some(0),
+            junction: false,
             _cancel_link: None,
             consumed,
             duration_samples: info.duration.map(samples_from_duration),
@@ -89,6 +108,7 @@ impl ActiveSource {
         let stage = Arc::clone(stage);
         stage.join_finished_worker();
         self.stream_eligible = decoder.opus_passthrough_rejection().is_none();
+        self.pre_skip = decoder.opus_pre_skip();
         self.eligible = self.stream_eligible;
         self.boundary = Some(self.consumed);
         self.encoded = false;
@@ -101,11 +121,38 @@ impl ActiveSource {
         true
     }
 
+    /// Record the encoder state a promoted source inherits from the overlap that just ended: how
+    /// long the encoder has been running and how many samples its partial frame holds.
+    pub(super) fn inherit_encoder_state(&mut self, pcm_run: u64, phase: Option<u64>) {
+        self.pcm_run = pcm_run;
+        self.encoder_phase = phase;
+    }
+
+    /// The encoder phase if this source were to start PCM now: empty after forwarded packets.
+    pub(super) fn encoder_phase_now(&self) -> Option<u64> {
+        if self.encoded {
+            Some(0)
+        } else {
+            self.encoder_phase
+        }
+    }
+
+    /// The output encoder was just flushed at `sample` and aligned to the 960-sample media grid.
+    pub(super) fn mark_encoder_aligned(&mut self, sample: u64) {
+        self.encoder_phase = Some(sample % 960);
+        self.pcm_run = 0;
+    }
+
+    /// A time-changing filter fed the encoder an unknown number of samples.
+    pub(super) fn forget_encoder_phase(&mut self) {
+        self.encoder_phase = None;
+    }
+
     /// Samples the next PCM read should request so reads end on the source packet grid. After a
     /// seek the first read is shorter; in steady state this is one full frame.
     pub(super) fn grid_aligned_read(&self, frame: usize) -> usize {
         if self.stream_eligible && matches!(self.input, ActiveInput::Direct { .. }) {
-            frame - (self.consumed % frame as u64) as usize
+            frame - ((self.consumed + u64::from(self.pre_skip)) % frame as u64) as usize
         } else {
             frame
         }
@@ -113,7 +160,7 @@ impl ActiveSource {
 
     /// Whether this source may return to source packets, for aligning a seek's output flush.
     pub(super) fn may_resume_encoded(&self) -> bool {
-        self.stream_eligible
+        self.eligible
     }
 
     pub(super) fn scheduling_end(&mut self, staged: bool, fade: u64) -> Option<u64> {
@@ -146,6 +193,11 @@ impl ActiveSource {
             } else {
                 decoder.activate_decoder(&[], None)?;
             }
+        }
+        if self.encoded {
+            // The output encoder restarts from an empty state on a source packet boundary.
+            self.pcm_run = 0;
+            self.encoder_phase = Some(0);
         }
         self.encoded = false;
         Ok(())
@@ -197,17 +249,66 @@ impl ActiveSource {
         if !self.encoded {
             // A return from PCM requires both source and encoder packet boundaries.
             // Conservatively keep transcoding if any decoded/resampled audio is pending.
-            if !pcm.is_empty()
-                || decoder.has_pending_frames()
-                || !processor.next_sample().is_multiple_of(960)
-            {
-                return Ok(None);
-            }
-            if self.consumed > 0 && decoder.source_boundary_sample() != self.boundary {
-                return Ok(None);
+            // The stream's first packet starts before media sample 0, so the very start of
+            // playback is a packet boundary even though it is off the grid.
+            let draining_junction = self.junction;
+            if draining_junction {
+                if !pcm.is_empty() {
+                    return Ok(None);
+                }
+            } else {
+                let at_stream_start = decoder.at_first_packet() && processor.next_sample() == 0;
+                let junction_path = self.pre_skip == OPUS_ENCODER_LOOKAHEAD && self.pcm_run > 0;
+                // After a re-encoded stretch the output timeline runs a lookahead ahead of the
+                // source, so the packet boundary is judged on the source's own position.
+                let on_grid = if junction_path {
+                    (self.consumed + u64::from(self.pre_skip)).is_multiple_of(960)
+                } else {
+                    (processor.next_sample() + u64::from(self.pre_skip)).is_multiple_of(960)
+                };
+                if !pcm.is_empty() || decoder.has_pending_frames() || !(on_grid || at_stream_start)
+                {
+                    return Ok(None);
+                }
+                if self.consumed > 0 && decoder.source_boundary_sample() != self.boundary {
+                    return Ok(None);
+                }
+                if junction_path {
+                    // The encoder lags its input by its lookahead and carries state the client
+                    // decoder has settled on. A seamless return needs it started on the media
+                    // grid, warm, and fed the next packet's first samples; anything else keeps
+                    // decoding rather than leave a hole or a cold decoder at the seam.
+                    let clear_of_overlap = before_overlap.is_none_or(|left| left > 2 * 960);
+                    let phase_ready = self.encoder_phase.is_some_and(|phase| {
+                        (phase + u64::from(self.pre_skip)).is_multiple_of(960)
+                    });
+                    if !phase_ready
+                        || self.pcm_run < u64::from(OPUS_RECOVERY_WARM_FRAMES) * 960
+                        || !clear_of_overlap
+                    {
+                        return Ok(None);
+                    }
+                    return match decoder.overshoot_next_packet(OPUS_ENCODER_LOOKAHEAD as usize)? {
+                        Some(head) => {
+                            pcm.extend(head.frame.samples);
+                            self.junction = true;
+                            Ok(None)
+                        }
+                        None => Ok(None),
+                    };
+                }
             }
             decoder.deactivate_decoder()?;
             encoded_output.prepare_passthrough(processor.next_sample(), cancellation)?;
+            if draining_junction {
+                // The drained samples are sent again as part of the packet that follows.
+                self.consumed = self
+                    .consumed
+                    .saturating_sub(u64::from(OPUS_ENCODER_LOOKAHEAD));
+                self.boundary = Some(self.consumed);
+                self.junction = false;
+            }
+            self.pcm_run = 0;
             self.encoded = true;
         }
         if *ended {
@@ -245,7 +346,7 @@ impl ActiveSource {
         let mut encoded = encoded.expect("checked packet eligibility");
         encoded.start_sample = processor
             .record_passthrough_packet(
-                encoded.samples_per_channel,
+                encoded.media_samples_per_channel,
                 packet.source_start_sample,
                 packet.source_position_estimated,
             )
@@ -287,15 +388,32 @@ impl ActiveSource {
                 pcm,
                 ended,
             } => {
-                while pcm.len() < wanted * 2 && !*ended && !cancellation.is_cancelled() {
-                    match decoder.next_frame()? {
-                        Some(frame) => pcm.extend(frame.samples),
-                        None => *ended = true,
+                if self.junction {
+                    if pcm.is_empty() {
+                        // Packets were not resumed (for example a gain change arrived). The
+                        // decoder already holds the next packet's state, so rebuild it from the
+                        // history before that packet and skip the samples already sent.
+                        let boundary = decoder.source_boundary_sample().unwrap_or(0);
+                        let history = decoder.packet_history_before(boundary);
+                        decoder.deactivate_decoder()?;
+                        decoder.activate_decoder(
+                            &history,
+                            Some(boundary + u64::from(OPUS_ENCODER_LOOKAHEAD)),
+                        )?;
+                        self.junction = false;
+                    }
+                } else {
+                    while pcm.len() < wanted * 2 && !*ended && !cancellation.is_cancelled() {
+                        match decoder.next_frame()? {
+                            Some(frame) => pcm.extend(frame.samples),
+                            None => *ended = true,
+                        }
                     }
                 }
-                if pcm.is_empty() {
+                if pcm.is_empty() && !self.junction {
                     return Ok(None);
                 }
+                // While draining the encoder lookahead only the queued samples are returned.
                 pcm.drain(..(wanted * 2).min(pcm.len())).collect()
             }
             ActiveInput::Prepared(stage) => {
@@ -318,6 +436,10 @@ impl ActiveSource {
             }
         };
         self.consumed += (samples.len() / 2) as u64;
+        self.pcm_run += (samples.len() / 2) as u64;
+        self.encoder_phase = self
+            .encoder_phase
+            .map(|phase| (phase + (samples.len() / 2) as u64) % 960);
         if self.eligible {
             self.boundary = Some(self.consumed);
         }
@@ -341,7 +463,7 @@ impl ActiveSource {
                 // The first packet after a demuxer seek needs trimming, so it is decoded. Once
                 // that audio is consumed on a packet boundary the stream can forward packets
                 // again if it ever could.
-                self.eligible = self.stream_eligible;
+                self.eligible = self.stream_eligible && self.pre_skip == OPUS_ENCODER_LOOKAHEAD;
                 self.boundary = None;
                 pcm.clear();
                 *ended = false;
@@ -364,7 +486,8 @@ impl ActiveSource {
                 decoder.seek(position)?;
                 self.encoded = false;
                 self.stream_eligible = decoder.opus_passthrough_rejection().is_none();
-                self.eligible = self.stream_eligible;
+                self.pre_skip = decoder.opus_pre_skip();
+                self.eligible = self.stream_eligible && self.pre_skip == OPUS_ENCODER_LOOKAHEAD;
                 self.boundary = None;
                 stage.cancel_and_join();
                 self.input = ActiveInput::Direct {
@@ -375,6 +498,9 @@ impl ActiveSource {
             }
         };
         self.encoded = false;
+        self.junction = false;
+        self.pcm_run = 0;
+        self.encoder_phase = None;
         self.probe = None;
         self.effective_end = None;
         self.consumed = samples_from_duration(position);

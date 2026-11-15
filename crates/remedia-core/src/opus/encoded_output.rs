@@ -5,7 +5,7 @@ impl EncodedOpusOutput for OpusEncoderOutput {
         matches!(
             packet.samples_per_channel,
             120 | 240 | 480 | 960 | 1_920 | 2_880 | 5_760
-        ) && packet.media_samples_per_channel == packet.samples_per_channel
+        ) && (1..=packet.samples_per_channel).contains(&packet.media_samples_per_channel)
             && !packet.bytes.is_empty()
             && self.sink.supports_passthrough_packet(packet)
     }
@@ -72,10 +72,11 @@ impl EncodedOpusOutput for OpusEncoderOutput {
         }
         state.discard_alignment_padding();
         if state.partial_scalars != 0 {
-            let media_samples = state.partial_scalars / 2;
+            let total_samples = state.partial_scalars / 2;
+            let media_samples = total_samples - state.partial_lead_samples;
             let encoded_samples = [120, 240, 480, OPUS_FRAME_SAMPLES]
                 .into_iter()
-                .find(|samples| *samples >= media_samples)
+                .find(|samples| *samples >= total_samples)
                 .ok_or_else(|| OutputError::new("partial Opus frame is too large to flush"))?;
             let encoded_scalars = encoded_samples * 2;
             let partial_scalars = state.partial_scalars;
@@ -97,11 +98,26 @@ impl EncodedOpusOutput for OpusEncoderOutput {
             )?;
             state.partial_scalars = 0;
             state.partial_start_sample = None;
+            state.partial_lead_samples = 0;
         }
         if let Some(encoder) = state.encoder.as_mut() {
             encoder.reset_state().map_err(OutputError::with_source)?;
         }
         state.next_input_sample = Some(next_sample_position);
+        Ok(())
+    }
+
+    fn align_encoder_frames(&self, next_sample_position: u64) -> Result<(), OutputError> {
+        let lead = (next_sample_position % OPUS_FRAME_SAMPLES as u64) as usize;
+        let mut state = lock(&self.state);
+        if lead == 0 || state.partial_scalars != 0 {
+            return Ok(());
+        }
+        state.partial[..lead * 2].fill(0.0);
+        state.partial_scalars = lead * 2;
+        state.partial_lead_samples = lead;
+        state.partial_start_sample = Some(next_sample_position);
+        state.partial_is_alignment_only = true;
         Ok(())
     }
 }

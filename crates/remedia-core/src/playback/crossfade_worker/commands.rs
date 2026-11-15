@@ -48,10 +48,12 @@ pub(super) fn handle_commands(
                 processor
                     .reset(sample)
                     .map_err(|e| PlaybackError::FilterGraph(Arc::new(e)))?;
-                if current.may_resume_encoded() {
-                    output.flush_samples_frame_aligned(sample, cancellation)?;
-                } else {
-                    output.flush_samples(sample, cancellation)?;
+                output.flush_samples(sample, cancellation)?;
+                if current.may_resume_encoded()
+                    && let Some(encoded) = output.encoded_opus_output()
+                {
+                    encoded.align_encoder_frames(sample)?;
+                    current.mark_encoder_aligned(sample);
                 }
                 let mut state = lock(&shared.data);
                 state.submitted_sample = sample;
@@ -100,6 +102,7 @@ pub(super) fn handle_commands(
                 .map_err(PlaybackError::from);
             if result.is_ok() {
                 processor.replace(update.graph);
+                current.forget_encoder_phase();
             }
             let _ = update.response.send(result.clone());
             result?;

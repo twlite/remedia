@@ -37,7 +37,8 @@ pub(super) struct PreparedStage {
     info: Mutex<Option<AudioStreamInfo>>,
     error: Mutex<Option<String>>,
     worker: Mutex<Option<JoinHandle<()>>>,
-    /// The staged stream can forward Opus packets (set once its input is open).
+    /// The staged stream can forward Opus packets and its input is local, so its decoder may
+    /// move to the playback worker (set once its input is open).
     passthrough_eligible: std::sync::atomic::AtomicBool,
     /// The promoted source asked this stage to park its decoder instead of decoding further.
     handoff_requested: std::sync::atomic::AtomicBool,
@@ -108,7 +109,12 @@ impl PreparedStage {
                 },
             )?;
             *lock(&self.info) = Some(decoder.info().clone());
-            let eligible = decoder.opus_passthrough_rejection().is_none();
+            // Handing the decoder to the playback worker removes the staged PCM cushion that
+            // absorbs a stalled remote read, so only inputs that cannot stall on a remote peer
+            // qualify. Network and producer-fed streams keep their buffered stage.
+            let eligible = decoder.opus_passthrough_rejection().is_none()
+                && decoder.opus_pre_skip() == crate::decoder::OPUS_ENCODER_LOOKAHEAD
+                && matches!(self.source, InputSource::File(_) | InputSource::Bytes(_));
             self.passthrough_eligible
                 .store(eligible, std::sync::atomic::Ordering::Release);
             let mut prefix = Vec::new();

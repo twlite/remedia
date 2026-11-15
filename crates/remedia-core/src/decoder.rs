@@ -17,6 +17,17 @@ const OUTPUT_SAMPLE_FORMAT: ffmpeg::format::Sample =
     ffmpeg::format::Sample::F32(SampleType::Planar);
 const RESAMPLER_PADDING_SAMPLES: usize = 128;
 const OPUS_PREROLL_SAMPLES: u64 = 5_760;
+
+/// The algorithmic delay, in 48 kHz samples, of the libopus encoder Remedia uses for PCM. Its
+/// output decodes to its input delayed by this many samples, which is why Opus streams carry a
+/// pre-skip of the same size. Returning from encoded PCM to source packets is seamless only for
+/// streams whose pre-skip matches it.
+pub(crate) const OPUS_ENCODER_LOOKAHEAD: u32 = 312;
+
+/// PCM frames the encoder must have processed since it started before a switch back to source
+/// packets: a freshly reset encoder codes its first frames poorly, and the client's decoder state
+/// must have settled on the re-encoded audio before it is handed original packets.
+pub(crate) const OPUS_RECOVERY_WARM_FRAMES: u32 = 6;
 const OPUS_HISTORY_MAX_BYTES: usize = 512 * 1024;
 
 mod audio_decoder;

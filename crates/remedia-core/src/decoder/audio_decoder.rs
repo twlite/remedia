@@ -104,6 +104,16 @@ impl AudioDecoder {
         })
     }
 
+    /// The next demuxed packet is the stream's first, so it holds any pre-skip region.
+    pub(crate) fn at_first_packet(&self) -> bool {
+        self.reader.first_packet_pending && self.reader.pending_packets.is_empty()
+    }
+
+    /// The Opus pre-skip, in 48 kHz samples, of a stream that can use packet passthrough.
+    pub(crate) fn opus_pre_skip(&self) -> u32 {
+        self.reader.pre_skip
+    }
+
     pub(crate) fn opus_passthrough_rejection(&self) -> Option<&'static str> {
         self.reader.opus_passthrough_rejection()
     }
@@ -124,9 +134,70 @@ impl AudioDecoder {
     }
 
     pub(crate) fn queue_compressed_packet(&mut self, packet: DemuxedAudioPacket) {
+        // The next unread packet is this one again, so the source position is back at its start.
+        if packet.source_start_sample.is_some() {
+            self.reader.next_source_sample = packet.source_start_sample;
+        }
         self.reader.pending_packets.push_front(packet);
         self.reader.demux_finished = false;
         self.finished = false;
+    }
+
+    /// Decode the next packet and return only its first `head_samples` of PCM, then put the packet
+    /// back so it can be forwarded unchanged. Used to feed the Opus encoder the samples that
+    /// drain its lookahead before a switch back to source packets.
+    ///
+    /// The decoder must be idle (no pending frames) and is left holding state that already
+    /// includes the packet, so the caller must leave PCM decoding immediately afterwards.
+    /// Returns `Ok(None)` at end of input or when the packet cannot be restored or is shorter than
+    /// `head_samples`; in that case nothing has been consumed from the demuxer.
+    pub(crate) fn overshoot_next_packet(
+        &mut self,
+        head_samples: usize,
+    ) -> Result<Option<DecodedPcmFrame>, DecoderError> {
+        let _log_capture = crate::ffmpeg_logging::capture();
+        self.check_cancelled()?;
+        if self.decoder.is_none() || !self.pending_frames.is_empty() {
+            return Ok(None);
+        }
+        let Some(packet) = self.read_compressed_packet()? else {
+            return Ok(None);
+        };
+        if packet.has_trimming_metadata
+            || !packet
+                .samples_per_channel
+                .is_some_and(|samples| samples as usize >= head_samples)
+        {
+            self.queue_compressed_packet(packet);
+            return Ok(None);
+        }
+        self.send_packet(&packet.packet)?;
+        self.drain_decoder()?;
+        let head = self
+            .pending_frames
+            .pop_front()
+            .filter(|frame| frame.frame.samples_per_channel >= head_samples);
+        self.pending_frames.clear();
+        let head = head.map(|mut frame| {
+            frame
+                .frame
+                .samples
+                .truncate(head_samples * usize::from(OUTPUT_CHANNELS));
+            frame.frame.samples_per_channel = head_samples;
+            frame
+        });
+        match head {
+            Some(frame) => {
+                self.queue_compressed_packet(packet);
+                Ok(Some(frame))
+            }
+            None => {
+                self.queue_compressed_packet(packet);
+                Err(DecoderError::Decode(
+                    "packet decoded to fewer samples than the encoder lookahead".into(),
+                ))
+            }
+        }
     }
 
     pub(crate) fn has_pending_frames(&self) -> bool {

@@ -49,36 +49,37 @@ pub(super) fn codec_parameter_metadata(
     )
 }
 
-pub(super) fn opus_head_passthrough_rejection(
+/// Validate the OpusHead for packet passthrough and return its pre-skip in 48 kHz samples.
+///
+/// Pre-skip is the number of decoder output samples a player discards at the start of the
+/// stream (RFC 7845 section 4.2). It is reported rather than rejected so the caller can model it.
+pub(super) fn opus_head_passthrough(
     parameters: &ffmpeg::codec::Parameters,
     source_channels: Option<u16>,
-) -> Option<&'static str> {
+) -> Result<u16, &'static str> {
     // SAFETY: Parameters owns a live AVCodecParameters allocation. The
     // extradata is borrowed for the duration of this parse only.
     let native = unsafe { &*parameters.as_ptr() };
     if native.extradata.is_null() || native.extradata_size < 19 {
-        return Some("Opus stream does not expose a complete OpusHead");
+        return Err("Opus stream does not expose a complete OpusHead");
     }
     // SAFETY: FFmpeg guarantees extradata is readable for extradata_size bytes
     // while the owning Parameters value remains alive.
     let extra =
         unsafe { std::slice::from_raw_parts(native.extradata, native.extradata_size as usize) };
     if !extra.starts_with(b"OpusHead") || extra[8] > 1 {
-        return Some("Opus codec initialization data is not a supported OpusHead");
+        return Err("Opus codec initialization data is not a supported OpusHead");
     }
     if !matches!(extra[9], 1 | 2) || extra[18] != 0 {
-        return Some("Opus channel mapping configuration is not family zero");
+        return Err("Opus channel mapping configuration is not family zero");
     }
     if source_channels != Some(u16::from(extra[9])) {
-        return Some("OpusHead channel count disagrees with stream parameters");
-    }
-    if u16::from_le_bytes([extra[10], extra[11]]) != 0 {
-        return Some("Opus stream has nonzero pre-skip");
+        return Err("OpusHead channel count disagrees with stream parameters");
     }
     if i16::from_le_bytes([extra[16], extra[17]]) != 0 {
-        return Some("OpusHead requires output gain");
+        return Err("OpusHead requires output gain");
     }
-    None
+    Ok(u16::from_le_bytes([extra[10], extra[11]]))
 }
 
 pub(super) fn is_again(error: ffmpeg::Error) -> bool {

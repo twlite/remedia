@@ -35,7 +35,10 @@ pub(super) fn encoded_packet_from_demuxed(
     Some(EncodedOpusPacket {
         bytes: bytes.to_vec(),
         samples_per_channel: samples,
-        media_samples_per_channel: samples,
+        // Only a stream's first packet can start with decoder pre-roll that is not media.
+        media_samples_per_channel: samples
+            .checked_sub(demuxed.leading_skip)
+            .filter(|m| *m > 0)?,
         start_sample: 0,
     })
 }

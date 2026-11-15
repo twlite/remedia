@@ -340,3 +340,39 @@ fn pcm_wave(samples: &[i16]) -> Vec<u8> {
     }
     bytes
 }
+
+/// `cargo test --release -p remedia-discord routed_delivery_cost -- --ignored --nocapture`
+///
+/// Heap allocations the router adds to one normal packet delivery, excluding the queue's own
+/// storage on the consumer thread.
+#[test]
+#[ignore = "benchmark; run explicitly with --ignored --nocapture"]
+fn routed_delivery_cost() {
+    const PACKETS: u64 = 20_000;
+    let voice = TestVoiceConnection::new(48);
+    let router = DiscordOpusSenderRouter::new();
+    router.attach(voice.connection().opus_sender());
+    let sender = router.sink();
+    let cancellation = CancellationToken::new();
+    let mut batch: Vec<EncodedOpusPacket> = (0..PACKETS)
+        .map(|index| {
+            let mut packet = packet(index * 960);
+            packet.bytes = (0..90).collect();
+            packet
+        })
+        .collect();
+    batch.reverse();
+
+    let started = std::time::Instant::now();
+    let ((), allocations) = crate::test_alloc::count_allocations(|| {
+        while let Some(packet) = batch.pop() {
+            sender.send_packet(packet, &cancellation).unwrap();
+        }
+    });
+    println!(
+        "routed delivery: {:.2} allocations/packet, {:.0} ns/packet",
+        allocations as f64 / PACKETS as f64,
+        started.elapsed().as_nanos() as f64 / PACKETS as f64
+    );
+    voice.wait_for_packets(PACKETS as usize);
+}

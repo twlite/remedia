@@ -335,28 +335,36 @@ fn queued_packets_own_only_the_encoded_payload() {
 }
 
 #[test]
-fn frame_aligned_flush_puts_the_first_frame_on_the_source_grid_and_returns_to_packets() {
+fn aligned_frames_put_the_first_frame_on_the_source_grid_and_report_true_media() {
     let sink = CaptureSink::default();
     let output = OpusEncoderOutput::new(sink.clone()).unwrap();
     let cancellation = CancellationToken::new();
+    let encoded: &dyn EncodedOpusOutput = &output;
 
     // 24 300 = 25 * 960 + 300: 660 samples remain in the packet containing the target.
-    output
-        .flush_samples_frame_aligned(24_300, &cancellation)
-        .unwrap();
+    output.flush_samples(24_300, &cancellation).unwrap();
+    encoded.align_encoder_frames(24_300).unwrap();
     output.write_frame(pcm(24_300, 660), &cancellation).unwrap();
     {
         let state = lock(&sink.0);
         assert_eq!(state.flush_sample_positions, [24_300]);
-        let first = &state.packets[0];
         assert_eq!(state.packets.len(), 1);
-        assert_eq!(first.start_sample, 24_000);
-        assert_eq!(first.samples_per_channel, 960);
-        assert_eq!(first.media_samples_per_channel, 960);
+        let first = &state.packets[0];
+        assert_eq!(
+            first.start_sample, 24_300,
+            "the packet starts at the first real sample"
+        );
+        assert_eq!(
+            first.samples_per_channel, 960,
+            "but occupies a whole 20 ms frame"
+        );
+        assert_eq!(
+            first.media_samples_per_channel, 660,
+            "of which 300 samples are silence"
+        );
     }
 
     // The encoder is now on the grid, so switching back needs no padded partial frame.
-    let encoded: &dyn EncodedOpusOutput = &output;
     encoded.prepare_passthrough(24_960, &cancellation).unwrap();
     assert_eq!(lock(&sink.0).packets.len(), 1);
     encoded
@@ -375,15 +383,31 @@ fn frame_aligned_flush_puts_the_first_frame_on_the_source_grid_and_returns_to_pa
 }
 
 #[test]
-fn frame_aligned_flush_without_audio_never_emits_or_requires_an_encoder() {
+fn encoder_lookahead_constant_matches_libopus() {
+    // Seamless packet recovery depends on this being exactly the encoder's algorithmic delay.
+    let output = OpusEncoderOutput::new(CaptureSink::default()).unwrap();
+    output
+        .write_frame(pcm(0, 960), &CancellationToken::new())
+        .unwrap();
+    let lookahead = lock(&output.state)
+        .encoder
+        .as_mut()
+        .unwrap()
+        .get_lookahead()
+        .unwrap();
+    assert_eq!(lookahead as u32, crate::decoder::OPUS_ENCODER_LOOKAHEAD);
+}
+
+#[test]
+fn aligning_without_audio_never_emits_or_requires_an_encoder() {
     let sink = CaptureSink::default();
     let output = OpusEncoderOutput::new(sink.clone()).unwrap();
     let cancellation = CancellationToken::new();
+    let encoded: &dyn EncodedOpusOutput = &output;
 
     // A seek to the very end can finish before any PCM follows. The alignment silence is dropped.
-    output
-        .flush_samples_frame_aligned(1_234, &cancellation)
-        .unwrap();
+    output.flush_samples(1_234, &cancellation).unwrap();
+    encoded.align_encoder_frames(1_234).unwrap();
     output.finish(&cancellation).unwrap();
 
     let state = lock(&sink.0);
@@ -392,17 +416,22 @@ fn frame_aligned_flush_without_audio_never_emits_or_requires_an_encoder() {
 }
 
 #[test]
-fn frame_aligned_flush_on_the_grid_changes_nothing() {
+fn aligning_on_the_grid_or_mid_frame_changes_nothing() {
     let sink = CaptureSink::default();
     let output = OpusEncoderOutput::new(sink.clone()).unwrap();
     let cancellation = CancellationToken::new();
+    let encoded: &dyn EncodedOpusOutput = &output;
 
-    output
-        .flush_samples_frame_aligned(9_600, &cancellation)
-        .unwrap();
+    encoded.align_encoder_frames(9_600).unwrap();
     output.write_frame(pcm(9_600, 960), &cancellation).unwrap();
+    // A partial frame is already pending, so a late request is ignored rather than corrupting it.
+    output.write_frame(pcm(10_560, 100), &cancellation).unwrap();
+    encoded.align_encoder_frames(10_660).unwrap();
+    output.write_frame(pcm(10_660, 860), &cancellation).unwrap();
 
     let state = lock(&sink.0);
-    assert_eq!(state.packets.len(), 1);
+    assert_eq!(state.packets.len(), 2);
     assert_eq!(state.packets[0].start_sample, 9_600);
+    assert_eq!(state.packets[1].start_sample, 10_560);
+    assert_eq!(state.packets[1].media_samples_per_channel, 960);
 }

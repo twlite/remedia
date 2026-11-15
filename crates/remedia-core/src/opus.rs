@@ -150,8 +150,10 @@ struct EncoderState {
     partial: [f32; OPUS_FRAME_SCALARS],
     partial_scalars: usize,
     partial_start_sample: Option<u64>,
-    /// The partial frame holds only grid-alignment silence from
-    /// `flush_samples_frame_aligned`; no real PCM has followed it yet.
+    /// Leading silence (per channel) that `align_encoder_frames` placed at the start of the
+    /// partial frame. It is encoded but is not media.
+    partial_lead_samples: usize,
+    /// The partial frame holds only that alignment silence; no real PCM has followed it yet.
     partial_is_alignment_only: bool,
     next_input_sample: Option<u64>,
     finished: bool,
@@ -199,6 +201,7 @@ impl OpusEncoderOutput {
                 partial: [0.0; OPUS_FRAME_SCALARS],
                 partial_scalars: 0,
                 partial_start_sample: None,
+                partial_lead_samples: 0,
                 partial_is_alignment_only: false,
                 next_input_sample: None,
                 finished: false,
@@ -387,12 +390,13 @@ impl OpusEncoderOutput {
                         .ok_or_else(|| OutputError::new("Opus encoder is not initialized"))?,
                     &state.partial,
                     OPUS_FRAME_SAMPLES,
-                    OPUS_FRAME_SAMPLES,
+                    OPUS_FRAME_SAMPLES - state.partial_lead_samples,
                     start_sample,
                     sink,
                     cancellation,
                 )?;
                 state.partial_scalars = 0;
+                state.partial_lead_samples = 0;
             }
         }
 
@@ -424,6 +428,7 @@ impl EncoderState {
         if self.partial_is_alignment_only {
             self.partial_scalars = 0;
             self.partial_start_sample = None;
+            self.partial_lead_samples = 0;
             self.partial_is_alignment_only = false;
         }
     }
