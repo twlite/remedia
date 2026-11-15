@@ -15,7 +15,7 @@ import {
   type StageNextOptions,
   type StageSnapshot,
 } from './lifecycle.js';
-import { PlaybackSession } from './playback.js';
+import { PlaybackSession, type SeekOptions } from './playback.js';
 import { FilterControls, validateVolume } from './filters.js';
 import type { MediaSource } from './input.js';
 import type {
@@ -468,11 +468,13 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
 
   /**
    * Seek on the original media timeline; non-seekable and one-shot sources may reject.
+   * See `PlaybackSession.seek()` for fallback seeking, the applied position and cancellation.
    * @param positionMs - Non-negative finite position on the original media timeline, in milliseconds.
+   * @param options - Optional cancellation; aborting the signal cancels a seek that has not taken effect.
    * @returns Resolves after the backend accepts the seek; rejects for invalid positions or unsupported inputs.
    */
-  seek(positionMs: number): Promise<void> {
-    return this.#requireExistingPlayback().seek(positionMs);
+  seek(positionMs: number, options?: SeekOptions): Promise<void> {
+    return this.#requireExistingPlayback().seek(positionMs, options);
   }
 
   /**

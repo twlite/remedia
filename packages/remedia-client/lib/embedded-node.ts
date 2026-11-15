@@ -19,6 +19,7 @@ import type {
   PlaybackState,
   PlayOptions,
   VoiceConnectionState,
+  SeekOptions,
 } from './types.js';
 import type { GuildBackend, GuildBackendEvents, NodeAdapter } from './adapters.js';
 import { estimateTempoFactor } from './tempo-factor.js';
@@ -43,7 +44,7 @@ interface EmbeddedPlayback extends EventEmitterType {
   readonly stagedSource: import('./types.js').StageSnapshot | null;
   pause(): Promise<void>;
   resume(): Promise<void>;
-  seek(positionMs: number): Promise<void>;
+  seek(positionMs: number, options?: SeekOptions): Promise<void>;
   stop(): Promise<void>;
   wait(): Promise<PlaybackState>;
   setVolume(gain: number): Promise<void>;
@@ -379,9 +380,9 @@ class EmbeddedGuildBackend extends RemediaEventEmitter<GuildBackendEvents> imple
     this.#assertOpen();
     return this.#session.resume();
   }
-  seek(positionMs: number): Promise<void> {
+  seek(positionMs: number, options?: SeekOptions): Promise<void> {
     this.#assertOpen();
-    return this.#session.seek(positionMs);
+    return this.#session.seek(positionMs, options);
   }
   stop(): Promise<void> {
     this.#assertOpen();

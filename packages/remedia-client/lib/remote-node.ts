@@ -38,6 +38,7 @@ import type {
   VoiceConnectionState,
 } from './types.js';
 import type { GuildBackend, GuildBackendEvents, NodeAdapter } from './adapters.js';
+import type { SeekOptions } from './types.js';
 
 const PROTOCOL_VERSION = 1;
 const MAX_TERMINAL_EVENTS = 128;
@@ -1419,9 +1420,16 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
     await this.refresh().catch(() => undefined);
   }
 
-  async seek(positionMs: number): Promise<void> {
+  async seek(positionMs: number, options: SeekOptions = {}): Promise<void> {
     this.#assertGuildReady();
-    await this.#node.control(this.#options.guildId, 'player.seek', { positionMs });
+    // The signal and the request deadline both cancel the seek on the node (see `rpc.ts`), so a
+    // seek the caller gave up on cannot apply later. One already being applied still completes
+    // and announces itself with `player.seeked`.
+    await this.#node.request(
+      'player.seek',
+      { guildId: this.#options.guildId, positionMs },
+      options.signal ? { signal: options.signal } : {},
+    );
     await this.refresh();
   }
 
@@ -1716,10 +1724,17 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
       }
       const positionMs = asNonnegativeInteger(event.data.positionMs);
       if (positionMs !== undefined) {
-        this.#playbackClock.seek(positionMs, eventGeneration);
+        // `positionMs` is where the audio continues from. A replacement source (`fallback`)
+        // leaves the output timeline running, so only the source position moves; an ordinary
+        // seek restarts both at the target.
+        const fallback = event.data.fallback === true;
+        if (fallback) this.#playbackClock.jump(positionMs, eventGeneration);
+        else this.#playbackClock.seek(positionMs, eventGeneration);
         this.emit(PlaybackEvent.playbackSeeked, {
           ...this.#playbackIdentity(event.data),
           positionMs,
+          requestedPositionMs: asNonnegativeInteger(event.data.requestedPositionMs) ?? positionMs,
+          fallback,
           previousPositionMs: nullableNumber(event.data.previousPositionMs),
         });
       }

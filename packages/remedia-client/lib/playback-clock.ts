@@ -72,6 +72,24 @@ export class PlaybackClock {
     this.#sampledAtMs = this.#now();
   }
 
+  /**
+   * A replacement source took over at `mediaMs` without restarting the output timeline: the
+   * source position jumps, while the elapsed output time keeps counting. The rate of source time
+   * per output second (a tempo filter's factor) continues to apply from the new position.
+   */
+  jump(mediaMs: number, generation?: number): void {
+    if (generation !== undefined) {
+      if (generation < this.#generation) return;
+      this.#generation = generation;
+    }
+    if (!Number.isFinite(mediaMs) || mediaMs < 0) return;
+    const now = this.#now();
+    this.#positionMs = this.#readAt(now);
+    this.#mediaMs = mediaMs;
+    this.#mediaKnown = true;
+    this.#sampledAtMs = now;
+  }
+
   /** A lost transport must not extrapolate indefinitely without knowing whether audio continued. */
   suspend(): void {
     const now = this.#now();

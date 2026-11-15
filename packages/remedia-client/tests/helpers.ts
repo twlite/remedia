@@ -116,6 +116,12 @@ export class FakeServerNode {
   playerPlayRequests = 0;
   probeGate: (() => Promise<void>) | undefined;
   probeCancelRequests = 0;
+  /** Awaited before a `player.seek` is answered, to model a seek that is still preparing. */
+  seekGate: (() => Promise<void>) | undefined;
+  /** Parameters of every `player.seek.cancel` received. */
+  readonly seekCancels: Array<Record<string, unknown>> = [];
+  /** Answer a seek like fallback seeking: the audio continues this much after the target. */
+  fallbackSeekLandsAfterMs: number | undefined;
   voiceConnectRequests = 0;
   readonly voiceConnectionCredentials: Array<{
     sessionId: string;
@@ -587,18 +593,24 @@ export class FakeServerNode {
           result = { state };
           break;
         }
+        case 'player.seek.cancel':
+          this.seekCancels.push(params);
+          result = { cancelled: true };
+          break;
         case 'player.seek': {
+          await this.seekGate?.();
           const session = this.#session(socket);
           const guild = this.#guild(socket, String(params.guildId));
           const previousPositionMs = guild.playback.position.media?.positionMs ?? null;
-          guild.playback.position.media = {
-            positionMs: Number(params.positionMs),
-            accuracy: 'timestamp',
-          };
+          const requestedPositionMs = Number(params.positionMs);
+          const positionMs = requestedPositionMs + (this.fallbackSeekLandsAfterMs ?? 0);
+          guild.playback.position.media = { positionMs, accuracy: 'timestamp' };
           this.#event(session, 'player.seeked', {
             guildId: guild.guildId,
             generation: guild.playback.generation,
-            positionMs: Number(params.positionMs),
+            positionMs,
+            requestedPositionMs,
+            fallback: this.fallbackSeekLandsAfterMs !== undefined,
             previousPositionMs,
           });
           result = { ...guild.playback.position };

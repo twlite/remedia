@@ -235,8 +235,19 @@ export type PlaybackLifecycleEvents<Metadata = unknown> = {
   /** Emitted after seeking to a source timeline position. */
   [PlaybackSessionEvents.playbackSeeked]: [
     PlaybackEventIdentity<Metadata> & {
-      /** Requested source timeline position in milliseconds. */
+      /**
+       * Source timeline position, in milliseconds, that the audio continues from. This is the
+       * requested position except for a fallback seek, which lands later by the source time
+       * that elapsed while its replacement was prepared.
+       */
       positionMs: number;
+      /** Position that was asked for, in milliseconds; differs from `positionMs` for a fallback seek. */
+      requestedPositionMs: number;
+      /**
+       * True when a replacement source took over (fallback seeking). The output timeline then
+       * continued without restarting, so only the source position jumped.
+       */
+      fallback: boolean;
       /** Source timeline position before seeking, in milliseconds, or null when unknown. */
       previousPositionMs: number | null;
     },

@@ -105,8 +105,13 @@ export declare class NativeRemedia {
   pause(playbackId: string): Promise<void>
   /** Resume a paused playback session. */
   resume(playbackId: string): Promise<void>
-  /** Seek to a media position in milliseconds. */
-  seek(playbackId: string, positionMs: number): Promise<void>
+  /** Seek to a media position in milliseconds and report where the audio continues from. */
+  seek(playbackId: string, positionMs: number): Promise<NativeSeekOutcome>
+  /**
+   * Cancel the playback's latest seek if it has not taken effect. Returns whether it was
+   * cancelled; `false` means there was nothing to cancel or it was already being applied.
+   */
+  playbackCancelSeek(playbackId: string): boolean
   /** Validate and replace the trusted native FFmpeg audio filtergraph. */
   playbackSetFilterGraph(playbackId: string, graph: string): Promise<void>
   /** Clear the current native audio filtergraph. */
@@ -198,6 +203,16 @@ export interface NativePlaybackPosition {
   mediaPositionAccuracy?: string
   submittedMs: number
   playedMs?: number
+}
+
+/** Where a seek landed. See the Rust `SeekOutcome`. */
+export interface NativeSeekOutcome {
+  /** The position asked for, in milliseconds. */
+  requestedMs: number
+  /** The source position the audio continues from, in milliseconds. */
+  appliedMs: number
+  /** A replacement decoder took over, so the output timeline continued instead of restarting. */
+  replacedSource: boolean
 }
 
 /** A bounded native stage with an application-owned queue occurrence identity. */

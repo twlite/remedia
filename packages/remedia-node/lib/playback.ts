@@ -33,6 +33,12 @@ const CROSSFADE_CURVES: readonly CrossfadeCurve[] = ['equalPower', 'adaptive'];
  * Controls one playback session. Local sessions decode into a no-op output.
  * @typeParam Metadata - Application-owned metadata attached to playback generations.
  */
+/** Options for {@link PlaybackSession.seek}. */
+export interface SeekOptions {
+  /** Cancels a seek that has not taken effect yet. */
+  signal?: AbortSignal;
+}
+
 /** Settings for a local playback session. Every setting is off unless enabled. */
 export interface PlaybackSessionOptions {
   /**
@@ -64,6 +70,7 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
   #latestGeneration = 0;
   #guildId: string | undefined;
   #crossfadeEnabled = false;
+  #seekSerial = 0;
   #fadeDurationMs = 5000;
   #crossfadeTimer: ReturnType<typeof setInterval> | undefined;
   #stageInput: ReadableInputHandle | undefined;
@@ -480,18 +487,45 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
    * served by a replacement source instead: the promise resolves once the swap has happened,
    * which can take seconds while the current source keeps playing. It rejects when a newer seek
    * replaced this one, when the session stopped, or when the track could not be reopened.
+   *
+   * The `playbackSeeked` event reports the position the audio actually continues from. A
+   * fallback seek lands on the requested position plus the source time that elapsed while its
+   * replacement was prepared, so a seek to 90 s that took three seconds resumes near 93 s.
    * @param positionMs - Non-negative finite position on the original media timeline, in milliseconds.
+   * @param options - Optional cancellation. Aborting `signal` cancels a seek that has not taken
+   * effect yet, so it can never apply later, and rejects with the signal's reason. If the seek
+   * was already being applied it completes normally.
    * @returns Resolves after the backend accepts the seek; rejects for invalid positions or unsupported inputs.
    */
-  async seek(positionMs: number): Promise<void> {
+  async seek(positionMs: number, options: SeekOptions = {}): Promise<void> {
     this.#assertActive();
+    const { signal } = options;
+    signal?.throwIfAborted();
     const previousPositionMs = this.position.mediaMs;
-    await this.#native.seek(this.#playbackId, positionMs);
+    // Only the latest seek of this session can be cancelled, so a cancel for an older call that
+    // a newer one replaced must not reach the newer one.
+    const serial = ++this.#seekSerial;
+    const abort = (): void => {
+      if (this.#seekSerial === serial) this.#native.playbackCancelSeek(this.#playbackId);
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    let outcome;
+    try {
+      outcome = await this.#native.seek(this.#playbackId, positionMs);
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', abort);
+    }
     this.#drainCrossfadeEvents();
-    if (previousPositionMs !== positionMs || this.#crossfadeEnabled) {
+    const appliedMs = Math.round(outcome.appliedMs);
+    if (previousPositionMs !== appliedMs || this.#crossfadeEnabled) {
       this.emit(PlaybackEvent.playbackSeeked, {
         ...this.#eventContext(),
-        positionMs,
+        positionMs: appliedMs,
+        requestedPositionMs: Math.round(outcome.requestedMs),
+        fallback: outcome.replacedSource,
         previousPositionMs,
       });
     }

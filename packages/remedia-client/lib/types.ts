@@ -474,6 +474,15 @@ export type PluginExecuteResult<Result extends JsonValue = JsonValue> =
   | PluginHandledResult<Result>
   | PluginUnhandledResult;
 
+/** Options for seeking a playback session. */
+export interface SeekOptions {
+  /**
+   * Cancels a seek that has not taken effect yet, so it cannot apply later; the promise rejects
+   * with the signal's reason. A seek already being applied completes normally.
+   */
+  signal?: AbortSignal;
+}
+
 /** Fallback-seeking support advertised by a node. Older nodes omit it, which means unavailable. */
 export interface FallbackSeekingCapability {
   /** Whether the node can replace an active source whose decoder cannot seek. */
@@ -822,8 +831,19 @@ export type PlaybackLifecycleEventMap<Metadata = unknown> = {
   /** Emitted after seeking to a source timeline position. */
   [PlaybackSessionEvents.playbackSeeked]: [
     PlaybackEventIdentity<Metadata> & {
-      /** Requested source timeline position in milliseconds. */
+      /**
+       * Source timeline position, in milliseconds, that the audio continues from. This is the
+       * requested position except for a fallback seek, which lands later by the source time that
+       * elapsed while its replacement was prepared.
+       */
       positionMs: number;
+      /** Position that was asked for, in milliseconds. Equals `positionMs` except for a fallback seek. */
+      requestedPositionMs: number;
+      /**
+       * True when a replacement source took over (fallback seeking). The output timeline then
+       * continued without restarting, so only the source position jumped.
+       */
+      fallback: boolean;
       /** Source timeline position before seeking, in milliseconds, or null when unknown. */
       previousPositionMs: number | null;
     },

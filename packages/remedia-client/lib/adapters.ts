@@ -17,6 +17,7 @@ import type {
   StageSnapshot,
   VoiceConnectionState,
   VoiceLifecycleEventMap,
+  SeekOptions,
 } from './types.js';
 
 /** Playback and voice lifecycle notifications emitted by an assigned backend. */
@@ -161,9 +162,10 @@ export interface GuildBackend extends EventEmitter<GuildBackendEvents> {
   /**
    * Seek on the original media timeline; non-seekable and one-shot sources may reject.
    * @param positionMs - Non-negative finite position on the original media timeline, in milliseconds.
+   * @param options - Optional cancellation of a seek that has not taken effect yet.
    * @returns Resolves after the backend accepts the seek; rejects for invalid positions or unsupported inputs.
    */
-  seek(positionMs: number): Promise<void>;
+  seek(positionMs: number, options?: SeekOptions): Promise<void>;
   /**
    * Stop the active playback generation and release its input without leaving the voice channel.
    * @returns Resolves after the backend stops the active source.

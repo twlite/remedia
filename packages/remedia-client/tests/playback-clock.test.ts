@@ -145,4 +145,39 @@ describe('remote playback clock', () => {
     now = 10_020;
     expect(clock.getPlaybackTime()).toBe(520);
   });
+  it('moves the media position without restarting output time when a replacement source takes over', () => {
+    let now = 0;
+    const clock = new PlaybackClock(() => now);
+    clock.reconcile({ ...snapshot(1, 'playing', 4_000, 4_000), filterGraph: 'atempo=2' });
+    now = 1_000;
+    // Four seconds in, one more second of output is two seconds of source at 2x tempo.
+    expect(clock.getPlaybackTime()).toBe(5_000);
+    expect(clock.getMediaTime()).toBe(6_000);
+
+    // A seek to 90 s that took three seconds to prepare lands at 93 s. The output timeline did
+    // not restart, so elapsed output time keeps counting from where it was.
+    clock.jump(93_000, 1);
+    expect(clock.getPlaybackTime()).toBe(5_000);
+    expect(clock.getMediaTime()).toBe(93_000);
+
+    now = 2_000;
+    expect(clock.getPlaybackTime()).toBe(6_000);
+    expect(clock.getMediaTime()).toBe(95_000);
+
+    // An ordinary seek restarts both at the target.
+    clock.seek(10_000, 1);
+    expect(clock.getPlaybackTime()).toBe(10_000);
+    expect(clock.getMediaTime()).toBe(10_000);
+  });
+
+  it('ignores a jump for an older generation and an invalid position', () => {
+    let now = 0;
+    const clock = new PlaybackClock(() => now);
+    clock.start(3);
+    now = 500;
+    clock.jump(1_000, 2);
+    clock.jump(Number.NaN, 3);
+    clock.jump(-5, 3);
+    expect(clock.getMediaTime()).toBe(500);
+  });
 });

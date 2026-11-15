@@ -25,6 +25,7 @@ import type {
   StageSnapshot,
   VoiceConnectionState,
   VoiceLifecycleEventMap,
+  SeekOptions,
 } from './types.js';
 
 interface ConnectAttempt {
@@ -675,13 +676,20 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   }
   /**
    * Seek on the original media timeline; non-seekable and one-shot sources may reject.
+   *
+   * With `enableFallbackSeeking` the promise settles when a replacement source is playing, which can
+   * take seconds. `playbackSeeked` then reports the position the audio actually continues from
+   * (`positionMs`), the position that was asked for (`requestedPositionMs`), and `fallback: true`.
    * @param positionMs - Non-negative finite position on the original media timeline, in milliseconds.
+   * @param options - Optional cancellation. Aborting `signal`, or the request deadline passing on a
+   * remote node, cancels a seek that has not taken effect, so it cannot apply later; a seek already
+   * being applied completes and is announced by `playbackSeeked`.
    * @returns Resolves after the backend accepts the seek; rejects for invalid positions or unsupported inputs.
    */
-  seek(positionMs: number): Promise<void> {
+  seek(positionMs: number, options?: SeekOptions): Promise<void> {
     if (!Number.isFinite(positionMs) || positionMs < 0)
       return Promise.reject(new RangeError('positionMs must be non-negative'));
-    return this.#requireExistingBackend().seek(positionMs);
+    return this.#requireExistingBackend().seek(positionMs, options);
   }
   /**
    * Stop the active playback generation and release its input without leaving the voice channel.

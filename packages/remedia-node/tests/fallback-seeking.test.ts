@@ -12,9 +12,12 @@ async function createRangelessServer(
   refuseFrom = Number.POSITIVE_INFINITY,
 ) {
   let requests = 0;
+  // Connections after the first wait while this is set, like an origin that is slow to answer.
+  let hold = false;
   const sockets = new Set<import('node:net').Socket>();
   const server: Server = createServer((_request, response) => {
     requests += 1;
+    const index = requests;
     if (requests > refuseFrom) {
       response.writeHead(503, { 'content-length': 0 });
       response.end();
@@ -23,6 +26,7 @@ async function createRangelessServer(
     response.writeHead(200, { 'content-length': wave.length, 'content-type': 'audio/wav' });
     let offset = 0;
     const timer = setInterval(() => {
+      if (index > 1 && hold) return;
       if (response.destroyed || offset >= wave.length) {
         clearInterval(timer);
         if (!response.destroyed) response.end();
@@ -46,6 +50,9 @@ async function createRangelessServer(
     url: `http://127.0.0.1:${address.port}/track.wav`,
     get requests() {
       return requests;
+    },
+    set hold(value: boolean) {
+      hold = value;
     },
     async close() {
       for (const socket of sockets) socket.destroy();
@@ -96,8 +103,12 @@ it('replaces a source whose origin ignores Range and keeps playing', async () =>
 
   // Rewinding a source that cannot be repositioned opens the track a second time.
   await session.seek(500);
-  await seeked;
+  const [event] = await seeked;
   expect(origin.requests).toBe(2);
+  // The event says where the audio continues from, not just what was asked for: the old source
+  // played on while the replacement was prepared.
+  expect(event).toMatchObject({ requestedPositionMs: 500, fallback: true });
+  expect(event.positionMs).toBeGreaterThanOrEqual(500);
   expect(session.state).toBe('playing');
 
   // The new source carries on from just after the target and plays to the end.
@@ -127,4 +138,51 @@ it('leaves the playing source untouched when the track cannot be reopened', asyn
   await once(session, 'playbackCompleted');
   expect(session.state).toBe('completed');
   expect(session.error).toBeNull();
+}, 30_000);
+
+it('cancels a seek that has not taken effect when its signal aborts', async () => {
+  const wave = makeWave(8);
+  const origin = await createRangelessServer(wave, 8 * 1024, 20);
+  cleanups.push(() => origin.close());
+  const engine = await Remedia.create();
+  cleanups.push(() => engine.close());
+  const session = engine.createPlaybackSession({ enableFallbackSeeking: true });
+  const seeked: unknown[] = [];
+  session.on('playbackSeeked', (event) => seeked.push(event));
+
+  await session.play({ url: origin.url });
+  await expect.poll(() => session.position.mediaMs ?? 0, { timeout: 5_000 }).toBeGreaterThan(1_500);
+  // The replacement cannot be answered, so the seek stays in preparation until it is aborted.
+  origin.hold = true;
+  const controller = new AbortController();
+  const seeking = session.seek(200, { signal: controller.signal });
+  const rejected = expect(seeking).rejects.toThrow(/stop that/);
+  await expect.poll(() => origin.requests).toBe(2);
+
+  controller.abort(new Error('stop that'));
+  await rejected;
+
+  // Answering now must not complete a seek the caller abandoned: playback goes on from where it
+  // was and no seek is ever reported.
+  origin.hold = false;
+  await once(session, 'playbackCompleted');
+  expect(seeked).toEqual([]);
+  expect(session.state).toBe('completed');
+}, 30_000);
+
+it('rejects a signal that is already aborted without touching playback', async () => {
+  const wave = makeWave(4);
+  const origin = await createRangelessServer(wave, 8 * 1024, 20);
+  cleanups.push(() => origin.close());
+  const engine = await Remedia.create();
+  cleanups.push(() => engine.close());
+  const session = engine.createPlaybackSession({ enableFallbackSeeking: true });
+
+  await session.play({ url: origin.url });
+  await expect.poll(() => session.position.mediaMs ?? 0, { timeout: 5_000 }).toBeGreaterThan(500);
+
+  await expect(session.seek(100, { signal: AbortSignal.abort(new Error('nope')) })).rejects.toThrow(
+    /nope/,
+  );
+  expect(origin.requests).toBe(1);
 }, 30_000);
