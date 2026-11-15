@@ -41,14 +41,15 @@ const client = await RemediaClient.create(options);
 
 Created with `createDiscordSession(options)`.
 
-| Option                           | Description                                                      |
-| -------------------------------- | ---------------------------------------------------------------- |
-| `guildId`, `channelId`, `userId` | Required snowflake strings. `userId` is the bot's user ID.       |
-| `nodeId`                         | Pin the guild to a configured node.                              |
-| `pluginHosts`                    | Only consider nodes that configure all of these plugin host IDs. |
-| `selfDeaf`, `selfMute`           | Discord voice state. Default `true` and `false`.                 |
-| `volume`, `filterGraph`          | Initial gain (0 to 2, default 1) and FFmpeg filtergraph.         |
-| `crossfade`                      | Opt in to [crossfading](/docs/client/crossfade).                 |
+| Option                           | Description                                                                                                  |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `guildId`, `channelId`, `userId` | Required snowflake strings. `userId` is the bot's user ID.                                                   |
+| `nodeId`                         | Pin the guild to a configured node.                                                                          |
+| `pluginHosts`                    | Only consider nodes that configure all of these plugin host IDs.                                             |
+| `selfDeaf`, `selfMute`           | Discord voice state. Default `true` and `false`.                                                             |
+| `volume`, `filterGraph`          | Initial gain (0 to 2, default 1) and FFmpeg filtergraph.                                                     |
+| `crossfade`                      | Opt in to [crossfading](/docs/client/crossfade).                                                             |
+| `enableFallbackSeeking`          | Replace the source when its decoder cannot [seek](/docs/client/positions#fallback-seeking). Default `false`. |
 
 | Member                                                                                                                        | Description                                                                                      |
 | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |

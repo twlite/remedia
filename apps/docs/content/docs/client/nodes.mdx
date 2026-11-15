@@ -94,6 +94,8 @@ requests fresh Discord Gateway credentials and connects the destination. The log
 settings persist. A `guildMigrated` client event contains `guildId`, `fromNodeId`,
 `toNodeId`, and `nodeType`.
 
+A session created with `enableFallbackSeeking` keeps it on the destination, so the seek that restores the position can use [fallback seeking](/docs/client/positions#fallback-seeking) when the destination cannot seek the URL itself.
+
 For an active source, the SDK currently supports HTTP(S) URL playback with an observed
 `position.mediaMs`. The destination opens a new decoder and seeks to the last observed source
 position. It also restores the paused state and local `customMetadata`. This starts a new

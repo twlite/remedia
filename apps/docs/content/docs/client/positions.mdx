@@ -47,4 +47,22 @@ Files, owned buffers, and seekable HTTP resources can seek when FFmpeg's demuxer
 
 Readable inputs and plugin media grants are forward-only. Forward seeking decodes and discards intervening audio. It can take time, and a position already passed by decoder read-ahead cannot be recovered. Backward seeks reject without stopping playback or flushing the active output.
 
+### Fallback seeking
+
+Some sources cannot seek: an HTTP origin that ignores range requests, a format without an index, or a plugin-hosted single-use stream. Create the session with `enableFallbackSeeking: true` and `seek()` serves them by opening a second decoder on the same track instead of rejecting. The current source keeps playing while the replacement decodes forward, then the two are swapped at one sample with a 5 ms blend. `seek()` resolves when the swap has happened, which can take several seconds for a distant position, so allow for that in your request timeout.
+
+```ts
+const session = client.createDiscordSession({
+  guildId,
+  channelId,
+  userId,
+  enableFallbackSeeking: true,
+});
+await session.seek(90_000); // resolves when the replacement is audible
+```
+
+Positions account for the preparation time. The replacement resumes at the requested position **plus the source time that played while it was prepared**: a seek to 90 s that takes three seconds resumes near 93 s. The offset stops while the session is paused and grows faster than wall-clock time under a tempo filter. The reported position jumps once at the swap and does not step backwards because of preparation latency.
+
+A newer `seek()` replaces one that is still preparing, and the older call rejects (`cancelled` on a remote node); so does a stop or a crossfade that begins first. Any failure, such as a source that cannot be reopened or a target past its end, rejects while the original stream keeps playing. A one-shot `{ stream }` source cannot be reopened and still rejects; a plugin operation source is reopened by running its operation again (see [plugin operations](/docs/server/plugin-operations#seeking-with-fallback-seeking)). A remote node must advertise `capabilities.fallbackSeeking.available`; a session that requests the option on a node that does not fails to start rather than silently ignoring it. After the swap an Opus stream is decoded and re-encoded until the next source.
+
 Seeking may invalidate a staged crossfade source and change its generation. Resolve a fresh stage in response to the next preparation request. For sample-level behavior, see [Rust seeking](/docs/core/playback#seeking-and-position) and [filter timing](/docs/core/filters).

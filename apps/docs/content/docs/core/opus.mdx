@@ -173,6 +173,16 @@ junction as a seek. Tests insert gain changes at every offset around the return 
 check that no sample is repeated or dropped on either side. Streams with another pre-skip keep the
 earlier behavior and its short artifact.
 
+### Fallback seeking
+
+When [fallback seeking](/docs/core/playback#fallback-seeking) swaps in a replacement decoder, a
+stream that is being forwarded as packets keeps being forwarded unchanged while the replacement is
+prepared. Once it is ready, the stream is converted to PCM with the seamless entry above, so the
+encoder is primed with what the client just heard, then the decoders are swapped at one sample.
+Returning to packets after a swap is not implemented, so the stream stays on the PCM path (decoded
+and re-encoded, at a CPU cost close to a gain change) until the next source. The output timeline is
+contiguous across the whole sequence.
+
 ### Reported position and what the listener hears
 
 For straight passthrough and for gain or filter changes, the reported media position is the media

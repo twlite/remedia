@@ -205,3 +205,14 @@ the outgoing source emits `playbackCompleted` with
 the next source is already playing: consumers must not call `play()` for it.
 The final source completes normally without continuation. Generations identify
 sources independently of transport recovery and the continuous output clock.
+
+### Seeking and fallback seeking
+
+A seek that the active decoder performs itself invalidates the staged source and advances the
+source generation, as before. With [fallback seeking](/docs/core/playback#fallback-seeking)
+enabled, a seek the decoder cannot perform leaves the stage, any overlap and the generation alone
+until the replacement is ready; the swap then publishes `TimelineChanged` and invalidates the stage
+like an ordinary seek. If a crossfade overlap begins before the replacement is ready, the seek is
+superseded (`SeekSuperseded`) and the transition goes ahead, because the track it targeted is
+ending. A promoted source keeps the reopener it was staged with
+(`stage_next_with_reopener`), so it can be sought after promotion.

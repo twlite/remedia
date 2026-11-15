@@ -127,3 +127,24 @@ Release builds use fat link-time optimization. Measured, it changes run time by 
 inside the noise, because most CPU is spent in libopus and FFmpeg, which are outside Rust's LTO.
 Its effect is on the binary: the server runtime is 13.4 MB instead of 21.4 MB (thin LTO: 18.8 MB),
 for a clean release build that takes 79 s instead of 33 s (thin: 45 s).
+
+## Fallback seeking
+
+[Fallback seeking](/docs/core/playback#fallback-seeking) serves a seek on a source that cannot seek by
+opening a second decoder on the same track while the first keeps playing. Measured on one Apple M5
+host against a loopback HTTP origin that ignores `Range`, with a 15-minute Opus track and a
+15-minute MP3 track and a real-time paced output (exploratory, one run per row):
+
+- No underruns in any row, and the longest interval between frames reaching the output was the
+  frame duration (20 ms Opus, 25 ms MP3). The preparation does not touch the playback worker.
+- A fast origin takes about 30 ms to swap, and 50 ms for a seek to 13 minutes. At 100 Mbit/s the
+  seek takes the time to transfer the track up to the target: 290 ms for 5 minutes of Opus, 711 ms
+  for 13 minutes, 1.5 s for 13 minutes of MP3. Extra work is one connection and one decoder.
+- CPU is 4-93 ms per seek. Compressed packets that end more than a second before the target are
+  dropped without being decoded.
+- Without the option the same Opus seeks all failed after 4-7 reconnects and 29-36 MB of transfer for
+  a 9.8 MB file, and no audio reached the output in the following 300 ms. An MP3 seek succeeded by reading the skipped bytes on
+  the playback worker.
+
+Commands, tables and caveats are in
+[`benchmarks/fallback-seeking.md`](https://github.com/twlite/remedia/blob/main/benchmarks/fallback-seeking.md).

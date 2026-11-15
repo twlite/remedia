@@ -101,6 +101,124 @@ submitted position because FFmpeg and the playback worker read ahead. A seek
 past EOF returns `SeekOutOfRange`. A stalled producer keeps the seek waiting
 until data arrives or the operation is cancelled.
 
+A source that cannot seek at all can be served by a replacement instead; see
+[Fallback seeking](#fallback-seeking).
+
+## Fallback seeking
+
+Some sources cannot reposition their decoder: an HTTP origin that ignores `Range` requests, a format
+without a usable index, or a one-shot stream whose producer can issue a new one. A seek on such a
+source normally fails with `UnsupportedSeeking`, or on a plain HTTP URL makes FFmpeg reconnect
+repeatedly (and, for a forward target, read and discard the skipped bytes **on the playback
+worker**, which stalls playback). With fallback seeking enabled, the session leaves the active
+decoder alone and prepares a replacement instead.
+
+```rust
+session.configure_fallback_seeking(true); // off by default; may be changed at any time
+session.seek(Duration::from_secs(90))?;   // returns when the replacement is audible
+```
+
+The mechanism:
+
+1. The worker keeps playing the current source. A short-lived `remedia-fallback-seek` thread opens
+   the same track again (see [what can be reopened](#what-can-be-reopened)), skips compressed packets
+   that end more than a second before the target without decoding them, then decodes and discards
+   forward.
+2. The thread follows the **effective playhead**. The seek asks for 90 s; if three seconds of the
+   current source play while the replacement is prepared, the replacement parks on about 93 s.
+   The offset is the amount the _source timeline_ advanced, not wall-clock time: it stops while
+   the session is paused and runs faster than real time under a tempo filter (`atempo=1.5` for
+   three seconds of output is 4.5 s of source), so the audio resumes where the listener would be.
+3. When the replacement is parked the worker swaps the decoders at one exact sample. Opus
+   passthrough is left first (see below). The first 5 ms of the new audio are blended in with an
+   equal-power fade against the audio it replaces, which is enough to prevent a click and too short
+   to hear as a crossfade. No audio is repeated, and nothing is flushed: audio already queued in the
+   output plays out, so the output timeline stays contiguous.
+4. `seek()` returns `Ok(())` at the swap. The source position jumps once, from the old source's
+   position to the replacement's; it never moves backwards because of preparation latency. The
+   stream metadata and duration are refreshed from the replacement.
+
+Anything that goes wrong leaves the original stream playing normally:
+
+| Situation                                                         | Result                                                                           |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| The track cannot be reopened (HTTP error, expired grant, refused) | `seek()` fails with the open error; playback continues                           |
+| The target is past the end of the replacement                     | `SeekOutOfRange`; playback continues                                             |
+| The replacement does not catch up within 60 s                     | `UnsupportedSeeking`; a source slower than real time can never catch up          |
+| A newer `seek` is submitted                                       | The older call fails with `SeekSuperseded`; only the latest seek can replace     |
+| A crossfade overlap begins first                                  | `SeekSuperseded`; the track is ending and the transition goes ahead              |
+| `stop()`, a new `play`, a failure, or dropping the session        | The preparation is cancelled and joined; the waiting call fails with `Cancelled` |
+| The old source ends before the replacement is ready               | The worker waits for the replacement rather than completing the playback         |
+
+At most one preparation exists per session. It owns one extra decoder, one extra connection and
+a thread, all released on every path above; staging is not involved, so memory stays bounded.
+
+### What can be reopened
+
+| Source              | Fallback seeking                                                                           |
+| ------------------- | ------------------------------------------------------------------------------------------ |
+| `File`, `Bytes`     | Not needed: the demuxer seeks. If a demuxer still reports it cannot, the file is reopened. |
+| `HttpUrl`           | Reopened from the same URL, with the same options and the same network restrictions.       |
+| `SequentialHttpUrl` | Never: it is typically a single-use grant. Fails with `UnsupportedSeeking`.                |
+| `ByteStream`        | Only with a [`SourceReopener`](#source-reopeners). Otherwise `UnsupportedSeeking`.         |
+
+A decoder is only asked to seek in place when it can: Remedia checks whether the FFmpeg I/O
+context is seekable before touching it. Reopening the same `HttpUrl` sends exactly the request the
+first open sent. It cannot carry anything the original request did not, and a URL that has since
+expired fails like any other reopen.
+
+### Source reopeners
+
+A source Remedia cannot reopen by itself, such as a stream produced from a single-use grant,
+supplies a `SourceReopener`:
+
+```rust
+use std::sync::Arc;
+use remedia_core::{CancellationToken, InputSource, ReopenError, SourceReopener};
+
+struct Grant { /* whatever issues a new stream */ }
+
+impl SourceReopener for Grant {
+    fn reopen(&self, cancellation: &CancellationToken) -> Result<InputSource, ReopenError> {
+        // Called on a background thread, never on the playback worker. Return promptly once
+        // `cancellation` is cancelled. The input must play the same media from its first sample.
+        self.issue_stream(cancellation).map_err(|error| ReopenError::new(error.to_string()))
+    }
+}
+
+session.play_with_reopener(source, Arc::new(Grant { /* ... */ }), output, CancellationToken::new())?;
+session.stage_next_with_reopener(next, Arc::new(Grant { /* ... */ }), identity, None)?;
+```
+
+Do not put credentials or signed URLs in a `ReopenError` message: it reaches the caller of `seek()`.
+A staged source keeps its reopener, so a track that was promoted by a crossfade can still be sought.
+
+### Submitting without waiting
+
+`seek()` blocks until the swap. A caller that serializes playback operations behind a lock, as the
+server does, uses `start_seek()` to submit under the lock and wait without it:
+
+```rust
+let pending = session.start_seek(position)?; // validates and submits
+// release the lock here; a newer seek, pause or stop can now reach the session
+pending.wait()?;                              // PendingSeek::wait
+```
+
+### Interaction with other features
+
+- **Opus passthrough.** Swapping decoders blends decoded audio, so forwarded packets are left
+  first using the seamless entry described in [Opus passthrough](/docs/core/opus#gain-and-filter-changes).
+  Packets keep flowing unchanged while the replacement is _preparing_; the conversion happens only
+  once it is ready. The replacement is decoded, so the stream stays on the PCM path until the next
+  source. `processing_mode()` reports `Transcoding` after the swap.
+- **Crossfade.** The swap publishes a `TimelineChanged` event, advances the source generation and
+  invalidates the staged next track, exactly as an ordinary seek does. A transition that starts
+  before the replacement is ready supersedes the seek.
+- **Filters and gain.** The filtergraph is kept, not rebuilt. It holds a little audio of the old
+  source (a tempo filter about a hundred milliseconds), which plays out across the swap.
+- **Diagnostics.** `core.playback.fallback_seek_started`, `_applied` (with target, applied position,
+  compensation and preparation time), `_failed` and `_timed_out`.
+
 ## Structured diagnostics
 
 `PlaybackSession::with_observability(handle)` attaches a session to the shared local tracing
@@ -114,7 +232,8 @@ environment configuration, and OTLP export.
 Startup errors are returned from `play()`. Errors after startup set the state to
 `Failed` and remain available from `last_error()`. `PlaybackError` distinguishes
 decoder failures, output failures, invalid state operations, worker startup or
-panic, cancellation, seek range errors, and unsupported seeking. The original
+panic, cancellation, seek range errors, unsupported seeking, and a seek that a newer one
+superseded (`SeekSuperseded`). The original
 decoder or output error remains available as the error source where possible.
 
 ## Runnable example
