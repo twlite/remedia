@@ -60,6 +60,7 @@ pub(super) fn worker_loop(
     // trimmed. `passthrough_eligible` records whether the stream could otherwise forward packets,
     // and `seek_recovery` tracks the return to whole source packets after that first frame.
     let mut passthrough_eligible = can_passthrough;
+    let mut primed_origin: Option<u64> = None;
     let mut seek_recovery = SeekRecovery {
         pre_skip: decoder.opus_pre_skip(),
         ..SeekRecovery::default()
@@ -108,6 +109,7 @@ pub(super) fn worker_loop(
         ) {
             WorkerAction::Exit => return,
             WorkerAction::ConfigureProcessing => {
+                let was_passthrough = passthrough_mode;
                 if (processing::ProcessingTransition {
                     shared: &shared,
                     generation,
@@ -120,11 +122,34 @@ pub(super) fn worker_loop(
                     passthrough_mode: &mut passthrough_mode,
                     pending_frame: &mut pending_frame,
                     deferred_filter_update: &mut deferred_filter_update,
+                    seamless: seek_recovery.can_resume(),
+                    primed_origin: &mut primed_origin,
                 })
                 .apply()
                 .is_break()
                 {
                     return;
+                }
+                if was_passthrough && !passthrough_mode && seek_recovery.can_resume() {
+                    // Entering PCM from forwarded packets. A stream whose pre-skip equals the
+                    // encoder lookahead returns to packets only through the lookahead junction.
+                    can_passthrough = false;
+                    lock(&shared.data).passthrough_available = false;
+                    seek_recovery.junction = false;
+                    seek_recovery.truthful = false;
+                    match primed_origin.take() {
+                        Some(origin) => {
+                            // The encoder was primed with what the client just heard, so it is
+                            // warm and its frame phase is known.
+                            seek_recovery.pending = passthrough_eligible;
+                            seek_recovery.delivered_frames = OPUS_RECOVERY_WARM_FRAMES;
+                            seek_recovery.encoder_origin = origin;
+                            seek_recovery.truthful = true;
+                        }
+                        // Priming was not possible (for example too little history right after
+                        // a seek). Decode on: an unprimed encoder cannot be joined seamlessly.
+                        None => seek_recovery.pending = false,
+                    }
                 }
             }
             WorkerAction::Decode => {
@@ -277,6 +302,9 @@ pub(super) fn worker_loop(
                             // a later gain or filter change takes the ordinary path out.
                             can_passthrough = true;
                             lock(&shared.data).passthrough_available = true;
+                            if std::mem::take(&mut seek_recovery.truthful) {
+                                processor.rewind(u64::from(OPUS_ENCODER_LOOKAHEAD));
+                            }
                             if (processing::ProcessingTransition {
                                 shared: &shared,
                                 generation,
@@ -289,6 +317,8 @@ pub(super) fn worker_loop(
                                 passthrough_mode: &mut passthrough_mode,
                                 pending_frame: &mut pending_frame,
                                 deferred_filter_update: &mut deferred_filter_update,
+                                seamless: false,
+                                primed_origin: &mut None,
                             })
                             .apply()
                             .is_break()
@@ -452,6 +482,7 @@ pub(super) fn worker_loop(
                 can_passthrough = false;
                 seek_recovery.pending = passthrough_eligible && seek_recovery.can_resume();
                 seek_recovery.junction = false;
+                seek_recovery.truthful = false;
                 seek_recovery.delivered_frames = 0;
                 {
                     let mut data = lock(&shared.data);
@@ -683,6 +714,12 @@ struct SeekRecovery {
     junction: bool,
     /// The stream's pre-skip: source packets begin where `(media sample + pre_skip) % 960 == 0`.
     pre_skip: u32,
+    /// The output sample at which the encoder's frame grid starts. Its partial frame holds
+    /// `(next_sample - origin) % 960` samples.
+    encoder_origin: u64,
+    /// Packets were accounted in heard media (the encoder was primed on forwarded audio), so the
+    /// lookahead samples drained at the junction are taken back off the output timeline.
+    truthful: bool,
 }
 
 impl SeekRecovery {
@@ -709,7 +746,9 @@ impl SeekRecovery {
             || deferred_filter
             || pending_frame.is_some()
             || decoder.has_pending_frames()
-            || !(processor.next_sample() + u64::from(self.pre_skip)).is_multiple_of(960)
+            || !(processor.next_sample().saturating_sub(self.encoder_origin)
+                + u64::from(self.pre_skip))
+            .is_multiple_of(960)
         {
             return false;
         }

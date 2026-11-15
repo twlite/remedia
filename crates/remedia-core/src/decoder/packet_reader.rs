@@ -48,9 +48,11 @@ const PREROLL_QUIET_PEAK: f32 = 0.001;
 ///
 /// libopus delays its input by its lookahead, so the first `pre_skip` decoded samples are silence
 /// plus, for an abrupt start, the transform's pre-echo. Measured on real files that pre-echo
-/// peaks around -30 dB relative to the audio that follows. A stream whose "pre-roll" is as loud
-/// as the audio after it was mislabeled, and trimming it would change what is heard.
-const PREROLL_RELATIVE_PEAK: f32 = 0.1;
+/// peaks between -30 dB and -20 dB relative to the audio that follows (a full-level burst at the
+/// first sample is the worst case), and Remedia's own PCM encoder emits the same pre-echo. A
+/// stream whose "pre-roll" is as loud as the audio after it was mislabeled, and trimming it
+/// would change what is heard.
+const PREROLL_RELATIVE_PEAK: f32 = 0.35;
 
 /// Decode `packet` with a fresh libopus decoder and report whether its first `pre_skip` output
 /// samples look like encoder delay, the only content a player is entitled to discard. `None` if

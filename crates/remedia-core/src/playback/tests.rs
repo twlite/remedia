@@ -454,5 +454,7 @@ mod crossfade;
 
 mod preskip;
 
+mod audit;
+
 mod packet_sink;
 use packet_sink::*;

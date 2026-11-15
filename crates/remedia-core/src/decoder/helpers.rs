@@ -82,6 +82,23 @@ pub(super) fn opus_head_passthrough(
     Ok(u16::from_le_bytes([extra[10], extra[11]]))
 }
 
+/// The pre-skip in an Ogg Opus stream's OpusHead, or 0 when there is none to read.
+pub(super) fn opus_head_pre_skip(parameters: &ffmpeg::codec::Parameters) -> u16 {
+    // SAFETY: Parameters owns a live AVCodecParameters allocation; the extradata is borrowed
+    // for this read only and its size is checked.
+    let native = unsafe { &*parameters.as_ptr() };
+    if native.extradata.is_null() || native.extradata_size < 12 {
+        return 0;
+    }
+    let extra =
+        unsafe { std::slice::from_raw_parts(native.extradata, native.extradata_size as usize) };
+    if extra.starts_with(b"OpusHead") {
+        u16::from_le_bytes([extra[10], extra[11]])
+    } else {
+        0
+    }
+}
+
 pub(super) fn is_again(error: ffmpeg::Error) -> bool {
     matches!(error, ffmpeg::Error::Other { errno } if errno == ffmpeg::error::EAGAIN)
 }

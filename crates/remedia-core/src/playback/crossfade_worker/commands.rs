@@ -90,7 +90,9 @@ pub(super) fn handle_commands(
         if let Some(update) = data.pending_filter_graph.take() {
             drop(data);
             if current.encoded_mode() {
-                if let Err(error) = current.enter_pcm() {
+                if let Err(error) =
+                    current.enter_pcm_seamless(output, processor.next_sample(), cancellation)
+                {
                     let _ = update.response.send(Err(error.clone()));
                     return Err(error);
                 }

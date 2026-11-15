@@ -34,6 +34,10 @@ pub(super) struct ActiveSource {
     encoder_phase: Option<u64>,
     /// The first samples of the next packet are queued in `pcm` to drain the encoder lookahead.
     junction: bool,
+    /// Warm-up audio (what the client just heard) to prime the output encoder with.
+    prime: Option<Vec<f32>>,
+    /// Packets are accounted in heard media since the encoder was primed on forwarded audio.
+    truthful: bool,
     /// Keeps a promoted source's cancellation linked to the session after its decoder was adopted.
     _cancel_link: Option<Arc<dyn crate::source::CancellationWake>>,
     pub(super) consumed: u64,
@@ -62,6 +66,8 @@ impl ActiveSource {
             pcm_run: 0,
             encoder_phase: Some(0),
             junction: false,
+            prime: None,
+            truthful: false,
             _cancel_link: None,
             consumed: 0,
             duration_samples,
@@ -86,6 +92,8 @@ impl ActiveSource {
             pcm_run: 0,
             encoder_phase: Some(0),
             junction: false,
+            prime: None,
+            truthful: false,
             _cancel_link: None,
             consumed,
             duration_samples: info.duration.map(samples_from_duration),
@@ -123,9 +131,15 @@ impl ActiveSource {
 
     /// Record the encoder state a promoted source inherits from the overlap that just ended: how
     /// long the encoder has been running and how many samples its partial frame holds.
-    pub(super) fn inherit_encoder_state(&mut self, pcm_run: u64, phase: Option<u64>) {
+    pub(super) fn inherit_encoder_state(
+        &mut self,
+        pcm_run: u64,
+        phase: Option<u64>,
+        truthful: bool,
+    ) {
         self.pcm_run = pcm_run;
         self.encoder_phase = phase;
+        self.truthful = truthful;
     }
 
     /// The encoder phase if this source were to start PCM now: empty after forwarded packets.
@@ -189,7 +203,18 @@ impl ActiveSource {
             if self.encoded {
                 let boundary = self.boundary.unwrap_or(self.consumed);
                 let history = decoder.packet_history_before(boundary);
-                decoder.activate_decoder(&history, Some(boundary))?;
+                if self.pre_skip == OPUS_ENCODER_LOOKAHEAD {
+                    // Keep the warm-up audio: it is what the client just heard, and the output
+                    // encoder is primed with it so the switch has no gap and no cold start.
+                    let (pcm, start) = decoder.activate_decoder_capturing(&history, boundary)?;
+                    let length = (pcm.len() / 2) as u64;
+                    self.prime = (start.is_some()
+                        && length <= boundary
+                        && (boundary - length).is_multiple_of(960))
+                    .then_some(pcm);
+                } else {
+                    decoder.activate_decoder(&history, Some(boundary))?;
+                }
             } else {
                 decoder.activate_decoder(&[], None)?;
             }
@@ -198,9 +223,37 @@ impl ActiveSource {
             // The output encoder restarts from an empty state on a source packet boundary.
             self.pcm_run = 0;
             self.encoder_phase = Some(0);
+            self.truthful = false;
         }
         self.encoded = false;
         Ok(())
+    }
+
+    /// Enter PCM from forwarded packets and, when possible, prime the output encoder with the
+    /// audio the client just heard, so there is no gap and no cold encoder at the switch.
+    pub(super) fn enter_pcm_seamless(
+        &mut self,
+        output: &Arc<dyn MediaOutput>,
+        live_start: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<(), PlaybackError> {
+        self.enter_pcm()?;
+        let Some(pcm) = self.prime.take() else {
+            return Ok(());
+        };
+        if let Some(encoded) = output.encoded_opus_output()
+            && encoded.begin_seamless_pcm(&pcm, live_start, cancellation)?
+        {
+            let length = (pcm.len() / 2) as u64;
+            self.encoder_phase = Some(length % 960);
+            self.pcm_run = length;
+            self.truthful = true;
+        }
+        Ok(())
+    }
+
+    pub(super) fn truthful(&self) -> bool {
+        self.truthful
     }
 
     /// Submit a whole source packet only when it fits before the overlap.
@@ -299,6 +352,11 @@ impl ActiveSource {
                 }
             }
             decoder.deactivate_decoder()?;
+            if draining_junction && std::mem::take(&mut self.truthful) {
+                // The drained samples were accounted once as encoder input and are about to be
+                // sent again as part of the next packet.
+                processor.rewind(u64::from(OPUS_ENCODER_LOOKAHEAD));
+            }
             encoded_output.prepare_passthrough(processor.next_sample(), cancellation)?;
             if draining_junction {
                 // The drained samples are sent again as part of the packet that follows.
@@ -388,21 +446,20 @@ impl ActiveSource {
                 pcm,
                 ended,
             } => {
-                if self.junction {
-                    if pcm.is_empty() {
-                        // Packets were not resumed (for example a gain change arrived). The
-                        // decoder already holds the next packet's state, so rebuild it from the
-                        // history before that packet and skip the samples already sent.
-                        let boundary = decoder.source_boundary_sample().unwrap_or(0);
-                        let history = decoder.packet_history_before(boundary);
-                        decoder.deactivate_decoder()?;
-                        decoder.activate_decoder(
-                            &history,
-                            Some(boundary + u64::from(OPUS_ENCODER_LOOKAHEAD)),
-                        )?;
-                        self.junction = false;
-                    }
-                } else {
+                if self.junction && pcm.is_empty() {
+                    // Packets were not resumed (for example a gain change arrived). The decoder
+                    // already holds the next packet's state, so rebuild it from the history before
+                    // that packet and skip the samples already sent, then carry on decoding.
+                    let boundary = decoder.source_boundary_sample().unwrap_or(0);
+                    let history = decoder.packet_history_before(boundary);
+                    decoder.deactivate_decoder()?;
+                    decoder.activate_decoder(
+                        &history,
+                        Some(boundary + u64::from(OPUS_ENCODER_LOOKAHEAD)),
+                    )?;
+                    self.junction = false;
+                }
+                if !self.junction {
                     while pcm.len() < wanted * 2 && !*ended && !cancellation.is_cancelled() {
                         match decoder.next_frame()? {
                             Some(frame) => pcm.extend(frame.samples),
@@ -499,6 +556,8 @@ impl ActiveSource {
         };
         self.encoded = false;
         self.junction = false;
+        self.truthful = false;
+        self.prime = None;
         self.pcm_run = 0;
         self.encoder_phase = None;
         self.probe = None;

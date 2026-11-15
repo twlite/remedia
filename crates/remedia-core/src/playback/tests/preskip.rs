@@ -7,18 +7,22 @@
 use super::*;
 use crate::decoder::DemuxedAudioPacket;
 
-const ABRUPT: &[u8] = include_bytes!("../../../tests/fixtures/ffmpeg-opus-abrupt-start.ogg");
-const SILENT_LEAD: &[u8] = include_bytes!("../../../tests/fixtures/ffmpeg-opus-silent-lead.ogg");
-const SILENT_LEAD_WEBM: &[u8] =
+pub(super) const ABRUPT: &[u8] =
+    include_bytes!("../../../tests/fixtures/ffmpeg-opus-abrupt-start.ogg");
+pub(super) const SILENT_LEAD: &[u8] =
+    include_bytes!("../../../tests/fixtures/ffmpeg-opus-silent-lead.ogg");
+pub(super) const SILENT_LEAD_WEBM: &[u8] =
     include_bytes!("../../../tests/fixtures/ffmpeg-opus-silent-lead.webm");
-const SILENT_LEAD_LONG: &[u8] =
+pub(super) const SILENT_LEAD_LONG: &[u8] =
     include_bytes!("../../../tests/fixtures/ffmpeg-opus-silent-lead-long.ogg");
+pub(super) const TRANSIENTS: &[u8] =
+    include_bytes!("../../../tests/fixtures/ffmpeg-opus-transients-long.ogg");
 
 /// The pre-skip FFmpeg wrote for these files, in samples at 48 kHz.
-const PRE_SKIP: usize = 312;
+pub(super) const PRE_SKIP: usize = 312;
 
 /// Interleaved stereo PCM as FFmpeg decodes the file, with pre-skip and end trimming applied.
-fn reference_pcm(bytes: &[u8]) -> Vec<f32> {
+pub(super) fn reference_pcm(bytes: &[u8]) -> Vec<f32> {
     let mut decoder = AudioDecoder::open(InputSource::bytes(bytes.to_vec())).unwrap();
     let mut pcm = Vec::new();
     while let Some(frame) = decoder.next_frame().unwrap() {
@@ -27,7 +31,7 @@ fn reference_pcm(bytes: &[u8]) -> Vec<f32> {
     pcm
 }
 
-fn source_packets(bytes: &[u8]) -> Vec<DemuxedAudioPacket> {
+pub(super) fn source_packets(bytes: &[u8]) -> Vec<DemuxedAudioPacket> {
     let mut decoder = AudioDecoder::open_for_playback(
         InputSource::bytes(bytes.to_vec()),
         DecoderOptions::default(),
@@ -40,12 +44,12 @@ fn source_packets(bytes: &[u8]) -> Vec<DemuxedAudioPacket> {
     packets
 }
 
-fn payload(packet: &DemuxedAudioPacket) -> &[u8] {
+pub(super) fn payload(packet: &DemuxedAudioPacket) -> &[u8] {
     packet.packet.data().unwrap()
 }
 
 /// Everything the sink received when `bytes` plays to the end.
-fn play_to_end(bytes: &[u8]) -> Vec<EncodedOpusPacket> {
+pub(super) fn play_to_end(bytes: &[u8]) -> Vec<EncodedOpusPacket> {
     let (sink, handle) = StepPacketSink::new();
     handle.release(100_000);
     let session = PlaybackSession::new();
@@ -61,7 +65,7 @@ fn play_to_end(bytes: &[u8]) -> Vec<EncodedOpusPacket> {
 
 /// What a client sees: every packet decoded in order by one libopus decoder. Each packet
 /// contributes its full encoded duration, including any leading pre-roll that is not media.
-fn client_pcm(packets: &[EncodedOpusPacket]) -> Vec<f32> {
+pub(super) fn client_pcm(packets: &[EncodedOpusPacket]) -> Vec<f32> {
     let mut decoder = opus2::Decoder::new(48_000, opus2::Channels::Stereo).unwrap();
     let mut pcm = Vec::new();
     for packet in packets {
@@ -75,14 +79,14 @@ fn client_pcm(packets: &[EncodedOpusPacket]) -> Vec<f32> {
     pcm
 }
 
-fn media_samples(packets: &[EncodedOpusPacket]) -> u64 {
+pub(super) fn media_samples(packets: &[EncodedOpusPacket]) -> u64 {
     packets
         .iter()
         .map(|packet| u64::from(packet.media_samples_per_channel))
         .sum()
 }
 
-fn assert_timeline_is_contiguous(packets: &[EncodedOpusPacket]) {
+pub(super) fn assert_timeline_is_contiguous(packets: &[EncodedOpusPacket]) {
     assert_eq!(packets[0].start_sample, 0);
     assert!(
         packets.windows(2).all(|pair| pair[1].start_sample
@@ -187,7 +191,7 @@ fn an_encoder_delay_pre_roll_is_forwarded_with_the_first_packet_unchanged() {
 
 /// The longest run of consecutive source packets (from source index `from`) inside the output:
 /// the output index it starts at, the source index of its first packet, and its length.
-fn longest_forwarded_run(
+pub(super) fn longest_forwarded_run(
     packets: &[EncodedOpusPacket],
     source: &[DemuxedAudioPacket],
     from: usize,
@@ -215,7 +219,10 @@ fn longest_forwarded_run(
 /// The run of source packets that ends the output: the index of its first packet and the source
 /// index that packet is. The final source packet is end-trimmed and therefore re-encoded, so the
 /// run ends one packet before the end of both lists.
-fn forwarded_run(packets: &[EncodedOpusPacket], source: &[DemuxedAudioPacket]) -> (usize, usize) {
+pub(super) fn forwarded_run(
+    packets: &[EncodedOpusPacket],
+    source: &[DemuxedAudioPacket],
+) -> (usize, usize) {
     let last = packets.len() - 2;
     let last_source = source.len() - 2;
     let mut start = last + 1;
@@ -251,7 +258,7 @@ fn a_streamed_pre_skip_source_matches_the_buffered_one() {
 
 /// A fresh client decoder's residual against the reference over `blocks` consecutive 20 ms
 /// blocks, starting at client index `client_start` and media sample `media_start`.
-fn residual_db(
+pub(super) fn residual_db(
     client: &[f32],
     client_start: usize,
     reference: &[f32],
@@ -260,7 +267,7 @@ fn residual_db(
 ) -> Vec<f32> {
     (0..blocks)
         .map(|block| {
-            let (mut error, mut signal) = (0.0_f32, 0.0_f32);
+            let (mut error, mut signal, mut heard) = (0.0_f32, 0.0_f32, 0.0_f32);
             for n in 0..960 {
                 let c = client_start + block * 960 + n;
                 let m = media_start + block * 960 + n;
@@ -268,15 +275,24 @@ fn residual_db(
                     let wanted = reference[m * 2 + channel];
                     error += (client[c * 2 + channel] - wanted).powi(2);
                     signal += wanted * wanted;
+                    heard += client[c * 2 + channel].powi(2);
                 }
             }
-            10.0 * (error / signal.max(1e-12)).log10()
+            if (signal / 1920.0).sqrt() < 0.004 {
+                // A near-silent block has no meaningful relative error: it must stay near-silent.
+                return if (heard / 1920.0).sqrt() < 0.01 {
+                    -100.0
+                } else {
+                    0.0
+                };
+            }
+            10.0 * (error / signal).log10()
         })
         .collect()
 }
 
 /// Seek `bytes` to `target` samples while playing, then collect everything the sink receives.
-fn packets_after_seek(bytes: &[u8], target: u64) -> Vec<EncodedOpusPacket> {
+pub(super) fn packets_after_seek(bytes: &[u8], target: u64) -> Vec<EncodedOpusPacket> {
     let (sink, handle) = StepPacketSink::new();
     let session = Arc::new(PlaybackSession::new());
     session
@@ -303,10 +319,16 @@ fn packets_after_seek(bytes: &[u8], target: u64) -> Vec<EncodedOpusPacket> {
     packets[1..].to_vec()
 }
 
-fn assert_seek_is_seamless(target: u64) {
-    let reference = reference_pcm(SILENT_LEAD_LONG);
-    let source = source_packets(SILENT_LEAD_LONG);
-    let packets = packets_after_seek(SILENT_LEAD_LONG, target);
+pub(super) fn assert_seek_is_seamless(target: u64) {
+    assert_seek_is_seamless_in(SILENT_LEAD_LONG, target, [-15.0, -35.0, -12.0]);
+}
+
+/// Seek `bytes` to `target` and check the seam; `limits` bound the first block after the
+/// junction, the eighth, and the last block before it, in dB relative to the reference.
+pub(super) fn assert_seek_is_seamless_in(bytes: &[u8], target: u64, limits: [f32; 3]) {
+    let reference = reference_pcm(bytes);
+    let source = source_packets(bytes);
+    let packets = packets_after_seek(bytes, target);
     let lead = (target % 960) as usize;
 
     assert_eq!(
@@ -358,11 +380,17 @@ fn assert_seek_is_seamless(target: u64) {
     println!(
         "seek to {target}: junction at packet {junction}; residual dB before {before:?} after {after:?}"
     );
-    assert!(after[0] < -15.0, "first block after the seam: {after:?}");
-    assert!(after[7] < -35.0, "the decoder has settled: {after:?}");
+    assert!(
+        after[0] < limits[0],
+        "first block after the seam: {after:?}"
+    );
+    assert!(after[7] < limits[1], "the decoder has settled: {after:?}");
     // A freshly reset encoder codes its first frames poorly; the last block before the seam is
     // settled and must line up in time (a lag would show as a residual near 0 dB).
-    assert!(before[3] < -12.0, "re-encoded audio is aligned: {before:?}");
+    assert!(
+        before[3] < limits[2],
+        "re-encoded audio is aligned: {before:?}"
+    );
 }
 
 #[test]
@@ -406,7 +434,7 @@ fn a_stream_whose_pre_skip_differs_from_the_encoder_lookahead_keeps_decoding_aft
     );
 }
 
-fn stage_identity(session: &PlaybackSession) -> super::super::StageIdentity {
+pub(super) fn stage_identity(session: &PlaybackSession) -> super::super::StageIdentity {
     super::super::StageIdentity {
         expected_generation: session.source_generation(),
         entry_id: "next".into(),
@@ -416,7 +444,10 @@ fn stage_identity(session: &PlaybackSession) -> super::super::StageIdentity {
 }
 
 /// Play `outgoing`, crossfade into `incoming`, and wait until the incoming source is staged.
-fn start_crossfade(outgoing: &[u8], incoming: &[u8]) -> (PlaybackSession, StepPacketHandle) {
+pub(super) fn start_crossfade(
+    outgoing: &[u8],
+    incoming: &[u8],
+) -> (PlaybackSession, StepPacketHandle) {
     let (sink, handle) = StepPacketSink::new();
     let session = PlaybackSession::new();
     session

@@ -89,7 +89,7 @@ fn sole_member_reset_reinitializes_mls_without_epoch_transition_id() {
 }
 
 /// A local voice gateway producing signed, spec-compliant external add proposals.
-struct TestGateway {
+pub(crate) struct TestGateway {
     provider: OpenMlsRustCrypto,
     signer: SignatureKeyPair,
     sender: ExternalSender,
@@ -219,7 +219,7 @@ fn assert_encrypted_roundtrip(sender: &mut DaveProtocol, receiver: &mut DaveProt
 }
 
 /// Epoch 2 avoids conflating same-epoch announcements with the special epoch 1 reset.
-fn established_group() -> (TestGateway, DaveProtocol, DaveProtocol) {
+pub(crate) fn established_group() -> (TestGateway, DaveProtocol, DaveProtocol) {
     let gateway = TestGateway::new();
     let mut a = gateway.member(100);
     let mut b = gateway.member(101);

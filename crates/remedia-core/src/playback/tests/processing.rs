@@ -12,7 +12,7 @@ fn compatible_opus_source_is_forwarded_without_transcoding() {
         expected_payloads.push(packet.packet.data().unwrap().to_vec());
     }
     let preroll = packet_reader.packet_history_before(u64::MAX);
-    assert_eq!(preroll.len(), 6, "packet history is capped at 120 ms");
+    assert_eq!(preroll.len(), 7, "packet history is capped at 140 ms");
 
     let (sink, handle) = StepPacketSink::new();
     handle.release(1_000);

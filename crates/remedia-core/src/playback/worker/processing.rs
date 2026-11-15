@@ -16,6 +16,10 @@ pub(super) struct ProcessingTransition<'a> {
     pub(super) passthrough_mode: &'a mut bool,
     pub(super) pending_frame: &'a mut Option<DecodedPcmFrame>,
     pub(super) deferred_filter_update: &'a mut Option<FilterUpdate>,
+    /// The stream's pre-skip equals the encoder lookahead, so entering PCM can be seamless.
+    pub(super) seamless: bool,
+    /// Set to the output sample at which the encoder started, when it was primed.
+    pub(super) primed_origin: &'a mut Option<u64>,
 }
 
 impl ProcessingTransition<'_> {
@@ -32,6 +36,8 @@ impl ProcessingTransition<'_> {
             passthrough_mode,
             pending_frame,
             deferred_filter_update,
+            seamless,
+            primed_origin,
         } = self;
         if *passthrough_mode {
             let source_boundary = processor
@@ -40,7 +46,16 @@ impl ProcessingTransition<'_> {
                 .or_else(|| decoder.source_boundary_sample())
                 .unwrap_or(0);
             let history = decoder.packet_history_before(source_boundary);
-            let activation = decoder.activate_decoder(&history, Some(source_boundary));
+            let mut warmup = None;
+            let activation = if seamless {
+                // Keep the warm-up audio: it is what the client just heard, and the encoder is
+                // conditioned on it so the switch has no gap and no cold start.
+                decoder
+                    .activate_decoder_capturing(&history, source_boundary)
+                    .map(|captured| warmup = Some(captured))
+            } else {
+                decoder.activate_decoder(&history, Some(source_boundary))
+            };
             if let Err(error) = activation {
                 let playback_error: PlaybackError = error.into();
                 if can_passthrough {
@@ -72,6 +87,37 @@ impl ProcessingTransition<'_> {
                 }
                 fail_session(shared, generation, playback_error, cancellation, output);
                 return ControlFlow::Break(());
+            }
+            if let Some((pcm, start)) = warmup {
+                let live_start = processor.next_sample();
+                let length = (pcm.len() / 2) as u64;
+                // A fresh decoder drops the stream's pre-skip from its first output, so the warm-up
+                // PCM starts one lookahead into the first history packet and ends at the boundary.
+                // Its start must be a multiple of 960: that puts the encoder's frame grid where a
+                // later return to packets needs it.
+                let aligned = start.is_some()
+                    && length <= source_boundary
+                    && (source_boundary - length).is_multiple_of(960);
+                if aligned && let Some(encoded) = output.encoded_opus_output() {
+                    let usable = &pcm[..];
+                    match encoded.begin_seamless_pcm(usable, live_start, cancellation) {
+                        Ok(true) => *primed_origin = Some(live_start - (usable.len() / 2) as u64),
+                        Ok(false) => {}
+                        Err(error) => {
+                            if is_stopped(shared, generation) {
+                                return ControlFlow::Break(());
+                            }
+                            fail_session(
+                                shared,
+                                generation,
+                                PlaybackError::Output(error),
+                                cancellation,
+                                output,
+                            );
+                            return ControlFlow::Break(());
+                        }
+                    }
+                }
             }
             let applied_filter_update = deferred_filter_update.take();
             if let Some(update) = applied_filter_update {

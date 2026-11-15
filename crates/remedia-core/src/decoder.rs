@@ -16,7 +16,9 @@ const OUTPUT_CHANNELS: u16 = 2;
 const OUTPUT_SAMPLE_FORMAT: ffmpeg::format::Sample =
     ffmpeg::format::Sample::F32(SampleType::Planar);
 const RESAMPLER_PADDING_SAMPLES: usize = 128;
-const OPUS_PREROLL_SAMPLES: u64 = 5_760;
+/// Seven 20 ms packets: six to warm a decoder or prime the output encoder, plus the packet that
+/// may already have been read but rejected at the boundary the switch happens on.
+const OPUS_PREROLL_SAMPLES: u64 = 6_720;
 
 /// The algorithmic delay, in 48 kHz samples, of the libopus encoder Remedia uses for PCM. Its
 /// output decodes to its input delayed by this many samples, which is why Opus streams carry a

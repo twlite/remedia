@@ -233,6 +233,21 @@ fn worker_loop(
                         // frame lines up with the incoming packet grid when its staged audio runs
                         // out. Skip the few incoming samples (under 20 ms, at the very start of
                         // the fade-in where the incoming gain is zero) that make it so.
+                        // Leave forwarded packets now, so the encoder phase the alignment below
+                        // relies on is the primed one.
+                        if current.encoded_mode()
+                            && let Err(error) = current.enter_pcm_seamless(
+                                &output,
+                                processor.next_sample(),
+                                &cancellation,
+                            )
+                        {
+                            if is_stopped(&shared, generation) {
+                                return;
+                            }
+                            fail_session(&shared, generation, error, &cancellation, &output);
+                            return;
+                        }
                         let encoder_phase_start = current.encoder_phase_now();
                         let trimmed = next
                             .trimmed_samples
@@ -326,7 +341,12 @@ fn worker_loop(
                 return;
             }
         }
-        if let Err(error) = current.enter_pcm() {
+        if let Err(error) =
+            current.enter_pcm_seamless(&output, processor.next_sample(), &cancellation)
+        {
+            if is_stopped(&shared, generation) {
+                return;
+            }
             fail_session(&shared, generation, error, &cancellation, &output);
             return;
         }
@@ -433,6 +453,7 @@ fn worker_loop(
                 "crossfade transition mixed",
             );
 
+            let outgoing_truthful = current.truthful();
             current = ActiveSource::prepared(
                 Arc::clone(&finished.next),
                 finished.incoming_consumed,
@@ -443,6 +464,7 @@ fn worker_loop(
                 finished
                     .encoder_phase_start
                     .map(|phase| (phase + finished.fading.consumed_samples() as u64) % 960),
+                outgoing_truthful,
             );
             outgoing_info = finished.info.clone();
             preparation_requested = false;

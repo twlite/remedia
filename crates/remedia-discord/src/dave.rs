@@ -54,6 +54,28 @@ impl DaveProtocol {
         self.session.can_encrypt()
     }
 
+    /// Decrypt a media frame another group member sent, as a DAVE receiver would.
+    #[cfg(test)]
+    pub(crate) fn decrypt_audio_from(&mut self, sender: &DaveProtocol, frame: &[u8]) -> Vec<u8> {
+        self.session
+            .decrypt(sender.user_id, davey::MediaType::AUDIO, frame)
+            .expect("a group member decrypts the sender's frame")
+    }
+
+    /// A stand-in for the sender's identity, which a receiver needs to decrypt its frames.
+    #[cfg(test)]
+    pub(crate) fn clone_identity_for_test(&self) -> DaveProtocol {
+        DaveProtocol {
+            session: create_session(self.protocol_version, self.user_id, self.channel_id)
+                .expect("a session for the same identity"),
+            protocol_version: self.protocol_version,
+            user_id: self.user_id,
+            channel_id: self.channel_id,
+            recognized_user_ids: HashSet::new(),
+            pending_transitions: HashMap::new(),
+        }
+    }
+
     pub(crate) fn epoch(&self) -> Option<u64> {
         self.session.epoch().map(|epoch| epoch.as_u64())
     }
@@ -405,4 +427,4 @@ fn split_transition_id(data: &[u8]) -> Result<(u16, &[u8]), VoiceError> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

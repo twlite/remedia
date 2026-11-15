@@ -581,3 +581,256 @@ fn opus_sender_backpressures_at_its_bounded_queue_and_cancellation_unblocks() {
     sender.cancel();
     assert_eq!(sender.inner.cancelled_generation.load(Ordering::Acquire), 1);
 }
+
+mod real_opus {
+    //! Packets the engine emits for real FFmpeg-written Opus files, sent through the actual RTP
+    //! packetizer, DAVE encryption and a loopback UDP socket, then decrypted by a separate DAVE
+    //! group member as a client would.
+
+    use std::sync::{Condvar, Mutex};
+
+    use remedia_core::{
+        InputSource, OpusEncoderOutput, OpusPacketSink, PlaybackSession, PlaybackState,
+    };
+
+    use super::*;
+    use crate::crypto::{EncryptionMode, TRANSPORT_NONCE_BYTES, TransportCipher};
+    use crate::dave::tests::established_group;
+    use crate::rtp::serialize_rtp_header;
+
+    const LONG: &[u8] =
+        include_bytes!("../../../remedia-core/tests/fixtures/ffmpeg-opus-silent-lead-long.ogg");
+    const WEBM: &[u8] =
+        include_bytes!("../../../remedia-core/tests/fixtures/ffmpeg-opus-silent-lead.webm");
+
+    /// A sink that records packets and blocks each one until released, so a test can act between
+    /// two packets.
+    #[derive(Clone, Default)]
+    struct GatedSink(Arc<(Mutex<Gate>, Condvar)>);
+
+    #[derive(Default)]
+    struct Gate {
+        permits: usize,
+        calls: usize,
+        packets: Vec<EncodedOpusPacket>,
+        cancelled: bool,
+    }
+
+    impl GatedSink {
+        fn release(&self, count: usize) {
+            lock(&self.0.0).permits += count;
+            self.0.1.notify_all();
+        }
+
+        fn wait_for_calls(&self, calls: usize) {
+            let guard = lock(&self.0.0);
+            let (guard, _) = self
+                .0
+                .1
+                .wait_timeout_while(guard, Duration::from_secs(10), |gate| gate.calls < calls)
+                .unwrap();
+            assert!(guard.calls >= calls, "the worker reached packet {calls}");
+        }
+
+        fn packets(&self) -> Vec<EncodedOpusPacket> {
+            lock(&self.0.0).packets.clone()
+        }
+    }
+
+    impl OpusPacketSink for GatedSink {
+        fn send_packet(
+            &self,
+            packet: EncodedOpusPacket,
+            cancellation: &CancellationToken,
+        ) -> Result<(), remedia_core::OutputError> {
+            let mut gate = lock(&self.0.0);
+            gate.calls += 1;
+            self.0.1.notify_all();
+            while gate.permits == 0 && !gate.cancelled && !cancellation.is_cancelled() {
+                gate = self.0.1.wait(gate).unwrap();
+            }
+            if gate.cancelled || cancellation.is_cancelled() {
+                return Err(remedia_core::OutputError::Cancelled);
+            }
+            gate.permits -= 1;
+            gate.packets.push(packet);
+            Ok(())
+        }
+
+        fn flush(
+            &self,
+            _: Duration,
+            _: &CancellationToken,
+        ) -> Result<(), remedia_core::OutputError> {
+            Ok(())
+        }
+
+        fn finish(&self, _: &CancellationToken) -> Result<(), remedia_core::OutputError> {
+            Ok(())
+        }
+
+        fn cancel(&self) {
+            lock(&self.0.0).cancelled = true;
+            self.0.1.notify_all();
+        }
+    }
+
+    /// Everything the engine emits for `bytes`, with one seek and one gain change in the middle:
+    /// the first packet carries the pre-skip, the seek and gain change re-encode and then return
+    /// to forwarded packets, and the last packet is end-trimmed.
+    fn engine_packets(bytes: &[u8]) -> Vec<EncodedOpusPacket> {
+        let sink = GatedSink::default();
+        let session = Arc::new(PlaybackSession::new());
+        session
+            .play(
+                InputSource::bytes(bytes.to_vec()),
+                OpusEncoderOutput::new(sink.clone()).unwrap(),
+            )
+            .unwrap();
+        sink.wait_for_calls(1);
+        sink.release(40);
+        sink.wait_for_calls(41);
+        let seeking = Arc::clone(&session);
+        let seek = std::thread::spawn(move || seeking.seek(Duration::from_millis(1_500)));
+        // The seek is applied between two packets; let packets through one at a time until it is.
+        while !seek.is_finished() {
+            sink.release(1);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        seek.join().unwrap().unwrap();
+        sink.release(100_000);
+        assert_eq!(session.wait(), PlaybackState::Completed);
+        sink.packets()
+    }
+
+    async fn through_rtp_and_dave(packets: &[EncodedOpusPacket], mode: EncryptionMode) {
+        let (_gateway, sender, mut receiver) = established_group();
+        let sender_identity = sender.clone_identity_for_test();
+        let dave = Arc::new(Mutex::new(sender));
+        let key = [0x61; 32];
+        let (ssrc, first_sequence, first_timestamp, first_nonce) =
+            (0x1234_5678, u16::MAX - 3, u32::MAX - 1_000, u32::MAX - 5);
+        let mut rtp = RtpSender::new(
+            ssrc,
+            first_sequence,
+            first_timestamp,
+            first_nonce,
+            mode,
+            &key,
+        )
+        .unwrap();
+        let cipher = TransportCipher::new(mode, &key).unwrap();
+        let observability = RtpSendObservability {
+            voice_connection_id: 1,
+            metrics: ObservabilityHandle::default().metrics(),
+        };
+        let receiving = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sending = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server = receiving.local_addr().unwrap();
+
+        let mut expected_timestamp = first_timestamp;
+        for (index, packet) in packets.iter().enumerate() {
+            send_transport_packet(
+                &sending,
+                server,
+                &mut rtp,
+                &dave,
+                &observability,
+                Duration::ZERO,
+                packet,
+            )
+            .await
+            .unwrap();
+            let mut datagram = [0_u8; 1_500];
+            let (length, _) =
+                time::timeout(Duration::from_secs(2), receiving.recv_from(&mut datagram))
+                    .await
+                    .expect("the datagram arrives")
+                    .unwrap();
+            let datagram = &datagram[..length];
+
+            // RTP: version 2, payload type 120, and a clock that advances by the encoded
+            // duration of every packet, including the pre-roll packet whose media is shorter.
+            let header: [u8; 12] = datagram[..12].try_into().unwrap();
+            assert_eq!(
+                header,
+                serialize_rtp_header(
+                    first_sequence.wrapping_add(index as u16),
+                    expected_timestamp,
+                    ssrc
+                ),
+                "packet {index} header"
+            );
+            expected_timestamp = expected_timestamp.wrapping_add(packet.samples_per_channel);
+
+            // Transport encryption: authenticated by the header, with the running nonce counter.
+            let sealed = &datagram[12..];
+            assert_eq!(
+                &sealed[sealed.len() - TRANSPORT_NONCE_BYTES..],
+                &first_nonce.wrapping_add(index as u32).to_be_bytes()
+            );
+            let dave_frame = cipher.decrypt_payload(&header, sealed).unwrap();
+
+            // DAVE: a different group member recovers the original Opus packet exactly.
+            let opus = receiver.decrypt_audio_from(&sender_identity, &dave_frame);
+            assert_eq!(opus, packet.bytes, "packet {index} payload");
+        }
+    }
+
+    #[tokio::test]
+    async fn real_file_packets_survive_rtp_transport_encryption_and_dave_exactly() {
+        for bytes in [LONG, WEBM] {
+            let packets = engine_packets(bytes);
+            assert_eq!(packets[0].samples_per_channel, 960);
+            assert_eq!(
+                packets[0].media_samples_per_channel, 648,
+                "the first packet carries the pre-skip"
+            );
+            assert!(
+                packets
+                    .iter()
+                    .any(|p| p.media_samples_per_channel < p.samples_per_channel),
+                "pre-roll and trimmed packets are present"
+            );
+            for mode in [EncryptionMode::Aes256Gcm, EncryptionMode::XChaCha20Poly1305] {
+                through_rtp_and_dave(&packets, mode).await;
+            }
+        }
+    }
+
+    #[test]
+    fn media_shorter_than_the_encoded_duration_is_queued_and_played_back_unchanged() {
+        // A transport handoff in the middle of a real file's packets: the old and replacement
+        // transports together receive every packet exactly once, in order, with the pre-skip
+        // packet's shorter media duration intact.
+        let packets = engine_packets(LONG);
+        let old = TestVoiceConnection::new(77);
+        let replacement = TestVoiceConnection::new(77);
+        let router = crate::sender_router::DiscordOpusSenderRouter::new();
+        router.attach(old.connection().opus_sender());
+        let sink = router.sink();
+        let token = CancellationToken::new();
+        let split = 30;
+        for packet in &packets[..split] {
+            sink.send_packet(packet.clone(), &token).unwrap();
+        }
+        old.wait_for_packets(split);
+        router.detach();
+        router.attach(replacement.connection().opus_sender());
+        for packet in &packets[split..] {
+            sink.send_packet(packet.clone(), &token).unwrap();
+        }
+        replacement.wait_for_packets(packets.len() - split);
+
+        let received = |voice: &TestVoiceConnection| {
+            voice
+                .packets()
+                .into_iter()
+                .map(|(_, packet)| packet)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(received(&old), packets[..split]);
+        assert_eq!(received(&replacement), packets[split..]);
+        assert_eq!(received(&old)[0].media_samples_per_channel, 648);
+    }
+}

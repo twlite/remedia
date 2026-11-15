@@ -64,12 +64,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument('input')
 parser.add_argument('output')
 parser.add_argument('--loops', type=int, default=1, help='repeat the audio packets this many times')
+parser.add_argument('--pre-skip', type=int, default=0, help='pre-skip to write into the OpusHead (default 0)')
 args = parser.parse_args()
 
 packets = read_packets(open(args.input, 'rb').read())
 head, audio = bytearray(packets[0]), packets[2:]
 assert head[:8] == b'OpusHead'
-struct.pack_into('<H', head, 10, 0)
+struct.pack_into('<H', head, 10, args.pre_skip)
 serial = 0x52454D44
 out = bytearray(page(serial, 0, 0, 0x02, bytes(head)))
 out += page(serial, 1, 0, 0, b'OpusTags' + struct.pack('<I', 7) + b'remedia' + struct.pack('<I', 0))

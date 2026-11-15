@@ -152,6 +152,24 @@ pub trait EncodedOpusOutput: Send + Sync {
         Ok(())
     }
 
+    /// Start PCM encoding after a stretch of forwarded source packets without a break in the
+    /// audio a client hears.
+    ///
+    /// `history_pcm` is interleaved stereo that was just played as source packets and ends where
+    /// live PCM continues (`live_start_sample`). Its length must be a multiple of 960 samples per
+    /// channel plus 648, and the encoder (which delays its output by its 312-sample lookahead)
+    /// is conditioned on it and then drops every packet whose audio the client already has.
+    /// Returns `Ok(false)` when the output cannot do this, and the caller starts PCM the usual
+    /// way. Outputs without an encoder keep this default.
+    fn begin_seamless_pcm(
+        &self,
+        _history_pcm: &[f32],
+        _live_start_sample: u64,
+        _cancellation: &CancellationToken,
+    ) -> Result<bool, OutputError> {
+        Ok(false)
+    }
+
     /// Close a partial PCM encoder frame at a safe packet boundary before
     /// switching back to encoded packets. Implementations must preserve sink
     /// ordering and must not seek, flush, or replace the underlying transport.
