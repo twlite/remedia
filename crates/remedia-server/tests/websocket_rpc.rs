@@ -244,5 +244,7 @@ mod playback;
 mod plugin_forwarding;
 #[path = "websocket_rpc/probe.rs"]
 mod probe;
+#[path = "websocket_rpc/seeking.rs"]
+mod seeking;
 #[path = "websocket_rpc/sessions.rs"]
 mod sessions;

@@ -444,6 +444,7 @@ pub(crate) async fn execute(
         | "player.resume"
         | "player.stop"
         | "player.seek"
+        | "player.seek.cancel"
         | "player.filter.set"
         | "player.filter.clear"
         | "player.volume.set" => execute_player_control(server, connection, request).await,

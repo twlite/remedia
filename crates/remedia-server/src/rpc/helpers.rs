@@ -305,7 +305,9 @@ pub(super) fn playback_error(error: PlaybackError) -> RpcError {
     let message = match code {
         "invalid_state" => "playback operation is invalid in the current state",
         "unsupported" => "playback operation is unsupported for this source",
-        "cancelled" => "the seek was replaced by a newer request before it was applied",
+        "cancelled" => {
+            "the seek was cancelled or replaced by a newer request before it was applied"
+        }
         _ => "playback operation failed; inspect server diagnostics for details",
     };
     RpcError::new(code, message)
@@ -318,7 +320,7 @@ pub(super) fn playback_error_code(error: &PlaybackError) -> &'static str {
             "unsupported"
         }
         PlaybackError::Cancelled => "invalid_state",
-        PlaybackError::SeekSuperseded => "cancelled",
+        PlaybackError::SeekSuperseded | PlaybackError::SeekCancelled => "cancelled",
         _ => "playback_failed",
     }
 }

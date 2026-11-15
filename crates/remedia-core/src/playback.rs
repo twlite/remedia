@@ -351,10 +351,16 @@ impl CrossfadeConfig {
 /// Events only emitted for explicitly enabled staged playback.
 #[derive(Clone, Debug)]
 pub enum CrossfadeEvent {
+    /// A seek changed the source timeline. `position_ms` is where the audio continues from;
+    /// for a fallback seek that is later than `requested_position_ms` by the source time that
+    /// elapsed while the replacement was prepared. `replaced_source` is set then, and the
+    /// output timeline continued rather than restarting at the position.
     TimelineChanged {
         previous_generation: u64,
         generation: u64,
         position_ms: u64,
+        requested_position_ms: u64,
+        replaced_source: bool,
     },
     PrepareRequested {
         generation: u64,

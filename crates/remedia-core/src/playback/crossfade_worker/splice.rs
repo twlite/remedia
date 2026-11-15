@@ -89,6 +89,8 @@ pub(super) fn finish_fallback_switch(
         previous_generation,
         generation,
         position_ms: duration_from_samples(applied_sample).as_millis() as u64,
+        requested_position_ms: done.target().as_millis() as u64,
+        replaced_source: true,
     });
     fallback::record_applied(playback_id, done.target(), applied_sample, done.elapsed());
 }

@@ -249,6 +249,30 @@ async fn respond(
             "x".repeat(input["bytes"].as_u64().unwrap_or(0) as usize)
         )),
         "descriptor" => handled(json!({"url": "http://127.0.0.1:9/never-fetched"})),
+        // A media descriptor for `input.url`. With `hangAfter`, calls after that many never
+        // answer, as a slow provider would while a seek is waiting on it.
+        "media-url" => {
+            let key = input["key"].as_str().unwrap_or("media").to_owned();
+            let seen = {
+                let mut counters = state.counters.lock().unwrap();
+                let seen = counters.entry(key).or_insert(0);
+
+                *seen += 1;
+                *seen
+            };
+
+            if input["hangAfter"]
+                .as_u64()
+                .is_some_and(|after| seen as u64 > after)
+            {
+                let mut scratch = [0_u8; 64];
+                let _ = reader.read(&mut scratch).await;
+
+                return None;
+            }
+
+            handled(json!({"url": input["url"]}))
+        }
         "slow" => {
             tokio::time::sleep(Duration::from_millis(input["ms"].as_u64().unwrap_or(100))).await;
             handled(input.clone())
@@ -1369,4 +1393,225 @@ async fn disabled_hosts_are_never_contacted_and_never_replaced_by_another_host()
 
     assert_eq!(stats["result"]["pluginHosts"].as_array().unwrap().len(), 1);
     server.shutdown().await;
+}
+
+mod reopening {
+    //! A guild that opts in to fallback seeking reopens a plugin-hosted track by running its
+    //! operation again. That second run is an ordinary operation: same host, same credentials,
+    //! same input, the host's limits, and cancellable.
+
+    use super::super::seeking::{Origin, silent_wave};
+    use super::*;
+    use std::time::Instant;
+
+    const GUILD: &str = "400000000000000001";
+
+    async fn server_for(host: &MockHost, host_limits: Value) -> RunningServer {
+        let mut config = host_config(
+            "meta-host",
+            host,
+            ops(&[("example.metadata", "media.resolve", true)]),
+            host_limits,
+        );
+        config["allowExternalMedia"] = json!(true);
+
+        RunningServer::start_configured(2, 2, false, json!([config]), json!({})).await
+    }
+
+    async fn play_operation(socket: &mut TestSocket, origin: &Origin, input: Value) {
+        let created = rpc(
+            socket,
+            "guild",
+            "guild.create",
+            json!({"guildId": GUILD, "enableFallbackSeeking": true}),
+        )
+        .await;
+        assert_eq!(created["ok"], true, "{created}");
+        let mut input = input;
+        input["url"] = json!(origin.url);
+        let played = rpc(
+            socket,
+            "play",
+            "player.play",
+            json!({"guildId": GUILD, "source": {
+                "type": "operation", "hostId": "meta-host", "pluginId": "example.metadata",
+                "operation": "media.resolve", "input": input,
+            }}),
+        )
+        .await;
+        assert_eq!(played["ok"], true, "{played}");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let state = rpc(socket, "wait", "player.state", json!({"guildId": GUILD})).await;
+            if state["result"]["position"]["media"]["positionMs"]
+                .as_u64()
+                .unwrap_or(0)
+                > 3_000
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "playback never advanced: {state}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_seek_runs_the_same_operation_again_as_the_same_client() {
+        let host = MockHost::start(&[("example.metadata", "media.resolve")]).await;
+        let server = server_for(&host, json!({})).await;
+        let origin = Origin::start(silent_wave(200));
+        let mut socket = session(&server, BOT_A).await;
+        play_operation(&mut socket, &origin, json!({"mode": "media-url"})).await;
+        assert_eq!(host.count(&host.state.execute_calls), 1);
+
+        let seek = rpc(
+            &mut socket,
+            "seek",
+            "player.seek",
+            json!({"guildId": GUILD, "positionMs": 500}),
+        )
+        .await;
+
+        assert_eq!(seek["ok"], true, "{seek}");
+        assert_eq!(seek["result"]["fallback"], true);
+        assert_eq!(origin.connections(), 2);
+        // The operation ran a second time, with the input and credentials of the first, under
+        // its own operation id.
+        assert_eq!(host.count(&host.state.execute_calls), 2);
+        let inputs = host.state.inputs.lock().unwrap().clone();
+        assert_eq!(inputs[0], inputs[1]);
+        let authorization = host.state.authorization.lock().unwrap().clone();
+        assert_eq!(authorization[0], format!("Bearer {TOKEN}"));
+        assert_eq!(authorization[0], authorization[1]);
+        let ids = host.state.operation_ids.lock().unwrap().clone();
+        assert!(
+            !ids[0].is_empty() && !ids[1].is_empty() && ids[0] != ids[1],
+            "{ids:?}"
+        );
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_seek_cancels_the_operation_it_is_waiting_on() {
+        let host = MockHost::start(&[("example.metadata", "media.resolve")]).await;
+        let server = server_for(&host, json!({})).await;
+        let origin = Origin::start(silent_wave(200));
+        let mut socket = session(&server, BOT_A).await;
+        // The first call answers; the reopening call never does.
+        play_operation(
+            &mut socket,
+            &origin,
+            json!({"mode": "media-url", "hangAfter": 1}),
+        )
+        .await;
+
+        send(
+            &mut socket,
+            "seek",
+            "player.seek",
+            json!({"guildId": GUILD, "positionMs": 500}),
+        )
+        .await;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while host.count(&host.state.in_flight) == 0 {
+            assert!(Instant::now() < deadline, "the operation was never re-run");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        send(
+            &mut socket,
+            "cancel",
+            "player.seek.cancel",
+            json!({"guildId": GUILD}),
+        )
+        .await;
+        let answers = receive_many(&mut socket, &["cancel", "seek"]).await;
+        assert_eq!(
+            answers["cancel"]["result"]["cancelled"], true,
+            "{answers:?}"
+        );
+        assert_eq!(answers["seek"]["error"]["code"], "cancelled", "{answers:?}");
+
+        // The host saw its request abandoned, and its permit came back.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while host.count(&host.state.closed_early) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the host request was not cancelled"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let stats = wait_for_idle(&mut socket, "meta-host").await;
+        assert_eq!(stats["resources"]["pending"], 0);
+        let state = rpc(
+            &mut socket,
+            "after",
+            "player.state",
+            json!({"guildId": GUILD}),
+        )
+        .await;
+        assert_eq!(state["result"]["state"], "playing");
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn the_hosts_limits_apply_to_the_reopening_and_a_refusal_leaves_playback_alone() {
+        let host = MockHost::start(&[("example.metadata", "media.resolve")]).await;
+        let server = server_for(&host, json!({"maxPendingOperations": 1})).await;
+        let origin = Origin::start(silent_wave(200));
+        let mut socket = session(&server, BOT_A).await;
+        play_operation(&mut socket, &origin, json!({"mode": "media-url"})).await;
+
+        // Another client of the host occupies its only slot.
+        send(
+            &mut socket,
+            "hog",
+            "plugin.execute",
+            execute_params("meta-host", "media.resolve", json!({"mode": "hang"})),
+        )
+        .await;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while host.count(&host.state.in_flight) == 0 {
+            assert!(Instant::now() < deadline, "the host was never busy");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let calls = host.count(&host.state.execute_calls);
+
+        let seek = rpc(
+            &mut socket,
+            "seek",
+            "player.seek",
+            json!({"guildId": GUILD, "positionMs": 500}),
+        )
+        .await;
+
+        assert_eq!(seek["ok"], false, "{seek}");
+        assert_eq!(
+            host.count(&host.state.execute_calls),
+            calls,
+            "a refused reopening never reached the host"
+        );
+        let state = rpc(
+            &mut socket,
+            "after",
+            "player.state",
+            json!({"guildId": GUILD}),
+        )
+        .await;
+        assert_eq!(state["result"]["state"], "playing");
+        assert!(
+            state["result"]["position"]["media"]["positionMs"]
+                .as_u64()
+                .unwrap()
+                > 3_000,
+            "{state}"
+        );
+
+        server.shutdown().await;
+    }
 }

@@ -132,6 +132,8 @@ pub(super) fn handle_commands(
                     previous_generation,
                     generation,
                     position_ms: request.position.as_millis() as u64,
+                    requested_position_ms: request.position.as_millis() as u64,
+                    replaced_source: false,
                 });
                 Ok(())
             });
