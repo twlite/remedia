@@ -21,7 +21,10 @@ so pkg-config supplies all static transitive link dependencies. The recipe uses
 Secure Transport on macOS and pinned OpenSSL 3.6.0 on Linux.
 
 Windows uses the pinned vcpkg manifest in `.github/native-deps/windows-cross`,
-with a static-md triplet matching the Rust target and build-time libclang. See
+with a static-md triplet matching the Rust target and build-time libclang.
+Windows ARM64 uses the SHA-256-verified upstream LLVM 19.1.7 ARM64 installer for
+native libclang; conda-forge supplies pkg-config only on that host. The x64 host
+uses the pinned Clang/libclang conda environment. See
 `.github/workflows/platform.yaml` for the exact compiler environment and cross recipes.
 No build tools are required to use a prebuilt package.
 

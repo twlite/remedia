@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 // Explicitly reviewed expressions from Cargo.lock, rather than accepting any unknown OR branch.
 // This is a metadata guard: it does not replace source/license review of bundled C code.
@@ -40,8 +41,11 @@ for (const dependency of metadata.packages) {
       `Unaudited license ${dependency.license}: ${dependency.name} ${dependency.version}`,
     );
 }
+
+const output = process.argv[2] ?? 'target/linked-license-inventory.json';
+mkdirSync(dirname(output), { recursive: true });
 writeFileSync(
-  process.argv[2] ?? 'target/linked-license-inventory.json',
+  output,
   JSON.stringify(
     metadata.packages.map(({ name, version, source, license }) => ({
       name,

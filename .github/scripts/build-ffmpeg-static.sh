@@ -17,7 +17,7 @@ fetch_source() {
 }
 fetch_source ffmpeg https://github.com/FFmpeg/FFmpeg.git 946fcce07b6dcd0331c8cc609192aeff5e1924f8
 export SOURCE_DATE_EPOCH="$(git -C "$work/ffmpeg" show -s --format=%ct HEAD)"
-args=(--prefix="$prefix" --enable-static --disable-shared --enable-gpl --enable-version3
+args=("--cc=${CC:-cc}" "--host-cc=${HOST_CC:-cc}" --prefix="$prefix" --enable-static --disable-shared --enable-gpl --enable-version3
   --disable-autodetect --disable-programs --disable-doc --disable-debug --enable-pic
   --enable-network --disable-avdevice)
 case "$(uname -s)" in
@@ -30,7 +30,7 @@ case "$(uname -s)" in
     ;;
 esac
 while IFS= read -r option; do args+=("$option"); done < "$(dirname "$0")/../native-deps/ffmpeg-audio-options.txt"
-(cd "$work/ffmpeg"; if [[ -f ffbuild/config.mak ]]; then "${MAKE:-make}" clean; fi; ./configure "${args[@]}"; "${MAKE:-make}" -j"${FFMPEG_BUILD_JOBS:-4}"; "${MAKE:-make}" install)
+(cd "$work/ffmpeg"; if [[ -f ffbuild/config.mak ]]; then "${MAKE:-make}" clean; fi; if ! ./configure "${args[@]}"; then cat ffbuild/config.log >&2; exit 1; fi; "${MAKE:-make}" -j"${FFMPEG_BUILD_JOBS:-4}"; "${MAKE:-make}" install)
 node "$(dirname "$0")/audit-ffmpeg-config.mjs" "$work/ffmpeg/ffbuild/config.mak"
 mkdir -p "$prefix/share/remedia-build"
 cp "$work/ffmpeg/ffbuild/config.mak" "$work/ffmpeg/config.h" "$prefix/share/remedia-build/"

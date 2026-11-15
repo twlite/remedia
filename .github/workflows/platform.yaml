@@ -84,12 +84,16 @@ jobs:
         if: inputs.os == 'windows'
         uses: mamba-org/setup-micromamba@v3
         with:
-          environment-file: .github/native-deps/clang-windows.yml
+          environment-file: ${{ inputs.target == 'aarch64-pc-windows-msvc' && '.github/native-deps/clang-windows-arm64.yml' || '.github/native-deps/clang-windows.yml' }}
           environment-name: remedia-build-tools
           init-shell: powershell
           cache-environment: true
-          cache-environment-key: remedia-clang-${{ inputs.target }}-${{ hashFiles('.github/native-deps/clang-windows.yml') }}
+          cache-environment-key: remedia-clang-${{ inputs.target }}-${{ hashFiles('.github/native-deps/clang-windows*.yml') }}
           cache-downloads: true
+      - name: Install pinned native ARM64 libclang
+        if: inputs.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: ./.github/scripts/install-windows-arm64-llvm.ps1
       - name: Install pinned vcpkg and target-specific FFmpeg 9 (Windows)
         if: inputs.os == 'windows'
         shell: pwsh
@@ -110,7 +114,7 @@ jobs:
           $audioOptions = (Get-Content (Join-Path $env:GITHUB_WORKSPACE '.github/native-deps/ffmpeg-audio-options.txt')) -join ' '
           $port = Get-Content -Raw $portFile
           $port = $port.Replace('set(OPTIONS "--enable-pic', ('set(OPTIONS "' + $audioOptions + ' --enable-pic'))
-          Set-Content -NoNewline $portFile $port
+          [IO.File]::WriteAllText($portFile, $port, [Text.UTF8Encoding]::new($false))
           $triplet = if ($env:RUST_TARGET -eq 'i686-pc-windows-msvc') { 'x86-windows-static-md' } elseif ($env:RUST_TARGET -eq 'aarch64-pc-windows-msvc') { 'arm64-windows-static-md' } else { 'x64-windows-static-md' }
           $installRoot = Join-Path $env:RUNNER_TEMP 'remedia-vcpkg-installed'
           $manifestRoot = Join-Path $env:GITHUB_WORKSPACE '.github\native-deps\windows-cross'
@@ -129,7 +133,8 @@ jobs:
           # Git for Windows also provides a link.exe (GNU coreutils). Pin
           # Cargo's linker to MSVC instead of relying on PATH resolution.
           $msvcTarget = if ($triplet -like 'x86-*') { 'x86' } elseif ($triplet -like 'arm64-*') { 'arm64' } else { 'x64' }
-          $msvcLinker = Join-Path $env:VCToolsInstallDir "bin\\Host$env:PROCESSOR_ARCHITECTURE\\$msvcTarget\\link.exe"
+          $msvcHost = if ($env:VSCMD_ARG_HOST_ARCH) { $env:VSCMD_ARG_HOST_ARCH } elseif ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+          $msvcLinker = Join-Path $env:VCToolsInstallDir "bin/Host$msvcHost/$msvcTarget/link.exe"
           if (!(Test-Path -LiteralPath $msvcLinker)) { throw "MSVC linker not found: $msvcLinker" }
           $rustTriple = $env:RUST_TARGET.ToUpper().Replace('-', '_')
           "CARGO_TARGET_${rustTriple}_LINKER=$msvcLinker" >> $env:GITHUB_ENV
@@ -139,7 +144,7 @@ jobs:
         run: |
           $ffmpegRoot = Join-Path $env:VCPKG_INSTALL_ROOT $env:VCPKG_TARGET_TRIPLET
           $pkgConfigPath = Join-Path $ffmpegRoot 'lib\pkgconfig'
-          $libclangPath = Join-Path $env:CONDA_PREFIX 'Library\bin'
+          $libclangPath = if ($env:REMEDIA_BUILD_LIBCLANG) { $env:REMEDIA_BUILD_LIBCLANG } else { Join-Path $env:CONDA_PREFIX 'Library\bin' }
           $libclangDll = Join-Path $libclangPath 'libclang.dll'
           if (!(Test-Path -LiteralPath $libclangDll)) {
             $versionedDll = Get-ChildItem -LiteralPath $libclangPath -Filter 'libclang-*.dll' -File |
@@ -473,12 +478,16 @@ jobs:
         if: inputs.os == 'windows'
         uses: mamba-org/setup-micromamba@v3
         with:
-          environment-file: .github/native-deps/clang-windows.yml
+          environment-file: ${{ inputs.target == 'aarch64-pc-windows-msvc' && '.github/native-deps/clang-windows-arm64.yml' || '.github/native-deps/clang-windows.yml' }}
           environment-name: remedia-build-tools
           init-shell: powershell
           cache-environment: true
-          cache-environment-key: remedia-clang-${{ inputs.target }}-${{ hashFiles('.github/native-deps/clang-windows.yml') }}
+          cache-environment-key: remedia-clang-${{ inputs.target }}-${{ hashFiles('.github/native-deps/clang-windows*.yml') }}
           cache-downloads: true
+      - name: Install pinned native ARM64 libclang
+        if: inputs.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: ./.github/scripts/install-windows-arm64-llvm.ps1
       - name: Install pinned vcpkg and target-specific FFmpeg 9 (Windows)
         if: inputs.os == 'windows'
         shell: pwsh
@@ -499,7 +508,7 @@ jobs:
           $audioOptions = (Get-Content (Join-Path $env:GITHUB_WORKSPACE '.github/native-deps/ffmpeg-audio-options.txt')) -join ' '
           $port = Get-Content -Raw $portFile
           $port = $port.Replace('set(OPTIONS "--enable-pic', ('set(OPTIONS "' + $audioOptions + ' --enable-pic'))
-          Set-Content -NoNewline $portFile $port
+          [IO.File]::WriteAllText($portFile, $port, [Text.UTF8Encoding]::new($false))
           $triplet = if ($env:RUST_TARGET -eq 'i686-pc-windows-msvc') { 'x86-windows-static-md' } elseif ($env:RUST_TARGET -eq 'aarch64-pc-windows-msvc') { 'arm64-windows-static-md' } else { 'x64-windows-static-md' }
           $installRoot = Join-Path $env:RUNNER_TEMP 'remedia-vcpkg-installed'
           $manifestRoot = Join-Path $env:GITHUB_WORKSPACE '.github\native-deps\windows-cross'
@@ -518,7 +527,8 @@ jobs:
           # Git for Windows also provides a link.exe (GNU coreutils). Pin
           # Cargo's linker to MSVC instead of relying on PATH resolution.
           $msvcTarget = if ($triplet -like 'x86-*') { 'x86' } elseif ($triplet -like 'arm64-*') { 'arm64' } else { 'x64' }
-          $msvcLinker = Join-Path $env:VCToolsInstallDir "bin\\Host$env:PROCESSOR_ARCHITECTURE\\$msvcTarget\\link.exe"
+          $msvcHost = if ($env:VSCMD_ARG_HOST_ARCH) { $env:VSCMD_ARG_HOST_ARCH } elseif ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+          $msvcLinker = Join-Path $env:VCToolsInstallDir "bin/Host$msvcHost/$msvcTarget/link.exe"
           if (!(Test-Path -LiteralPath $msvcLinker)) { throw "MSVC linker not found: $msvcLinker" }
           $rustTriple = $env:RUST_TARGET.ToUpper().Replace('-', '_')
           "CARGO_TARGET_${rustTriple}_LINKER=$msvcLinker" >> $env:GITHUB_ENV
@@ -528,7 +538,7 @@ jobs:
         run: |
           $ffmpegRoot = Join-Path $env:VCPKG_INSTALL_ROOT $env:VCPKG_TARGET_TRIPLET
           $pkgConfigPath = Join-Path $ffmpegRoot 'lib\pkgconfig'
-          $libclangPath = Join-Path $env:CONDA_PREFIX 'Library\bin'
+          $libclangPath = if ($env:REMEDIA_BUILD_LIBCLANG) { $env:REMEDIA_BUILD_LIBCLANG } else { Join-Path $env:CONDA_PREFIX 'Library\bin' }
           $libclangDll = Join-Path $libclangPath 'libclang.dll'
           if (!(Test-Path -LiteralPath $libclangDll)) {
             $versionedDll = Get-ChildItem -LiteralPath $libclangPath -Filter 'libclang-*.dll' -File |

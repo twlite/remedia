@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  existsSync,
+  writeFileSync,
+  rmSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 const base = '--enable-static --disable-shared --enable-gpl --enable-version3 --disable-autodetect';
@@ -33,3 +41,188 @@ for (const [name, configuration, expected] of [
     }
   });
 }
+
+for (const [license, expected] of [
+  ['MIT', 0],
+  ['LicenseRef-nonfree', 1],
+]) {
+  test(`license inventory handles a clean checkout with ${license}`, () => {
+    const directory = mkdtempSync(join(tmpdir(), 'remedia-license-audit-'));
+    try {
+      mkdirSync(join(directory, 'src'));
+      writeFileSync(join(directory, 'src/lib.rs'), '');
+      writeFileSync(
+        join(directory, 'Cargo.toml'),
+        `[package]\nname = "audit-fixture"\nversion = "0.1.0"\nlicense = "${license}"\nedition = "2021"\n`,
+      );
+      const lock = spawnSync('cargo', ['generate-lockfile', '--offline'], {
+        cwd: directory,
+        encoding: 'utf8',
+      });
+      assert.equal(lock.status, 0, lock.stderr);
+      const script = resolve('.github/scripts/audit-linked-licenses.mjs');
+      const result = spawnSync(process.execPath, [script], {
+        cwd: directory,
+        encoding: 'utf8',
+        env: { ...process.env, CARGO_NET_OFFLINE: 'true' },
+      });
+      assert.equal(result.status, expected, result.stderr);
+      const output = join(directory, 'target/linked-license-inventory.json');
+      if (expected === 0) {
+        const inventory = JSON.parse(readFileSync(output, 'utf8'));
+        assert.equal(inventory[0].name, 'audit-fixture');
+        assert.equal(inventory[0].license, license);
+      } else {
+        assert.match(result.stderr, /Unaudited license LicenseRef-nonfree/);
+        assert.equal(existsSync(output), false);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test('Windows FFmpeg port patch writes literal files without provider-specific parameters', (t) => {
+  if (spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).error)
+    return t.skip('pwsh unavailable');
+  const directory = mkdtempSync(join(tmpdir(), 'remedia port patch '));
+  try {
+    const workflow = readFileSync('.github/workflows/platform.yaml', 'utf8');
+    const snippets = [
+      ...workflow.matchAll(
+        /          \$portFile =[^]*?          (?:Set-Content[^\n]*|\[IO\.File\]::WriteAllText[^\n]*)/g,
+      ),
+    ].map(([script]) => script);
+    assert.equal(snippets.length, 2, 'both native and cross Windows jobs must be exercised');
+    mkdirSync(join(directory, 'ports/ffmpeg'), { recursive: true });
+    mkdirSync(join(directory, '.github/native-deps'), { recursive: true });
+    const portFile = join(directory, 'ports/ffmpeg/portfile.cmake');
+    const original = 'set(OPTIONS "--enable-pic --disable-doc")\n';
+    writeFileSync(
+      join(directory, '.github/native-deps/ffmpeg-audio-options.txt'),
+      '--disable-decoders\n--enable-decoder=aac,mp3\n',
+    );
+    for (const snippet of snippets) {
+      writeFileSync(portFile, original);
+      const script = join(directory, 'patch.ps1');
+      writeFileSync(
+        script,
+        '$ErrorActionPreference = "Stop"\n$vcpkgRoot = $env:GITHUB_WORKSPACE\n' + snippet,
+      );
+      const result = spawnSync('pwsh', ['-NoProfile', '-File', script], {
+        encoding: 'utf8',
+        env: { ...process.env, GITHUB_WORKSPACE: directory },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(
+        readFileSync(portFile, 'utf8'),
+        'set(OPTIONS "--disable-decoders --enable-decoder=aac,mp3 --enable-pic --disable-doc")\n',
+      );
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+for (const [compiler, hostCompiler] of [
+  ['', ''],
+  ['target-clang', 'host-clang'],
+]) {
+  test(`native FFmpeg recipe selects ${compiler || 'cc'} explicitly`, (t) => {
+    if (process.platform === 'win32') return t.skip('POSIX recipe');
+    const directory = mkdtempSync(join(tmpdir(), 'remedia native recipe '));
+    try {
+      const bin = join(directory, 'bin');
+      const source = join(directory, 'remedia-static/ffmpeg');
+      const log = join(directory, 'configure-arguments');
+      mkdirSync(bin);
+      mkdirSync(join(source, '.git'), { recursive: true });
+      mkdirSync(join(source, 'ffbuild'));
+      for (const [name, content] of [
+        ['uname', '#!/bin/sh\nprintf Darwin\n'],
+        [
+          'git',
+          '#!/bin/sh\ncase "$*" in *rev-parse*) printf 946fcce07b6dcd0331c8cc609192aeff5e1924f8 ;; *show*) printf 1790000000 ;; esac\nexit 0\n',
+        ],
+        ['make', '#!/bin/sh\nexit 0\n'],
+      ]) {
+        const path = join(bin, name);
+        writeFileSync(path, content);
+        chmodSync(path, 0o755);
+      }
+      const configure = join(source, 'configure');
+      writeFileSync(
+        configure,
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$REMEDIA_CONFIGURE_LOG"\nprintf "%s\\n" "$@" > ffbuild/config.mak\n: > config.h\n',
+      );
+      chmodSync(configure, 0o755);
+      const result = spawnSync('bash', ['.github/scripts/build-ffmpeg-static.sh'], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          RUNNER_TEMP: directory,
+          FFMPEG_DIR: join(directory, 'prefix'),
+          GITHUB_ENV: join(directory, 'environment'),
+          REMEDIA_CONFIGURE_LOG: log,
+          CC: compiler,
+          HOST_CC: hostCompiler,
+          MAKE: 'make',
+        },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const configureArguments = readFileSync(log, 'utf8').split('\n');
+      assert.ok(configureArguments.includes(`--cc=${compiler || 'cc'}`));
+      assert.ok(configureArguments.includes(`--host-cc=${hostCompiler || 'cc'}`));
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test('Windows jobs select the configured MSVC host and target linker directories', (t) => {
+  if (spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).error)
+    return t.skip('pwsh unavailable');
+  const directory = mkdtempSync(join(tmpdir(), 'remedia msvc linker '));
+  try {
+    const workflow = readFileSync('.github/workflows/platform.yaml', 'utf8');
+    const snippets = [
+      ...workflow.matchAll(/          \$msvcTarget =[^]*?          "CARGO_TARGET_[^\n]+/g),
+    ].map(([script]) => script);
+    assert.equal(snippets.length, 2);
+    for (const [architecture, host, target, triple, triplet] of [
+      ['AMD64', 'x64', 'x64', 'x86_64-pc-windows-msvc', 'x64-windows-static-md'],
+      ['AMD64', 'x64', 'x86', 'i686-pc-windows-msvc', 'x86-windows-static-md'],
+      ['ARM64', 'arm64', 'arm64', 'aarch64-pc-windows-msvc', 'arm64-windows-static-md'],
+    ]) {
+      const linkerDirectory = join(directory, 'bin', `Host${host}`, target);
+      mkdirSync(linkerDirectory, { recursive: true });
+      const linker = join(linkerDirectory, 'link.exe');
+      writeFileSync(linker, 'fixture');
+      for (const snippet of snippets) {
+        const script = join(directory, 'linker.ps1');
+        const environment = join(directory, 'environment');
+        writeFileSync(environment, '');
+        writeFileSync(
+          script,
+          `$ErrorActionPreference = 'Stop'\n$triplet = '${triplet}'\n${snippet}`,
+        );
+        const result = spawnSync('pwsh', ['-NoProfile', '-File', script], {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            VCToolsInstallDir: directory,
+            VSCMD_ARG_HOST_ARCH: host,
+            PROCESSOR_ARCHITECTURE: architecture,
+            RUST_TARGET: triple,
+            GITHUB_ENV: environment,
+          },
+        });
+        assert.equal(result.status, 0, result.stderr);
+        assert.ok(readFileSync(environment, 'utf8').includes(`=${linker}`));
+      }
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
