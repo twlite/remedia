@@ -146,6 +146,8 @@ export interface PlaybackSnapshot {
   /** Session master linear gain from 0 through 2, independent of filtergraph processing; defaults to 1. */
   volume: number;
   /** Most recent structured playback failure, or null when none is recorded. */
+  /** Whether fallback seeking is enabled for this session; absent on nodes that predate it. */
+  fallbackSeeking?: boolean;
   /** Optional crossfade policy and staged state reported by capable nodes. */
   crossfade?: {
     enabled: true;
@@ -472,10 +474,18 @@ export type PluginExecuteResult<Result extends JsonValue = JsonValue> =
   | PluginHandledResult<Result>
   | PluginUnhandledResult;
 
+/** Fallback-seeking support advertised by a node. Older nodes omit it, which means unavailable. */
+export interface FallbackSeekingCapability {
+  /** Whether the node can replace an active source whose decoder cannot seek. */
+  available: boolean;
+}
+
 /** Capabilities advertised by a node's `node.info` response. */
 export interface NodeCapabilities {
   /** Crossfade policy and implementation capability. */
   crossfade: CrossfadeCapability;
+  /** Whether sessions may opt in to `DiscordSessionOptions.enableFallbackSeeking`. */
+  fallbackSeeking: FallbackSeekingCapability;
   /** Plugin-host operation support. Absent capabilities are treated as unavailable. */
   pluginOperations: PluginOperationsCapability;
 }
@@ -613,6 +623,18 @@ export interface DiscordSessionOptions {
   filterGraph?: string | null;
   /** Optional staged-source crossfade request, disabled when omitted. */
   crossfade?: SessionCrossfadeOptions | false;
+  /**
+   * Replace the active source when its decoder cannot seek, instead of rejecting the seek with
+   * an unsupported error. Disabled by default.
+   *
+   * A seek on such a source (an HTTP origin that ignores range requests, or a plugin-hosted
+   * single-use stream) keeps the current track playing while the node reopens it, decodes
+   * forward to the target plus the playback that happened meanwhile, and swaps the source with
+   * a 5 ms blend. The seek settles when the swap has happened, which can take seconds; a newer
+   * seek or a stop settles it early, and a failed one leaves playback untouched. A node that does
+   * not advertise `capabilities.fallbackSeeking.available` rejects sessions that request it.
+   */
+  enableFallbackSeeking?: boolean;
   /** Discord guild snowflake as a decimal string; unique within the owning client. */
   guildId: string;
   /** Discord voice channel snowflake as a decimal string; the requested mutable destination. */

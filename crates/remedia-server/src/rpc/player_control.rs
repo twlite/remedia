@@ -113,9 +113,28 @@ pub(super) async fn execute_player_control(
             let playback = Arc::clone(&guild.playback);
             let position = Duration::from_millis(params.position_ms);
             let previous_position_ms = playback.position().media.map(|p| p.position.as_millis());
+            // With fallback seeking a seek can wait seconds for its replacement source, and a newer
+            // seek, a pause or a stop must still be able to reach the session meanwhile, so the
+            // guild's operation lock is released once the seek is submitted. Other guilds keep the
+            // lock until the seek is applied, which preserves the order of their operations.
+            let release_early = playback.fallback_seeking();
+            let (pending, held) = tokio::task::spawn_blocking(move || {
+                let pending = playback.start_seek(position);
+                let held = if release_early {
+                    drop(operation);
+                    None
+                } else {
+                    Some(operation)
+                };
+                (pending, held)
+            })
+            .await
+            .map_err(|_| RpcError::new("playback_failed", "playback worker failed"))?;
+            let pending = pending.map_err(playback_error)?;
             tokio::task::spawn_blocking(move || {
-                let _operation = operation;
-                playback.seek(position)
+                let outcome = pending.wait();
+                drop(held);
+                outcome
             })
             .await
             .map_err(|_| RpcError::new("playback_failed", "playback worker failed"))?

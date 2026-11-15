@@ -57,6 +57,7 @@ pub(crate) fn playback_snapshot(playback: &PlaybackSession, generation: u64) -> 
         })
     });
     serde_json::json!({
+        "fallbackSeeking": playback.fallback_seeking(),
         "crossfade": crossfade,
         "staged": stage,
         "state": playback_state_name(playback.state()),

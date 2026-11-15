@@ -287,6 +287,7 @@ export class RemoteNodeAdapter
   async createGuild(
     guildId: string,
     crossfade?: import('./types.js').SessionCrossfadeOptions | false,
+    enableFallbackSeeking?: boolean,
   ): Promise<GuildSnapshot> {
     this.#assertHealthy();
     if (this.#lostGuilds.has(guildId)) {
@@ -302,6 +303,7 @@ export class RemoteNodeAdapter
       await this.request<unknown>('guild.create', {
         guildId,
         ...(crossfade ? { crossfade } : {}),
+        ...(enableFallbackSeeking ? { enableFallbackSeeking: true } : {}),
       }),
       this.id,
     );
@@ -1204,7 +1206,19 @@ class RemoteGuildBackend extends RemediaEventEmitter<GuildBackendEvents> impleme
           `node ${this.#node.id} does not support the ${requestedCurve} crossfade curve; use equalPower or a newer node`,
         );
       }
-      const guild = await this.#node.createGuild(this.#options.guildId, this.#options.crossfade);
+      if (
+        this.#options.enableFallbackSeeking &&
+        !this.#node.snapshot.capabilities?.fallbackSeeking.available
+      ) {
+        throw new Error(
+          `node ${this.#node.id} does not support fallback seeking; disable the option or use a newer node`,
+        );
+      }
+      const guild = await this.#node.createGuild(
+        this.#options.guildId,
+        this.#options.crossfade,
+        this.#options.enableFallbackSeeking,
+      );
       this.#guildCreated = true;
       this.#sessionId = guild.guildSessionId;
       this.#snapshot = parsePlaybackSnapshot(guild.playback, this.#node.id);
@@ -2033,6 +2047,7 @@ function parsePlaybackSnapshot(value: Record<string, unknown>, nodeId: string): 
     },
     durationMs: nullableNumber(value.durationMs),
     source: isRecord(value.source) ? toStreamInfo(value.source, nodeId) : null,
+    ...(value.fallbackSeeking === true ? { fallbackSeeking: true } : {}),
     ...(isRecord(value.crossfade) &&
     value.crossfade.enabled === true &&
     Number.isSafeInteger(value.crossfade.durationMs) &&
@@ -2216,8 +2231,16 @@ function parseNodeCapabilities(input: unknown): import('./types.js').NodeCapabil
     isRecord(input) ? input.pluginOperations : undefined,
   );
 
+  // Nodes that predate fallback seeking omit the capability.
+  const fallbackSeeking = {
+    available:
+      isRecord(input) &&
+      isRecord(input.fallbackSeeking) &&
+      input.fallbackSeeking.available === true,
+  };
+
   if (!isRecord(input) || !isRecord(input.crossfade))
-    return { crossfade: fallback, pluginOperations };
+    return { crossfade: fallback, fallbackSeeking, pluginOperations };
   const fade = input.crossfade;
   const configured = fade.configured === true;
   const available = fade.available === true && configured;
@@ -2249,6 +2272,7 @@ function parseNodeCapabilities(input: unknown): import('./types.js').NodeCapabil
       curve: curve ?? fallback.curve,
       curves,
     },
+    fallbackSeeking,
     pluginOperations,
   };
 }

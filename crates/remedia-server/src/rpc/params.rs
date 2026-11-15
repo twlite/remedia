@@ -25,6 +25,9 @@ pub(super) struct GuildCreateParams {
     pub(super) guild_id: String,
     #[serde(default)]
     pub(super) crossfade: Option<SessionCrossfadeOptions>,
+    /// Opt in to replacing the active source when its decoder cannot seek. Off when omitted.
+    #[serde(default)]
+    pub(super) enable_fallback_seeking: Option<bool>,
 }
 
 #[derive(Deserialize)]

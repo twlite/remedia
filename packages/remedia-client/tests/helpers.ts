@@ -51,6 +51,8 @@ export interface FakeServerOptions {
   pluginForwarding?: FakePluginForwarding;
   /** Advertise exactly this `capabilities.crossfade` object, including legacy shapes without `curves`. */
   crossfadeCapability?: Record<string, unknown>;
+  /** Advertise exactly this `capabilities.fallbackSeeking` object; omit it to model an older node. */
+  fallbackSeekingCapability?: Record<string, unknown>;
 }
 
 /** Throw from a fake handler to answer with a specific protocol error code. */
@@ -93,6 +95,9 @@ export class FakeServerNode {
   readonly #pluginHosts: readonly string[] | undefined;
   readonly #pluginForwarding: FakePluginForwarding | undefined;
   readonly #crossfadeCapability: Record<string, unknown> | undefined;
+  readonly #fallbackSeekingCapability: Record<string, unknown> | undefined;
+  /** Parameters of every `guild.create` request received, in order. */
+  readonly guildCreateParams: Array<Record<string, unknown>> = [];
   /** Every `plugin.*` request received, in order, with the connection's request ID. */
   readonly pluginRequests: Array<{ id: string | null; command: string; params: unknown }> = [];
   /** Request IDs named by `plugin.cancel`. */
@@ -140,6 +145,7 @@ export class FakeServerNode {
     this.#pluginHosts = options.pluginHosts ?? options.pluginForwarding?.hosts.map((h) => h.hostId);
     this.#pluginForwarding = options.pluginForwarding;
     this.#crossfadeCapability = options.crossfadeCapability;
+    this.#fallbackSeekingCapability = options.fallbackSeekingCapability;
     this.pluginExecute = options.pluginForwarding?.execute;
     this.#websocketServer = websocketServer;
     websocketServer.on('connection', (socket) => {
@@ -258,9 +264,12 @@ export class FakeServerNode {
             nodeId: this.nodeIdentity,
             version: 'test',
             protocolVersion: this.protocolVersion,
-            ...(this.#pluginHosts || this.#crossfadeCapability
+            ...(this.#pluginHosts || this.#crossfadeCapability || this.#fallbackSeekingCapability
               ? {
                   capabilities: {
+                    ...(this.#fallbackSeekingCapability
+                      ? { fallbackSeeking: this.#fallbackSeekingCapability }
+                      : {}),
                     crossfade: this.#crossfadeCapability ?? {
                       configured: false,
                       available: false,
@@ -391,6 +400,7 @@ export class FakeServerNode {
         }
         case 'guild.create': {
           this.guildCreateRequests += 1;
+          this.guildCreateParams.push(params);
           const session = this.#session(socket);
           const guildId = String(params.guildId);
           if (session.guilds.has(guildId)) {

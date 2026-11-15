@@ -148,6 +148,7 @@ export class EmbeddedNodeAdapter implements NodeAdapter {
           curve: 'equalPower',
           curves: ['equalPower', 'adaptive'],
         },
+        fallbackSeeking: { available: true },
         // Embedded nodes run in-process and do not talk to configured plugin hosts.
         pluginOperations: { available: false, hosts: [], forwarding: false },
       },

@@ -5,7 +5,7 @@ export type {
   DiscordGatewaySend,
   DiscordGatewayVoicePayload,
 } from './gateway.js';
-export { PlaybackSession } from './playback.js';
+export { PlaybackSession, type PlaybackSessionOptions } from './playback.js';
 export {
   PlaybackHooks,
   PlaybackSessionEvents,

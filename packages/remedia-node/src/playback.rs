@@ -140,6 +140,33 @@ impl NativeRemedia {
             .map_err(|error| playback_error("could not configure crossfade", error))
     }
 
+    /// Allow or forbid fallback seeking, which replaces the active source when its decoder cannot
+    /// seek. It is off by default and may be changed at any time.
+    #[napi]
+    pub fn playback_configure_fallback_seeking(
+        &self,
+        playback_id: String,
+        enabled: bool,
+    ) -> napi::Result<()> {
+        self.inner.ensure_open()?;
+        self.inner
+            .playback(&playback_id)?
+            .session
+            .configure_fallback_seeking(enabled);
+
+        Ok(())
+    }
+
+    /// Whether fallback seeking is enabled for this playback session.
+    #[napi]
+    pub fn playback_fallback_seeking(&self, playback_id: String) -> napi::Result<bool> {
+        Ok(self
+            .inner
+            .playback(&playback_id)?
+            .session
+            .fallback_seeking())
+    }
+
     /// Open an independent decoder and stage a queue occurrence without
     /// interrupting current playback.
     #[napi]

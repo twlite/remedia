@@ -81,6 +81,13 @@ export declare class NativeRemedia {
    */
   playbackConfigureCrossfade(playbackId: string, enabled: boolean, durationMs: number, prepareBeforeMs: number, curve?: string | undefined | null): void
   /**
+   * Allow or forbid fallback seeking, which replaces the active source when its decoder cannot
+   * seek. It is off by default and may be changed at any time.
+   */
+  playbackConfigureFallbackSeeking(playbackId: string, enabled: boolean): void
+  /** Whether fallback seeking is enabled for this playback session. */
+  playbackFallbackSeeking(playbackId: string): boolean
+  /**
    * Open an independent decoder and stage a queue occurrence without
    * interrupting current playback.
    */

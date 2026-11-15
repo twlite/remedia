@@ -11,7 +11,7 @@ import {
   RemediaEvents as RemediaEvent,
   VoiceSessionEvents as VoiceEvent,
 } from './lifecycle.js';
-import { PlaybackSession } from './playback.js';
+import { PlaybackSession, type PlaybackSessionOptions } from './playback.js';
 import { toDiagnosticEvent, type DebugListener, type DiagnosticEvent } from './types.js';
 
 /** Optional Gateway integration for the embedded engine; required when creating Discord sessions. */
@@ -135,10 +135,13 @@ export class Remedia extends RemediaEventEmitter<RemediaLifecycleEvents> {
 
   /**
    * Create a local decoder session that discards its PCM output.
+   * @param options - Optional session settings; every setting is off by default.
    * @returns An independent playback session owned by this engine until disposal.
    * @typeParam Metadata - Application-owned metadata attached to playback generations.
    */
-  createPlaybackSession<Metadata = unknown>(): PlaybackSession<Metadata> {
+  createPlaybackSession<Metadata = unknown>(
+    options: PlaybackSessionOptions = {},
+  ): PlaybackSession<Metadata> {
     this.#assertOpen();
     let playback: PlaybackSession<Metadata>;
     playback = new PlaybackSession<Metadata>(
@@ -150,6 +153,7 @@ export class Remedia extends RemediaEventEmitter<RemediaLifecycleEvents> {
     );
     forwardLifecycleEvents(playback, this);
     this.#sessions.add(playback);
+    if (options.enableFallbackSeeking === true) playback.configureFallbackSeeking(true);
     return playback;
   }
 

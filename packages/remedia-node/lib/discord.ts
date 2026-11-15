@@ -47,6 +47,11 @@ export interface DiscordSessionOptions {
   filterGraph?: string | null;
   /** Explicit PCM crossfade opt-in; disabled by default. */
   crossfade?: CrossfadeOptions | false;
+  /**
+   * Replace the active source when its decoder cannot seek, instead of rejecting the seek.
+   * Disabled by default. See `PlaybackSession.configureFallbackSeeking()`.
+   */
+  enableFallbackSeeking?: boolean;
 }
 
 /** Cancellation and timeout controls for obtaining credentials and establishing a voice transport. */
@@ -135,6 +140,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
   #filterGraph: string | null = null;
   #volume = 1;
   #crossfade: DiscordSessionOptions['crossfade'];
+  #enableFallbackSeeking: boolean;
   #configurationWork: Promise<void> = Promise.resolve();
   #nativeStateTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -157,6 +163,12 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
     this.userId = validateSnowflake('userId', options.userId);
     validateVolume(options.volume ?? 1);
     this.#crossfade = options.crossfade;
+    if (
+      options.enableFallbackSeeking !== undefined &&
+      typeof options.enableFallbackSeeking !== 'boolean'
+    )
+      throw new TypeError('enableFallbackSeeking must be a boolean');
+    this.#enableFallbackSeeking = options.enableFallbackSeeking === true;
     if (
       options.filterGraph !== undefined &&
       options.filterGraph !== null &&
@@ -856,6 +868,7 @@ export class DiscordSession<Metadata = unknown> extends RemediaEventEmitter<
         playback = createdPlayback;
         this.#playback = createdPlayback;
         if (this.#crossfade) createdPlayback.configureCrossfade(this.#crossfade);
+        if (this.#enableFallbackSeeking) createdPlayback.configureFallbackSeeking(true);
         await this.#serializeConfiguration(async () => {
           if (this.#playback !== createdPlayback) return;
           if (this.#filterGraph !== null) await createdPlayback.filters.set(this.#filterGraph);
