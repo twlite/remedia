@@ -236,6 +236,23 @@ function Get-RemediaTar {
   return (Get-Command tar -CommandType Application -ErrorAction Stop).Source
 }
 
+# Compute SHA-256 without depending on PowerShell module autoloading.
+# Both Windows PowerShell 5.1 and PowerShell 7 provide these .NET APIs.
+function Get-RemediaSha256 {
+  param([string]$Path)
+  $hasher = [Security.Cryptography.SHA256]::Create()
+  try {
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+      return [BitConverter]::ToString($hasher.ComputeHash($stream)).Replace('-', '')
+    } finally {
+      $stream.Dispose()
+    }
+  } finally {
+    $hasher.Dispose()
+  }
+}
+
 # Resolve micromamba. A micromamba on PATH or in the install directory is reused. A missing one is
 # downloaded to $BinaryDirectory, which is the server bin directory for server installs and a
 # temporary directory for -FFmpegOnly so that no server directories are created.
@@ -357,7 +374,7 @@ try {
     }
   }
   Write-InstallStatus 'Verifying server archive SHA-256...'
-  $actual = (Get-FileHash $archive -Algorithm SHA256).Hash
+  $actual = Get-RemediaSha256 -Path $archive
   if ($actual -ine $asset.digest.Substring(7)) { throw 'Release SHA-256 checksum mismatch.' }
   Write-InstallStatus 'Extracting server archive...'
   & (Get-RemediaTar) -xzf $archive -C $tmp

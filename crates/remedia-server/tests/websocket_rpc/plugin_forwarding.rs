@@ -317,23 +317,6 @@ async fn send(socket: &mut TestSocket, id: &str, command: &str, params: Value) {
         .unwrap();
 }
 
-async fn receive(socket: &mut TestSocket, id: &str) -> Value {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let Message::Text(text) = socket.next().await.unwrap().unwrap() else {
-                continue;
-            };
-            let value: Value = serde_json::from_str(text.as_str()).unwrap();
-
-            if value.get("id").and_then(Value::as_str) == Some(id) {
-                return value;
-            }
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for response {id}"))
-}
-
 /// Read until every listed response has arrived, in whatever order the server sent them.
 async fn receive_many(socket: &mut TestSocket, ids: &[&str]) -> HashMap<String, Value> {
     let mut found = HashMap::new();
@@ -1155,8 +1138,16 @@ async fn concurrent_operations_are_independent() {
         .await;
     }
 
+    // Concurrent operations can complete out of order. Collect all replies
+    // without discarding another request's response while waiting for one ID.
+    let request_ids = (0..6)
+        .map(|index| format!("request-{index}"))
+        .collect::<Vec<_>>();
+    let expected_ids = request_ids.iter().map(String::as_str).collect::<Vec<_>>();
+    let responses = receive_many(&mut socket, &expected_ids).await;
+
     for index in 0..6 {
-        let response = receive(&mut socket, &format!("request-{index}")).await;
+        let response = &responses[&format!("request-{index}")];
 
         assert_eq!(response["ok"], true, "{response}");
         // Every response carries its own request's input, never another's.
