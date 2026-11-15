@@ -1155,8 +1155,16 @@ async fn concurrent_operations_are_independent() {
         .await;
     }
 
+    // Concurrent operations can complete out of order. Collect all replies
+    // without discarding another request's response while waiting for one ID.
+    let request_ids = (0..6)
+        .map(|index| format!("request-{index}"))
+        .collect::<Vec<_>>();
+    let expected_ids = request_ids.iter().map(String::as_str).collect::<Vec<_>>();
+    let responses = receive_many(&mut socket, &expected_ids).await;
+
     for index in 0..6 {
-        let response = receive(&mut socket, &format!("request-{index}")).await;
+        let response = &responses[&format!("request-{index}")];
 
         assert_eq!(response["ok"], true, "{response}");
         // Every response carries its own request's input, never another's.
