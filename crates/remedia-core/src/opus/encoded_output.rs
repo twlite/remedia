@@ -27,11 +27,12 @@ impl EncodedOpusOutput for OpusEncoderOutput {
                 "Opus packet written after output finished",
             ));
         }
-        if state.partial_scalars != 0 {
+        if state.partial_scalars != 0 && !state.partial_is_alignment_only {
             return Err(OutputError::new(
                 "cannot pass through Opus while a partial PCM frame is pending",
             ));
         }
+        state.discard_alignment_padding();
         if let Some(expected) = state.next_input_sample
             && expected != packet.start_sample
         {
@@ -69,6 +70,7 @@ impl EncodedOpusOutput for OpusEncoderOutput {
                 "passthrough transition expected sample {expected}, received {next_sample_position}"
             )));
         }
+        state.discard_alignment_padding();
         if state.partial_scalars != 0 {
             let media_samples = state.partial_scalars / 2;
             let encoded_samples = [120, 240, 480, OPUS_FRAME_SAMPLES]

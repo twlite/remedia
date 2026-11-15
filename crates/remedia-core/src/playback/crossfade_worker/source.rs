@@ -20,7 +20,12 @@ pub(super) struct ActiveSource {
     effective_end: Option<u64>,
     encoded: bool,
     eligible: bool,
+    /// The stream could use source packets if the current position and output allow it. Unlike
+    /// `eligible`, this survives a seek and a packet that merely would not fit before an overlap.
+    stream_eligible: bool,
     boundary: Option<u64>,
+    /// Keeps a promoted source's cancellation linked to the session after its decoder was adopted.
+    _cancel_link: Option<Arc<dyn crate::source::CancellationWake>>,
     pub(super) consumed: u64,
     pub(super) duration_samples: Option<u64>,
 }
@@ -40,7 +45,9 @@ impl ActiveSource {
             },
             encoded: false,
             eligible,
+            stream_eligible: eligible,
             boundary: None,
+            _cancel_link: None,
             consumed: 0,
             duration_samples,
         }
@@ -58,10 +65,55 @@ impl ActiveSource {
             input: ActiveInput::Prepared(stage),
             encoded: false,
             eligible: false,
+            stream_eligible: false,
             boundary: None,
+            _cancel_link: None,
             consumed,
             duration_samples: info.duration.map(samples_from_duration),
         }
+    }
+
+    /// Take over a promoted stage's decoder once its staged PCM is fully consumed, so a source
+    /// that can use encoded Opus packets stops decoding on a separate thread. Returns whether the
+    /// decoder is now owned by this source.
+    fn adopt_handed_off_decoder(&mut self) -> bool {
+        let ActiveInput::Prepared(stage) = &self.input else {
+            return false;
+        };
+        if !stage.handoff_complete() {
+            return false;
+        }
+        let Some(decoder) = stage.take_handed_off_decoder() else {
+            return false;
+        };
+        let stage = Arc::clone(stage);
+        stage.join_finished_worker();
+        self.stream_eligible = decoder.opus_passthrough_rejection().is_none();
+        self.eligible = self.stream_eligible;
+        self.boundary = Some(self.consumed);
+        self.encoded = false;
+        self._cancel_link = stage.cancel_link();
+        self.input = ActiveInput::Direct {
+            decoder,
+            pcm: VecDeque::new(),
+            ended: false,
+        };
+        true
+    }
+
+    /// Samples the next PCM read should request so reads end on the source packet grid. After a
+    /// seek the first read is shorter; in steady state this is one full frame.
+    pub(super) fn grid_aligned_read(&self, frame: usize) -> usize {
+        if self.stream_eligible && matches!(self.input, ActiveInput::Direct { .. }) {
+            frame - (self.consumed % frame as u64) as usize
+        } else {
+            frame
+        }
+    }
+
+    /// Whether this source may return to source packets, for aligning a seek's output flush.
+    pub(super) fn may_resume_encoded(&self) -> bool {
+        self.stream_eligible
     }
 
     pub(super) fn scheduling_end(&mut self, staged: bool, fade: u64) -> Option<u64> {
@@ -113,12 +165,27 @@ impl ActiveSource {
             let state = lock(&shared.data);
             state.volume == 1.0 && state.filter_graph.is_none() && processor.expression().is_none()
         };
-        if !self.eligible || !wants_encoded || before_overlap == Some(0) {
+        if !wants_encoded || before_overlap == Some(0) {
             return Ok(None);
         }
         let Some(encoded_output) = output.encoded_opus_output() else {
             return Ok(None);
         };
+        if let ActiveInput::Prepared(stage) = &self.input {
+            // A promoted Opus source keeps decoding on its stage thread. Ask it to park its
+            // decoder at the next frame boundary; this source adopts it after draining the
+            // staged PCM, then the checks below decide whether packets can resume.
+            if !stage.passthrough_eligible() {
+                return Ok(None);
+            }
+            stage.request_handoff();
+            if !self.adopt_handed_off_decoder() {
+                return Ok(None);
+            }
+        }
+        if !self.eligible {
+            return Ok(None);
+        }
         let ActiveInput::Direct {
             decoder,
             pcm,
@@ -155,16 +222,23 @@ impl ActiveSource {
             let state = lock(&shared.data);
             state.volume == 1.0 && state.filter_graph.is_none() && state.pending_seek.is_none()
         };
-        let fits = encoded.as_ref().is_some_and(|encoded| {
-            !packet.has_trimming_metadata
-                && encoded_output.supports_encoded_packet(encoded)
-                && before_overlap
-                    .is_none_or(|left| u64::from(encoded.media_samples_per_channel) <= left)
+        let usable = encoded.as_ref().is_some_and(|encoded| {
+            !packet.has_trimming_metadata && encoded_output.supports_encoded_packet(encoded)
         });
+        let fits = usable
+            && encoded.as_ref().is_some_and(|encoded| {
+                before_overlap
+                    .is_none_or(|left| u64::from(encoded.media_samples_per_channel) <= left)
+            });
         if !fits || !still_wanted {
             decoder.queue_compressed_packet(packet);
             if !fits {
                 self.eligible = false;
+            }
+            if !usable {
+                // A packet the output can never forward disables passthrough for this stream,
+                // unlike one that only would not fit before the overlap.
+                self.stream_eligible = false;
             }
             return Ok(None);
         }
@@ -228,6 +302,12 @@ impl ActiveSource {
                 match stage.buffer.read_for_playback(wanted, cancellation) {
                     Some(frame) => frame,
                     None if cancellation.is_cancelled() => return Err(PlaybackError::Cancelled),
+                    None if stage.handoff_complete() => {
+                        // The staged PCM ended because the decoder moved to this source, not
+                        // because the track did. Continue decoding it here.
+                        self.adopt_handed_off_decoder();
+                        return self.read(wanted, cancellation);
+                    }
                     None if stage.snapshot().state == StageState::Failed => {
                         return Err(PlaybackError::UnsupportedSeeking(
                             "prepared source failed while decoding".into(),
@@ -258,7 +338,11 @@ impl ActiveSource {
                 decoder.activate_decoder(&[], None)?;
                 decoder.seek(position)?;
                 self.encoded = false;
-                self.eligible = false;
+                // The first packet after a demuxer seek needs trimming, so it is decoded. Once
+                // that audio is consumed on a packet boundary the stream can forward packets
+                // again if it ever could.
+                self.eligible = self.stream_eligible;
+                self.boundary = None;
                 pcm.clear();
                 *ended = false;
             }
@@ -279,7 +363,9 @@ impl ActiveSource {
                 decoder.activate_decoder(&[], None)?;
                 decoder.seek(position)?;
                 self.encoded = false;
-                self.eligible = false;
+                self.stream_eligible = decoder.opus_passthrough_rejection().is_none();
+                self.eligible = self.stream_eligible;
+                self.boundary = None;
                 stage.cancel_and_join();
                 self.input = ActiveInput::Direct {
                     decoder: Box::new(decoder),
@@ -288,7 +374,6 @@ impl ActiveSource {
                 };
             }
         };
-        self.eligible = false;
         self.encoded = false;
         self.probe = None;
         self.effective_end = None;

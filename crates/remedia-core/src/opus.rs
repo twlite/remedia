@@ -150,6 +150,9 @@ struct EncoderState {
     partial: [f32; OPUS_FRAME_SCALARS],
     partial_scalars: usize,
     partial_start_sample: Option<u64>,
+    /// The partial frame holds only grid-alignment silence from
+    /// `flush_samples_frame_aligned`; no real PCM has followed it yet.
+    partial_is_alignment_only: bool,
     next_input_sample: Option<u64>,
     finished: bool,
 }
@@ -196,6 +199,7 @@ impl OpusEncoderOutput {
                 partial: [0.0; OPUS_FRAME_SCALARS],
                 partial_scalars: 0,
                 partial_start_sample: None,
+                partial_is_alignment_only: false,
                 next_input_sample: None,
                 finished: false,
             }),
@@ -317,6 +321,9 @@ impl OpusEncoderOutput {
         if state.finished {
             return Err(OutputError::new("PCM frame written after output finished"));
         }
+        if scalar_count != 0 {
+            state.partial_is_alignment_only = false;
+        }
         if let Some(expected) = state.next_input_sample
             && expected != frame.start_sample
         {
@@ -409,6 +416,17 @@ fn duration_from_samples(samples: u64) -> Duration {
     let remainder = samples % rate;
     let nanoseconds = (u128::from(remainder) * 1_000_000_000 / u128::from(rate)) as u32;
     Duration::new(seconds, nanoseconds)
+}
+
+impl EncoderState {
+    /// Drop grid-alignment silence that no real audio ever followed.
+    fn discard_alignment_padding(&mut self) {
+        if self.partial_is_alignment_only {
+            self.partial_scalars = 0;
+            self.partial_start_sample = None;
+            self.partial_is_alignment_only = false;
+        }
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

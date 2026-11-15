@@ -333,3 +333,76 @@ fn queued_packets_own_only_the_encoded_payload() {
         assert_eq!(packet.start_sample, index as u64 * 960);
     }
 }
+
+#[test]
+fn frame_aligned_flush_puts_the_first_frame_on_the_source_grid_and_returns_to_packets() {
+    let sink = CaptureSink::default();
+    let output = OpusEncoderOutput::new(sink.clone()).unwrap();
+    let cancellation = CancellationToken::new();
+
+    // 24 300 = 25 * 960 + 300: 660 samples remain in the packet containing the target.
+    output
+        .flush_samples_frame_aligned(24_300, &cancellation)
+        .unwrap();
+    output.write_frame(pcm(24_300, 660), &cancellation).unwrap();
+    {
+        let state = lock(&sink.0);
+        assert_eq!(state.flush_sample_positions, [24_300]);
+        let first = &state.packets[0];
+        assert_eq!(state.packets.len(), 1);
+        assert_eq!(first.start_sample, 24_000);
+        assert_eq!(first.samples_per_channel, 960);
+        assert_eq!(first.media_samples_per_channel, 960);
+    }
+
+    // The encoder is now on the grid, so switching back needs no padded partial frame.
+    let encoded: &dyn EncodedOpusOutput = &output;
+    encoded.prepare_passthrough(24_960, &cancellation).unwrap();
+    assert_eq!(lock(&sink.0).packets.len(), 1);
+    encoded
+        .write_encoded_packet(
+            EncodedOpusPacket {
+                bytes: vec![0xF8, 0xFF, 0xFE],
+                samples_per_channel: 960,
+                media_samples_per_channel: 960,
+                start_sample: 24_960,
+            },
+            &cancellation,
+        )
+        .unwrap();
+    output.finish(&cancellation).unwrap();
+    assert_eq!(lock(&sink.0).packets.len(), 2);
+}
+
+#[test]
+fn frame_aligned_flush_without_audio_never_emits_or_requires_an_encoder() {
+    let sink = CaptureSink::default();
+    let output = OpusEncoderOutput::new(sink.clone()).unwrap();
+    let cancellation = CancellationToken::new();
+
+    // A seek to the very end can finish before any PCM follows. The alignment silence is dropped.
+    output
+        .flush_samples_frame_aligned(1_234, &cancellation)
+        .unwrap();
+    output.finish(&cancellation).unwrap();
+
+    let state = lock(&sink.0);
+    assert!(state.packets.is_empty());
+    assert!(state.finished);
+}
+
+#[test]
+fn frame_aligned_flush_on_the_grid_changes_nothing() {
+    let sink = CaptureSink::default();
+    let output = OpusEncoderOutput::new(sink.clone()).unwrap();
+    let cancellation = CancellationToken::new();
+
+    output
+        .flush_samples_frame_aligned(9_600, &cancellation)
+        .unwrap();
+    output.write_frame(pcm(9_600, 960), &cancellation).unwrap();
+
+    let state = lock(&sink.0);
+    assert_eq!(state.packets.len(), 1);
+    assert_eq!(state.packets[0].start_sample, 9_600);
+}

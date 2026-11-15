@@ -255,7 +255,13 @@ fn worker_loop(
         let wanted = transition
             .as_ref()
             .map(|t| FRAME_SAMPLES.min(t.fading.remaining_samples()))
-            .unwrap_or(FRAME_SAMPLES.min(until_fade));
+            .unwrap_or_else(|| {
+                // Keep PCM reads on the source's 20 ms packet grid so a source that can
+                // forward packets again is not left holding a partial frame.
+                current
+                    .grid_aligned_read(FRAME_SAMPLES)
+                    .min(FRAME_SAMPLES.min(until_fade))
+            });
         let before_overlap = scheduled_end.map(|duration| {
             duration
                 .saturating_sub(fade_samples.samples() as u64)

@@ -37,8 +37,28 @@ impl MediaOutput for OpusEncoderOutput {
         }
         state.partial_scalars = 0;
         state.partial_start_sample = None;
+        state.partial_is_alignment_only = false;
         state.next_input_sample = Some(sample_position);
         state.finished = false;
+        Ok(())
+    }
+
+    fn flush_samples_frame_aligned(
+        &self,
+        sample_position: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OutputError> {
+        self.flush_samples(sample_position, cancellation)?;
+        let lead = (sample_position % OPUS_FRAME_SAMPLES as u64) as usize;
+        if lead != 0 {
+            // Start the first frame on the 20 ms grid. The leading zeros are silence that
+            // precedes the first audible sample by less than one frame.
+            let mut state = lock(&self.state);
+            state.partial[..lead * 2].fill(0.0);
+            state.partial_scalars = lead * 2;
+            state.partial_start_sample = Some(sample_position - lead as u64);
+            state.partial_is_alignment_only = true;
+        }
         Ok(())
     }
 
@@ -86,6 +106,7 @@ impl MediaOutput for OpusEncoderOutput {
         if state.finished {
             return Err(OutputError::new("Opus output finished more than once"));
         }
+        state.discard_alignment_padding();
         if state.partial_scalars != 0 {
             let media_samples = state.partial_scalars / 2;
             let partial_scalars = state.partial_scalars;

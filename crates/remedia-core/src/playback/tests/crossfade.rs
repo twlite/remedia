@@ -587,10 +587,8 @@ fn opus_crossfade_enters_pcm_at_overlap_and_keeps_exact_output_sample_accounting
     handle.release(1000);
     assert_eq!(session.wait(), PlaybackState::Completed);
     assert_eq!(session.source_generation(), 2);
-    assert_eq!(
-        session.processing_mode(),
-        Some(PlaybackProcessingMode::Transcoding)
-    );
+    // The short staged source may already be fully decoded when the overlap ends, so whether it
+    // returns to packets for its last moments is timing dependent. Accounting is not.
     let packets = handle.snapshot().packets;
     assert!(packets.windows(2).all(|pair| pair[1].start_sample
         == pair[0].start_sample + u64::from(pair[0].media_samples_per_channel)));
@@ -601,6 +599,149 @@ fn opus_crossfade_enters_pcm_at_overlap_and_keeps_exact_output_sample_accounting
             .sum::<u64>(),
         145920
     );
+}
+
+/// Packets the long fixture produces when it is forwarded without any processing.
+fn long_opus_reference() -> Vec<EncodedOpusPacket> {
+    let (sink, handle) = StepPacketSink::new();
+    handle.release(10_000);
+    let session = PlaybackSession::new();
+    session
+        .play(
+            InputSource::bytes(
+                include_bytes!("../../../tests/fixtures/generated-opus-passthrough-long.ogg")
+                    .to_vec(),
+            ),
+            OpusEncoderOutput::new(sink).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(session.wait(), PlaybackState::Completed);
+    handle.snapshot().packets
+}
+
+#[test]
+fn promoted_opus_source_resumes_packet_passthrough_after_the_overlap() {
+    use super::super::{CrossfadeConfig, StageIdentity};
+    let outgoing = include_bytes!("../../../tests/fixtures/generated-opus-passthrough.ogg");
+    let incoming = include_bytes!("../../../tests/fixtures/generated-opus-passthrough-long.ogg");
+    let reference = long_opus_reference();
+    let (sink, handle) = StepPacketSink::new();
+    let session = PlaybackSession::new();
+    session
+        .configure_crossfade(Some(CrossfadeConfig::new(1000, 5000).unwrap()))
+        .unwrap();
+    session
+        .play(
+            InputSource::bytes(outgoing.to_vec()),
+            OpusEncoderOutput::new(sink).unwrap(),
+        )
+        .unwrap();
+    assert!(handle.wait_for_calls(1));
+    session
+        .stage_next(
+            InputSource::bytes(incoming.to_vec()),
+            StageIdentity {
+                expected_generation: session.source_generation(),
+                entry_id: "next".into(),
+                queue_revision: 1,
+                source_revision: 1,
+            },
+        )
+        .unwrap();
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    while session.staged_source().unwrap().buffered_samples < 96_000 {
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    }
+    handle.release(10_000);
+    assert_eq!(session.wait(), PlaybackState::Completed);
+    assert_eq!(session.source_generation(), 2);
+    assert_eq!(
+        session.processing_mode(),
+        Some(PlaybackProcessingMode::Passthrough),
+        "the promoted source resumes forwarding Opus packets"
+    );
+
+    let packets = handle.snapshot().packets;
+    assert!(
+        packets.windows(2).all(|pair| pair[1].start_sample
+            == pair[0].start_sample + u64::from(pair[0].media_samples_per_channel)),
+        "handing the decoder over never opens a timeline gap"
+    );
+    // 2.02 s outgoing + 8.08 s incoming - 1 s overlap.
+    assert_eq!(
+        packets
+            .iter()
+            .map(|packet| u64::from(packet.media_samples_per_channel))
+            .sum::<u64>(),
+        96_960 + 387_840 - 48_000
+    );
+
+    // The tail is the incoming source's own packets, byte for byte: nothing was decoded.
+    let tail = 150;
+    assert_eq!(
+        packets[packets.len() - tail..]
+            .iter()
+            .map(|packet| &packet.bytes)
+            .collect::<Vec<_>>(),
+        reference[reference.len() - tail..]
+            .iter()
+            .map(|packet| &packet.bytes)
+            .collect::<Vec<_>>()
+    );
+    let passthrough_run = packets
+        .iter()
+        .rev()
+        .zip(reference.iter().rev())
+        .take_while(|(actual, expected)| actual.bytes == expected.bytes)
+        .count();
+    assert!(
+        passthrough_run > 200,
+        "most of the promoted source is forwarded, got {passthrough_run} packets"
+    );
+}
+
+#[test]
+fn stopping_after_a_promoted_decoder_handoff_releases_every_worker() {
+    use super::super::{CrossfadeConfig, StageIdentity};
+    let outgoing = include_bytes!("../../../tests/fixtures/generated-opus-passthrough.ogg");
+    let incoming = include_bytes!("../../../tests/fixtures/generated-opus-passthrough-long.ogg");
+    let (sink, handle) = StepPacketSink::new();
+    let session = PlaybackSession::new();
+    session
+        .configure_crossfade(Some(CrossfadeConfig::new(1000, 5000).unwrap()))
+        .unwrap();
+    session
+        .play(
+            InputSource::bytes(outgoing.to_vec()),
+            OpusEncoderOutput::new(sink).unwrap(),
+        )
+        .unwrap();
+    assert!(handle.wait_for_calls(1));
+    session
+        .stage_next(
+            InputSource::bytes(incoming.to_vec()),
+            StageIdentity {
+                expected_generation: session.source_generation(),
+                entry_id: "next".into(),
+                queue_revision: 1,
+                source_revision: 1,
+            },
+        )
+        .unwrap();
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    while session.staged_source().unwrap().buffered_samples < 96_000 {
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    }
+
+    // Let the overlap complete and the decoder move, then stop while packets are blocked.
+    handle.release(180);
+    assert!(handle.wait_for_calls(181));
+    session.stop().unwrap();
+    assert_eq!(session.state(), PlaybackState::Stopped);
+    assert!(session.staged_source().is_none());
+    assert!(handle.snapshot().cancelled);
 }
 
 #[test]

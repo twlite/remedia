@@ -55,7 +55,31 @@ pub(super) fn worker_loop(
     let mut pending_frame = None;
     let mut deferred_filter_update: Option<FilterUpdate> = None;
     let mut input_finished = false;
+    // A seek moves the demuxer to an arbitrary sample, so the first packet must be decoded and
+    // trimmed. `passthrough_eligible` records whether the stream could otherwise forward packets,
+    // and `seek_recovery` tracks the return to whole source packets after that first frame.
+    let mut passthrough_eligible = can_passthrough;
+    let mut seek_recovery = SeekRecovery::default();
     loop {
+        if seek_recovery.ready(
+            &shared,
+            &decoder,
+            &processor,
+            &pending_frame,
+            passthrough_mode,
+            input_finished,
+            deferred_filter_update.is_some(),
+        ) {
+            can_passthrough = true;
+            seek_recovery.pending = false;
+            lock(&shared.data).passthrough_available = true;
+            tracing::debug!(
+                name: "core.playback.passthrough_recovery_ready",
+                target: "remedia_core::playback",
+                playback_id,
+                "decoded the first post-seek packet; source packets can be forwarded again"
+            );
+        }
         match next_worker_action(
             &shared,
             generation,
@@ -176,6 +200,8 @@ pub(super) fn worker_loop(
                                 );
                                 decoder.queue_compressed_packet(packet);
                                 can_passthrough = false;
+                                passthrough_eligible = false;
+                                seek_recovery.pending = false;
                                 lock(&shared.data).passthrough_available = false;
                             }
                         }
@@ -203,6 +229,7 @@ pub(super) fn worker_loop(
                 }
             }
             WorkerAction::Deliver(decoded_frame) => {
+                seek_recovery.delivered_frames += 1;
                 let gain = lock(&shared.data).volume;
                 let DecodedPcmFrame {
                     frame,
@@ -375,10 +402,12 @@ pub(super) fn worker_loop(
                     passthrough_mode = false;
                 }
                 // Packet passthrough cannot trim the first packet after a
-                // demuxer seek to an arbitrary sample. Keep this source in the
-                // decoder path after seeking so FFmpeg can discard pre-target
-                // samples exactly.
+                // demuxer seek to an arbitrary sample. Decode the packets up to
+                // the next packet boundary so FFmpeg can discard pre-target
+                // samples exactly, then `seek_recovery` restores passthrough.
                 can_passthrough = false;
+                seek_recovery.pending = passthrough_eligible;
+                seek_recovery.delivered_frames = 0;
                 {
                     let mut data = lock(&shared.data);
                     data.passthrough_available = false;
@@ -401,7 +430,12 @@ pub(super) fn worker_loop(
                             );
                             return;
                         }
-                        match output.flush_samples(target_sample, &cancellation) {
+                        let flushed = if seek_recovery.pending {
+                            output.flush_samples_frame_aligned(target_sample, &cancellation)
+                        } else {
+                            output.flush_samples(target_sample, &cancellation)
+                        };
+                        match flushed {
                             Ok(()) => {
                                 let played = safe_played_position(&output);
                                 let mut data = lock(&shared.data);
@@ -583,3 +617,53 @@ pub(super) fn worker_loop(
 mod startup;
 
 mod processing;
+
+/// Tracks the return to Opus packet passthrough after a seek.
+///
+/// The demuxer lands on a packet at or before the target, so that packet is decoded and trimmed
+/// to the exact target sample. Once its audio has been delivered and nothing decoded is pending,
+/// the next demuxed packet starts exactly where the delivered PCM ended and whole packets can be
+/// forwarded again, provided the encoder's 20 ms frame grid is aligned with the source's.
+#[derive(Default)]
+struct SeekRecovery {
+    pending: bool,
+    delivered_frames: u32,
+}
+
+impl SeekRecovery {
+    #[allow(clippy::too_many_arguments)]
+    fn ready(
+        &self,
+        shared: &SessionShared,
+        decoder: &AudioDecoder,
+        processor: &PcmProcessor,
+        pending_frame: &Option<DecodedPcmFrame>,
+        passthrough_mode: bool,
+        input_finished: bool,
+        deferred_filter: bool,
+    ) -> bool {
+        if !self.pending
+            || self.delivered_frames == 0
+            || passthrough_mode
+            || input_finished
+            || deferred_filter
+            || pending_frame.is_some()
+            || decoder.has_pending_frames()
+            || !processor.next_sample().is_multiple_of(960)
+        {
+            return false;
+        }
+
+        // The delivered PCM must end exactly at the demuxer's next packet. Estimated positions
+        // (missing timestamps or an active filtergraph) cannot prove that.
+        let exact_boundary = processor.source_position().is_some_and(|position| {
+            !position.estimated && Some(position.sample) == decoder.source_boundary_sample()
+        });
+        if !exact_boundary {
+            return false;
+        }
+
+        let data = lock(&shared.data);
+        data.filter_graph.is_none() && data.volume == 1.0 && data.state != PlaybackState::Stopping
+    }
+}

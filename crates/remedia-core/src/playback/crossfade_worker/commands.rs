@@ -48,7 +48,11 @@ pub(super) fn handle_commands(
                 processor
                     .reset(sample)
                     .map_err(|e| PlaybackError::FilterGraph(Arc::new(e)))?;
-                output.flush_samples(sample, cancellation)?;
+                if current.may_resume_encoded() {
+                    output.flush_samples_frame_aligned(sample, cancellation)?;
+                } else {
+                    output.flush_samples(sample, cancellation)?;
+                }
                 let mut state = lock(&shared.data);
                 state.submitted_sample = sample;
                 state.submitted_position = request.position;

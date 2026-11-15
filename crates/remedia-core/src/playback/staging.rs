@@ -37,6 +37,24 @@ pub(super) struct PreparedStage {
     info: Mutex<Option<AudioStreamInfo>>,
     error: Mutex<Option<String>>,
     worker: Mutex<Option<JoinHandle<()>>>,
+    /// The staged stream can forward Opus packets (set once its input is open).
+    passthrough_eligible: std::sync::atomic::AtomicBool,
+    /// The promoted source asked this stage to park its decoder instead of decoding further.
+    handoff_requested: std::sync::atomic::AtomicBool,
+    handed_off: std::sync::atomic::AtomicBool,
+    handoff: Mutex<Option<Box<AudioDecoder>>>,
+    /// Cancels this stage's decoder when the owning playback is cancelled. Held so the weak
+    /// registration with the playback token stays live for as long as the decoder can run.
+    session_link: Mutex<Option<Arc<dyn crate::source::CancellationWake>>>,
+}
+
+/// Forwards cancellation of a playback to a stage whose decoder may outlive its stage thread.
+struct StageCancelLink(CancellationToken);
+
+impl crate::source::CancellationWake for StageCancelLink {
+    fn wake_for_cancellation(&self) {
+        self.0.cancel();
+    }
 }
 
 impl PreparedStage {
@@ -45,6 +63,7 @@ impl PreparedStage {
         identity: StageIdentity,
         shared: Arc<SessionShared>,
         expires_at_unix_ms: Option<u64>,
+        playback_cancellation: Option<CancellationToken>,
     ) -> Result<Arc<Self>, PlaybackError> {
         let stage = Arc::new(Self {
             identity,
@@ -57,7 +76,18 @@ impl PreparedStage {
             info: Mutex::new(None),
             error: Mutex::new(None),
             worker: Mutex::new(None),
+            passthrough_eligible: std::sync::atomic::AtomicBool::new(false),
+            handoff_requested: std::sync::atomic::AtomicBool::new(false),
+            handed_off: std::sync::atomic::AtomicBool::new(false),
+            handoff: Mutex::new(None),
+            session_link: Mutex::new(None),
         });
+        if let Some(playback) = playback_cancellation {
+            let link: Arc<dyn crate::source::CancellationWake> =
+                Arc::new(StageCancelLink(stage.cancellation.clone()));
+            playback.register_waker(Arc::clone(&link));
+            *lock(&stage.session_link) = Some(link);
+        }
         let worker_stage = Arc::clone(&stage);
         let handle = thread::Builder::new()
             .name("remedia-stage-next".into())
@@ -78,10 +108,27 @@ impl PreparedStage {
                 },
             )?;
             *lock(&self.info) = Some(decoder.info().clone());
+            let eligible = decoder.opus_passthrough_rejection().is_none();
+            self.passthrough_eligible
+                .store(eligible, std::sync::atomic::Ordering::Release);
             let mut prefix = Vec::new();
             let mut prefix_done = false;
             let mut prefix_checked = 0;
             while !self.cancellation.is_cancelled() {
+                if prefix_done
+                    && self
+                        .handoff_requested
+                        .load(std::sync::atomic::Ordering::Acquire)
+                    && !decoder.has_pending_frames()
+                {
+                    // Every decoded frame has been pushed, so the decoder sits on a frame
+                    // boundary. Park it for the promoted source and let it drain the buffer.
+                    *lock(&self.handoff) = Some(Box::new(decoder));
+                    self.handed_off
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    self.buffer.finish();
+                    return Ok(());
+                }
                 match decoder.next_frame()? {
                     Some(frame) => {
                         let samples =
@@ -100,7 +147,13 @@ impl PreparedStage {
                                     continue;
                                 }
                                 prefix_done = true;
-                                let trim = crate::crossfade::scheduling::leading_trim(&prefix);
+                                let mut trim = crate::crossfade::scheduling::leading_trim(&prefix);
+                                if eligible {
+                                    // Keep the incoming source's 20 ms packet grid aligned with
+                                    // the output's, so it can resume forwarding packets. At most
+                                    // 19.98 ms of near-silent lead-in is retained.
+                                    trim -= trim % 960;
+                                }
                                 self.trimmed_samples
                                     .store(trim as u64, std::sync::atomic::Ordering::Release);
                                 prefix.drain(..trim * 2);
@@ -176,6 +229,37 @@ impl PreparedStage {
             buffered_samples,
             error,
         }
+    }
+
+    pub(super) fn passthrough_eligible(&self) -> bool {
+        self.passthrough_eligible
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(super) fn request_handoff(&self) {
+        self.handoff_requested
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// The decoder was parked and every staged sample has been consumed.
+    pub(super) fn handoff_complete(&self) -> bool {
+        self.handed_off.load(std::sync::atomic::Ordering::Acquire)
+            && self.buffer.buffered_samples() == 0
+    }
+
+    pub(super) fn take_handed_off_decoder(&self) -> Option<Box<AudioDecoder>> {
+        lock(&self.handoff).take()
+    }
+
+    /// Join the stage thread after it parked its decoder. It does not cancel the decoder.
+    pub(super) fn join_finished_worker(&self) {
+        if let Some(worker) = lock(&self.worker).take() {
+            let _ = worker.join();
+        }
+    }
+
+    pub(super) fn cancel_link(&self) -> Option<Arc<dyn crate::source::CancellationWake>> {
+        lock(&self.session_link).clone()
     }
 
     pub(super) fn cancel_and_join(&self) {
@@ -259,11 +343,13 @@ impl PlaybackSession {
                 old.cancellation.cancel();
                 old.buffer.cancel();
             }
+            let playback_cancellation = lock(&self.shared.data).cancellation.clone();
             let next = match PreparedStage::start(
                 source,
                 identity,
                 Arc::clone(&self.shared),
                 expires_at_unix_ms,
+                playback_cancellation,
             ) {
                 Ok(next) => next,
                 Err(error) => {

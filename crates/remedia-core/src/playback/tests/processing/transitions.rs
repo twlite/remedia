@@ -246,3 +246,176 @@ fn one_opus_source_switches_between_passthrough_and_live_filtering() {
             .all(|source_payload| source_payload != &packet.bytes)
     }));
 }
+
+/// Collect every packet of the fixture as source passthrough forwards it.
+fn reference_opus_packets() -> Vec<EncodedOpusPacket> {
+    let (sink, handle) = StepPacketSink::new();
+    handle.release(1_000);
+    let session = PlaybackSession::new();
+    session
+        .play(
+            InputSource::bytes(
+                include_bytes!("../../../../tests/fixtures/generated-opus-passthrough.ogg")
+                    .to_vec(),
+            ),
+            OpusEncoderOutput::new(sink).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(session.wait(), PlaybackState::Completed);
+    handle.snapshot().packets
+}
+
+fn assert_seek_returns_to_source_packets(target_samples: u64) {
+    let reference = reference_opus_packets();
+    let (sink, handle) = StepPacketSink::new();
+    let session = Arc::new(PlaybackSession::new());
+    session
+        .play(
+            InputSource::bytes(
+                include_bytes!("../../../../tests/fixtures/generated-opus-passthrough.ogg")
+                    .to_vec(),
+            ),
+            OpusEncoderOutput::new(sink).unwrap(),
+        )
+        .unwrap();
+    assert!(handle.wait_for_calls(1));
+
+    let seeking_session = Arc::clone(&session);
+    let target = Duration::from_nanos(target_samples * 1_000_000_000 / 48_000);
+    let (response_tx, response_rx) = mpsc::sync_channel(1);
+    let seeker = thread::spawn(move || {
+        let _ = response_tx.send(seeking_session.seek(target));
+    });
+    assert!(handle.wait_for_pending_seek(&session));
+    handle.release(1);
+    response_rx.recv_timeout(TEST_TIMEOUT).unwrap().unwrap();
+    seeker.join().unwrap();
+
+    handle.release(1_000);
+    assert_eq!(session.wait(), PlaybackState::Completed);
+    assert_eq!(
+        session.processing_mode(),
+        Some(PlaybackProcessingMode::Passthrough),
+        "the seeked source returns to forwarding Opus packets"
+    );
+
+    let packets = handle.snapshot().packets;
+    let grid_start = target_samples - target_samples % 960;
+    let first = packets
+        .iter()
+        .position(|packet| packet.start_sample == grid_start)
+        .expect("the packet containing the target is re-encoded on the 20 ms grid");
+    assert_eq!(first, 1, "only the packet containing the target is decoded");
+    assert_ne!(
+        packets[first].bytes,
+        reference[(grid_start / 960) as usize].bytes,
+        "the first packet is trimmed, so it cannot be the source packet"
+    );
+
+    // Every later packet is the source's packet, byte for byte, on a continuous timeline.
+    for packet in &packets[first + 1..] {
+        let source = &reference[(packet.start_sample / 960) as usize];
+        assert_eq!(packet.start_sample, source.start_sample);
+        assert_eq!(packet.bytes, source.bytes);
+        assert_eq!(packet.media_samples_per_channel, 960);
+    }
+    assert!(packets[first..].windows(2).all(|pair| {
+        pair[1].start_sample == pair[0].start_sample + u64::from(pair[0].media_samples_per_channel)
+    }));
+    assert_eq!(
+        packets.last().map(|packet| packet.start_sample + 960),
+        Some(96_960),
+        "playback runs to the end of the source"
+    );
+}
+
+#[test]
+fn seeking_on_the_packet_grid_returns_to_source_packets() {
+    assert_seek_returns_to_source_packets(24_000);
+}
+
+#[test]
+fn seeking_inside_a_packet_trims_it_then_returns_to_source_packets() {
+    assert_seek_returns_to_source_packets(24_300);
+}
+
+#[test]
+fn repeated_seeks_each_return_to_source_packets() {
+    let reference = reference_opus_packets();
+    let (sink, handle) = StepPacketSink::new();
+    let session = Arc::new(PlaybackSession::new());
+    session
+        .play(
+            InputSource::bytes(
+                include_bytes!("../../../../tests/fixtures/generated-opus-passthrough.ogg")
+                    .to_vec(),
+            ),
+            OpusEncoderOutput::new(sink).unwrap(),
+        )
+        .unwrap();
+    assert!(handle.wait_for_calls(1));
+
+    for target in [30_000_u64, 12_345, 60_001] {
+        let seeking_session = Arc::clone(&session);
+        let position = Duration::from_nanos(target * 1_000_000_000 / 48_000);
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        let seeker = thread::spawn(move || {
+            let _ = response_tx.send(seeking_session.seek(position));
+        });
+        assert!(handle.wait_for_pending_seek(&session));
+        handle.release(1);
+        response_rx.recv_timeout(TEST_TIMEOUT).unwrap().unwrap();
+        seeker.join().unwrap();
+    }
+    handle.release(1_000);
+    assert_eq!(session.wait(), PlaybackState::Completed);
+
+    let packets = handle.snapshot().packets;
+    let last_grid_start = 60_001 - 60_001 % 960;
+    let first = packets
+        .iter()
+        .rposition(|packet| packet.start_sample == last_grid_start)
+        .unwrap();
+    assert!(
+        packets[first + 1..].iter().all(|packet| {
+            packet.bytes == reference[(packet.start_sample / 960) as usize].bytes
+        })
+    );
+    assert!(first + 1 < packets.len());
+}
+
+#[test]
+fn seeking_with_a_filter_active_stays_in_pcm_until_the_filter_is_removed() {
+    let (sink, handle) = StepPacketSink::new();
+    let session = Arc::new(PlaybackSession::new());
+    session.set_volume(0.5).unwrap();
+    session
+        .play(
+            InputSource::bytes(
+                include_bytes!("../../../../tests/fixtures/generated-opus-passthrough.ogg")
+                    .to_vec(),
+            ),
+            OpusEncoderOutput::new(sink).unwrap(),
+        )
+        .unwrap();
+    assert!(handle.wait_for_calls(1));
+    assert_eq!(
+        session.processing_mode(),
+        Some(PlaybackProcessingMode::Transcoding)
+    );
+    let seeking_session = Arc::clone(&session);
+    let (response_tx, response_rx) = mpsc::sync_channel(1);
+    let seeker = thread::spawn(move || {
+        let _ = response_tx.send(seeking_session.seek(Duration::from_millis(500)));
+    });
+    assert!(handle.wait_for_pending_seek(&session));
+    handle.release(1);
+    response_rx.recv_timeout(TEST_TIMEOUT).unwrap().unwrap();
+    seeker.join().unwrap();
+    handle.release(1_000);
+    assert_eq!(session.wait(), PlaybackState::Completed);
+    assert_eq!(
+        session.processing_mode(),
+        Some(PlaybackProcessingMode::Transcoding)
+    );
+}
