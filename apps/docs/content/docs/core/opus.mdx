@@ -36,7 +36,7 @@ the wait.
 
 The demuxer stays open across mode changes. On passthrough-to-PCM activation,
 the worker constructs the decoder from the selected stream parameters and
-replays only a bounded history of up to 120 ms or 512 KiB of preceding Opus
+replays only a bounded history of up to 140 ms (seven packets) or 512 KiB of preceding Opus
 packets. Warm-up output before the exact transition boundary is discarded.
 The next unread source packet is then decoded and processed. This policy also
 works with one-shot non-seekable streams and does not promise identical
@@ -98,7 +98,7 @@ limits. MP3, AAC, Vorbis, trimmed Opus, and any source sent to a PCM-only output
 decode/resample path. Failure of an eligibility check is a normal fallback, not an error.
 
 For a passthrough source that later needs PCM processing, Remedia keeps the open demuxer and replays
-a rolling maximum of 120 ms and 512 KiB of preceding Opus packets into a newly initialized decoder. The bounded history is intended to provide decoder warm-up while remaining suitable for non-seekable
+a rolling maximum of 140 ms (seven packets) and 512 KiB of preceding Opus packets into a newly initialized decoder. The bounded history is intended to provide decoder warm-up while remaining suitable for non-seekable
 inputs. It is not a claim that every possible Opus stream has identical decoder preroll needs.
 
 Decoded warm-up samples before the transition boundary are discarded. The transition never reopens
@@ -127,14 +127,15 @@ packet is forwarded **unchanged** and the pre-skip is accounted for instead of i
   codec parameters, and must match the OpusHead. A pre-skip of one packet or more is not modeled
   and keeps the stream on the PCM path.
 - Before forwarding, the first packet is decoded once to confirm that the pre-skip region is
-  **encoder delay**: either no louder than about -60 dBFS, or at most 10% of the peak of the audio
+  **encoder delay**: either no louder than about -60 dBFS, or at most 35% of the peak of the audio
   that follows in the packet. An abrupt start produces pre-echo of about -30 dB relative to the
   onset, which is the same pre-echo the PCM path's own encoder emits. A stream whose "pre-roll" is
   as loud as its audio was mislabeled and is decoded, where FFmpeg trims it exactly.
 - The last packet of such a file normally carries end trimming and is therefore decoded and
   re-encoded, as before.
 
-Streams whose pre-skip is 0 are unaffected.
+Streams whose pre-skip is 0 are unaffected. The duration of an Ogg Opus file excludes its
+pre-skip, so it equals the length of the audio a player decodes.
 
 ## Seamless return to packets
 
@@ -160,8 +161,27 @@ crossfade **promotion**, it therefore:
 
 On real FFmpeg files the first block after the seam measures between -18 and -33 dB relative to
 the signal after a seek, and -25 dB after a promotion, which is the level of the encoder's own
-re-encoding noise; blocks settle below -45 dB within eight packets. Gain and filter changes keep
-the existing transition behavior and its documented short artifact.
+re-encoding noise; blocks settle below -45 dB within eight packets.
+
+### Gain and filter changes
+
+A gain or filter change on a 312-pre-skip stream is seamless in both directions. Entering PCM, the
+encoder is primed with the audio the client has already been sent (the rolling packet history,
+decoded once for warm-up) so it starts converged instead of cold, and the first re-encoded frames
+that would repeat audio the client already played are suppressed. Leaving PCM uses the same
+junction as a seek. Tests insert gain changes at every offset around the return to packets and
+check that no sample is repeated or dropped on either side. Streams with another pre-skip keep the
+earlier behavior and its short artifact.
+
+### Reported position and what the listener hears
+
+For straight passthrough and for gain or filter changes, the reported media position is the media
+time the client has been sent, which is what it plays (to within the 6.5 ms pre-roll). After a
+**seek or promotion**, the re-encoded segment is accounted in the input domain: the reported
+position leads the audio the listener hears by the encoder's constant 312 samples (6.5 ms) until
+the stream returns to packets, the same convention the PCM path has always had. Reported
+durations, positions and synchronized-lyrics timestamps therefore stay within 6.5 ms of the
+audible audio through seeks, crossfades and tempo changes; tests assert both bounds.
 
 A seek decodes only the packet that contains the target (FFmpeg trims it to the exact sample),
 then about six more packets, then forwards source packets again. A seek to a position that is not

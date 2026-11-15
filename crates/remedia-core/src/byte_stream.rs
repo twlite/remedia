@@ -27,10 +27,22 @@ pub enum ByteStreamError {
 }
 
 /// The source side of a bounded stream passed to [`InputSource::byte_stream`].
-/// Cloning it refers to the same one-shot byte stream.
+/// Cloning it refers to the same one-shot byte stream. Dropping every clone (and every reader
+/// opened from them) without ever reading closes the consumer side, so a producer blocked in
+/// [`ByteStreamWriter::write`] wakes with [`ByteStreamError::ConsumerClosed`].
 #[derive(Clone)]
 pub struct ByteStreamInput {
     inner: Arc<QueueInner>,
+    release: Arc<ConsumerRelease>,
+}
+
+/// Closes the consumer side once the last input or reader handle is gone.
+struct ConsumerRelease(Arc<QueueInner>);
+
+impl Drop for ConsumerRelease {
+    fn drop(&mut self) {
+        self.0.close_consumer();
+    }
 }
 
 impl fmt::Debug for ByteStreamInput {
@@ -69,6 +81,8 @@ impl fmt::Debug for ByteStreamWriter {
 
 pub(crate) struct ByteStreamReader {
     inner: Arc<QueueInner>,
+    /// Keeps the consumer open for as long as a reader exists, even if every input is dropped.
+    _release: Arc<ConsumerRelease>,
 }
 
 struct QueueInner {
@@ -99,6 +113,7 @@ impl ByteStreamInput {
     pub(crate) fn reader(&self) -> ByteStreamReader {
         ByteStreamReader {
             inner: Arc::clone(&self.inner),
+            _release: Arc::clone(&self.release),
         }
     }
 }
@@ -127,6 +142,7 @@ impl ByteStreamWriter {
         });
         Ok((
             ByteStreamInput {
+                release: Arc::new(ConsumerRelease(Arc::clone(&inner))),
                 inner: Arc::clone(&inner),
             },
             Self { inner },
@@ -477,5 +493,41 @@ mod tests {
         wait_for_state(&input.inner, |state| state.waiting_readers == 1);
         cancellation.cancel();
         assert_eq!(worker.join().unwrap(), Err(ByteStreamError::Cancelled));
+    }
+
+    #[test]
+    fn dropping_every_input_without_reading_wakes_a_blocked_writer() {
+        let (input, writer) = ByteStreamWriter::new_pair(4).unwrap();
+        writer.write(b"full").unwrap();
+        let blocked = writer.clone();
+        let worker = thread::spawn(move || blocked.write_owned(b"next".to_vec()));
+        wait_for_state(&writer.inner, |state| state.waiting_writers == 1);
+        let clone = input.clone();
+
+        drop(input);
+        assert!(
+            !writer.is_closed(),
+            "a remaining clone keeps the input open"
+        );
+        drop(clone);
+
+        assert_eq!(worker.join().unwrap(), Err(ByteStreamError::ConsumerClosed));
+        assert!(writer.is_closed());
+        assert_eq!(writer.pending_bytes(), 0);
+    }
+
+    #[test]
+    fn a_live_reader_keeps_the_stream_open_after_every_input_is_dropped() {
+        let (input, writer) = ByteStreamWriter::new_pair(8).unwrap();
+        let reader = input.reader();
+        drop(input);
+        writer.write(b"abc").unwrap();
+        let cancellation = CancellationToken::new();
+        let mut bytes = [0; 8];
+
+        assert!(!writer.is_closed());
+        assert_eq!(reader.read(&mut bytes, &cancellation).unwrap(), 3);
+        drop(reader);
+        assert!(writer.is_closed());
     }
 }

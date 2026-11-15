@@ -99,7 +99,8 @@ For incremental producers, `InputSource::byte_stream(max_pending_bytes)` returns
 `ByteStreamWriter`. Writes block when the pending byte capacity is reached, applying backpressure
 without dropping media bytes. Signal normal EOF with `finish()` or propagate a producer failure with
 `fail(message)`. Dropping/cancelling the decoder wakes blocked reads and writes and clears queued
-bytes. A producer-backed input is one-shot and non-seekable:
+bytes. Dropping the source (and every clone of it) without ever decoding it does the same, so a
+producer blocked in `write` returns `ByteStreamError::ConsumerClosed` instead of waiting forever. A producer-backed input is one-shot and non-seekable:
 
 ```rust
 use remedia_core::{AudioDecoder, InputSource};

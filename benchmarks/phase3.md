@@ -182,19 +182,144 @@ not changed: it is the stall cushion for network sources.
 ## Remaining and worth investigating
 
 - **Network and plugin-stream sources** keep their stage thread and 2 s PCM buffer after promotion
-  to preserve the stall cushion. A compressed-packet lookahead (about 32 KB per 2 s of Opus)
-  would give the same cushion for 1/24 of the memory and no PCM decode.
+  to preserve the stall cushion. A compressed-packet lookahead was assessed and not built (see the
+  final audit).
 - **The last second of a track** whose duration is not on the packet grid is decoded when no next
   track is staged, because a packet that would cross the (never used) overlap boundary disables
   passthrough for the rest of the file. Pre-existing; visible now that real files are eligible
   (the final ~50 packets of the promoted file in the tests).
-- **Gain and filter transitions** (`prepare_passthrough` after a volume or filter change) still
-  switch back to packets without draining the encoder lookahead, so they keep the short artifact
-  the docs already describe. The same junction would fix it for 312-pre-skip streams.
 - **Pre-skip other than 312 or at least one packet** (older opusenc used 3840) still decodes.
-- Plugin media transfer uses one OS thread per stream; its cost was not measured here.
-- A pre-existing timing test (`separate_sessions_progress_independently_under_backpressure`) is
-  flaky: with the whole `playback::` suite running in parallel it failed 1 of 210 iterations at the
-  base commit and 4 of 260 on this branch (not distinguishable); in isolation it passed 150 of 150
-  on both. It waits on a process-wide diagnostics channel and is likely a tracing
-  callsite-registration race. It was not changed.
+
+## Final correctness audit
+
+Findings of the audit of the Opus passthrough changes before the branch is pushed.
+
+**Receiver pre-skip.** RTP Opus has no pre-skip, so a client plays the 312 pre-roll samples.
+Tests decode Remedia's RTP payloads with a fresh libopus decoder and compare them with FFmpeg's
+decode of the same files: forwarded and transcoded output are both delayed by exactly 312 samples
+and are otherwise identical. Internal accounting (media position, `start_sample`) excludes the
+pre-skip; durations of Ogg Opus files exclude it too. Verified for Ogg and WebM fixtures with
+silent leads, abrupt starts and a deliberately mislabeled pre-skip (decoded, not forwarded).
+
+**Seam quality.** Real FFmpeg files with transients, silence and repeated transitions were sent
+through seeks, crossfade promotions, consecutive promotions and gain changes at every offset
+around the return to packets. Findings fixed during the audit: the first return to packets left a
+hole and a cold client decoder (residual -0.9 dB, 303-sample lag), fixed by an encoder warm-up and
+lookahead junction; gain changes repeated or dropped up to one packet, fixed by seamless entry
+(encoder primed with the audio already sent, duplicate frames suppressed) and exit; a crossfade
+read ended the stream early after an aborted junction; the packet history was one packet short at
+the end of a track (now seven packets, 140 ms); the abrupt-start gate rejected a full-level burst
+(now a 35% relative level). Residual after a seam is the encoder's own re-encoding noise.
+
+**Discord transport.** RTP sequencing and timestamps stay contiguous across the pre-roll packet,
+seeks, promotions and handoffs; in-place AEAD sealing, DAVE encryption and the UDP path are
+covered by end-to-end tests with real Opus packets.
+
+**Timing.** Reported position equals what the listener has heard through passthrough and gain
+changes; after a seek the reported position leads the audio by the constant 312-sample encoder
+lookahead (6.5 ms). Durations, positions through a tempo change and back, and promotion are
+asserted in `playback/tests/audit.rs`.
+
+**Resource cleanup.** `playback/tests/cleanup.rs` holds the source bytes through an `Arc` and
+asserts that every internal owner (stage thread, decoder, handed-off decoder, buffer, session) is
+dropped after: replacing a staged source, clearing it, stopping with a stage, skipping to another
+source, a stage that fails to decode, stopping during the overlap, stopping after the promotion,
+completion, and six repeated cycles. The checks fail if a stage leaks (mutation checked). Steady
+state, `cargo test --release -p remedia-core --lib steady_state -- --ignored --nocapture`: RSS 18.3
+MiB after 125 stage-and-promote cycles and 19.6 MiB after 1000, flat in steps of the allocator's
+arena growth, threads constant at 2.
+
+**Defect found while measuring: dropped byte-stream inputs.** `ByteStreamInput` closed its consumer
+side only when a reader (a decoder) was dropped. A source that was dropped before it was ever
+decoded (a stage cancelled before opening, a failed `play`) left a producer blocked in `write`
+forever. The plugin media pump is such a producer, so its thread, buffer and active-stream permit
+would leak. The input now closes the consumer when the last input or reader is dropped; covered by
+two tests in `byte_stream.rs`. This is what stopped the first run of the plugin thread benchmark
+below from exiting.
+
+### Flaky `separate_sessions_progress_independently_under_backpressure`
+
+Root cause: the test waited for `core.playback.starting` on a process-wide diagnostics channel. The
+event is emitted, `enabled!` is true under the session's dispatcher, no events were dropped (`dropped
+= 0`), and a callsite first hit afterwards is delivered, so the loss was not the channel, the level
+filter or thread-local propagation (`with_dispatch` wraps every emit site). It is `tracing-core`'s
+callsite interest cache: with exactly one registered `Dispatch`, `Rebuilder::JustOne` computes a new
+callsite's interest from the _registering thread's_ current dispatcher. Remedia's dispatchers are
+scoped, so when a parallel test's thread that uses the default handle (no dispatcher in scope) reached
+`playback.starting` first, the callsite was cached as disabled for the one real dispatcher. It happened
+about 2% of the time when only `lifecycle::` tests ran; a probe event from a fresh callsite arrived
+every time. A throwaway single-test reproduction (a no-op guard dispatcher making the interest
+combine across dispatchers) removed it deterministically.
+
+Not changed in production: keeping a permanent no-op dispatcher alive in `remedia-observability`
+would fix the same hazard for embedders (a configured `Observability` can lose a callsite to any
+unscoped thread in the process that reaches it first), but it alters tracing behavior and was not
+adopted. It remains a known limitation: with a single configured `Observability` and no global
+subscriber, lifecycle events can be missed if another thread without a scoped dispatcher emits that
+callsite first.
+
+Fix and coverage: the test now asserts independence from per-session state (distinct playback IDs
+from each session, gate call counters and acceptance, session B staying at zero submitted while A
+completes). Diagnostics delivery has a deterministic test in its own binary
+(`crates/remedia-core/tests/playback_diagnostics.rs`). After the change: 0 failures in 100
+`lifecycle::` runs, 6 full parallel `playback::` runs and 50 isolated runs.
+
+### Plugin media transfer: one OS thread per stream
+
+`crates/remedia-server/examples/plugin_media_threads.rs` mirrors `open_media` (a bounded
+`ByteStreamWriter`, a dedicated thread running `Handle::block_on`, the same 250 ms idle poll).
+Reproduce with `cargo build --release -p remedia-server --example plugin_media_threads` and
+`python3 benchmarks/plugin_media_threads.py --out benchmarks/data/plugin-media-threads.jsonl`
+(every run is a fresh process with a 60 s timeout; failures are recorded). Data:
+`benchmarks/data/plugin-media-threads.jsonl`.
+
+| Streams | Blocked, 256 KiB buffer (RSS/stream) | Blocked, 4 KiB buffer | Idle thread (RSS, CPU) | Same idle loop as Tokio tasks |
+| ------: | -----------------------------------: | --------------------: | ---------------------: | ----------------------------: |
+|       1 |                              352 KiB |                80 KiB |           48 KiB, 0.0% |                  64 KiB, 0.0% |
+|      32 |                              297 KiB |              30.5 KiB |         21.5 KiB, 0.2% |                 1.5 KiB, 0.1% |
+|     128 |                              292 KiB |              26.6 KiB |         18.5 KiB, 0.7% |                 0.9 KiB, 0.2% |
+|     512 |                              291 KiB |              25.9 KiB |         17.8 KiB, 4.4% |                 0.8 KiB, 0.3% |
+|    1024 |                              291 KiB |              25.8 KiB |        17.6 KiB, 11.4% |                 0.7 KiB, 0.5% |
+
+The memory of a blocked stream is the configured `mediaBufferBytes` (256 KiB default) plus about
+26 KiB for the thread (stack, kernel and runtime bookkeeping). The buffer is required by any design
+that applies backpressure, so only the ~26 KiB is attributable to the thread: about 7% of the
+roughly 0.36 MiB a passthrough session costs and 9% of the stream's own total. Blocked threads use no CPU. Idle
+(waiting for upstream bytes) threads cost CPU through the 250 ms `select!` poll: negligible up to
+128 streams (0.7%), 4.4% at 512 and 11.4% of a core at 1024, against 0.3-0.5% for the same polling
+as tasks. The default limit is 8 active streams per host (`maxActiveStreams`, at most 1024), at
+which the thread cost is about 0.2 MiB and no measurable CPU.
+
+Conclusion: no rewrite. An async pump would need a non-blocking `ByteStreamWriter`, which would
+reshape the core API, to save about 26 KiB per stream and, only at several hundred concurrently
+_idle_ transfers, a few percent of a core. The only change that would help at the configured upper
+limit is cheap and not made here: waking the idle poll from the writer's close notification, or a
+longer `POLL_INTERVAL`, instead of polling every 250 ms. This is worth doing if deployments raise
+`maxActiveStreams` into the hundreds.
+
+### Compressed-packet lookahead instead of retained PCM staging
+
+Assessment only; nothing implemented. A staged network or plugin source keeps a 2 s PCM buffer
+(752 KiB; about 44% of a staged session's heap) so that a stalled upstream cannot starve the
+overlap. Two seconds of 128 kbps audio is about 32 KiB of packets (1/24 of the PCM).
+
+Why it was not built:
+
+- It does not remove the dominant owners: the stage still needs its input thread and FFmpeg
+  demuxer and decoder state (about 410 KiB per decoder), so the saving is about 0.7 MiB of the
+  ~2.4 MiB a staged session costs, and only while a stage exists. With the default stage window
+  that is a small fraction of the sessions at any moment.
+- It changes the semantics of "ready". Today a stage is ready when decoded audio is buffered, and
+  a corrupt or failing source is reported by the stage _before_ promotion so the application can
+  skip it. With packets only, decode errors, decoder priming (MP3 bit reservoir, AAC) and
+  resampler warm-up would move into the audible overlap. Preserving the guarantee needs a decode
+  of at least the first packets anyway.
+- It moves decode CPU from the stage thread into the playback worker during the overlap, the
+  latency-sensitive path.
+- Stall protection is not weakened by retained packets (the same two seconds are covered), but it
+  would have to be re-proved for each codec's decoder delay, and the existing handoff already
+  reaches the same memory result for local files.
+
+Revisit only if a deployment measures many simultaneously staged network sessions as its memory
+limit; at that point the per-stage saving above (about 0.7 MiB) is what to weigh against the
+semantic cost.

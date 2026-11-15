@@ -52,6 +52,16 @@ multiples of 960 media samples, which lets playback return to forwarded source p
 a padded partial frame ([details](/docs/core/opus#seamless-return-to-packets)). Outputs without
 an encoder keep the no-op default and need not change.
 
+### Seamless entry to PCM
+
+`EncodedOpusOutput` also has a defaulted `begin_seamless_pcm(history_pcm, live_start_sample,
+cancellation) -> Result<bool, OutputError>`. When playback leaves forwarded source packets for
+PCM (a gain or filter change), the worker passes the audio the client has just been sent. The
+encoder is conditioned on it and drops the first re-encoded frames whose audio the client already
+has, so no sample is repeated or lost. It returns `Ok(false)` when the output cannot do this
+(the default, and any output without an encoder), and the worker then starts PCM the usual way
+([details](/docs/core/opus#gain-and-filter-changes)). Existing outputs need not change.
+
 Each Opus output owns its encoder and sink. The sink contract is synchronous and
 backpressured: implementations should use bounded storage and make `cancel`
 safe alongside a blocked send. The adapter does not expose Discord types and can
