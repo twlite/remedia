@@ -33,6 +33,11 @@ on:
       - 'THIRD_PARTY_NOTICES.md'
       - 'THIRD_PARTY_LICENSES.txt'
   workflow_dispatch:
+    inputs:
+      recover_v030:
+        description: Resume v0.3.0 from existing verified artifacts without native rebuilds
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -75,7 +80,7 @@ jobs:
 
   draft-release:
     name: Create GitHub release draft
-    if: needs.release-detection.outputs.is_release == 'true'
+    if: ${{ !inputs.recover_v030 && (needs.release-detection.outputs.is_release == 'true') }}
     needs: release-detection
     runs-on: ubuntu-24.04
     permissions:
@@ -124,7 +129,7 @@ jobs:
         run: node .github/scripts/github-release.mjs prepare "$RELEASE_VERSION"
 
   checks:
-    if: needs.release-detection.outputs.checks == 'true' || needs.release-detection.outputs.is_release == 'true'
+    if: ${{ !inputs.recover_v030 && (needs.release-detection.outputs.checks == 'true' || needs.release-detection.outputs.is_release == 'true') }}
     name: Lint, types, tests, and docs
     needs: release-detection
     runs-on: ubuntu-24.04
@@ -185,7 +190,7 @@ jobs:
       - run: pnpm --filter docs build
 
   supported-platforms:
-    if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
+    if: ${{ !inputs.recover_v030 && (needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true') }}
     name: Required native targets
     needs: release-detection
     strategy:
@@ -233,7 +238,7 @@ jobs:
       release_version: ${{ needs.release-detection.outputs.version }}
 
   additional-platforms:
-    if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
+    if: ${{ !inputs.recover_v030 && (needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true') }}
     name: Additional native npm release targets
     needs: release-detection
     strategy:
@@ -278,7 +283,7 @@ jobs:
       release_version: ${{ needs.release-detection.outputs.version }}
 
   package-release:
-    if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
+    if: ${{ !inputs.recover_v030 && (needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true') }}
     name: Verify and pack npm release
     needs: [release-detection, checks, supported-platforms, additional-platforms]
     runs-on: ubuntu-24.04
@@ -343,7 +348,7 @@ jobs:
 
   upload-release:
     name: Upload and verify draft release binaries
-    if: needs.release-detection.outputs.is_release == 'true'
+    if: ${{ !inputs.recover_v030 && (needs.release-detection.outputs.is_release == 'true') }}
     needs: [release-detection, draft-release, package-release]
     runs-on: ubuntu-24.04
     permissions:
@@ -382,7 +387,7 @@ jobs:
 
   publish:
     name: Publish verified packages via npm OIDC
-    if: needs.release-detection.outputs.is_release == 'true'
+    if: ${{ !inputs.recover_v030 && (needs.release-detection.outputs.is_release == 'true') }}
     needs: [release-detection, package-release, upload-release]
     runs-on: ubuntu-24.04
     concurrency:
@@ -421,7 +426,7 @@ jobs:
 
   github-release:
     name: Make the completed GitHub release public
-    if: needs.release-detection.outputs.is_release == 'true'
+    if: ${{ !inputs.recover_v030 && (needs.release-detection.outputs.is_release == 'true') }}
     needs: [release-detection, upload-release, publish]
     runs-on: ubuntu-24.04
     permissions:
@@ -452,7 +457,7 @@ jobs:
     # The Dockerfile installs the published release, so this runs only after the release is
     # public. It is a separate job: a failure here cannot undo npm or GitHub releases, and
     # "Re-run failed jobs" retries just this publication.
-    if: needs.release-detection.outputs.is_release == 'true'
+    if: ${{ !inputs.recover_v030 && (needs.release-detection.outputs.is_release == 'true') }}
     needs: [release-detection, github-release]
     permissions:
       contents: read
@@ -460,3 +465,108 @@ jobs:
     uses: ./.github/workflows/docker-publish.yaml
     with:
       version: ${{ needs.release-detection.outputs.version }}
+
+  recovery-v030-verify:
+    name: Recovery v0.3.0 - verify existing draft assets
+    if: github.event_name == 'workflow_dispatch' && inputs.recover_v030 == true
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+      - name: Require repository collaborator write access
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/release.mjs authorize
+      - name: Validate original run, tag, and draft asset digests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/recover-v030.mjs
+      - uses: actions/upload-artifact@v7
+        with:
+          name: recovery-v030-assets
+          path: ${{ runner.temp }}/github-release-assets.json
+          if-no-files-found: error
+          retention-days: 7
+
+  recovery-v030-publish:
+    name: Recovery v0.3.0 - publish already-packed npm artifacts
+    needs: recovery-v030-verify
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: npm-release-${{ github.repository }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+      - name: Require repository collaborator write access
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/release.mjs authorize
+      - name: Install npm CLI with trusted publishing support
+        run: |
+          npm install --global npm@11.21.0
+          test "$(npm --version)" = "11.21.0"
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release-packages
+          run-id: 43813499144
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/npm-release-packages
+      - name: Publish exact v0.3.0 packages in dependency order
+        env:
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/remedia-publish.npmrc
+        run: |
+          printf 'registry=https://registry.npmjs.org/\n' > "$NPM_CONFIG_USERCONFIG"
+          node .github/scripts/release.mjs publish 0.3.0 latest "$RUNNER_TEMP/npm-release-packages/release-packages.json"
+
+  recovery-v030-finalize:
+    name: Recovery v0.3.0 - publish verified GitHub draft
+    needs: [recovery-v030-verify, recovery-v030-publish]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+      - name: Require repository collaborator write access
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/release.mjs authorize
+      - uses: actions/download-artifact@v8
+        with:
+          name: recovery-v030-assets
+          path: ${{ runner.temp }}/release-assets
+      - name: Verify all uploaded assets then make v0.3.0 public
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/github-release.mjs finalize 0.3.0 "$RUNNER_TEMP/release-assets/github-release-assets.json"
+
+  recovery-v030-docker:
+    name: Recovery v0.3.0 - publish GHCR image
+    needs: recovery-v030-finalize
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-publish.yaml
+    with:
+      version: 0.3.0
