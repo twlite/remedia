@@ -256,6 +256,16 @@ fn pump_until<T>(gate: &GateHandle, seek: thread::JoinHandle<T>) -> T {
     seek.join().expect("seek thread joins")
 }
 
+/// Wait for a control that can finish while output stays blocked, without advancing media.
+fn join_without_pumping<T>(worker: thread::JoinHandle<T>) -> T {
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    while !worker.is_finished() {
+        assert!(Instant::now() < deadline, "the control never completed");
+        thread::sleep(Duration::from_millis(1));
+    }
+    worker.join().expect("control thread joins")
+}
+
 /// The index of the one frame where the source position jumps by more than `threshold` ms.
 fn find_jump(frames: &[(u64, i64, usize)], threshold: i64) -> usize {
     let jumps: Vec<usize> = (1..frames.len())
@@ -502,7 +512,10 @@ fn a_tempo_filter_scales_the_compensation_by_source_time() {
     let tempo = Arc::clone(&session);
     let apply = thread::spawn(move || tempo.set_filter_graph(Some("atempo=1.5")));
     assert!(wait_for_pending_filter_update(&session));
-    assert!(pump_until(&gate, apply).is_ok());
+    // Replacing the initial empty graph needs one worker boundary, not an
+    // arbitrary amount of media while the caller waits to be scheduled.
+    consume(&gate, 1);
+    assert!(join_without_pumping(apply).is_ok());
     consume(&gate, 10);
     server.hold_new_connections();
 
@@ -521,7 +534,8 @@ fn a_tempo_filter_scales_the_compensation_by_source_time() {
     assert!(wait_for_condition(&session.shared, TEST_TIMEOUT, |data| {
         data.fallback_signal
     }));
-    assert_applied(pump_until(&gate, seek));
+    consume(&gate, 1);
+    assert_applied(join_without_pumping(seek));
     consume(&gate, 10);
 
     let frames = delivered(&gate);
