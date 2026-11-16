@@ -512,7 +512,15 @@ fn a_tempo_filter_scales_the_compensation_by_source_time() {
     let at_request = gate.snapshot().accepted.len();
     assert!(server.wait_for_connections(2));
     consume(&gate, 30);
+    assert!(gate.wait_for_calls(gate.snapshot().accepted.len() + 1));
     server.release();
+
+    // The controlled playback above supplies the source-time compensation. Keep the
+    // output blocked while preparation finishes: pumping it faster than real time
+    // can otherwise exhaust this finite track before a slow origin responds.
+    assert!(wait_for_condition(&session.shared, TEST_TIMEOUT, |data| {
+        data.fallback_signal
+    }));
     assert_applied(pump_until(&gate, seek));
     consume(&gate, 10);
 
