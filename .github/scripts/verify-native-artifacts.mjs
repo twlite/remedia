@@ -1,14 +1,6 @@
 import { readdirSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { ffmpegAbi } from './ffmpeg-abi.mjs';
-
-const requiredLinuxLibraries = [...ffmpegAbi].map(([library, major]) => `${library}.so.${major}`);
-const requiredMacLibraries = [...ffmpegAbi].map(([library, major]) => `${library}.${major}`);
-const requiredWindowsLibraries = [...ffmpegAbi].map(
-  ([library, major]) => `${library.slice(3)}-${major}.dll`,
-);
-
 const packageDirectory = 'packages/remedia-node';
 const addons = readdirSync(packageDirectory).filter((entry) => /^node\..+\.node$/.test(entry));
 if (addons.length !== 1) {
@@ -16,13 +8,6 @@ if (addons.length !== 1) {
     `Expected exactly one target N-API addon, found: ${addons.join(', ') || '(none)'}`,
   );
 }
-
-// The bootstrap loads before FFmpeg and must therefore not link against it.
-const bootstrapName = 'bootstrap.' + addons[0].slice('node.'.length);
-if (!readdirSync(packageDirectory).includes(bootstrapName)) {
-  throw new Error(`Missing bootstrap addon ${bootstrapName} next to ${addons[0]}`);
-}
-const bootstrapBinary = `${packageDirectory}/${bootstrapName}`;
 
 const serverBinary = process.env.REMEDIA_SERVER_BINARY;
 if (!serverBinary)
@@ -35,10 +20,9 @@ const runtimeBinary = join(
   'remedia-server-runtime-' + serverName.slice('remedia-server-'.length),
 );
 const nativeBinaries = [`${packageDirectory}/${addons[0]}`, runtimeBinary];
-const binaries = [serverBinary, ...nativeBinaries, bootstrapBinary];
-const mustNotLinkFfmpeg = new Set([serverBinary, bootstrapBinary]);
+const binaries = [serverBinary, ...nativeBinaries];
 console.log(
-  `Testing native addon ${addons[0]}, bootstrap ${bootstrapName}, CLI ${serverName}, and runtime ${basename(runtimeBinary)}`,
+  `Testing native addon ${addons[0]}, CLI ${serverName}, and runtime ${basename(runtimeBinary)}`,
 );
 const version = execFileSync(serverBinary, ['--version'], {
   encoding: 'utf8',
@@ -57,13 +41,7 @@ if (process.platform === 'linux') {
     if (!header.includes(process.arch === 'arm64' ? 'AArch64' : 'Advanced Micro Devices X86-64')) {
       throw new Error(`Unexpected ELF architecture for ${binary}`);
     }
-    if (mustNotLinkFfmpeg.has(binary)) {
-      rejectDependencies(dependencies, requiredLinuxLibraries, binary);
-    } else {
-      rejectDependencies(dependencies, requiredLinuxLibraries, binary);
-    }
-    const directDependencies = execFileSync('readelf', ['-d', binary], { encoding: 'utf8' });
-    rejectDynamicOpus(directDependencies, binary, /libopus\.so(?:\.\d+)?/i);
+    rejectBundledDependencies(dependencies, binary);
   }
 } else if (process.platform === 'darwin') {
   for (const binary of binaries) {
@@ -73,13 +51,7 @@ if (process.platform === 'linux') {
     if (!architecture.includes(process.arch === 'arm64' ? 'arm64' : 'x86_64')) {
       throw new Error(`Unexpected Mach-O architecture for ${binary}`);
     }
-    if (mustNotLinkFfmpeg.has(binary)) {
-      rejectDependencies(dependencies, requiredMacLibraries, binary);
-    } else {
-      rejectDependencies(dependencies, requiredMacLibraries, binary);
-    }
-
-    rejectDynamicOpus(dependencies, binary, /libopus(?:\.\d+)?\.dylib/i);
+    rejectBundledDependencies(dependencies, binary);
   }
 } else if (process.platform === 'win32') {
   for (const binary of binaries) {
@@ -93,31 +65,18 @@ if (process.platform === 'linux') {
     ) {
       throw new Error(`Unexpected PE architecture for ${binary}`);
     }
-    if (mustNotLinkFfmpeg.has(binary)) {
-      rejectDependencies(dependencies, requiredWindowsLibraries, binary);
-    } else {
-      rejectDependencies(dependencies, requiredWindowsLibraries, binary);
-    }
-    rejectDynamicOpus(dependencies, binary, /opus\.dll/i);
+    rejectBundledDependencies(dependencies, binary);
   }
 } else {
   throw new Error(`Native artifact inspection is not configured for ${process.platform}`);
 }
 
-function rejectDynamicOpus(output, binary, pattern) {
-  if (pattern.test(output)) {
-    throw new Error(
-      `${binary} unexpectedly depends on dynamically linked libopus; the addon bundles it`,
-    );
-  }
-}
-
-function rejectDependencies(output, names, binary) {
-  for (const name of names) {
-    if (output.toLowerCase().includes(name.toLowerCase())) {
-      throw new Error(
-        `${binary} unexpectedly links to ${name}; it must not require FFmpeg to load`,
-      );
-    }
+function rejectBundledDependencies(output, binary) {
+  if (
+    /(?:lib)?(?:avcodec|avformat|avutil|avfilter|swresample|swscale|avdevice|opus|ssl|crypto)[-.\d]*(?:\.so|\.dylib|\.dll)/i.test(
+      output,
+    )
+  ) {
+    throw new Error(`${binary} unexpectedly depends on an external media/TLS library:\n${output}`);
   }
 }

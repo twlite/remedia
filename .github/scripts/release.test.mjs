@@ -8,7 +8,6 @@ import { fileURLToPath } from 'node:url';
 import {
   assertPackedManifest,
   assertTarContents,
-  bootstrapFileName,
   packServerArchives,
   stageReleaseLicenses,
   detectRelease,
@@ -296,7 +295,6 @@ test('matches release server artifacts to the target-triple filenames staged by 
   writeFileSync(path.join(bindings, 'native.d.ts'), 'declarations');
   for (const target of RELEASE_TARGETS) {
     writeFileSync(path.join(bindings, 'node.' + target.suffix + '.node'), 'addon');
-    writeFileSync(path.join(bindings, 'bootstrap.' + target.suffix + '.node'), 'bootstrap');
     if (target.server !== false) {
       writeFileSync(
         path.join(servers, 'remedia-server-' + target.triple + (target.extension ?? '')),
@@ -359,19 +357,6 @@ test('matches release server artifacts to the target-triple filenames staged by 
       /Required verified release artifact/,
     );
     writeFileSync(path.join(bindings, 'node.' + addonOnlyTarget.suffix + '.node'), 'addon');
-
-    // Every platform package needs the FFmpeg-free bootstrap next to its engine addon.
-    for (const target of RELEASE_TARGETS) {
-      const bootstrap = path.join(bindings, 'bootstrap.' + target.suffix + '.node');
-      rmSync(bootstrap);
-      assert.throws(
-        () => verifyReleaseArtifacts(bindings, servers),
-        new RegExp('Required verified release artifact is missing: .*bootstrap\\.' + target.suffix),
-      );
-      writeFileSync(bootstrap, '');
-      assert.throws(() => verifyReleaseArtifacts(bindings, servers), /Release artifact is empty/);
-      writeFileSync(bootstrap, 'bootstrap');
-    }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -616,7 +601,6 @@ test('platform tarballs require all exact license files, including negative case
     const manifest = { name: '@remedia/node-darwin-arm64', main: 'node.darwin-arm64.node' };
     writeFileSync(path.join(fixture, 'package.json'), JSON.stringify(manifest));
     writeFileSync(path.join(fixture, manifest.main), 'packaging fixture, not a native binary');
-    writeFileSync(path.join(fixture, 'bootstrap.darwin-arm64.node'), 'packaging fixture');
     stageReleaseLicenses(fixture);
     manifest.version = '0.1.0-beta.1';
     writeFileSync(path.join(fixture, 'package.json'), JSON.stringify(manifest));
@@ -628,12 +612,6 @@ test('platform tarballs require all exact license files, including negative case
       return path.join(directory, 'remedia-node-darwin-arm64-' + manifest.version + '.tgz');
     };
     assertTarContents(pack(), manifest, 'platform');
-    rmSync(path.join(fixture, 'bootstrap.darwin-arm64.node'));
-    assert.throws(
-      () => assertTarContents(pack(), manifest, 'platform'),
-      /missing required file package\/bootstrap\.darwin-arm64\.node/,
-    );
-    writeFileSync(path.join(fixture, 'bootstrap.darwin-arm64.node'), 'packaging fixture');
     rmSync(path.join(fixture, 'THIRD_PARTY_NOTICES.md'));
     assert.throws(() => assertTarContents(pack(), manifest, 'platform'), /missing required file/);
     stageReleaseLicenses(fixture);
@@ -644,24 +622,64 @@ test('platform tarballs require all exact license files, including negative case
   }
 });
 
-test('derives the bootstrap file name from the engine addon file name', () => {
-  assert.equal(bootstrapFileName('node.linux-x64-gnu.node'), 'bootstrap.linux-x64-gnu.node');
-  assert.equal(bootstrapFileName('node.win32-x64-msvc.node'), 'bootstrap.win32-x64-msvc.node');
-  assert.throws(
-    () => bootstrapFileName('bootstrap.linux-x64-gnu.node'),
-    /Unexpected N-API engine addon name/,
-  );
+test('an existing npm version must match both hashes of the verified tarball', async () => {
+  const directory = temporaryDirectory();
+  try {
+    const tarball = path.join(directory, 'package.tgz');
+    writeFileSync(tarball, 'immutable tarball fixture');
+    const { fileHash } = await import('./release-network.mjs');
+    const metadata = {
+      name: '@remedia/node',
+      version: '1.0.0',
+      dist: {
+        integrity: 'sha512-' + (await fileHash(tarball, 'sha512', 'base64')),
+        shasum: await fileHash(tarball, 'sha1'),
+      },
+    };
+    const request = async () => new Response(JSON.stringify(metadata), { status: 200 });
+    assert.equal(await registryHasVersion(metadata.name, metadata.version, request, tarball), true);
+    metadata.dist.integrity = 'sha512-wrong';
+    await assert.rejects(
+      registryHasVersion(metadata.name, metadata.version, request, tarball),
+      /differs from verified tarball/,
+    );
+    metadata.dist.integrity = 'sha512-' + (await fileHash(tarball, 'sha512', 'base64'));
+    metadata.dist.shasum = 'wrong';
+    await assert.rejects(
+      registryHasVersion(metadata.name, metadata.version, request, tarball),
+      /differs from verified tarball/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
-test('the bootstrap napi config targets exactly the configured engine targets', () => {
-  const root = path.resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-  const engine = JSON.parse(
-    readFileSync(path.join(root, 'packages/remedia-node/package.json'), 'utf8'),
+test('npm verification tolerates propagation delays but fails closed after bounded checks', async () => {
+  const { verifyPublishedPackages } = await import('./release.mjs');
+  let calls = 0;
+  let waited = 0;
+  await verifyPublishedPackages([{ name: '@remedia/node', tarball: 'original.tgz' }], '1.0.0', {
+    check: async (name, version, _fetch, tarball) => {
+      assert.equal(name, '@remedia/node');
+      assert.equal(version, '1.0.0');
+      assert.equal(tarball, 'original.tgz');
+      return ++calls === 3;
+    },
+    wait: async () => {
+      waited++;
+    },
+  });
+  assert.equal(waited, 2);
+  calls = 0;
+  await assert.rejects(
+    verifyPublishedPackages([{ name: '@remedia/node', tarball: 'original.tgz' }], '1.0.0', {
+      check: async () => {
+        calls++;
+        return false;
+      },
+      wait: async () => {},
+    }),
+    /rerun failed jobs/,
   );
-  const bootstrap = JSON.parse(
-    readFileSync(path.join(root, 'packages/remedia-node/bootstrap/napi.json'), 'utf8'),
-  );
-
-  assert.deepEqual(bootstrap.targets, engine.napi.targets);
-  assert.equal(bootstrap.packageName, engine.napi.packageName);
+  assert.equal(calls, 9);
 });

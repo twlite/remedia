@@ -6,6 +6,11 @@ prefix="${FFMPEG_DIR:-$work/install}"
 mkdir -p "$work"
 fetch_source() {
   local name="$1" url="$2" revision="$3"
+  if [[ -n "${REMEDIA_SOURCE_DIR:-}" ]]; then
+    rm -rf "$work/$name"
+    node "$(dirname "$0")/source-checkout.mjs" "$name" "$work/$name"
+    return
+  fi
   if [[ ! -d "$work/$name/.git" ]]; then
     git init -q "$work/$name"
     git -C "$work/$name" remote add origin "$url"
@@ -14,9 +19,20 @@ fetch_source() {
   git -C "$work/$name" checkout -q --detach "$revision"
   test "$(git -C "$work/$name" rev-parse HEAD)" = "$revision"
   test -z "$(git -C "$work/$name" status --porcelain)"
+  git -C "$work/$name" clean -q -fdx
 }
+build_key="$(node "$(dirname "$0")/native-cache-key.mjs")"
+marker="$prefix/.remedia-native-key"
+if [[ -f "$marker" && "$(cat "$marker")" == "$build_key" && -f "$prefix/lib/libavcodec.a" ]]; then
+  node "$(dirname "$0")/audit-ffmpeg-config.mjs" "$prefix/share/remedia-build/config.mak"
+  echo "Using audited cached static dependencies at $prefix"
+  if [[ -n "${GITHUB_ENV:-}" ]]; then
+    printf 'REMEDIA_STATIC_FFMPEG_DIR=%s\nPKG_CONFIG_PATH=%s/lib/pkgconfig\n' "$prefix" "$prefix" >> "$GITHUB_ENV"
+  fi
+  exit 0
+fi
 fetch_source ffmpeg https://github.com/FFmpeg/FFmpeg.git 946fcce07b6dcd0331c8cc609192aeff5e1924f8
-export SOURCE_DATE_EPOCH="$(git -C "$work/ffmpeg" show -s --format=%ct HEAD)"
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$work/ffmpeg" show -s --format=%ct HEAD 2>/dev/null || printf 0)}"
 args=("--cc=${CC:-cc}" "--host-cc=${HOST_CC:-cc}" --prefix="$prefix" --enable-static --disable-shared --enable-gpl --enable-version3
   --disable-autodetect --disable-programs --disable-doc --disable-debug --enable-pic
   --enable-network --disable-avdevice --pkg-config-flags=--static)
@@ -35,6 +51,7 @@ node "$(dirname "$0")/audit-ffmpeg-config.mjs" "$work/ffmpeg/ffbuild/config.mak"
 mkdir -p "$prefix/share/remedia-build"
 cp "$work/ffmpeg/ffbuild/config.mak" "$work/ffmpeg/config.h" "$prefix/share/remedia-build/"
 printf '%s\n' "${args[@]}" > "$prefix/share/remedia-build/configure-arguments.txt"
+printf '%s\n' "$build_key" > "$marker"
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   printf 'REMEDIA_STATIC_FFMPEG_DIR=%s\nPKG_CONFIG_PATH=%s/lib/pkgconfig\n' "$prefix" "$prefix" >> "$GITHUB_ENV"
 fi

@@ -27,11 +27,20 @@ combined binaries are distributed under GPLv3-or-later obligations. Native npm
 packages declare `SEE LICENSE IN LICENSES.md`. Archives include LICENSES.md,
 COPYING.GPLv3, MIT and third-party acknowledgments.
 
-Every binary GitHub release supplies `corresponding-source.tar.gz`, containing the
-exact Remedia revision, vendored Rust dependencies, FFmpeg/native dependency sources,
-patches, build scripts and target configuration records. Redistributors must meet
-the applicable source and installation-information obligations. Notices and CI
-success alone do not establish legal compliance. Review [FFmpeg's licensing
-information](https://ffmpeg.org/legal.html) and the included GPL text.
+Complete corresponding source is retrieved using the exact binary version, as
+explained in `SOURCE_DISTRIBUTION.md` included with native npm packages; server archives carry retrieval directions in
+`LICENSES.md`. The binary release's `source-manifest.json` names the Remedia revision,
+hash-verified release source archive and target configurations, and a public,
+content-addressed dependency snapshot. Snapshot assets are hosted on this same
+repository's source-only GitHub releases and reused when inputs match. Both source
+parts are publicly available before npm publication; no upstream clone is required.
+The original v0.3.0 source archive remains unchanged.
+
+This implements equivalent network source access under GPLv3 §6(d). Source must
+remain available while the binaries are distributed. Redistributors must meet
+applicable source, notice and installation-information obligations. Automated
+checks do not establish legal compliance. See the
+[GPLv3 text](https://www.gnu.org/licenses/gpl-3.0.html) and
+[FFmpeg licensing information](https://ffmpeg.org/legal.html).
 
 See [bundled FFmpeg](/docs/node/ffmpeg-9) for diagnostics and target limitations.

@@ -14,7 +14,9 @@
     "THIRD_PARTY_NOTICES.md",
     "THIRD_PARTY_LICENSES.txt",
     "LICENSES.md",
-    "COPYING.GPLv3"
+    "COPYING.GPLv3",
+    "SOURCE_DISTRIBUTION.md",
+    "source-manifest.json"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -30,10 +32,8 @@
   },
   "scripts": {
     "build": "pnpm run build:native && pnpm run build:types",
-    "build:native": "napi build --platform --esm --js native.js --dts native.d.ts --release && pnpm run normalize:native && pnpm run build:bootstrap",
-    "build:native:debug": "napi build --platform --esm --js native.js --dts native.d.ts && pnpm run normalize:native && pnpm run build:bootstrap:debug",
-    "build:bootstrap": "node ../../.github/scripts/build-bootstrap.mjs",
-    "build:bootstrap:debug": "node ../../.github/scripts/build-bootstrap.mjs --debug",
+    "build:native": "napi build --platform --esm --js native.js --dts native.d.ts --release && pnpm run normalize:native",
+    "build:native:debug": "napi build --platform --esm --js native.js --dts native.d.ts && pnpm run normalize:native",
     "normalize:native": "node ../../.github/scripts/audit-static-ffmpeg.mjs",
     "build:types": "tsc -p tsconfig.json",
     "build:debug": "pnpm run build:native:debug && pnpm run build:types",

@@ -1,0 +1,659 @@
+{
+  "environment": {
+    "os": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "rust": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "ffmpeg_revision": "946fcce07b6dcd0331c8cc609192aeff5e1924f8",
+    "scope": "Local macOS ARM64; non-isolated host, cached native FFmpeg, separate empty Cargo target directories; no hosted after timings yet"
+  },
+  "profiles": [
+    {
+      "mode": "fat",
+      "cases": [
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "passthrough",
+          "repeat": 0,
+          "wall_seconds": 0.4691041670157574,
+          "cpu_seconds": 0.119179,
+          "peak_rss_bytes": 19316736,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "passthrough",
+          "repeat": 1,
+          "wall_seconds": 0.01904729101806879,
+          "cpu_seconds": 0.091848,
+          "peak_rss_bytes": 19824640,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "passthrough",
+          "repeat": 2,
+          "wall_seconds": 0.016037833003792912,
+          "cpu_seconds": 0.081843,
+          "peak_rss_bytes": 19791872,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "passthrough",
+          "repeat": 3,
+          "wall_seconds": 0.013707958976738155,
+          "cpu_seconds": 0.07310199999999999,
+          "peak_rss_bytes": 20611072,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "passthrough",
+          "repeat": 4,
+          "wall_seconds": 0.01338754198513925,
+          "cpu_seconds": 0.06981499999999999,
+          "peak_rss_bytes": 20578304,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "filter",
+          "repeat": 0,
+          "wall_seconds": 0.014535458001773804,
+          "cpu_seconds": 0.077068,
+          "peak_rss_bytes": 24248320,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "filter",
+          "repeat": 1,
+          "wall_seconds": 0.014700208965223283,
+          "cpu_seconds": 0.078057,
+          "peak_rss_bytes": 24477696,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "filter",
+          "repeat": 2,
+          "wall_seconds": 0.0158966250019148,
+          "cpu_seconds": 0.072531,
+          "peak_rss_bytes": 24035328,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "filter",
+          "repeat": 3,
+          "wall_seconds": 0.014215417031664401,
+          "cpu_seconds": 0.075044,
+          "peak_rss_bytes": 24068096,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "filter",
+          "repeat": 4,
+          "wall_seconds": 0.013992374995723367,
+          "cpu_seconds": 0.07512899999999999,
+          "peak_rss_bytes": 23576576,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "passthrough",
+          "repeat": 0,
+          "wall_seconds": 0.009523707965854555,
+          "cpu_seconds": 0.010263,
+          "peak_rss_bytes": 13959168,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "passthrough",
+          "repeat": 1,
+          "wall_seconds": 0.009317916992586106,
+          "cpu_seconds": 0.010021,
+          "peak_rss_bytes": 13942784,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "passthrough",
+          "repeat": 2,
+          "wall_seconds": 0.009370374958962202,
+          "cpu_seconds": 0.010106,
+          "peak_rss_bytes": 13877248,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "passthrough",
+          "repeat": 3,
+          "wall_seconds": 0.009091874992009252,
+          "cpu_seconds": 0.009819999999999999,
+          "peak_rss_bytes": 13975552,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "passthrough",
+          "repeat": 4,
+          "wall_seconds": 0.008798249997198582,
+          "cpu_seconds": 0.009609999999999999,
+          "peak_rss_bytes": 13975552,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "filter",
+          "repeat": 0,
+          "wall_seconds": 0.058143834001384676,
+          "cpu_seconds": 0.453657,
+          "peak_rss_bytes": 25952256,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "filter",
+          "repeat": 1,
+          "wall_seconds": 0.05819912505103275,
+          "cpu_seconds": 0.45391,
+          "peak_rss_bytes": 28377088,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "filter",
+          "repeat": 2,
+          "wall_seconds": 0.05886766698677093,
+          "cpu_seconds": 0.458015,
+          "peak_rss_bytes": 27770880,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "filter",
+          "repeat": 3,
+          "wall_seconds": 0.06063512503169477,
+          "cpu_seconds": 0.45545399999999997,
+          "peak_rss_bytes": 26689536,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "filter",
+          "repeat": 4,
+          "wall_seconds": 0.05998616601573303,
+          "cpu_seconds": 0.45791399999999993,
+          "peak_rss_bytes": 27639808,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        }
+      ],
+      "cold_build_seconds": 78.96206508303294,
+      "warm_build_seconds": 0.2984337499947287,
+      "sizes": {
+        "remedia-server": 4446400,
+        "remedia-server-runtime": 23638448,
+        "libnode.dylib": 22298000
+      }
+    },
+    {
+      "mode": "thin",
+      "cases": [
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "passthrough",
+          "repeat": 0,
+          "wall_seconds": 0.4828402499551885,
+          "cpu_seconds": 0.11945399999999999,
+          "peak_rss_bytes": 19775488,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "passthrough",
+          "repeat": 1,
+          "wall_seconds": 0.019580291002057493,
+          "cpu_seconds": 0.09082199999999999,
+          "peak_rss_bytes": 20332544,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "passthrough",
+          "repeat": 2,
+          "wall_seconds": 0.015396500006318092,
+          "cpu_seconds": 0.07824099999999999,
+          "peak_rss_bytes": 20758528,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "passthrough",
+          "repeat": 3,
+          "wall_seconds": 0.013682459015399218,
+          "cpu_seconds": 0.072373,
+          "peak_rss_bytes": 20594688,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "passthrough",
+          "repeat": 4,
+          "wall_seconds": 0.013093332992866635,
+          "cpu_seconds": 0.072532,
+          "peak_rss_bytes": 20250624,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "filter",
+          "repeat": 0,
+          "wall_seconds": 0.014768666005693376,
+          "cpu_seconds": 0.077484,
+          "peak_rss_bytes": 24100864,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "filter",
+          "repeat": 1,
+          "wall_seconds": 0.015372540976386517,
+          "cpu_seconds": 0.07387099999999999,
+          "peak_rss_bytes": 24510464,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "filter",
+          "repeat": 2,
+          "wall_seconds": 0.015021749946754426,
+          "cpu_seconds": 0.076764,
+          "peak_rss_bytes": 23953408,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "filter",
+          "repeat": 3,
+          "wall_seconds": 0.014943458023481071,
+          "cpu_seconds": 0.07555999999999999,
+          "peak_rss_bytes": 24494080,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "filter",
+          "repeat": 4,
+          "wall_seconds": 0.01488295802846551,
+          "cpu_seconds": 0.074373,
+          "peak_rss_bytes": 24068096,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "passthrough",
+          "repeat": 0,
+          "wall_seconds": 0.009571375034283847,
+          "cpu_seconds": 0.010246,
+          "peak_rss_bytes": 14155776,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "passthrough",
+          "repeat": 1,
+          "wall_seconds": 0.009341707977000624,
+          "cpu_seconds": 0.010154,
+          "peak_rss_bytes": 14139392,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "passthrough",
+          "repeat": 2,
+          "wall_seconds": 0.00953158299671486,
+          "cpu_seconds": 0.010247,
+          "peak_rss_bytes": 14106624,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "passthrough",
+          "repeat": 3,
+          "wall_seconds": 0.009044207981787622,
+          "cpu_seconds": 0.009831,
+          "peak_rss_bytes": 14155776,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "passthrough",
+          "repeat": 4,
+          "wall_seconds": 0.008848750032484531,
+          "cpu_seconds": 0.009862,
+          "peak_rss_bytes": 14073856,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "filter",
+          "repeat": 0,
+          "wall_seconds": 0.0576234589680098,
+          "cpu_seconds": 0.454236,
+          "peak_rss_bytes": 28409856,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "filter",
+          "repeat": 1,
+          "wall_seconds": 0.06250645802356303,
+          "cpu_seconds": 0.45132,
+          "peak_rss_bytes": 27475968,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "filter",
+          "repeat": 2,
+          "wall_seconds": 0.06098512501921505,
+          "cpu_seconds": 0.453278,
+          "peak_rss_bytes": 26820608,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "filter",
+          "repeat": 3,
+          "wall_seconds": 0.06250358402030542,
+          "cpu_seconds": 0.447042,
+          "peak_rss_bytes": 28295168,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "filter",
+          "repeat": 4,
+          "wall_seconds": 0.06952791701769456,
+          "cpu_seconds": 0.45492499999999997,
+          "peak_rss_bytes": 26329088,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        }
+      ],
+      "cold_build_seconds": 55.182584166992456,
+      "warm_build_seconds": 0.13538054196396843,
+      "sizes": {
+        "remedia-server": 6040224,
+        "remedia-server-runtime": 29192464,
+        "libnode.dylib": 27320288
+      }
+    },
+    {
+      "mode": "off",
+      "cases": [
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "passthrough",
+          "repeat": 0,
+          "wall_seconds": 0.4683366250246763,
+          "cpu_seconds": 0.12261299999999999,
+          "peak_rss_bytes": 20316160,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "passthrough",
+          "repeat": 1,
+          "wall_seconds": 0.020039416034705937,
+          "cpu_seconds": 0.092649,
+          "peak_rss_bytes": 20152320,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "passthrough",
+          "repeat": 2,
+          "wall_seconds": 0.01601620903238654,
+          "cpu_seconds": 0.079235,
+          "peak_rss_bytes": 20119552,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "passthrough",
+          "repeat": 3,
+          "wall_seconds": 0.0158935830113478,
+          "cpu_seconds": 0.07633,
+          "peak_rss_bytes": 20398080,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "passthrough",
+          "repeat": 4,
+          "wall_seconds": 0.014753874973393977,
+          "cpu_seconds": 0.07169199999999999,
+          "peak_rss_bytes": 19955712,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "filter",
+          "repeat": 0,
+          "wall_seconds": 0.0161185420001857,
+          "cpu_seconds": 0.081165,
+          "peak_rss_bytes": 24772608,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "filter",
+          "repeat": 1,
+          "wall_seconds": 0.01597287500044331,
+          "cpu_seconds": 0.078021,
+          "peak_rss_bytes": 23314432,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "filter",
+          "repeat": 2,
+          "wall_seconds": 0.01581599999917671,
+          "cpu_seconds": 0.08051,
+          "peak_rss_bytes": 24625152,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "filter",
+          "repeat": 3,
+          "wall_seconds": 0.016026708006393164,
+          "cpu_seconds": 0.07957299999999999,
+          "peak_rss_bytes": 24543232,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-tone.mp3",
+          "workload": "filter",
+          "repeat": 4,
+          "wall_seconds": 0.015713125001639128,
+          "cpu_seconds": 0.076012,
+          "peak_rss_bytes": 23773184,
+          "packets": 512,
+          "audio_seconds": 10.031333333333333
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "passthrough",
+          "repeat": 0,
+          "wall_seconds": 0.009518250008113682,
+          "cpu_seconds": 0.010374,
+          "peak_rss_bytes": 14123008,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "passthrough",
+          "repeat": 1,
+          "wall_seconds": 0.009099499962758273,
+          "cpu_seconds": 0.009987,
+          "peak_rss_bytes": 14090240,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "passthrough",
+          "repeat": 2,
+          "wall_seconds": 0.008904916991014034,
+          "cpu_seconds": 0.009644,
+          "peak_rss_bytes": 14172160,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "passthrough",
+          "repeat": 3,
+          "wall_seconds": 0.009741166955791414,
+          "cpu_seconds": 0.010428999999999999,
+          "peak_rss_bytes": 14139392,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "passthrough",
+          "repeat": 4,
+          "wall_seconds": 0.01129670802038163,
+          "cpu_seconds": 0.011902,
+          "peak_rss_bytes": 14172160,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "filter",
+          "repeat": 0,
+          "wall_seconds": 0.06102608295623213,
+          "cpu_seconds": 0.476976,
+          "peak_rss_bytes": 28278784,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "filter",
+          "repeat": 1,
+          "wall_seconds": 0.06317174999276176,
+          "cpu_seconds": 0.47717299999999996,
+          "peak_rss_bytes": 29114368,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "filter",
+          "repeat": 2,
+          "wall_seconds": 0.0643187909736298,
+          "cpu_seconds": 0.48340299999999997,
+          "peak_rss_bytes": 28540928,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "filter",
+          "repeat": 3,
+          "wall_seconds": 0.06357429100899026,
+          "cpu_seconds": 0.47901999999999995,
+          "peak_rss_bytes": 29179904,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        },
+        {
+          "fixture": "generated-opus-passthrough.ogg",
+          "workload": "filter",
+          "repeat": 4,
+          "wall_seconds": 0.06251254200469702,
+          "cpu_seconds": 0.480214,
+          "peak_rss_bytes": 29196288,
+          "packets": 3232,
+          "audio_seconds": 64.64
+        }
+      ],
+      "cold_build_seconds": 34.61177266598679,
+      "warm_build_seconds": 0.1426623750012368,
+      "sizes": {
+        "remedia-server": 6866608,
+        "remedia-server-runtime": 31864656,
+        "libnode.dylib": 29522656
+      }
+    }
+  ],
+  "native_cache": [
+    {
+      "label": "cold",
+      "seconds": 73.23481387499487
+    },
+    {
+      "label": "warm",
+      "seconds": 0.1528935829992406
+    }
+  ],
+  "source_snapshot_bytes": 119578611,
+  "v030_source_archive_bytes": 1965145303
+}

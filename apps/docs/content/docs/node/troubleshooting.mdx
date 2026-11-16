@@ -1,6 +1,6 @@
 ---
 title: Native library troubleshooting
-description: Diagnose FFmpeg discovery and native addon loading failures, and inspect which FFmpeg installation Remedia loaded.
+description: Diagnose platform addon loading failures and inspect bundled FFmpeg metadata.
 ---
 
 Official addons bundle FFmpeg. For import failures, confirm Node.js 22.18 or newer,
@@ -9,8 +9,8 @@ the CPU architecture and libc variant, and installation of the matching optional
 system FFmpeg or setting library search paths cannot repair a bundled addon.
 
 ```ts
-import { getFfmpegRuntime } from '@remedia/node';
-console.log(getFfmpegRuntime());
+import { getFFmpegRuntime } from '@remedia/node';
+console.log(getFFmpegRuntime());
 ```
 
 The report contains actual bundled versions, license and configuration. Include it

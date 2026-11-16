@@ -1,0 +1,26 @@
+[
+  {
+    "name": "ffmpeg",
+    "revision": "946fcce07b6dcd0331c8cc609192aeff5e1924f8",
+    "url": "https://codeload.github.com/ffmpeg/ffmpeg/tar.gz/n9.0.2",
+    "sha256": "6e374ed621e48faa40639307dff48ba6fe574a509977956d2cce9669b7cc27e9",
+    "sha512": "21bf3fbcdfd2f41ea6edeab40433fecfe362b09ecaa177a652471b54f9357011b4f74dab18245ab1c26f1a473b94205490baecb42289afd2effd603cd0b22b59",
+    "size": 17319950
+  },
+  {
+    "name": "openssl",
+    "revision": "7b371d80d959ec9ab4139d09d78e83c090de9779",
+    "url": "https://codeload.github.com/openssl/openssl/tar.gz/7b371d80d959ec9ab4139d09d78e83c090de9779",
+    "sha256": "0f844a233b8c4250c17aa9a3a26f7defd48aac35c66614c9a264ca461813e448",
+    "sha512": "4f63c0394689aea2465b4bf123853c6973c81b7d03a434107a6caab8ba7414625923e60247688b9a2ecd3844f293277891715615b5a61dc926adc1d0cdabf873",
+    "size": 55172363
+  },
+  {
+    "name": "vcpkg",
+    "revision": "14439b1e7cdaac4c6f466fee3deede319fcece8f",
+    "url": "https://codeload.github.com/microsoft/vcpkg/tar.gz/14439b1e7cdaac4c6f466fee3deede319fcece8f",
+    "sha256": "301eff5e89c1fe3aa35877990dbf925f2059a22021c667da82787253a4fdc345",
+    "sha512": "f274f70d8cde9c47259c869e0716ba7db2c526b44a4ca0cb49cb170e8ffe7ae23fa6a2df0f2a2be7645b1daeec50ad488acaa8080430a5e34fb045365546505b",
+    "size": 5488719
+  }
+]

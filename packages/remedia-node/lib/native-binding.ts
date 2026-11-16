@@ -14,8 +14,9 @@ export type NativeRemedia = NativeRemediaClass;
  *
  * @returns Bundled library versions, build configuration, license and Remedia identity.
  */
-export function getFfmpegRuntime(): FfmpegRuntimeInfo {
+export function getFFmpegRuntime(): FfmpegRuntimeInfo {
   const info = JSON.parse(binding.bundledFfmpegInfo()) as {
+    capabilities: FfmpegRuntimeInfo['capabilities'];
     version: string;
     license: string;
     configuration: string;

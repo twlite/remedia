@@ -38,8 +38,8 @@ function cleanEnvironment(home: string, extra: Record<string, string> = {}): Nod
 
 const script = `
 const [entry, fixture] = process.argv.slice(2);
-const { Remedia, getFfmpegRuntime } = await import(entry);
-const runtime = getFfmpegRuntime();
+const { Remedia, getFFmpegRuntime } = await import(entry);
+const runtime = getFFmpegRuntime();
 const remedia = await Remedia.create();
 const info = await remedia.probe({ file: fixture });
 const playback = remedia.createPlaybackSession();

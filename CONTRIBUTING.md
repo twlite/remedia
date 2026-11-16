@@ -6,7 +6,7 @@ follow the intended boundaries in [`docs/architecture.md`](docs/architecture.md)
 
 ## Native build prerequisites
 
-Use the pinned static recipes described above. Install a C compiler, make, NASM,
+Use the pinned static recipes described below. Install a C compiler, make, NASM,
 pkg-config, and libclang. Runtime users do not need these tools.
 
 ## Set up the repository
@@ -75,17 +75,18 @@ media libraries. Build scripts regenerate native.js and native.d.ts from Rust.
 
 ## CI change selection
 
-Every push to main or `fix/**` runs lightweight release and change detection, including empty
-commits. The remaining checks run only for workspace code, application documentation content,
+Every push to main and every relevant pull request runs release/change detection.
+Feature branches run through pull requests, avoiding duplicate push and PR matrices. The remaining checks run only for workspace code, application documentation content,
 build and release configuration, distributed license files, or a detected release. Ordinary
 README-only changes, contributor guides, and issue/PR templates skip those checks. Pull requests
 retain workflow path filters. Manual workflow dispatch runs all checks.
 
 Changes confined to `apps/docs`, `apps/discord`, shared npm lockfiles, or license texts run the
-JavaScript, packaging-test, and documentation checks without installing FFmpeg or running Rust
-checks, native build matrices, or native release packing. Rust crates, the Node and client packages
+JavaScript, packaging-test, and documentation checks without native build matrices or release packing. Rust documentation generation
+still requires cached static FFmpeg headers. Rust crates, the Node and client packages
 (which exercise native integration), native build recipes, workflow scripts, and shared build
-configuration enable the native checks. Detected release commits always enable all checks.
+configuration enable native checks. TypeScript-only integration changes omit additional
+cross builds; low-level and release changes retain every target. Detected release commits always enable all checks.
 Push comparisons cover the entire push; pull requests compare from the merge base. New feature
 branches compare with the default branch. Unavailable history falls back to full validation.
 Run `pnpm test:ci` to check this selection logic locally.
@@ -118,14 +119,14 @@ platform packages publish before @remedia/node, followed by @remedia/plugin-host
 
 A detected release first creates (or reuses) a GitHub draft and verifies that its immutable tag
 points to the release commit. After checks, native builds, and packaging pass, all 13 `.node`
-addons, five server executables, five server archives, and the three license/notice files are
-uploaded to that draft. Upload completeness, sizes, and available SHA-256 digests are verified
+addons, eight server executables, eight server archives, and license/source-distribution files are
+uploaded to that draft. Upload completeness, sizes, and SHA-256 digests are verified
 before npm publication starts. The final job waits for every npm package publish to succeed,
 rechecks the assets, and only then makes the GitHub release public. Prerelease versions remain
 marked as prereleases and are not promoted to GitHub's latest stable release.
 
-Failures before finalization leave the draft and tag in place for inspection or a rerun. Draft
-assets can be replaced on retries. A release that is already public is never changed back to a
+Failures before finalization leave the draft and tag in place for inspection or a rerun. Matching draft
+assets are preserved on retries; mismatched completed assets block publication. A release that is already public is never changed back to a
 draft or overwritten by a fresh full run; retrying only the final publication job is harmless.
 The npm registry and GitHub are separate systems: npm versions published before a later failure
 remain published. The existing exact-version checks allow a failed npm stage to resume.
@@ -142,12 +143,7 @@ For token-free releases, configure npm Trusted Publishing for each package the w
 - @remedia/plugin-host
 
 For every package, choose GitHub Actions with organization/user twlite, repository remedia, and
-workflow filename ci.yaml. Leave the environment unset and allow direct publishing. Alternatively,
-set the optional repository Actions secret `NPM_TOKEN` to a token with publish access to the release
-packages. The publish step configures token credentials only when the secret is present; otherwise
-it relies on OIDC Trusted Publishing. npm 11.21.0 can still prefer OIDC when Trusted Publishing is
-already configured; the optional token also supports publishing when OIDC is unavailable.
-The workflow uses a GitHub-hosted Node 24 runner and npm 11.21.0; only its publish job receives
+workflow filename ci.yaml. Leave the environment unset and allow direct publishing. The workflow uses a GitHub-hosted Node 24 runner and npm 11.21.0; only its publish job receives
 id-token: write, also used for provenance when publishing with a token. See npm's
 [trusted publisher setup guide](https://docs.npmjs.com/trusted-publishers/).
 `cargo test -p remedia-core` runs deterministic file, in-memory, streaming, and local-HTTP decoder tests. The
@@ -211,3 +207,39 @@ Package `prepack` scripts copy the root license and notices into each workspace 
 packer also stages them into every generated platform package, checks their exact tarball contents,
 and builds per-target server archives with all three files. Run `pnpm test:release`; the tarball tests build the
 TypeScript packages. These packaging checks do not replace dependency or legal review.
+
+## Cached native builds and corresponding source
+
+CI caches only compiled dependency prefixes and configuration records, keyed by
+actual tool versions, target and native recipe inputs. Windows vcpkg uses its pinned
+overlay in classic mode, avoiding an unnecessary full-history clone. Cache hits
+still run configuration, ABI, license and linked dependency checks. The release
+server and addon share an explicit target directory. Tests use the test profile;
+PR artifacts use the optimized no-LTO `ci` profile; releases retain fat LTO.
+See `.github/CI_AUDIT.md` for measured tradeoffs and unmeasured limits.
+
+`SOURCE_DISTRIBUTION.md` explains exact-version source retrieval and rebuilding.
+Dependency snapshots contain locked Cargo vendor sources and hash-verified native
+source archives, reused across releases. Small release-specific source/configuration
+archives become public before npm publishes. `source-manifest.json` records their
+identities, hashes and URLs. Never delete or replace a source asset while associated
+binaries are distributed. v0.3.0's assets are unchanged.
+
+Validate a changed source set locally without publishing:
+
+```sh
+node .github/scripts/corresponding-source.mjs snapshot /tmp/remedia-source-snapshot
+node .github/scripts/update-third-party-notices.mjs --check
+pnpm test:release
+```
+
+Use the resulting vendor and native directories for offline rebuilding as described
+in `SOURCE_DISTRIBUTION.md`. CI runs stronger source validation when source inputs
+change. Custom toolchain distributions and User Products may require additional
+notice/installation-information review; technical audits do not decide compliance.
+
+The installers use immutable `libexec/vVERSION` pairs and atomic current/previous
+pointers. Layout migration and cleanup never stop running processes. Tests cover
+legacy tmp/GUID paths, stale stages, pointer failures, cached rollback and process
+retention; native CI additionally launches the installed runtime from its final
+path. See the [installation guide](apps/docs/content/docs/server/installation.mdx).

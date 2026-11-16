@@ -372,8 +372,9 @@ fn update(no_ffmpeg: bool) -> Result<(), Box<dyn std::error::Error>> {
             .as_nanos(),
         extension
     ));
-    // Only execute the installer shipped with this binary. Old releases must be
-    // repaired explicitly using the current installer; never fetch mutable script text.
+    // Only execute the installer shipped with this binary, never mutable remote script text.
+    // Archives remain compatible with old installers; newer embedded installers migrate
+    // legacy version directories without replacing files used by running processes.
     let mut script = OpenOptions::new()
         .write(true)
         .create_new(true)

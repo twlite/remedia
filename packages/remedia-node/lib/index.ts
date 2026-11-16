@@ -13,15 +13,8 @@ export {
   VoiceSessionEvents,
 } from './lifecycle.js';
 export { Remedia, type ProbeOptions, type RemediaOptions } from './remedia.js';
-export { getFfmpegRuntime } from './native-binding.js';
-export { FfmpegLoadError } from './ffmpeg-runtime.js';
-export type {
-  FfmpegCandidateReport,
-  FfmpegFailureReason,
-  FfmpegLibraryInfo,
-  FfmpegRuntimeInfo,
-  FfmpegSource,
-} from './ffmpeg-runtime.js';
+export { getFFmpegRuntime } from './native-binding.js';
+export type { FfmpegLibraryInfo, FfmpegRuntimeInfo, FfmpegSource } from './ffmpeg-runtime.js';
 export type { MediaSource } from './input.js';
 export type {
   AudioStreamInfo,

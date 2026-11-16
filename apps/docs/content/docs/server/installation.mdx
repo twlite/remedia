@@ -26,6 +26,43 @@ copies LICENSE, LICENSES.md, COPYING.GPLv3 and third-party acknowledgments into
 GPLv3-or-later obligations. [Bundled FFmpeg](/docs/node/ffmpeg-9) explains the source
 archive and distribution model.
 
+## Version directories and updates
+
+A fresh installation uses `~/.remedia/libexec/vVERSION/` (or the chosen prefix),
+containing both `remedia-server` and `remedia-server-runtime` (`.exe` on Windows).
+The `bin` wrappers read `libexec/current.txt` once; the CLI launches the runtime
+beside its own executable. Both therefore resolve to one installed version.
+No executable path contains a staging or temporary suffix.
+
+The installer locks the prefix, downloads and verifies the archive, stages the
+complete pair and notices on the same filesystem, then renames that directory into
+place. It atomically updates `current.txt` only after staging succeeds. Repeating
+an installation verifies the cached pair's hashes and reuses it; it never overwrites
+those executables. A failed download, checksum, staging or activation keeps the
+previous pair active. Interrupted staging is cleaned by the next successful run;
+a complete inactive version can be reused without downloading again.
+
+One previous version is retained in `libexec/previous.txt`. To select a published
+version again, use the existing `REMEDIA_VERSION` option (or Windows `-Version`);
+there is no separate version manager. Configuration files are left in place.
+
+Legacy `vVERSION-tmp.*` Unix directories and Windows GUID directories migrate on
+the next installer run using this implementation. Future commands use the stable
+path while running processes continue using their original files. The old directory
+is retained for at least one invocation and while any process uses it; later installs
+clean idle obsolete directories. Unix uses optional `lsof` for conservative process
+inspection; Windows uses process executable paths. If inspection is unavailable or
+permission is denied, old files are retained. No playback process is stopped for
+migration. Finish those processes normally before expecting their files to be removed.
+A damaged or different fixed version is never replaced while active or possibly in use.
+
+Published v0.3.0 CLIs contain their old installer. Their first upgrade can still
+create a legacy directory; the updated CLI's next normal `remedia update` migrates
+it automatically, without a manual reinstall or server restart. Server archives
+keep the old entry allowlist so those embedded updaters can still install them.
+The new installers serialize concurrent runs with Windows file locking, Linux
+`flock` (util-linux/BusyBox), or macOS's built-in `lockf`.
+
 ## Platform selection
 
 The installer selects Linux x64/ARM64 GNU or musl by CPU and libc, macOS x64/ARM64,
@@ -68,3 +105,12 @@ Windows PowerShell 5.1. Existing configuration files are preserved.
 The installer needs GitHub access, tar, and curl (POSIX) or PowerShell (Windows).
 Inspect scripts before execution and pin trusted revisions for production.
 GitHub asset digests do not protect against a compromised release account.
+
+## Corresponding source instructions
+
+`licenses/LICENSES.md` contains version-specific source retrieval directions.
+The matching GitHub release provides `SOURCE_DISTRIBUTION.md` and
+`source-manifest.json` for releases after v0.3.0. They identify the exact source,
+shared dependency snapshot, hashes and rebuild steps. Server archives retain the
+entry layout accepted by older embedded updaters; v0.3.0's assets are unchanged.
+See [licensing](/docs/licensing).

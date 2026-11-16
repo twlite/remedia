@@ -1,7 +1,0 @@
-name: remedia-ffmpeg9-runtime
-channels:
-  - conda-forge
-channel_priority: strict
-dependencies:
-  - ffmpeg=9.0.2
-  - pkg-config=0.29.2

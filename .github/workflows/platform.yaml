@@ -53,10 +53,6 @@ jobs:
         run: node .github/scripts/release.mjs sync
       - name: Select the repository Rust toolchain
         run: rustup show active-toolchain
-      - uses: Swatinem/rust-cache@v2.9.3
-        with:
-          shared-key: ${{ inputs.target }}-ffmpeg9-static-gpl3
-          key: release-no-incremental-${{ hashFiles('.github/scripts/build-ffmpeg*.sh', '.github/native-deps/ffmpeg-audio-options.txt', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'crates/remedia-core/Cargo.toml', 'packages/remedia-node/Cargo.toml', '.github/native-deps/ffmpeg9.yml', '.github/native-deps/ffmpeg9-windows.yml') }}
       - name: Install Linux build tools
         if: inputs.os == 'linux'
         run: |
@@ -94,52 +90,30 @@ jobs:
         if: inputs.target == 'aarch64-pc-windows-msvc'
         shell: pwsh
         run: ./.github/scripts/install-windows-arm64-llvm.ps1
+      - name: Fingerprint native dependency inputs
+        id: native-key
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: node .github/scripts/native-cache-key.mjs
+      - uses: actions/cache/restore@v5
+        id: native-cache
+        with:
+          path: |
+            ${{ runner.temp }}/remedia-static/install
+            ${{ runner.temp }}/remedia-ffmpeg-${{ inputs.target }}
+            ${{ runner.temp }}/remedia-vcpkg/installed
+          key: ${{ steps.native-key.outputs.key }}
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: native-${{ steps.native-key.outputs.key }}-${{ hashFiles('.github/scripts/patch-ffmpeg-sys-vulkan.mjs') }}
+          shared-key: ${{ inputs.target }}-static-v2
+          cache-on-failure: true
       - name: Install pinned vcpkg and target-specific FFmpeg 9 (Windows)
         if: inputs.os == 'windows'
         shell: pwsh
         env:
           RUST_TARGET: ${{ inputs.target }}
-        run: |
-          $vcpkgRoot = Join-Path $env:RUNNER_TEMP 'remedia-vcpkg'
-          # vcpkg versioned ports resolve historical Git tree objects, which are
-          # unavailable in a depth=1 checkout even when the baseline commit exists.
-          git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
-          if ($LASTEXITCODE -ne 0) { throw 'vcpkg full clone failed' }
-          git -C $vcpkgRoot checkout --detach 14439b1e7cdaac4c6f466fee3deede319fcece8f
-          if ($LASTEXITCODE -ne 0) { throw 'vcpkg pinned checkout failed' }
-          & (Join-Path $vcpkgRoot 'bootstrap-vcpkg.bat') -disableMetrics
-          if ($LASTEXITCODE -ne 0) { throw 'vcpkg bootstrap failed' }
-
-          $portFile = Join-Path $vcpkgRoot 'ports/ffmpeg/portfile.cmake'
-          $audioOptions = (Get-Content (Join-Path $env:GITHUB_WORKSPACE '.github/native-deps/ffmpeg-audio-options.txt')) -join ' '
-          $port = Get-Content -Raw $portFile
-          $port = $port.Replace('set(OPTIONS "--enable-pic', ('set(OPTIONS "' + $audioOptions + ' --enable-pic'))
-          [IO.File]::WriteAllText($portFile, $port, [Text.UTF8Encoding]::new($false))
-          $triplet = if ($env:RUST_TARGET -eq 'i686-pc-windows-msvc') { 'x86-windows-static-md' } elseif ($env:RUST_TARGET -eq 'aarch64-pc-windows-msvc') { 'arm64-windows-static-md' } else { 'x64-windows-static-md' }
-          # vcpkg-rs 0.2.15 resolves metadata under VCPKG_ROOT/installed.
-          $installRoot = Join-Path $vcpkgRoot 'installed'
-          $manifestRoot = Join-Path $env:GITHUB_WORKSPACE '.github\native-deps\windows-cross'
-          $env:VCPKG_ROOT = $vcpkgRoot
-          $env:VCPKG_DEFAULT_TRIPLET = $triplet
-          Push-Location $manifestRoot
-          try {
-            & (Join-Path $vcpkgRoot 'vcpkg.exe') install --triplet $triplet --overlay-ports="$vcpkgRoot/ports" --x-install-root=$installRoot
-            if ($LASTEXITCODE -ne 0) { throw "vcpkg FFmpeg install failed for $triplet" }
-          } finally {
-            Pop-Location
-          }
-          "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
-          "VCPKG_INSTALL_ROOT=$installRoot" >> $env:GITHUB_ENV
-          "VCPKG_TARGET_TRIPLET=$triplet" >> $env:GITHUB_ENV
-          "VCPKGRS_TRIPLET=$triplet" >> $env:GITHUB_ENV
-          # Git for Windows also provides a link.exe (GNU coreutils). Pin
-          # Cargo's linker to MSVC instead of relying on PATH resolution.
-          $msvcTarget = if ($triplet -like 'x86-*') { 'x86' } elseif ($triplet -like 'arm64-*') { 'arm64' } else { 'x64' }
-          $msvcHost = if ($env:VSCMD_ARG_HOST_ARCH) { $env:VSCMD_ARG_HOST_ARCH } elseif ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
-          $msvcLinker = Join-Path $env:VCToolsInstallDir "bin/Host$msvcHost/$msvcTarget/link.exe"
-          if (!(Test-Path -LiteralPath $msvcLinker)) { throw "MSVC linker not found: $msvcLinker" }
-          $rustTriple = $env:RUST_TARGET.ToUpper().Replace('-', '_')
-          "CARGO_TARGET_${rustTriple}_LINKER=$msvcLinker" >> $env:GITHUB_ENV
+        run: ./.github/scripts/build-ffmpeg-windows.ps1
       - name: Configure Windows target FFmpeg and host libclang paths
         if: inputs.os == 'windows'
         shell: pwsh
@@ -164,6 +138,8 @@ jobs:
           "LIBCLANG_PATH=$libclangPath" >> $env:GITHUB_ENV
           "PATH=$(Join-Path $ffmpegRoot 'bin');$libclangPath;$env:PATH" >> $env:GITHUB_ENV
       - name: Build pinned static FFmpeg (POSIX)
+        env:
+          RUST_TARGET: ${{ inputs.target }}
         if: inputs.os != 'windows'
         shell: bash
         run: |
@@ -182,8 +158,6 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - name: Test the installers and macOS install-name rewriting
-        run: node --test .github/scripts/installer.test.mjs .github/scripts/normalize-macos-addon.test.mjs
       - name: Verify FFmpeg 9 native dependencies (Linux)
         if: inputs.os == 'linux'
         shell: bash
@@ -195,6 +169,14 @@ jobs:
         if: inputs.os == 'windows'
         shell: pwsh
         run: node .github/scripts/verify-native-deps.mjs --build
+      - uses: actions/cache/save@v5
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ${{ runner.temp }}/remedia-static/install
+            ${{ runner.temp }}/remedia-ffmpeg-${{ inputs.target }}
+            ${{ runner.temp }}/remedia-vcpkg/installed
+          key: ${{ steps.native-key.outputs.key }}
       - name: Verify the native Rust target (Linux)
         if: inputs.os == 'linux'
         shell: bash
@@ -221,59 +203,21 @@ jobs:
         run: |
           $rustHost = (rustc -vV | Select-String '^host: ').ToString().Substring(6)
           if ($rustHost -ne $env:RUST_TARGET) { throw "Expected $env:RUST_TARGET but found $rustHost" }
-      - name: Run Rust workspace tests in release profile
-        if: inputs.os == 'linux'
-        shell: bash
-        run: cargo test --workspace --release --locked
-      - name: Run Rust workspace tests in release profile (macOS and Windows)
-        if: inputs.os != 'linux'
-        run: cargo test --workspace --release --locked
+      - name: Run Rust workspace tests
+        run: cargo test --workspace --locked
       - name: Build standalone server
-        if: inputs.os == 'linux'
-        shell: bash
-        run: cargo build --release --locked -p remedia-server --bins
-      - name: Build standalone server (macOS)
-        if: inputs.os == 'macos'
-        shell: bash
-        run: cargo build --release --locked -p remedia-server --bins
-      - name: Build standalone server (Windows)
-        if: inputs.os == 'windows'
-        run: cargo build --release --locked -p remedia-server --bins
-      - name: Test installed Windows CLI self-updates in both PowerShell shells
-        if: inputs.os == 'windows'
-        shell: pwsh
+        run: cargo build --profile ${{ inputs.release_version != '' && 'release' || 'ci' }} --locked -p remedia-server --bins --target ${{ inputs.target }}
+      - name: Test installed native CLI paths and self-updates
         env:
-          REMEDIA_TEST_CLI: ${{ github.workspace }}\target\release\remedia-server.exe
+          REMEDIA_TEST_CLI: ${{ github.workspace }}/target/${{ inputs.target }}/${{ inputs.release_version != '' && 'release' || 'ci' }}/remedia-server${{ inputs.server_suffix }}
+          REMEDIA_TEST_RUNTIME: ${{ github.workspace }}/target/${{ inputs.target }}/${{ inputs.release_version != '' && 'release' || 'ci' }}/remedia-server-runtime${{ inputs.server_suffix }}
         run: node --test .github/scripts/installer.test.mjs
       - name: Build N-API addon
-        if: inputs.os == 'linux'
         working-directory: packages/remedia-node
-        shell: bash
-        env:
-          RUST_TARGET: ${{ inputs.target }}
-        run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target "$RUST_TARGET"
-      - name: Build N-API addon (macOS)
-        if: inputs.os == 'macos'
-        working-directory: packages/remedia-node
-        shell: bash
-        env:
-          RUST_TARGET: ${{ inputs.target }}
-        run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target "$RUST_TARGET"
-      - name: Build N-API addon (Windows)
-        if: inputs.os == 'windows'
-        working-directory: packages/remedia-node
-        shell: pwsh
-        env:
-          RUST_TARGET: ${{ inputs.target }}
-        run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target $env:RUST_TARGET
-      - name: Rewrite macOS FFmpeg install names to @rpath
+        run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --profile ${{ inputs.release_version != '' && 'release' || 'ci' }} --target ${{ inputs.target }}
+      - name: Audit static macOS linkage
         if: inputs.os == 'macos'
         run: node .github/scripts/audit-static-ffmpeg.mjs packages/remedia-node/node.*.node
-      - name: Build FFmpeg-free bootstrap addon
-        shell: bash
-        env:
-          RUST_TARGET: ${{ inputs.target }}
-        run: node .github/scripts/build-bootstrap.mjs --target "$RUST_TARGET"
       - name: Stage standalone server binary
         if: inputs.os != 'windows'
         shell: bash
@@ -282,8 +226,8 @@ jobs:
           SERVER_SUFFIX: ${{ inputs.server_suffix }}
         run: |
           mkdir -p "$RUNNER_TEMP/remedia-server"
-          cp "target/release/remedia-server$SERVER_SUFFIX" "$RUNNER_TEMP/remedia-server/remedia-server-$RUST_TARGET$SERVER_SUFFIX"
-          cp "target/release/remedia-server-runtime$SERVER_SUFFIX" "$RUNNER_TEMP/remedia-server/remedia-server-runtime-$RUST_TARGET$SERVER_SUFFIX"
+          cp "target/${{ inputs.target }}/${{ inputs.release_version != '' && 'release' || 'ci' }}/remedia-server$SERVER_SUFFIX" "$RUNNER_TEMP/remedia-server/remedia-server-$RUST_TARGET$SERVER_SUFFIX"
+          cp "target/${{ inputs.target }}/${{ inputs.release_version != '' && 'release' || 'ci' }}/remedia-server-runtime$SERVER_SUFFIX" "$RUNNER_TEMP/remedia-server/remedia-server-runtime-$RUST_TARGET$SERVER_SUFFIX"
       - name: Stage standalone server binary (Windows)
         if: inputs.os == 'windows'
         shell: pwsh
@@ -292,14 +236,13 @@ jobs:
           SERVER_SUFFIX: ${{ inputs.server_suffix }}
         run: |
           New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\remedia-server" | Out-Null
-          Copy-Item target\release\remedia-server.exe "$env:RUNNER_TEMP\remedia-server\remedia-server-$env:RUST_TARGET$env:SERVER_SUFFIX"
-          Copy-Item target\release\remedia-server-runtime.exe "$env:RUNNER_TEMP\remedia-server\remedia-server-runtime-$env:RUST_TARGET$env:SERVER_SUFFIX"
+          Copy-Item target\${{ inputs.target }}\${{ inputs.release_version != '' && 'release' || 'ci' }}\remedia-server.exe "$env:RUNNER_TEMP\remedia-server\remedia-server-$env:RUST_TARGET$env:SERVER_SUFFIX"
+          Copy-Item target\${{ inputs.target }}\${{ inputs.release_version != '' && 'release' || 'ci' }}\remedia-server-runtime.exe "$env:RUNNER_TEMP\remedia-server\remedia-server-runtime-$env:RUST_TARGET$env:SERVER_SUFFIX"
       - uses: actions/upload-artifact@v7
         with:
           name: bindings-${{ inputs.target }}
           path: |
             packages/remedia-node/node.*.node
-            packages/remedia-node/bootstrap.*.node
             packages/remedia-node/native.js
             packages/remedia-node/native.d.ts
           if-no-files-found: error
@@ -332,7 +275,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['22.18.0', '24', '26']
+        node: ${{ fromJSON(inputs.release_version != '' && '["22.18.0", "24", "26"]' || '["24"]') }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -383,6 +326,9 @@ jobs:
         run: node .github/scripts/verify-native-artifacts.mjs
       - run: pnpm --filter @remedia/node build:types
       - run: pnpm --filter @remedia/client build
+      - name: Test clean native npm installation
+        if: matrix.node == '24'
+        run: node .github/scripts/smoke-packed-package.mjs ${{ inputs.target }}
       - run: pnpm --filter @remedia/node test:bindings
       - run: pnpm --filter @remedia/client test
       - run: pnpm --filter @remedia/client test:hybrid
@@ -490,52 +436,33 @@ jobs:
         if: inputs.target == 'aarch64-pc-windows-msvc'
         shell: pwsh
         run: ./.github/scripts/install-windows-arm64-llvm.ps1
+      - name: Fingerprint native dependency inputs
+        if: inputs.os != 'freebsd'
+        id: native-key
+        env:
+          RUST_TARGET: ${{ inputs.target }}
+        run: node .github/scripts/native-cache-key.mjs
+      - uses: actions/cache/restore@v5
+        id: native-cache
+        if: inputs.os != 'freebsd'
+        with:
+          path: |
+            ${{ runner.temp }}/remedia-static/install
+            ${{ runner.temp }}/remedia-ffmpeg-${{ inputs.target }}
+            ${{ runner.temp }}/remedia-vcpkg/installed
+          key: ${{ steps.native-key.outputs.key }}
+      - uses: Swatinem/rust-cache@v2.9.3
+        if: inputs.os != 'freebsd'
+        with:
+          key: native-${{ steps.native-key.outputs.key }}-${{ hashFiles('.github/scripts/patch-ffmpeg-sys-vulkan.mjs') }}
+          shared-key: ${{ inputs.target }}-static-v2
+          cache-on-failure: true
       - name: Install pinned vcpkg and target-specific FFmpeg 9 (Windows)
         if: inputs.os == 'windows'
         shell: pwsh
         env:
           RUST_TARGET: ${{ inputs.target }}
-        run: |
-          $vcpkgRoot = Join-Path $env:RUNNER_TEMP 'remedia-vcpkg'
-          # vcpkg versioned ports resolve historical Git tree objects, which are
-          # unavailable in a depth=1 checkout even when the baseline commit exists.
-          git clone https://github.com/microsoft/vcpkg.git $vcpkgRoot
-          if ($LASTEXITCODE -ne 0) { throw 'vcpkg full clone failed' }
-          git -C $vcpkgRoot checkout --detach 14439b1e7cdaac4c6f466fee3deede319fcece8f
-          if ($LASTEXITCODE -ne 0) { throw 'vcpkg pinned checkout failed' }
-          & (Join-Path $vcpkgRoot 'bootstrap-vcpkg.bat') -disableMetrics
-          if ($LASTEXITCODE -ne 0) { throw 'vcpkg bootstrap failed' }
-
-          $portFile = Join-Path $vcpkgRoot 'ports/ffmpeg/portfile.cmake'
-          $audioOptions = (Get-Content (Join-Path $env:GITHUB_WORKSPACE '.github/native-deps/ffmpeg-audio-options.txt')) -join ' '
-          $port = Get-Content -Raw $portFile
-          $port = $port.Replace('set(OPTIONS "--enable-pic', ('set(OPTIONS "' + $audioOptions + ' --enable-pic'))
-          [IO.File]::WriteAllText($portFile, $port, [Text.UTF8Encoding]::new($false))
-          $triplet = if ($env:RUST_TARGET -eq 'i686-pc-windows-msvc') { 'x86-windows-static-md' } elseif ($env:RUST_TARGET -eq 'aarch64-pc-windows-msvc') { 'arm64-windows-static-md' } else { 'x64-windows-static-md' }
-          # vcpkg-rs 0.2.15 resolves metadata under VCPKG_ROOT/installed.
-          $installRoot = Join-Path $vcpkgRoot 'installed'
-          $manifestRoot = Join-Path $env:GITHUB_WORKSPACE '.github\native-deps\windows-cross'
-          $env:VCPKG_ROOT = $vcpkgRoot
-          $env:VCPKG_DEFAULT_TRIPLET = $triplet
-          Push-Location $manifestRoot
-          try {
-            & (Join-Path $vcpkgRoot 'vcpkg.exe') install --triplet $triplet --overlay-ports="$vcpkgRoot/ports" --x-install-root=$installRoot
-            if ($LASTEXITCODE -ne 0) { throw "vcpkg FFmpeg install failed for $triplet" }
-          } finally {
-            Pop-Location
-          }
-          "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
-          "VCPKG_INSTALL_ROOT=$installRoot" >> $env:GITHUB_ENV
-          "VCPKG_TARGET_TRIPLET=$triplet" >> $env:GITHUB_ENV
-          "VCPKGRS_TRIPLET=$triplet" >> $env:GITHUB_ENV
-          # Git for Windows also provides a link.exe (GNU coreutils). Pin
-          # Cargo's linker to MSVC instead of relying on PATH resolution.
-          $msvcTarget = if ($triplet -like 'x86-*') { 'x86' } elseif ($triplet -like 'arm64-*') { 'arm64' } else { 'x64' }
-          $msvcHost = if ($env:VSCMD_ARG_HOST_ARCH) { $env:VSCMD_ARG_HOST_ARCH } elseif ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
-          $msvcLinker = Join-Path $env:VCToolsInstallDir "bin/Host$msvcHost/$msvcTarget/link.exe"
-          if (!(Test-Path -LiteralPath $msvcLinker)) { throw "MSVC linker not found: $msvcLinker" }
-          $rustTriple = $env:RUST_TARGET.ToUpper().Replace('-', '_')
-          "CARGO_TARGET_${rustTriple}_LINKER=$msvcLinker" >> $env:GITHUB_ENV
+        run: ./.github/scripts/build-ffmpeg-windows.ps1
       - name: Configure Windows target FFmpeg and host libclang paths
         if: inputs.os == 'windows'
         shell: pwsh
@@ -585,10 +512,17 @@ jobs:
         env:
           RUST_TARGET: ${{ inputs.target }}
         run: bash .github/scripts/build-ffmpeg-cross.sh
-      - name: Verify target FFmpeg 9 development libraries (Linux and Android)
-        if: inputs.os == 'linux' || inputs.os == 'android'
-        shell: bash
+      - name: Verify target FFmpeg 9 development libraries
+        if: inputs.os != 'freebsd'
         run: node .github/scripts/verify-native-deps.mjs --build
+      - uses: actions/cache/save@v5
+        if: inputs.os != 'freebsd' && steps.native-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ${{ runner.temp }}/remedia-static/install
+            ${{ runner.temp }}/remedia-ffmpeg-${{ inputs.target }}
+            ${{ runner.temp }}/remedia-vcpkg/installed
+          key: ${{ steps.native-key.outputs.key }}
       - name: Patch ffmpeg-sys-next 9.0.1 Vulkan bindgen shim for 32-bit targets
         if: inputs.target == 'armv7-unknown-linux-gnueabihf' || inputs.target == 'armv7-linux-androideabi' || inputs.target == 'i686-pc-windows-msvc'
         shell: bash
@@ -606,8 +540,8 @@ jobs:
           RUST_TARGET: ${{ inputs.target }}
         run: |
           case "$RUST_TARGET" in
-            *-musl) pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target "$RUST_TARGET" --cross-compile ;;
-            *) pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target "$RUST_TARGET" ;;
+            *-musl) pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --profile ${{ inputs.release_version != '' && 'release' || 'ci' }} --target "$RUST_TARGET" --cross-compile ;;
+            *) pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --profile ${{ inputs.release_version != '' && 'release' || 'ci' }} --target "$RUST_TARGET" ;;
           esac
       - name: Build Android N-API addon for distribution
         if: inputs.os == 'android'
@@ -615,25 +549,14 @@ jobs:
         shell: bash
         env:
           RUST_TARGET: ${{ inputs.target }}
-        run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target "$RUST_TARGET"
-      - name: Verify target FFmpeg 9 development libraries (Windows)
-        if: inputs.os == 'windows'
-        shell: pwsh
-        run: node .github/scripts/verify-native-deps.mjs --build
-      - name: Investigate Windows x86 server compilation
-        continue-on-error: true
-        if: inputs.target == 'i686-pc-windows-msvc'
-        shell: pwsh
-        run: cargo build --release --locked -p remedia-server --bins --target $env:RUST_TARGET
-        env:
-          RUST_TARGET: ${{ inputs.target }}
+        run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --profile ${{ inputs.release_version != '' && 'release' || 'ci' }} --target "$RUST_TARGET"
       - name: Build Windows N-API addon for distribution
         if: inputs.os == 'windows'
         working-directory: packages/remedia-node
         shell: pwsh
         env:
           RUST_TARGET: ${{ inputs.target }}
-        run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --release --target $env:RUST_TARGET
+        run: pnpm exec napi build --platform --esm --js native.js --dts native.d.ts --profile ${{ inputs.release_version != '' && 'release' || 'ci' }} --target $env:RUST_TARGET
       - name: Build additional standalone Linux servers
         if: contains(inputs.target, 'musl')
         shell: bash
@@ -641,18 +564,13 @@ jobs:
           RUST_TARGET: ${{ inputs.target }}
         run: |
           case "$RUST_TARGET" in
-            *-musl) cargo zigbuild --release --locked -p remedia-server --bins --target "$RUST_TARGET" ;;
-            *) cargo build --release --locked -p remedia-server --bins --target "$RUST_TARGET" ;;
+            *-musl) cargo zigbuild --profile ${{ inputs.release_version != '' && 'release' || 'ci' }} --locked -p remedia-server --bins --target "$RUST_TARGET" ;;
+            *) cargo build --profile ${{ inputs.release_version != '' && 'release' || 'ci' }} --locked -p remedia-server --bins --target "$RUST_TARGET" ;;
           esac
           mkdir -p "$RUNNER_TEMP/additional-servers"
           for name in remedia-server remedia-server-runtime; do
-            cp "target/$RUST_TARGET/release/$name" "$RUNNER_TEMP/additional-servers/$name-$RUST_TARGET"
+            cp "target/$RUST_TARGET/${{ inputs.release_version != '' && 'release' || 'ci' }}/$name" "$RUNNER_TEMP/additional-servers/$name-$RUST_TARGET"
           done
-      - name: Investigate ARMv7 server compilation
-        if: inputs.target == 'armv7-unknown-linux-gnueabihf'
-        continue-on-error: true
-        shell: bash
-        run: cargo build --release --locked -p remedia-server --bins --target armv7-unknown-linux-gnueabihf
       - name: Verify musl server startup in a clean Alpine container
         if: contains(inputs.target, 'musl')
         shell: bash
@@ -676,16 +594,6 @@ jobs:
           name: server-${{ inputs.target }}
           path: ${{ runner.temp }}/additional-servers/*
           if-no-files-found: error
-      - name: Build FFmpeg-free bootstrap addon for distribution
-        if: inputs.os != 'freebsd'
-        shell: bash
-        env:
-          RUST_TARGET: ${{ inputs.target }}
-        run: |
-          case "$RUST_TARGET" in
-            *-musl) node .github/scripts/build-bootstrap.mjs --target "$RUST_TARGET" --cross-compile ;;
-            *) node .github/scripts/build-bootstrap.mjs --target "$RUST_TARGET" ;;
-          esac
       - name: Capture corresponding native dependency source
         if: inputs.os != 'freebsd'
         shell: bash
@@ -709,9 +617,13 @@ jobs:
           name: bindings-${{ inputs.target }}
           path: |
             packages/remedia-node/node.*.node
-            packages/remedia-node/bootstrap.*.node
           if-no-files-found: error
           retention-days: 7
+      - uses: actions/cache@v5
+        if: inputs.os == 'freebsd'
+        with:
+          path: .ci-freebsd-native/remedia-static/install
+          key: freebsd-15.1-native-v2-${{ hashFiles('.github/scripts/build-ffmpeg*', '.github/scripts/native-cache-key.mjs', '.github/scripts/source-checkout.mjs', '.github/native-deps/**', 'rust-toolchain.toml') }}
       - name: Start FreeBSD 15.1 native VM
         if: inputs.os == 'freebsd'
         uses: cross-platform-actions/action@v1.7.0
@@ -732,13 +644,12 @@ jobs:
         run: |
           set -euo pipefail
           sudo pkg update -f
-          sudo pkg install -y curl git node24 npm-node24 cmake pkgconf llvm19 gmake nasm
-          export RUNNER_TEMP="$HOME/remedia-build"
+          sudo pkg install -y curl git node24 npm-node24 cmake pkgconf llvm19 gmake nasm python3
+          export RUNNER_TEMP="$PWD/.ci-freebsd-native"
           export GITHUB_ENV="$RUNNER_TEMP/environment"
           mkdir -p "$RUNNER_TEMP"
           MAKE=gmake bash .github/scripts/build-ffmpeg-static.sh
           export PKG_CONFIG_PATH="$RUNNER_TEMP/remedia-static/install/lib/pkgconfig"
-          ffmpeg_source="$RUNNER_TEMP/remedia-static/ffmpeg"
           curl https://sh.rustup.rs -sSf --output rustup.sh
           sh rustup.sh -y --profile minimal --default-toolchain 1.99.1
           source "$HOME/.cargo/env"
@@ -751,17 +662,16 @@ jobs:
             node .github/scripts/release.mjs sync "$RELEASE_VERSION"
           fi
           pnpm install --frozen-lockfile
-          cargo test --workspace --release --locked
-          cargo build --release --locked -p remedia-server --bins
-          pnpm --filter @remedia/node exec napi build --platform --esm --js native.js --dts native.d.ts --release --target x86_64-unknown-freebsd
-          node .github/scripts/build-bootstrap.mjs --target x86_64-unknown-freebsd
-          node .github/scripts/audit-static-ffmpeg.mjs packages/remedia-node/node.freebsd-x64.node target/release/remedia-server target/release/remedia-server-runtime
+          cargo test --workspace --locked
+          cargo build --profile ${{ inputs.release_version != '' && 'release' || 'ci' }} --locked -p remedia-server --bins --target ${{ inputs.target }}
+          pnpm --filter @remedia/node exec napi build --platform --esm --js native.js --dts native.d.ts --profile ${{ inputs.release_version != '' && 'release' || 'ci' }} --target x86_64-unknown-freebsd
+          node .github/scripts/audit-static-ffmpeg.mjs packages/remedia-node/node.freebsd-x64.node target/${{ inputs.target }}/${{ inputs.release_version != '' && 'release' || 'ci' }}/remedia-server target/${{ inputs.target }}/${{ inputs.release_version != '' && 'release' || 'ci' }}/remedia-server-runtime
           pnpm --filter @remedia/node build:types
           pnpm --filter @remedia/client build
           pnpm --filter @remedia/node test:bindings
           pnpm --filter @remedia/client test
           pnpm --filter @remedia/client test:hybrid
-          REMEDIA_SERVER_BINARY="$PWD/target/release/remedia-server" pnpm --filter @remedia/client test:server
+          REMEDIA_SERVER_BINARY="$PWD/target/${{ inputs.target }}/${{ inputs.release_version != '' && 'release' || 'ci' }}/remedia-server" pnpm --filter @remedia/client test:server
           RUST_TARGET=x86_64-unknown-freebsd bash .github/scripts/capture-native-source.sh
           cp "$RUNNER_TEMP/native-source-x86_64-unknown-freebsd.tar.gz" .
       - name: Upload runtime-tested FreeBSD N-API release binding
@@ -771,7 +681,6 @@ jobs:
           name: bindings-${{ inputs.target }}
           path: |
             packages/remedia-node/node.freebsd-x64.node
-            packages/remedia-node/bootstrap.freebsd-x64.node
           if-no-files-found: error
           retention-days: 7
       - uses: actions/upload-artifact@v7

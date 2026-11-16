@@ -6,7 +6,7 @@ import test from 'node:test';
 import { finalizeRelease, prepareDraft, releaseAssets, uploadDraft } from './github-release.mjs';
 import { RELEASE_TARGETS } from './release.mjs';
 
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'remedia-github-release-'));
   const bindings = join(root, 'bindings');
   const servers = join(root, 'servers');
@@ -31,10 +31,12 @@ function fixture() {
     'THIRD_PARTY_LICENSES.txt',
     'LICENSES.md',
     'COPYING.GPLv3',
+    'SOURCE_DISTRIBUTION.md',
     'corresponding-source.tar.gz',
+    'source-manifest.json',
   ])
     writeFileSync(join(servers, name), 'notice fixture');
-  return { root, assets: releaseAssets(bindings, servers) };
+  return { root, assets: await releaseAssets(bindings, servers) };
 }
 
 function mockApi(assets, { draft = true, version = '1.0.0' } = {}) {
@@ -72,7 +74,7 @@ test('prepares a draft before any assets or npm publication, including prereleas
 });
 
 test('reuses failed-run drafts and refuses to demote an existing public release', async () => {
-  const existing = { id: 7, draft: true, tag_name: 'v1.0.0' };
+  const existing = { id: 7, draft: true, tag_name: 'v1.0.0', target_commitish: 'sha' };
   assert.equal(await prepareDraft('1.0.0', 'sha', async () => [existing]), existing);
   await assert.rejects(
     prepareDraft('1.0.0', 'sha', async () => [{ draft: false, tag_name: 'v1.0.0' }]),
@@ -86,53 +88,87 @@ test('reuses failed-run drafts and refuses to demote an existing public release'
   );
 });
 
-test('uploads every addon, server, archive, and notice while retaining the draft', async () => {
-  const { root, assets } = fixture();
+test('verified matching assets are skipped, including after publication', async () => {
+  const { root, assets } = await fixture();
   try {
-    assert.equal(assets.filter((asset) => asset.name.endsWith('.node')).length, 13);
-    assert.equal(assets.length, 35);
-    const mock = mockApi(assets, { version: '0.1.0-beta.1' });
-    let uploadedPaths;
-    await uploadDraft('0.1.0-beta.1', assets, {
-      request: mock.request,
-      upload: (tag, paths) => {
-        assert.equal(tag, 'v0.1.0-beta.1');
-        uploadedPaths = paths;
-      },
-    });
-    assert.deepEqual(
-      uploadedPaths,
-      assets.map((asset) => asset.path),
-    );
-    assert.ok(mock.calls.every((call) => call.options?.method !== 'PATCH'));
+    assert.equal(assets.length, 37);
+    for (const draft of [true, false]) {
+      const mock = mockApi(assets, { draft });
+      await uploadDraft('1.0.0', assets, {
+        request: mock.request,
+        upload: () => assert.fail('must not reupload'),
+      });
+      assert.ok(mock.calls.every((call) => !call.options?.method));
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('upload errors fail the stage and public releases never have assets overwritten', async () => {
-  const mock = mockApi([]);
-  await assert.rejects(
-    uploadDraft('1.0.0', [], {
+test('uploads only missing assets; reconciles a network failure after acceptance', async () => {
+  const { root, assets } = await fixture();
+  try {
+    const mock = mockApi(assets);
+    const missing = mock.uploaded.shift();
+    let calls = 0;
+    await uploadDraft('1.0.0', assets, {
       request: mock.request,
-      upload: () => {
-        throw new Error('upload failed');
+      wait: async () => {},
+      upload: (tag, paths) => {
+        calls++;
+        assert.equal(tag, 'v1.0.0');
+        assert.deepEqual(paths, [assets[0].path]);
+        mock.uploaded.push(missing);
+        throw new Error('socket closed after upload');
       },
-    }),
-    /upload failed/,
-  );
-  assert.equal(mock.calls.length, 1);
-  await assert.rejects(
-    uploadDraft('1.0.0', [], {
-      request: mockApi([], { draft: false }).request,
-      upload: () => assert.fail('must not upload'),
-    }),
-    /already public/,
-  );
+    });
+    assert.equal(calls, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('mismatched completed assets are never overwritten; upload failures are bounded', async () => {
+  const { root, assets } = await fixture();
+  try {
+    const corrupt = mockApi(assets);
+    corrupt.uploaded[0].digest = 'sha256:wrong';
+    await assert.rejects(
+      uploadDraft('1.0.0', assets, {
+        request: corrupt.request,
+        upload: () => assert.fail('must not overwrite'),
+      }),
+      /refusing to overwrite/,
+    );
+    const missing = mockApi(assets);
+    missing.uploaded.shift();
+    let calls = 0;
+    await assert.rejects(
+      uploadDraft('1.0.0', assets, {
+        request: missing.request,
+        wait: async () => {},
+        upload: () => {
+          calls++;
+          throw new Error('upload failed');
+        },
+      }),
+      /four attempts.*upload failed/,
+    );
+    assert.equal(calls, 4);
+    await assert.rejects(
+      uploadDraft('1.0.0', assets, {
+        request: mockApi([], { draft: false }).request,
+        upload: () => assert.fail('must not upload'),
+      }),
+      /already public/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('missing, partial, corrupt, or incomplete-manifest assets prevent publication', async () => {
-  const { root, assets } = fixture();
+  const { root, assets } = await fixture();
   try {
     for (const kind of ['missing', 'partial', 'size', 'digest', 'manifest']) {
       const mock = mockApi(assets);
@@ -152,7 +188,7 @@ test('missing, partial, corrupt, or incomplete-manifest assets prevent publicati
 });
 
 test('finalization selects release or prerelease only after verifying all uploaded assets', async () => {
-  const { root, assets } = fixture();
+  const { root, assets } = await fixture();
   try {
     for (const [version, prerelease] of [
       ['1.0.0', false],
@@ -174,7 +210,7 @@ test('finalization selects release or prerelease only after verifying all upload
 });
 
 test('finds existing unpublished drafts beyond the first page', async () => {
-  const draft = { id: 7, draft: true, tag_name: 'v1.0.0' };
+  const draft = { id: 7, draft: true, tag_name: 'v1.0.0', target_commitish: 'sha' };
   const calls = [];
   const result = await prepareDraft('1.0.0', 'sha', async (path) => {
     calls.push(path);

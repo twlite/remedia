@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -14,13 +15,17 @@ const original = '_Static_assert(sizeof(VkPhysicalDeviceFeatures2) == 240,';
 const corrected =
   '_Static_assert(sizeof(VkPhysicalDeviceFeatures2) == (sizeof(void *) == 8 ? 240 : 228),';
 
-if (!existsSync(registry)) {
+const vendorPath = join(process.cwd(), 'vendor', crate, headerName);
+
+if (!existsSync(registry) && !existsSync(vendorPath)) {
   throw new Error(`Cargo registry sources are unavailable: ${registry}`);
 }
 
-const matches = readdirSync(registry)
-  .map((root) => join(registry, root, crate, headerName))
-  .filter((path) => existsSync(path));
+const matches = existsSync(vendorPath)
+  ? [vendorPath]
+  : readdirSync(registry)
+      .map((root) => join(registry, root, crate, headerName))
+      .filter((path) => existsSync(path));
 
 if (matches.length !== 1) {
   throw new Error(`Expected one unpacked ${crate} Vulkan shim, found ${matches.length}`);
@@ -28,6 +33,10 @@ if (matches.length !== 1) {
 
 const path = matches[0];
 const content = readFileSync(path, 'utf8');
+if (content.includes(corrected)) {
+  console.log('Vulkan ABI assertion is already patched');
+  process.exit(0);
+}
 if (!content.includes(original)) {
   throw new Error(
     `The expected ${crate} Vulkan ABI assertion changed; inspect upstream before patching`,
@@ -35,4 +44,12 @@ if (!content.includes(original)) {
 }
 
 writeFileSync(path, content.replace(original, corrected));
+if (existsSync(vendorPath)) {
+  const checksumPath = join(process.cwd(), 'vendor', crate, '.cargo-checksum.json');
+  const checksum = JSON.parse(readFileSync(checksumPath, 'utf8'));
+  checksum.files[headerName.replaceAll('\\', '/')] = createHash('sha256')
+    .update(readFileSync(path))
+    .digest('hex');
+  writeFileSync(checksumPath, JSON.stringify(checksum));
+}
 console.log(`Adjusted ${crate} Vulkan ABI assertion for 32-bit bindgen`);

@@ -232,14 +232,45 @@ fn update_reuses_installer_version_check_and_infers_custom_prefix() {
 
     let root = temp_root();
     let libexec = root.join("libexec");
-    let version_dir = libexec.join("fixture");
+    let tag = format!("v{}", env!("REMEDIA_BUILD_VERSION"));
+    let version_dir = libexec.join(&tag);
     let fake_bin = root.join("fake-bin");
     fs::create_dir_all(&version_dir).unwrap();
     fs::create_dir_all(&fake_bin).unwrap();
     let executable = version_dir.join("remedia-server");
     fs::copy(env!("CARGO_BIN_EXE_remedia-server"), &executable).unwrap();
     fs::copy(&executable, version_dir.join("remedia-server-runtime")).unwrap();
-    fs::write(libexec.join("current.txt"), "fixture").unwrap();
+    fs::write(libexec.join("current.txt"), &tag).unwrap();
+    fs::write(version_dir.join("version.txt"), &tag).unwrap();
+    fs::write(version_dir.join("target.txt"), "x86_64-unknown-linux-gnu").unwrap();
+    let digest = Command::new("sh")
+        .args(["-c", "if command -v sha256sum >/dev/null; then sha256sum \"$1\"; elif command -v shasum >/dev/null; then shasum -a 256 \"$1\"; else sha256 -r \"$1\"; fi", "fixture"])
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(digest.status.success());
+    let digest = String::from_utf8(digest.stdout).unwrap();
+    let digest = digest.split_whitespace().next().unwrap();
+    for file in ["cli.sha256", "runtime.sha256"] {
+        fs::write(version_dir.join(file), digest).unwrap();
+    }
+    fs::create_dir(version_dir.join("licenses")).unwrap();
+    for file in [
+        "LICENSE",
+        "LICENSES.md",
+        "COPYING.GPLv3",
+        "THIRD_PARTY_NOTICES.md",
+        "THIRD_PARTY_LICENSES.txt",
+    ] {
+        fs::write(version_dir.join("licenses").join(file), "fixture notice").unwrap();
+    }
+    // FreeBSD is intentionally modelled as Linux below. Its native checksum tool
+    // provides the same bytes for the installer's shasum fallback.
+    if cfg!(target_os = "freebsd") {
+        let shasum = fake_bin.join("shasum");
+        fs::write(&shasum, "#!/bin/sh\nexec sha256 -r \"$3\"\n").unwrap();
+        fs::set_permissions(shasum, fs::Permissions::from_mode(0o755)).unwrap();
+    }
 
     // The installer publishes Linux/macOS server archives; Rust tests also run on
     // FreeBSD. Keep this installation fixture independent of the CI host's platform.
@@ -277,7 +308,7 @@ fn update_reuses_installer_version_check_and_infers_custom_prefix() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("already current"));
     assert_eq!(
         fs::read_to_string(libexec.join("current.txt")).unwrap(),
-        "fixture"
+        tag
     );
 
     // Unsupported hosts must still fail before release lookup or installation changes.
@@ -296,7 +327,7 @@ fn update_reuses_installer_version_check_and_infers_custom_prefix() {
     assert!(!String::from_utf8_lossy(&unsupported.stdout).contains("Checking GitHub releases"));
     assert_eq!(
         fs::read_to_string(libexec.join("current.txt")).unwrap(),
-        "fixture"
+        tag
     );
 
     fs::remove_dir_all(root).unwrap();

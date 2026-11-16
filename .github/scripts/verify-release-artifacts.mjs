@@ -10,12 +10,8 @@ if (!bindingsDirectory || !serversDirectory) {
 const artifacts = verifyReleaseArtifacts(bindingsDirectory, serversDirectory);
 for (const artifact of artifacts) {
   if (artifact.server) {
-    console.log(
-      `Verified ${artifact.triple}: ${artifact.addon}, ${artifact.bootstrap} and ${artifact.server}`,
-    );
+    console.log(`Verified ${artifact.triple}: ${artifact.addon} and ${artifact.server}`);
   } else {
-    console.log(
-      `Verified ${artifact.triple}: ${artifact.addon} and ${artifact.bootstrap} (N-API addon only)`,
-    );
+    console.log(`Verified ${artifact.triple}: ${artifact.addon} (N-API addon only)`);
   }
 }

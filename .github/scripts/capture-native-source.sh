@@ -1,38 +1,23 @@
 #!/usr/bin/env bash
+# Capture only target-specific generated configuration. Dependency trees are shared snapshots.
 set -euo pipefail
 target="${RUST_TARGET:?}"
-work_root="${RUNNER_TEMP:?RUNNER_TEMP must be set}"
-# Git Bash receives RUNNER_TEMP in Windows notation. Use MSYS paths for all
-# filesystem tools, especially GNU tar's -C arguments and archive destinations.
-if command -v cygpath >/dev/null 2>&1; then
-  work_root="$(cygpath -u "$work_root")"
-fi
+work_root="${RUNNER_TEMP:?}"
+if command -v cygpath >/dev/null 2>&1; then work_root="$(cygpath -u "$work_root")"; fi
+prefix="${REMEDIA_STATIC_FFMPEG_DIR:?}"
+if command -v cygpath >/dev/null 2>&1; then prefix="$(cygpath -u "$prefix")"; fi
 staging="$work_root/native-source-$target"
 mkdir -p "$staging"
-# Includes pinned source, license texts, generated configuration, and vcpkg patches.
+cp -R "$prefix/share/remedia-build/." "$staging/"
+rustc -vV > "$staging/rustc.txt"
 if [[ "$target" == *windows* ]]; then
-  config_file="$(find "$work_root/remedia-vcpkg/buildtrees/ffmpeg" -name config.h -print -quit)"
-  test -n "$config_file"
-  grep -q '^#define CONFIG_GPL 1' "$config_file"
-  grep -q '^#define CONFIG_VERSION3 1' "$config_file"
-  grep -q '^#define CONFIG_NONFREE 0' "$config_file"
-  if grep -Eq '^#define CONFIG_LIB[A-Z0-9_]+ 1$' "$config_file"; then
-    echo 'Unaudited external FFmpeg library enabled in Windows build' >&2
-    exit 1
-  fi
-  mkdir -p "$staging/vcpkg-source"
-  tar --exclude=.git --exclude=buildtrees --exclude=downloads --exclude=packages --exclude=installed -cf - -C "$work_root/remedia-vcpkg" . | tar -xf - -C "$staging/vcpkg-source"
-  cp -R "$work_root/remedia-vcpkg/ports/ffmpeg" "$staging/ffmpeg-port"
-  cp -R "$work_root/remedia-vcpkg/buildtrees/ffmpeg" "$staging/ffmpeg-build"
-  cp -R "$work_root/remedia-vcpkg/downloads" "$staging/downloads"
+  printf 'MSVC=%s\nWindowsSDK=%s\n' "${VCToolsVersion:-}" "${WindowsSDKVersion:-}" > "$staging/compiler.txt"
 else
-  for source in "$work_root/remedia-static/ffmpeg" "$work_root/remedia-static/openssl" "$work_root/remedia-ffmpeg-source-$target" "$work_root/remedia-ffmpeg-source-$target-openssl"; do
-    if [[ -d "$source" ]]; then
-      mkdir -p "$staging/$(basename "$source")"
-      # Exclude generated object archives, retain all source and build records.
-      tar --exclude=.git --exclude='*.o' --exclude='*.a' -cf - -C "$source" . | tar -xf - -C "$staging/$(basename "$source")"
-    fi
-  done
+  "${CC:-cc}" --version > "$staging/compiler.txt"
 fi
-find "$staging" -type f -print -quit | grep -q .
-tar -czf "$work_root/native-source-$target.tar.gz" -C "$staging" .
+# The config audit is also performed on cache hits by the dependency build recipe.
+test -s "$staging/config.h"
+test -s "$staging/config.mak"
+python=python3
+if ! command -v "$python" >/dev/null 2>&1; then python=python; fi
+"$python" "$(dirname "$0")/source-archive.py" "$staging" "$work_root/native-source-$target.tar.gz"

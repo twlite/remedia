@@ -1,12 +1,9 @@
 // Install the packed @remedia/node and its platform package into a clean project and use the
 // native engine from a fresh Node.js process with every FFmpeg loader variable unset.
 //
-// This exercises the layout npm users receive: the engine addon and the FFmpeg-free bootstrap
-// live only in `@remedia/node-<platform>`; nothing sits next to native.js.
+// The engine lives only in `@remedia/node-<platform>`; nothing sits next to native.js.
 //
 // Usage: smoke-packed-package.mjs <rust-target-triple | platform-suffix>
-//   REMEDIA_TEST_HOME           home directory containing the installer-managed ~/.remedia/ffmpeg9
-//   REMEDIA_EXPECT_FFMPEG_SOURCE  optional expected runtime source (managed, system, explicit)
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   existsSync,
@@ -21,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { RELEASE_TARGETS, bootstrapFileName } from './release.mjs';
+import { RELEASE_TARGETS, stageReleaseLicenses } from './release.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const nodePackage = join(root, 'packages/remedia-node');
@@ -38,16 +35,12 @@ if (!target)
 const suffix = target.suffix;
 
 const engine = `node.${suffix}.node`;
-const bootstrap = bootstrapFileName(engine);
 
-for (const file of [engine, bootstrap]) {
+for (const file of [engine]) {
   if (!existsSync(join(nodePackage, file))) throw new Error(`Missing built artifact: ${file}`);
 }
 
-const home = process.env.REMEDIA_TEST_HOME;
-
-if (!home)
-  throw new Error('REMEDIA_TEST_HOME must point at the home directory with ~/.remedia/ffmpeg9');
+const home = mkdtempSync(join(tmpdir(), 'remedia empty home '));
 
 // The path contains spaces on purpose; quoting mistakes show up as failures here.
 const work = mkdtempSync(join(tmpdir(), 'remedia smoke project '));
@@ -73,9 +66,17 @@ try {
     return join(tarballs, created[0]);
   };
 
-  // Mirror the release: the root package holds JavaScript only; the platform package holds both
-  // native files. Stage the platform package outside the workspace so pnpm treats it standalone.
+  // Mirror the release: the root package holds JavaScript only; the platform package holds the
+  // native file. Stage the platform package outside the workspace so pnpm treats it standalone.
   const platformDirectory = join(work, 'platform package');
+  const notices = [
+    'LICENSE',
+    'THIRD_PARTY_NOTICES.md',
+    'THIRD_PARTY_LICENSES.txt',
+    'LICENSES.md',
+    'COPYING.GPLv3',
+    'SOURCE_DISTRIBUTION.md',
+  ];
   const version = JSON.parse(readFileSync(join(nodePackage, 'package.json'), 'utf8')).version;
 
   mkdirSync(platformDirectory, { recursive: true });
@@ -85,14 +86,16 @@ try {
       name: `@remedia/node-${suffix}`,
       version,
       main: engine,
-      files: [engine, bootstrap],
+      license: 'SEE LICENSE IN LICENSES.md',
+      files: [engine, ...notices],
     }),
   );
 
-  for (const file of [engine, bootstrap]) {
+  for (const file of [engine]) {
     writeFileSync(join(platformDirectory, file), readFileSync(join(nodePackage, file)));
   }
 
+  stageReleaseLicenses(platformDirectory);
   const rootTarball = pack(nodePackage);
   const platformTarball = pack(platformDirectory);
 
@@ -119,9 +122,9 @@ try {
   writeFileSync(
     join(project, 'main.mjs'),
     `
-import { Remedia, getFfmpegRuntime } from '@remedia/node';
+import { Remedia, getFFmpegRuntime } from '@remedia/node';
 
-const runtime = getFfmpegRuntime();
+const runtime = getFFmpegRuntime();
 const remedia = await Remedia.create();
 const info = await remedia.probe({ file: process.argv[2] });
 const playback = remedia.createPlaybackSession();
@@ -173,7 +176,7 @@ console.log(JSON.stringify({
   if (report.libraries.length !== 5) throw new Error('Expected five loaded FFmpeg libraries');
   if (report.codec !== 'mp3') throw new Error(`Decoded unexpected codec ${report.codec}`);
 
-  const expected = process.env.REMEDIA_EXPECT_FFMPEG_SOURCE;
+  const expected = 'bundled';
 
   if (expected && report.source !== expected) {
     throw new Error(`Expected FFmpeg source ${expected}, got ${report.source}`);
@@ -184,4 +187,5 @@ console.log(JSON.stringify({
   );
 } finally {
   rmSync(work, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true });
 }
