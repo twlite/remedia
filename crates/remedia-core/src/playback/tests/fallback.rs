@@ -583,9 +583,18 @@ fn only_the_latest_of_rapid_consecutive_seeks_replaces_the_source() {
     let second = start_seek(&session, &gate, 14_000);
     assert!(wait_for_pending_seek(&session));
     consume(&gate, 1);
-    // The newer seek makes the older one obsolete straight away.
+    // Superseding does not require further output. Keep the finite playhead
+    // blocked while the old preparation is cancelled and its caller wakes.
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    while !first.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "the first seek was not superseded"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
     assert!(matches!(
-        pump_until(&gate, first),
+        first.join().expect("first seek thread joins"),
         Err(PlaybackError::SeekSuperseded)
     ));
 
@@ -593,7 +602,13 @@ fn only_the_latest_of_rapid_consecutive_seeks_replaces_the_source() {
         server.wait_for_connections(3),
         "the latest seek is preparing"
     );
+    assert!(gate.wait_for_calls(gate.snapshot().accepted.len() + 1));
     server.release();
+    // A slow runner must not pump six seconds of source time past the
+    // target before the replacement is ready, exhausting this 20-second track.
+    assert!(wait_for_condition(&session.shared, TEST_TIMEOUT, |data| {
+        data.fallback_signal
+    }));
     assert_applied(pump_until(&gate, second));
     consume(&gate, 5);
 
