@@ -21,6 +21,13 @@ the binary release also carries a copy. This is actual
 retained source, not an instruction to retrieve moving upstream branches. No login,
 fee, or binary download is required. Source assets have immutable names and are never overwritten. New release-specific
 archives are added to the source-only release for the matching dependency identity.
+Snapshot identity format v2 hashes Cargo.lock, Cargo manifests/configuration, the
+pinned Rust toolchain, native input/patch metadata, and the vendoring, filtering,
+patching and archive recipes. Changing these inputs selects a new source snapshot;
+archive bytes are verified separately by SHA-256. Keep the format version in sync
+with any output-affecting tool semantics not represented by those inputs.
+A retry reuses verified public dependencies and matching release-source assets;
+partial uploads are retried without overwriting completed mismatched assets.
 Source snapshots must remain available for as
 long as any associated binaries are distributed. Redistributors must retain them
 or provide equivalent source access, with these directions next to their binaries.

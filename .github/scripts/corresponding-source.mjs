@@ -23,12 +23,40 @@ import { authorizeRelease } from './release-authorization.mjs';
 const pinsFile = '.github/native-deps/source-inputs.json';
 const pins = JSON.parse(readFileSync(pinsFile, 'utf8'));
 
-export function snapshotIdentity() {
-  return createHash('sha256')
-    .update('remedia-dependencies-v1\0')
-    .update(readFileSync('Cargo.lock'))
-    .update(readFileSync(pinsFile))
-    .digest('hex');
+// v2 binds retained inputs to the recipes that select, transform and archive them.
+// The published asset has its own byte digest; this identity describes source compatibility.
+export function snapshotIdentity(root = process.cwd()) {
+  const files = execFileSync(
+    'git',
+    [
+      'ls-files',
+      '-z',
+      '--',
+      'Cargo.lock',
+      'Cargo.toml',
+      '**/Cargo.toml',
+      'rust-toolchain.toml',
+      '.cargo',
+      '.github/native-deps',
+      '.github/scripts/corresponding-source.mjs',
+      '.github/scripts/source-archive.py',
+      '.github/scripts/prepare-vendor.mjs',
+      '.github/scripts/source-checkout.mjs',
+      '.github/scripts/patch-ffmpeg*',
+      '.github/scripts/build-ffmpeg*',
+    ],
+    { cwd: root },
+  )
+    .toString()
+    .split('\0')
+    .filter(Boolean)
+    .sort();
+  const hash = createHash('sha256').update('remedia-dependencies-v2\0');
+  for (const file of files) {
+    const content = readFileSync(join(root, file));
+    hash.update(file).update('\0').update(String(content.length)).update('\0').update(content);
+  }
+  return hash.digest('hex');
 }
 
 export function verifySnapshot(release, assets, identity) {
@@ -139,7 +167,14 @@ async function findSnapshot(identity, request) {
 
 export async function ensureSnapshot(
   work,
-  { publish = false, request = api, inputDirectory } = {},
+  {
+    publish = false,
+    request = api,
+    inputDirectory,
+    authorize = authorizeRelease,
+    build = buildSnapshot,
+    upload = uploadAssets,
+  } = {},
 ) {
   const identity = snapshotIdentity();
   const existing = await findSnapshot(identity, request);
@@ -151,8 +186,8 @@ export async function ensureSnapshot(
       url: `https://github.com/twlite/remedia/releases/download/sources-${identity}/dependencies.tar.gz`,
       pending: true,
     };
-  await authorizeRelease();
-  const archive = await buildSnapshot(work, { inputDirectory });
+  await authorize();
+  const archive = await build(work, { inputDirectory });
   // Retry after an ambiguous POST failure by looking up the same tag, never making another release blindly.
   let release = existing?.release;
   if (!release) {
@@ -165,7 +200,7 @@ export async function ensureSnapshot(
           name: `Corresponding dependency sources ${identity.slice(0, 12)}`,
           draft: true,
           prerelease: true,
-          body: 'Retained corresponding dependency source for Remedia native binaries. Content identity covers Cargo.lock and source-inputs.json. Do not delete while any associated binary remains distributed. See SOURCE_DISTRIBUTION.md in each binary release.',
+          body: 'Retained corresponding dependency source for Remedia native binaries. Content identity covers pinned inputs, manifests, patches, vendoring and archive recipes (format v2). Do not delete while any associated binary remains distributed. See SOURCE_DISTRIBUTION.md in each binary release.',
         },
       });
     } catch (error) {
@@ -173,12 +208,12 @@ export async function ensureSnapshot(
       if (!release) throw error;
     }
   }
-  await uploadAssets(release, [archive], { request });
+  await upload(release, [archive], { request });
   const uploaded = (await listAssets(release, request)).find(
     (asset) => asset.name === archive.name,
   );
   if (!assetMatches(uploaded, archive)) throw new Error('Source publication digest mismatch');
-  await authorizeRelease();
+  await authorize();
   release = await request('/releases/' + release.id, {
     method: 'PATCH',
     body: { draft: false, prerelease: true, make_latest: 'false' },
@@ -189,7 +224,15 @@ export async function ensureSnapshot(
 export async function prepareSource(
   destination,
   staging,
-  { version, targetsDirectory, publish = false, request = api } = {},
+  {
+    version,
+    targetsDirectory,
+    publish = false,
+    request = api,
+    authorize = authorizeRelease,
+    build = buildSnapshot,
+    upload = uploadAssets,
+  } = {},
 ) {
   parseReleaseVersion(version);
   mkdirSync(destination, { recursive: true });
@@ -197,6 +240,9 @@ export async function prepareSource(
   const snapshot = await ensureSnapshot(resolve(staging, '../dependency-snapshot'), {
     publish,
     request,
+    authorize,
+    build,
+    upload,
   });
   execFileSync('git', ['archive', '--format=tar', '-o', join(staging, 'remedia.tar'), 'HEAD']);
   writeFileSync(join(staging, 'release.patch'), execFileSync('git', ['diff', '--binary', 'HEAD']));
@@ -240,11 +286,11 @@ export async function prepareSource(
   };
   if (publish) {
     const existing = await findSnapshot(snapshot.identity, request);
-    await authorizeRelease();
+    await authorize();
     // Append immutable release sources before npm publishes; the binary draft stays private.
     const sourcePath = resolve(staging, '..', manifest.releaseSource.name);
     cpSync(archive, sourcePath);
-    await uploadAssets(existing.release, [{ path: sourcePath, ...manifest.releaseSource }], {
+    await upload(existing.release, [{ path: sourcePath, ...manifest.releaseSource }], {
       request,
       allowPublished: true,
     });

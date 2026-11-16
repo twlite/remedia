@@ -31,7 +31,10 @@ Complete corresponding source is retrieved using the exact binary version, as
 explained in `SOURCE_DISTRIBUTION.md` included with native npm packages; server archives carry retrieval directions in
 `LICENSES.md`. The binary release's `source-manifest.json` names the Remedia revision,
 hash-verified release source archive and target configurations, and a public,
-content-addressed dependency snapshot. Snapshot assets are hosted on this same
+content-addressed dependency snapshot. Its versioned identity includes pinned inputs,
+Cargo manifests/configuration, the toolchain and source transformation/archive recipes,
+so changing these selects a new snapshot. Archive hashes verify the downloaded bytes.
+Publication retries reuse matching completed sources. Snapshot assets are hosted on this same
 repository's source-only GitHub releases and reused when inputs match. Both source
 parts are publicly available before npm publication; no upstream clone is required.
 The original v0.3.0 source archive remains unchanged.

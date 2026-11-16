@@ -215,6 +215,10 @@ test('TypeScript integration uses native checks without duplicating cross-platfo
   for (const path of [
     'Cargo.lock',
     '.github/native-deps/source-inputs.json',
+    'Cargo.toml',
+    'crates/remedia-core/Cargo.toml',
+    'rust-toolchain.toml',
+    '.cargo/config.toml',
     '.github/scripts/build-ffmpeg-static.sh',
     'SOURCE_DISTRIBUTION.md',
   ])

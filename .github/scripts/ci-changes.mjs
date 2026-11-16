@@ -94,6 +94,9 @@ export function needsSourceChecks(paths) {
   return paths.some(
     (path) =>
       path === 'Cargo.lock' ||
+      /(^|\/)Cargo\.toml$/.test(path) ||
+      path === 'rust-toolchain.toml' ||
+      path.startsWith('.cargo/') ||
       path === 'SOURCE_DISTRIBUTION.md' ||
       path.startsWith('.github/native-deps/') ||
       /(?:corresponding-source|source-checkout|prepare-vendor|source-archive|build-ffmpeg|patch-ffmpeg)/.test(
