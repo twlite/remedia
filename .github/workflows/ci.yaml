@@ -471,7 +471,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.recover_v030 == true
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      # GitHub hides unpublished drafts from tokens without push access.
+      contents: write
       actions: read
     steps:
       - uses: actions/checkout@v7.0.1
@@ -532,7 +533,7 @@ jobs:
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/remedia-publish.npmrc
         run: |
           printf 'registry=https://registry.npmjs.org/\n' > "$NPM_CONFIG_USERCONFIG"
-          node .github/scripts/release.mjs publish 0.3.0 latest "$RUNNER_TEMP/npm-release-packages/release-packages.json"
+          node .github/scripts/recover-v030.mjs publish "$RUNNER_TEMP/npm-release-packages/release-packages.json"
 
   recovery-v030-finalize:
     name: Recovery v0.3.0 - publish verified GitHub draft

@@ -39,7 +39,7 @@ test('pushes always reach detection and release jobs bypass path selection', () 
     const block = workflow.split('\n  ' + job + ':')[1]?.split(/\n  [a-z][\w-]*:/)[0];
     assert.ok(block, job);
     assert.match(
-      block,
+      block.replace(/if: \$\{\{ !inputs\.recover_v030 && \(([^\n]+)\) \}\}/, 'if: $1'),
       /if: needs\.release-detection\.outputs\.(checks|native) == 'true' \|\| needs\.release-detection\.outputs\.is_release == 'true'/,
       job,
     );
