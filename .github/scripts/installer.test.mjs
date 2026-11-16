@@ -786,6 +786,43 @@ if ($resolved.Count -ne 1 -or $resolved[0] -cne '/first/tar') { throw "Expected 
   assert.equal(result.status, 0, result.stdout + result.stderr);
 });
 
+test('PowerShell normalizes running executable paths before allowing version cleanup', (t) => {
+  if (spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).error)
+    return t.skip('pwsh unavailable');
+  const box = sandbox();
+  try {
+    const source = readFileSync(installPs1, 'utf8');
+    const start = source.indexOf('function Test-VersionInUse {');
+    const end = source.indexOf('function Remove-ObsoleteVersions {', start);
+    const directory = join(box.installDir, 'libexec/v0.3.0');
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, 'remedia-server-runtime.exe'), 'fixture');
+    const result = spawnSync(
+      'pwsh',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `$ErrorActionPreference = 'Stop'
+${source.slice(start, end)}
+function Get-CimInstance { [pscustomobject]@{ ExecutablePath = $script:executable } }
+$directory = '${directory}'
+$script:executable = (Split-Path $directory -Parent) + '/./v0.3.0/remedia-server-runtime.exe'
+if (!(Test-VersionInUse $directory)) { throw 'Equivalent process path must retain the version' }
+$script:executable = $directory + '-other/remedia-server-runtime.exe'
+if (Test-VersionInUse $directory) { throw 'A sibling version does not use this directory' }
+$script:executable = $null
+if (!(Test-VersionInUse $directory)) { throw 'Unknown process paths must retain the version' }`,
+      ],
+      { encoding: 'utf8' },
+    );
+
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  } finally {
+    box.cleanup();
+  }
+});
+
 test('PowerShell normalizes GUID paths, preserves busy versions, and resumes atomic activation', async (t) => {
   if (spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).error)
     return t.skip('pwsh unavailable');

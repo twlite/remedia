@@ -283,7 +283,10 @@ function Test-VersionInUse {
     $processes = @(Get-CimInstance Win32_Process -Filter "Name='remedia-server.exe' OR Name='remedia-server-runtime.exe'" -ErrorAction Stop)
     $prefix = [IO.Path]::GetFullPath($Directory).TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar
     foreach ($process in $processes) {
-      if (!$process.ExecutablePath -or $process.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+      if (!$process.ExecutablePath) { return $true }
+      # Normalize both sides: Windows process paths can use 8.3 names such as RUNNER~1.
+      $executable = [IO.Path]::GetFullPath($process.ExecutablePath)
+      if ($executable.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { return $true }
     }
     return $false
   } catch { return $true }
