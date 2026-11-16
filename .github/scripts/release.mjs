@@ -45,8 +45,8 @@ export const RELEASE_TARGETS = [
     os: 'win32',
     cpu: 'x64',
   },
-  // Additional publishable N-API targets. The standalone server release
-  // currently remains scoped to the five native runner targets above.
+  // Additional N-API targets opt into server releases only where explicitly
+  // enabled and covered by the platform workflow's runtime checks.
   {
     triple: 'x86_64-unknown-linux-musl',
     suffix: 'linux-x64-musl',

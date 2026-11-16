@@ -1,6 +1,6 @@
 ---
 title: Install the server
-description: One-command installation, FFmpeg 9 runtime provisioning, upgrades, and platform support.
+description: Self-contained server installation, upgrades, and platform support.
 ---
 
 Install the self-contained server and its license files:
@@ -30,10 +30,12 @@ archive and distribution model.
 
 The installer selects Linux x64/ARM64 GNU or musl by CPU and libc, macOS x64/ARM64,
 or Windows x64/ARM64 by native OS architecture (including an emulated shell).
-The release pipeline requires target tests before publishing. The newly added
-Windows ARM64 and musl candidates still need their first platform CI validation;
-build configuration alone does not establish support. Windows ARM64 requires
-Windows 11, matching the existing installer OS boundary.
+Windows ARM64 runs the native server and addon test matrix. Linux musl x64 and
+ARM64 run server startup and addon decoding checks in clean Alpine containers;
+these smoke checks provide narrower coverage than the GNU Linux test matrix.
+Windows ARM64 requires Windows 11, matching the existing installer OS boundary.
+Windows x86, Linux ARMv7 and FreeBSD servers remain outside the release target
+list even when their compilation probes succeed.
 
 ## Configure and verify
 

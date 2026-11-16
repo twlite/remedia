@@ -43,8 +43,11 @@ establish legal compliance.
 
 ## Target verification
 
-The existing 13 addon targets are retained. Cross-built targets retain their
-experimental status until native runtime validation succeeds. Build success alone
-does not establish Android, musl, Windows ARM64, ARMv7 or FreeBSD compatibility.
+The existing 13 addon targets are retained. Linux GNU, macOS and Windows x64/ARM64
+run the native test matrix on Node 22.18, 24 and 26. Linux musl x64/ARM64 load and
+decode in clean Alpine containers, and FreeBSD x64 runs native tests in a VM.
+Android, Linux ARMv7 and Windows x86 addons have build and linking checks but
+remain experimental until native runtime validation succeeds. The musl smoke
+checks provide narrower playback coverage than the full native test matrix.
 System C runtimes, OS frameworks and certificate stores may still be required;
 static FFmpeg linking does not mean every OS dependency is statically linked.
