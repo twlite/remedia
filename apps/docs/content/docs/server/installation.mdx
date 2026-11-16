@@ -1,145 +1,70 @@
 ---
 title: Install the server
-description: One-command installation, FFmpeg 9 runtime provisioning, upgrades, and platform support.
+description: Self-contained server installation, upgrades, and platform support.
 ---
 
-Install the standalone Rust WebSocket server from a published GitHub release. The installer checks the platform, verifies the release archive against its published SHA-256 digest, and provisions an isolated FFmpeg 9.0.2 runtime through conda-forge. Node.js and a Rust toolchain are not required.
-
-## Install modes
-
-| Mode                            | FFmpeg  | Server  | Use it for                                                                                  |
-| ------------------------------- | ------- | ------- | ------------------------------------------------------------------------------------------- |
-| Default                         | Install | Install | A host that runs `remedia-server`.                                                          |
-| `--ffmpeg-only` / `-FFmpegOnly` | Install | Skip    | A Node.js host that embeds `@remedia/node`. See [installing FFmpeg 9](/docs/node/ffmpeg-9). |
-| `--no-ffmpeg` / `-NoFFmpeg`     | Skip    | Install | A host that manages FFmpeg itself.                                                          |
-
-`--ffmpeg-only` never calls GitHub or downloads a server archive, creates no commands, wrappers or `bin`/`libexec` directories, leaves PATH and shell startup files alone, preserves an existing server installation, and can be repeated to update or re-verify FFmpeg. Combining it with `--no-ffmpeg` is rejected.
-
-Choose the mode by where audio is processed: **remote mode** needs FFmpeg on the `remedia-server` host (the default mode below does that), and a remote-only `@remedia/client` host needs nothing. **Embedded mode** needs FFmpeg on the Node.js host, and no server.
-
-## Windows (PowerShell)
-
-```powershell
-irm https://remedia.twlite.dev/install.ps1 | iex
-```
-
-`irm … | iex` cannot pass parameters. To use an option such as `-FFmpegOnly` or `-NoFFmpeg`, run the downloaded script text as a script block:
-
-```powershell
-# FFmpeg only (embedded @remedia/node): no server, no commands, no PATH change
-& ([scriptblock]::Create((irm https://remedia.twlite.dev/install.ps1))) -FFmpegOnly
-
-# Server only, managing FFmpeg yourself
-& ([scriptblock]::Create((irm https://remedia.twlite.dev/install.ps1))) -NoFFmpeg
-```
-
-`-InstallDir <path>` (or `REMEDIA_INSTALL_DIR`) selects another prefix. Paths with spaces are supported.
-
-Windows x64 (AMD64, including Intel and AMD processors) and Windows 11 ARM64 are supported. Both use the x64 MSVC server binaries, x64 micromamba, and `win-64` FFmpeg 9 libraries; Windows 11 ARM64 runs these through its built-in x64 emulation. Windows 10 ARM64 and 32-bit Windows are unsupported. The installer places command wrappers in `$HOME\.remedia\bin`, adds that directory to the user PATH (without admin rights), and updates the current PowerShell session PATH. It stores versioned executables separately, so a running server executable does not need to be overwritten. The PowerShell installer needs `tar` and access to GitHub, `micro.mamba.pm`, and conda-forge. It prefers Windows’ built-in `System32\tar.exe` when present, so Git’s GNU tar earlier on PATH cannot misinterpret drive-letter archive paths. Otherwise it uses `tar` from PATH.
-
-### Use a browser-downloaded archive
-
-If the GitHub release archive returns an HTTP 504 in PowerShell, the installer also tries GitHub's release-asset API. If both download routes fail but the release downloads in your browser, download the **Windows x64 `.tar.gz` archive** from [GitHub Releases](https://github.com/twlite/remedia/releases), not the standalone `.exe`, and run:
-
-```powershell
-$env:REMEDIA_ARCHIVE_PATH = "$HOME\Downloads\remedia-server-x86_64-pc-windows-msvc.tar.gz"
-irm https://remedia.twlite.dev/install.ps1 | iex
-Remove-Item Env:REMEDIA_ARCHIVE_PATH
-```
-
-The installer still retrieves release metadata and checks the local archive against GitHub's published SHA-256 digest before extraction. The archive must match the release selected by `REMEDIA_VERSION` (or the default latest release).
-
-## macOS and Linux
+Install the self-contained server and its license files:
 
 ```sh
 curl -fsSL https://remedia.twlite.dev/install.sh | sh
 ```
 
-To install only FFmpeg for an embedded `@remedia/node` application, pass `--ffmpeg-only` through `sh -s --`:
-
-```sh
-curl -fsSL https://remedia.twlite.dev/install.sh | sh -s -- --ffmpeg-only
+```powershell
+irm https://remedia.twlite.dev/install.ps1 | iex
 ```
 
-Supported standalone targets: macOS Intel / Apple Silicon and Linux glibc x64 / ARM64. The script requires `curl`, `tar`, and a SHA-256 tool (`sha256sum` or `shasum`). It places `remedia` and `remedia-server` launchers in `~/.remedia/bin`. On Linux, a glibc-compatible host is required. The install script does not support Alpine/musl or FreeBSD server binaries.
+The installer downloads a GitHub release archive, verifies its SHA-256 digest,
+and installs the CLI/runtime executable pair. No FFmpeg installation or library
+path configuration is needed. `--no-ffmpeg` and `-NoFFmpeg` remain accepted no-ops.
+Set `REMEDIA_INSTALL_DIR` to choose the prefix and `REMEDIA_VERSION` to pin a release.
+Windows also accepts `-InstallDir`, `-Version`, and `-ArchivePath` for a locally
+downloaded archive; its checksum is still verified against release metadata.
 
-### Commands and shell setup
+The installer creates `remedia` and `remedia-server` commands, updates PATH, and
+copies LICENSE, LICENSES.md, COPYING.GPLv3 and third-party acknowledgments into
+`licenses` alongside the installed executables. Native binaries are subject to
+GPLv3-or-later obligations. [Bundled FFmpeg](/docs/node/ffmpeg-9) explains the source
+archive and distribution model.
 
-On macOS/Linux, the installer adds the command directory to your shell startup file: `~/.zshrc` for zsh, `~/.bashrc` for bash, or `~/.profile` otherwise. Reinstalling does not duplicate the entry. Open a new terminal after running `curl | sh`, because the child installer process cannot change its parent shell's PATH. On Windows, the installer updates the user PATH and the current PowerShell session automatically. Then run:
+## Platform selection
+
+The installer selects Linux x64/ARM64 GNU or musl by CPU and libc, macOS x64/ARM64,
+or Windows x64/ARM64 by native OS architecture (including an emulated shell).
+Windows ARM64 runs the native server and addon test matrix. Linux musl x64 and
+ARM64 run server startup and addon decoding checks in clean Alpine containers;
+these smoke checks provide narrower coverage than the GNU Linux test matrix.
+Windows ARM64 requires Windows 11, matching the existing installer OS boundary.
+Windows x86, Linux ARMv7 and FreeBSD servers remain outside the release target
+list even when their compilation probes succeed.
+
+## Configure and verify
 
 ```sh
+remedia --generate-config-file ./remedia.config.json
 remedia --version
-remedia --help
-remedia serve --config ./remedia.config.json
-```
-
-Without a subcommand, `remedia` starts the server using `./remedia.config.json`. See [configuration](/docs/server/configuration) to create the config and supply secrets. The installers do **not** start a system service or open network ports.
-
-The archive contains two executables: `remedia-server`, a FFmpeg-independent administrative CLI, and `remedia-server-runtime`, which loads FFmpeg 9 only when you start the server or perform a native diagnostic. The installers deploy both executables together. The command wrappers in `~/.remedia/bin` point to the lightweight CLI.
-
-You can run `remedia-server --help`, `--version`, `--generate-config-file`, `--list`, and `update` without FFmpeg libraries. Server playback still requires the FFmpeg 9 shared libraries.
-
-Prefer a container? See [Run the server in Docker](/docs/server/docker): it reuses this installer and the same FFmpeg 9 verification inside an image.
-
-## FFmpeg 9 runtime
-
-Remedia uses FFmpeg's shared libraries, not an `ffmpeg` executable subprocess. For these installers, the FFmpeg 9.0.2 libraries and their runtime dependencies are installed into `~/.remedia/ffmpeg9`, outside the system library directories. The launchers configure the corresponding runtime search paths for each process.
-
-The required ABI majors are `libavcodec 63`, `libavformat 63`, `libavutil 61`, `libavfilter 12`, and `libswresample 7`. The installer verifies all five files and reports the install directory, and does not replace your system FFmpeg. The same `~/.remedia/ffmpeg9` prefix is found automatically by embedded `@remedia/node` applications, so one installation can serve both the server launcher and Node.js. Review [FFmpeg ABI requirements](/docs/node/ffmpeg-9) for details.
-
-To manage FFmpeg yourself, download and review the script before running it, then pass `--no-ffmpeg` (Unix) or `-NoFFmpeg` (PowerShell, using the script-block form above). The corresponding library loader paths must still be configured in the launching environment of `remedia-server`.
-
-## First-run configuration and diagnostics
-
-After installation, generate a minimal configuration with secure local credentials:
-
-```sh
-remedia init
 remedia doctor --config ./remedia.config.json
 remedia serve --config ./remedia.config.json
 ```
 
-A generated file binds only to loopback and does not allow remote URLs or
-local file playback until explicitly configured. A random password is stored in `auth.password`;
-the username defaults to `remedia`. The CLI never prints credentials or overwrites an existing file.
-
-`remedia-server --list` shows running servers from the same operating-system
-user with their listener address, port, player counts, connections, memory (where
-available), and health. `--list --json` emits machine-readable snapshots.
-See the [CLI reference](/docs/server/cli) for flags, precedence, and diagnostics.
+Doctor reports the bundled FFmpeg version, license, configure flags and library
+ABI capabilities, then validates environment files, configuration and plugin hosts.
+See the [CLI reference](/docs/server/cli) for configuration and environment flags.
 
 ## Update or upgrade
 
 ```sh
 remedia update
-# Alias
 remedia upgrade
 ```
 
-Both commands select the latest stable release, or the newest published prerelease if no stable release exists, using the installer embedded in your currently installed server. If the full installed version matches, they print “already current” and exit successfully before downloading artifacts or changing the installation. Otherwise, they verify the archive checksum and stage the new binary pair before switching the active version. Download, verification or staging failures leave the previous pair active. An update restarts neither the running process nor a service manager. Restart your server after updating. Active playback sessions do not survive the restart.
+Both commands run the installer embedded in the current executable. They resolve
+the latest stable release, falling back to a prerelease when none exists. Identical
+full versions are skipped. Downloads and checksum failures leave the active binary
+pair in place. Versions are staged separately before an atomic pointer switch;
+a running instance continues until restarted. Restart after updating; playback
+sessions do not survive a restart. Windows prefers PowerShell 7 and falls back to
+Windows PowerShell 5.1. Existing configuration files are preserved.
 
-If you manage FFmpeg independently, use `remedia update --no-ffmpeg`. `REMEDIA_INSTALL_DIR` and `REMEDIA_VERSION` can be supplied to the installers to select another install directory or release tag. Set `REMEDIA_VERSION` before running `remedia update` to select an explicit release.
-
-Installers keep versioned binary pairs and switch them through an atomic pointer file. A running instance continues using its previous binary until restarted. Updates infer the installation prefix from the executable unless `REMEDIA_INSTALL_DIR` is set. Windows supports Windows PowerShell 5.1 and PowerShell 7+, including direct GitHub downloads and release-asset API fallback. Each update prefers `pwsh` when available, falling back to `powershell.exe`, independently of the shell used to install. Errors from the installer are printed directly. Server updates reuse verified existing FFmpeg libraries so they do not modify DLLs in use; use `-FFmpegOnly` explicitly to repair or update dependencies. Stop running servers before repairing dependencies.
-
-### Recover an older Windows installation
-
-Older binaries run their own build-time installer, so they cannot pick up installer fixes from the website. If `remedia update` fails with a `System.Net.Http` assembly error, or rejects Windows 11 ARM64, run the current installer explicitly in PowerShell 5.1 or PowerShell 7:
-
-```powershell
-# Required by Windows PowerShell 5.1 before the initial HTTPS request
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-& ([scriptblock]::Create((irm https://remedia.twlite.dev/install.ps1))) -InstallDir 'C:\Tools\Remedia' -NoFFmpeg
-```
-
-Replace the example directory with your existing installation prefix. Omit `-NoFFmpeg` if the installer should provision dependencies. Set `$env:REMEDIA_VERSION` to a release tag to switch versions; otherwise the installer selects the latest release. Restart the server after installing. If that release is already installed, the installer exits without replacing it; select a newer fixed release when available.
-
-The CLI continues using its embedded installer rather than downloading and executing mutable remote scripts. Recovery is an explicit execution of the current installer under the same trust model as initial installation; you can download and review it first or pin it to a trusted commit. Archive SHA-256 verification remains enabled.
-
-## Security and troubleshooting
-
-The commands above execute a remote installation script. For production hosts, inspect the script first and pin the script to a trusted commit. Downloaded server archives are checked using GitHub's published SHA-256 asset digest. However, this is not an independent signature or protection against a compromised GitHub release.
-
-FFmpeg is downloaded from conda-forge using micromamba. Make sure your environment permits those downloads. Running the installer without `--no-ffmpeg` (including `--ffmpeg-only`) requires the external package index. It is not fully offline or reproducible without a separately pinned conda package lock.
-
-For failures, check the executable with `remedia --version`, inspect its shared dependencies with `ldd` (Linux) or `otool -L` (macOS), and confirm your configuration exists. See [server deployment](/docs/server/deployment) for TLS, routing, and service operation.
+The installer needs GitHub access, tar, and curl (POSIX) or PowerShell (Windows).
+Inspect scripts before execution and pin trusted revisions for production.
+GitHub asset digests do not protect against a compromised release account.

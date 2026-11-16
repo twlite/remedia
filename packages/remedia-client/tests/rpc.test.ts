@@ -35,19 +35,27 @@ describe('bounded WebSocket RPC', () => {
     node = await FakeServerNode.listen({ id: 'rpc-cancel' });
     socket = connect(node.url);
     await once(socket, 'open');
-    rpc = makeRpc(socket, 25);
+    rpc = makeRpc(socket);
 
-    await expect(rpc.request('test.delay', { delayMs: 80 })).rejects.toMatchObject({
+    await expect(
+      rpc.request('test.delay', { delayMs: 80 }, { timeoutMs: 25 }),
+    ).rejects.toMatchObject({
       code: 'request_timeout',
     });
+    expect(rpc.pendingCount).toBe(0);
+
     const controller = new AbortController();
     const aborted = rpc.request('test.delay', { delayMs: 80 }, { signal: controller.signal });
     controller.abort();
     await expect(aborted).rejects.toMatchObject({ name: 'AbortError' });
+    expect(rpc.pendingCount).toBe(0);
+
     await new Promise((resolve) => setTimeout(resolve, 100));
-    await expect(rpc.request('test.delay', { delayMs: 0, value: 'still alive' })).resolves.toEqual({
-      value: 'still alive',
-    });
+
+    // Recovery uses the normal request budget, even when its response takes
+    // longer than the intentionally short timeout exercised above.
+    const recovered = rpc.request('test.delay', { delayMs: 50, value: 'still alive' });
+    await expect(recovered).resolves.toEqual({ value: 'still alive' });
     expect(rpc.pendingCount).toBe(0);
   });
 

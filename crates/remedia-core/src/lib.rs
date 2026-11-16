@@ -61,3 +61,79 @@ pub fn ffmpeg_runtime_versions() -> [(&'static str, u32); 5] {
         ]
     }
 }
+
+/// Build identity reported by the linked FFmpeg itself (not a build-time assumption).
+///
+/// Returns the release version, license and configure command. All strings are owned;
+/// this function is side-effect-free and does not initialize playback.
+pub fn ffmpeg_build_info() -> (String, String, String) {
+    // SAFETY: FFmpeg returns non-null, immutable, process-lifetime C strings.
+    unsafe {
+        let string = |pointer| {
+            std::ffi::CStr::from_ptr(pointer)
+                .to_string_lossy()
+                .into_owned()
+        };
+        (
+            string(ffmpeg_next::ffi::av_version_info()),
+            string(ffmpeg_next::ffi::avutil_license()),
+            string(ffmpeg_next::ffi::avutil_configuration()),
+        )
+    }
+}
+
+/// Enumerate bundled audio decoders, filters and input protocols.
+///
+/// The returned names describe the actual linked build, not an assumed feature list.
+/// Enumeration does not open media or allocate playback resources.
+pub fn ffmpeg_capabilities() -> (Vec<String>, Vec<String>, Vec<String>) {
+    let mut decoders = Vec::new();
+    let mut filters = Vec::new();
+    let mut protocols = Vec::new();
+    // SAFETY: FFmpeg's iteration APIs return immutable process-lifetime descriptors.
+    // Each iterator owns a separate opaque cursor initialized to null. Descriptor names
+    // are valid NUL-terminated strings and are copied before returning.
+    unsafe {
+        let mut cursor = std::ptr::null_mut();
+        loop {
+            let codec = ffmpeg_next::ffi::av_codec_iterate(&mut cursor);
+            if codec.is_null() {
+                break;
+            }
+            if (*codec).type_ == ffmpeg_next::ffi::AVMediaType::AVMEDIA_TYPE_AUDIO
+                && ffmpeg_next::ffi::av_codec_is_decoder(codec) != 0
+            {
+                decoders.push(
+                    std::ffi::CStr::from_ptr((*codec).name)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+        cursor = std::ptr::null_mut();
+        loop {
+            let filter = ffmpeg_next::ffi::av_filter_iterate(&mut cursor);
+            if filter.is_null() {
+                break;
+            }
+            filters.push(
+                std::ffi::CStr::from_ptr((*filter).name)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        cursor = std::ptr::null_mut();
+        loop {
+            let protocol = ffmpeg_next::ffi::avio_enum_protocols(&mut cursor, 0);
+            if protocol.is_null() {
+                break;
+            }
+            protocols.push(
+                std::ffi::CStr::from_ptr(protocol)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    (decoders, filters, protocols)
+}

@@ -13,6 +13,7 @@ import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 /**
  * Where the loaded FFmpeg installation came from.
  *
+ * - `bundled`: statically linked FFmpeg; no library discovery.
  * - `explicit`: the `REMEDIA_FFMPEG_DIR` environment variable.
  * - `system`: an installation the platform's library search finds (package manager, Homebrew,
  *   `LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, `PATH`, ...).
@@ -20,7 +21,7 @@ import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
  * - `unmanaged`: the platform has no bootstrap addon, so the operating system's loader resolved
  *   FFmpeg on its own and Remedia cannot report which installation it chose.
  */
-export type FfmpegSource = 'explicit' | 'system' | 'managed' | 'unmanaged';
+export type FfmpegSource = 'bundled' | 'explicit' | 'system' | 'managed' | 'unmanaged';
 
 /**
  * Why an FFmpeg installation candidate was rejected, where that can be determined.
@@ -46,7 +47,7 @@ export type FfmpegFailureReason =
 export interface FfmpegLibraryInfo {
   /** FFmpeg library name without the `lib` prefix, for example `avcodec`. */
   readonly name: string;
-  /** Absolute path of the loaded file as reported by the operating system. */
+  /** Absolute path of the loaded file, or an empty string for a statically linked library. */
   readonly path: string;
   /** Library version reported by the library itself, as `major.minor.micro`. */
   readonly version: string;
@@ -70,6 +71,25 @@ export interface FfmpegCandidateReport {
 
 /** The FFmpeg runtime that `@remedia/node` loaded. */
 export interface FfmpegRuntimeInfo {
+  /** Names compiled into the bundle, without opening media or starting playback. */
+  readonly capabilities?: {
+    /** Available audio decoders. */
+    readonly decoders: readonly string[];
+    /** Available filtergraph filters. */
+    readonly filters: readonly string[];
+    /** Available input protocols. */
+    readonly protocols: readonly string[];
+  };
+  /** Actual bundled FFmpeg release version. */
+  readonly version?: string;
+  /** Actual FFmpeg license string. */
+  readonly license?: string;
+  /** Configure arguments compiled into FFmpeg. */
+  readonly configuration?: string;
+  /** Remedia release version compiled into the addon. */
+  readonly remediaVersion?: string;
+  /** Remedia source revision compiled into the addon. */
+  readonly remediaCommit?: string;
   /** How the installation was found. */
   readonly source: FfmpegSource;
   /** Directory containing the loaded libraries, or `null` when `source` is `unmanaged`. */
@@ -81,12 +101,11 @@ export interface FfmpegRuntimeInfo {
 }
 
 /** Command that installs FFmpeg 9 on Linux and macOS with the Remedia installer. */
-export const UNIX_INSTALL_COMMAND =
-  'curl -fsSL https://remedia.twlite.dev/install.sh | sh -s -- --ffmpeg-only';
+export const UNIX_INSTALL_COMMAND = 'curl -fsSL https://remedia.twlite.dev/install.sh | sh';
 
 /** Command that installs FFmpeg 9 on Windows PowerShell with the Remedia installer. */
 export const WINDOWS_INSTALL_COMMAND =
-  '& ([scriptblock]::Create((irm https://remedia.twlite.dev/install.ps1))) -FFmpegOnly';
+  '& ([scriptblock]::Create((irm https://remedia.twlite.dev/install.ps1)))';
 
 /**
  * Raised when no compatible FFmpeg 9 installation could be loaded, or when an explicit

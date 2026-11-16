@@ -421,7 +421,7 @@ describe('discovery precedence', () => {
           /libavcodec 63, libavformat 63, libavutil 61, libavfilter 12, libswresample 7|libavutil 61.*libavfilter 12/,
         );
         assert.ok(error.message.includes(join(home, '.remedia', 'ffmpeg9')));
-        assert.match(error.message, /--ffmpeg-only|-FFmpegOnly/);
+        assert.match(error.message, /install/);
         assert.match(error.message, /REMEDIA_FFMPEG_DIR/);
 
         return true;
@@ -453,7 +453,7 @@ describe('discovery precedence', () => {
   test('shows the PowerShell installer command for Windows', () => {
     const error = new FfmpegLoadError([], false, 'win32');
 
-    assert.match(error.message, /-FFmpegOnly/);
+    assert.match(error.message, /install/);
     assert.match(error.message, /Library\\bin/);
   });
 });

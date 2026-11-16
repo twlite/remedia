@@ -16,15 +16,14 @@ Pick how you want to run the engine:
 
 | I want to...                                 | Install                                                                                                          | Guide                                                                           |
 | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| Run audio inside my Node.js bot              | `npm install @remedia/node` and [FFmpeg 9](https://remedia.twlite.dev/docs/node/ffmpeg-9)                        | [Embedded quickstart](https://remedia.twlite.dev/docs/getting-started/embedded) |
+| Run audio inside my Node.js bot              | `npm install @remedia/node`                                                                                      | [Embedded quickstart](https://remedia.twlite.dev/docs/getting-started/embedded) |
 | Run audio on a separate server               | `curl -fsSL https://remedia.twlite.dev/install.sh \| sh` on the server, `npm install @remedia/client` in the bot | [Remote quickstart](https://remedia.twlite.dev/docs/getting-started/remote)     |
 | Use both from one API                        | `npm install @remedia/client`                                                                                    | [Using `@remedia/client`](https://remedia.twlite.dev/docs/client/overview)      |
 | Resolve audio or data through my own service | `npm install @remedia/plugin-host`                                                                               | [Plugins](https://remedia.twlite.dev/docs/plugins/overview)                     |
 
 To run the server in a container instead, see the [Docker guide](https://remedia.twlite.dev/docs/server/docker) and [`docker/`](docker).
 
-Node.js 22.18 or newer is required. FFmpeg 9 shared libraries are needed on the machine that decodes
-audio; a bot that only talks to remote servers needs none. On Windows, use the PowerShell installer
+Node.js 22.18 or newer is required. FFmpeg 9 is bundled in the native binaries. On Windows, use the PowerShell installer
 from the [server installation guide](https://remedia.twlite.dev/docs/server/installation).
 
 ## Example
@@ -74,5 +73,5 @@ workflows. The workspace uses Rust and pnpm.
 
 ## License
 
-[MIT](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) for dependency terms.
+Original source: [MIT](LICENSE). Native binaries: GPLv3-or-later; see [distribution terms](LICENSES.md). See [third-party notices](THIRD_PARTY_NOTICES.md) for dependency terms.
 Applications are responsible for obtaining authorized media sources.

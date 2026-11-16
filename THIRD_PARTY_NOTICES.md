@@ -6,17 +6,14 @@ additional upstream copyright notices, conditions, and disclaimers required for 
 including native Rust dependencies, Unicode data, and the Rust standard library. Keep both notice
 files with redistributed packages and binaries.
 
-## FFmpeg 7 — independently installed runtime libraries
+## FFmpeg 9.0.2 — statically linked
 
-Remedia dynamically links FFmpeg 7. Consumers install the shared libraries independently; they are
-not bundled in Remedia's npm packages or standalone server binaries. FFmpeg's licensing depends on
-the selected build, enabled components, and external libraries. GPL-enabled builds are not rejected.
-Users must comply with applicable licensing requirements for their chosen build and deployment.
-See [official licensing information](https://ffmpeg.org/legal.html) and
-[FFmpeg source code](https://git.ffmpeg.org/ffmpeg.git).
-
-The Rust `ffmpeg-next` and `ffmpeg-sys-next` bindings have separate WTFPL terms, reproduced in the
-license appendix; those terms do not apply to FFmpeg itself.
+The native addon and server runtime include FFmpeg revision
+946fcce07b6dcd0331c8cc609192aeff5e1924f8, configured with GPL and version3.
+Combined binaries are distributed under GPLv3-or-later; see LICENSES.md and
+COPYING.GPLv3. Corresponding source is supplied on the matching GitHub release.
+Linux TLS uses OpenSSL 3.6.0 (Apache-2.0); macOS uses system Secure Transport;
+Windows uses system Schannel. No nonfree components are permitted.
 
 ## libopus — statically included
 

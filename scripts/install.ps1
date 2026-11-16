@@ -1,15 +1,11 @@
 [CmdletBinding()]
 param(
   [switch]$NoFFmpeg,
-  [switch]$FFmpegOnly,
   [string]$Version = $(if ($env:REMEDIA_VERSION) { $env:REMEDIA_VERSION } else { 'latest' }),
   [string]$InstallDir = $(if ($env:REMEDIA_INSTALL_DIR) { $env:REMEDIA_INSTALL_DIR } else { Join-Path $HOME '.remedia' }),
   [string]$ArchivePath = $env:REMEDIA_ARCHIVE_PATH
 )
 $ErrorActionPreference = 'Stop'
-if ($FFmpegOnly -and $NoFFmpeg) {
-  throw 'Conflicting options: -FFmpegOnly installs only FFmpeg and -NoFFmpeg installs only the server, so nothing would be left to install. Remove one of them.'
-}
 # Read the native OS architecture even from an emulated or 32-bit shell. These
 # environment values are available in Windows PowerShell 5.1 without newer .NET APIs.
 function Test-RemediaWindowsPlatform {
@@ -24,10 +20,6 @@ if (-not (Test-RemediaWindowsPlatform -Architecture $osArchitecture -Build ([Env
 # Initialize before any GitHub metadata request, not just archive downloads.
 Add-Type -AssemblyName System.Net.Http
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-# FFmpeg 9 shared-library ABI majors (not application versions). Keep in sync with
-# .github/scripts/ffmpeg-abi.mjs and packages/remedia-node/lib/ffmpeg-runtime.ts.
-$ffmpegAbi = [ordered]@{ avcodec = 63; avformat = 63; avutil = 61; avfilter = 12; swresample = 7 }
-$ffmpegPackage = 'ffmpeg=9.0.2'
 $repo = 'twlite/remedia'
 $headers = @{ 'User-Agent' = 'remedia-installer'; 'Accept' = 'application/vnd.github+json' }
 
@@ -253,69 +245,6 @@ function Get-RemediaSha256 {
   }
 }
 
-# Resolve micromamba. A micromamba on PATH or in the install directory is reused. A missing one is
-# downloaded to $BinaryDirectory, which is the server bin directory for server installs and a
-# temporary directory for -FFmpegOnly so that no server directories are created.
-function Get-RemediaMicromamba {
-  param([string]$BinaryDirectory, [string]$WorkDirectory)
-  $existing = (Get-Command micromamba -ErrorAction SilentlyContinue).Source
-  if ($existing) { return $existing }
-  $installed = Join-Path $InstallDir 'bin\micromamba.exe'
-  if (Test-Path -LiteralPath $installed) { return $installed }
-  $mamba = Join-Path $BinaryDirectory 'micromamba.exe'
-  New-Item -ItemType Directory -Path $BinaryDirectory -Force | Out-Null
-  $mambaArchive = Join-Path $WorkDirectory 'micromamba.tar.bz2'
-  Save-InstallDownload -Url 'https://micro.mamba.pm/api/micromamba/win-64/latest' -Destination $mambaArchive -Label 'micromamba'
-  Write-InstallStatus 'Extracting micromamba...'
-  & (Get-RemediaTar) -xf $mambaArchive -C $WorkDirectory 'Library/bin/micromamba.exe' | Out-Host
-  if ($LASTEXITCODE -ne 0) { throw 'Failed to extract micromamba executable.' }
-  $downloaded = Join-Path $WorkDirectory 'Library/bin/micromamba.exe'
-  if (!(Test-Path -LiteralPath $downloaded)) { throw 'Unable to locate downloaded micromamba.exe.' }
-  Copy-Item -LiteralPath $downloaded -Destination $mamba
-  return $mamba
-}
-
-# Check that every FFmpeg shared library at the required ABI major exists in the prefix.
-function Test-RemediaFFmpeg {
-  param([string]$Prefix)
-  $libraryDirectory = Join-Path $Prefix 'Library\bin'
-  foreach ($entry in $ffmpegAbi.GetEnumerator()) {
-    $dll = Join-Path $libraryDirectory ('{0}-{1}.dll' -f $entry.Key, $entry.Value)
-    if (!(Test-Path -LiteralPath $dll)) { throw "FFmpeg 9 DLL was not installed: $dll" }
-  }
-  Write-InstallStatus ("Verified FFmpeg 9 libraries ({0}) in {1}" -f (($ffmpegAbi.GetEnumerator() | ForEach-Object { '{0}-{1}' -f $_.Key, $_.Value }) -join ', '), $libraryDirectory)
-}
-
-# Install or update FFmpeg 9 and its shared libraries in <install dir>\ffmpeg9.
-function Install-RemediaFFmpeg {
-  param([string]$BinaryDirectory, [string]$WorkDirectory)
-  Write-InstallStatus 'Preparing FFmpeg 9 dependencies...'
-  New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-  $mamba = Get-RemediaMicromamba -BinaryDirectory $BinaryDirectory -WorkDirectory $WorkDirectory
-  $prefix = Join-Path $InstallDir 'ffmpeg9'
-  $action = if (Test-Path -LiteralPath (Join-Path $prefix 'conda-meta')) { 'install' } else { 'create' }
-  Write-InstallStatus 'Provisioning FFmpeg 9 via micromamba (package resolution may take a while)...'
-  # Native command output must reach the console, not this function's return value (the prefix).
-  & $mamba $action --yes --prefix $prefix --platform win-64 --override-channels -c conda-forge $ffmpegPackage | Out-Host
-  if ($LASTEXITCODE -ne 0) { throw 'FFmpeg 9 provisioning failed.' }
-  Test-RemediaFFmpeg -Prefix $prefix
-  return $prefix
-}
-
-# -FFmpegOnly never contacts GitHub releases and never touches server files.
-if ($FFmpegOnly) {
-  $tmp = Join-Path ([IO.Path]::GetTempPath()) ("remedia-" + [guid]::NewGuid().ToString('N'))
-  New-Item -ItemType Directory -Path $tmp -Force | Out-Null
-  try {
-    $ffmpegPrefix = Install-RemediaFFmpeg -BinaryDirectory (Join-Path $tmp 'bin') -WorkDirectory $tmp
-    Write-Host "FFmpeg 9 is installed in $ffmpegPrefix"
-    Write-Host '@remedia/node finds this installation automatically. Set REMEDIA_FFMPEG_DIR to use another prefix.'
-  } finally {
-    Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
-  }
-  return
-}
-
 Write-InstallStatus "Checking GitHub releases..."
 if ($Version -eq 'latest') {
   # GitHub's latest endpoint excludes prereleases. Fall back only when no stable release exists.
@@ -349,7 +278,8 @@ if (Test-Path -LiteralPath $currentFile) {
     return
   }
 }
-$assetName = 'remedia-server-x86_64-pc-windows-msvc.tar.gz'
+$target = if ($osArchitecture -eq 'ARM64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
+$assetName = "remedia-server-$target.tar.gz"
 $asset = $release.assets | Where-Object name -eq $assetName | Select-Object -First 1
 if (-not $asset -or $asset.digest -notmatch '^sha256:[a-fA-F0-9]{64}$') { throw "Missing release asset or checksum: $assetName" }
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("remedia-" + [guid]::NewGuid().ToString('N'))
@@ -383,40 +313,9 @@ try {
   $libexec = Join-Path $InstallDir 'libexec'
   $licenseDir = Join-Path $InstallDir 'licenses'
   @($binDir, $libexec, $licenseDir) | ForEach-Object { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
-  $serverExe = Join-Path $tmp 'remedia-server-x86_64-pc-windows-msvc.exe'
-  $runtimeExe = Join-Path $tmp 'remedia-server-runtime-x86_64-pc-windows-msvc.exe'
+  $serverExe = Join-Path $tmp "remedia-server-$target.exe"
+  $runtimeExe = Join-Path $tmp "remedia-server-runtime-$target.exe"
   if (!(Test-Path $serverExe) -or !(Test-Path $runtimeExe)) { throw 'CLI or runtime binary not present in release archive.' }
-
-  if (-not $NoFFmpeg) {
-    # Do not modify DLLs used by the active installation. The pinned FFmpeg ABI
-    # is unchanged; -FFmpegOnly remains the explicit dependency repair/update path.
-    $healthyFFmpeg = $false
-    if ((Test-Path -LiteralPath $currentFile) -and
-        (Test-Path -LiteralPath (Join-Path $InstallDir 'ffmpeg9'))) {
-      try {
-        Test-RemediaFFmpeg -Prefix (Join-Path $InstallDir 'ffmpeg9')
-        $healthyFFmpeg = $true
-      } catch {
-        throw "The current FFmpeg installation needs repair. Run the current installer with -FFmpegOnly before updating. $($_.Exception.Message)"
-      }
-    }
-    if (-not $healthyFFmpeg) {
-      $dependencyPrefix = Join-Path $InstallDir 'ffmpeg9'
-      $dependencyExisted = Test-Path -LiteralPath $dependencyPrefix
-      try {
-        Install-RemediaFFmpeg -BinaryDirectory $binDir -WorkDirectory $tmp | Out-Null
-      } catch {
-        # A failed first provision must not shadow externally managed libraries
-        # on the next invocation of the existing command wrapper.
-        if (-not $dependencyExisted) {
-          Remove-Item -LiteralPath $dependencyPrefix -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        throw
-      }
-    }
-  } else {
-    Write-InstallStatus 'Skipping FFmpeg installation (-NoFFmpeg).'
-  }
 
   Write-InstallStatus 'Installing Remedia binaries and commands...'
   # Windows cannot replace a running executable. Place it in a versioned directory and
@@ -426,14 +325,13 @@ try {
   Copy-Item $serverExe (Join-Path $versionDir 'remedia-server.exe') -Force
   Copy-Item $runtimeExe (Join-Path $versionDir 'remedia-server-runtime.exe') -Force
   Set-Content -LiteralPath (Join-Path $versionDir 'version.txt') -Value $release.tag_name -NoNewline -Encoding Ascii
-  foreach ($name in @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt')) {
+  foreach ($name in @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt', 'LICENSES.md', 'COPYING.GPLv3')) {
     Copy-Item (Join-Path $tmp $name) (Join-Path $licenseDir $name) -Force
   }
   $wrapper = @'
 @echo off
 setlocal
 set "REMEDIA_ROOT=%~dp0.."
-if exist "%REMEDIA_ROOT%\ffmpeg9\Library\bin" set "PATH=%REMEDIA_ROOT%\ffmpeg9\Library\bin;%PATH%"
 set /p REMEDIA_CURRENT=<"%REMEDIA_ROOT%\libexec\current.txt"
 "%REMEDIA_ROOT%\libexec\%REMEDIA_CURRENT%\remedia-server.exe" %*
 exit /b %ERRORLEVEL%

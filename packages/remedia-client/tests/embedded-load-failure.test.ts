@@ -5,7 +5,7 @@ vi.mock('@remedia/node', () => ({
     create: () =>
       Promise.reject(
         new Error(
-          'Remedia could not load a compatible FFmpeg 9 runtime.\nInstall FFmpeg with --ffmpeg-only.',
+          'Remedia could not load a compatible FFmpeg 9 runtime.\nInstall FFmpeg with the installer.',
         ),
       ),
   },
@@ -27,6 +27,6 @@ describe('embedded node load failures', () => {
       /embedded @remedia\/node could not be loaded: Remedia could not load a compatible FFmpeg 9 runtime\./,
     );
     expect(adapter.status).toBe('disconnected');
-    expect(statuses.at(-1)).toContain('--ffmpeg-only');
+    expect(statuses.at(-1)).toContain('the installer');
   });
 });

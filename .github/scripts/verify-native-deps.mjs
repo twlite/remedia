@@ -8,7 +8,7 @@ if (mode !== '--build' && mode !== '--runtime') {
   throw new Error('Usage: verify-native-deps.mjs [--build|--runtime]');
 }
 
-const ffmpegDir = process.env.FFMPEG_DIR;
+const ffmpegDir = process.env.REMEDIA_STATIC_FFMPEG_DIR ?? process.env.FFMPEG_DIR;
 if (!ffmpegDir) throw new Error('FFMPEG_DIR must identify the FFmpeg prefix');
 console.log(`FFMPEG_DIR: ${ffmpegDir}`);
 

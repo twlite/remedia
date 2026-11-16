@@ -5,7 +5,13 @@ import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseReleaseVersion, RELEASE_TARGETS } from './release.mjs';
 
-const noticeFiles = ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt'];
+const noticeFiles = [
+  'LICENSE',
+  'THIRD_PARTY_NOTICES.md',
+  'THIRD_PARTY_LICENSES.txt',
+  'LICENSES.md',
+  'COPYING.GPLv3',
+];
 
 export function releaseAssets(bindingsDirectory, serversDirectory) {
   const paths = RELEASE_TARGETS.flatMap((target) => [
@@ -16,7 +22,9 @@ export function releaseAssets(bindingsDirectory, serversDirectory) {
           join(serversDirectory, 'remedia-server-' + target.triple + (target.extension ?? '')),
           join(serversDirectory, 'remedia-server-' + target.triple + '.tar.gz'),
         ]),
-  ]).concat(noticeFiles.map((file) => join(serversDirectory, file)));
+  ]).concat(
+    [...noticeFiles, 'corresponding-source.tar.gz'].map((file) => join(serversDirectory, file)),
+  );
   return paths.map((path) => {
     const bytes = readFileSync(path);
     if (!bytes.length) throw new Error('Empty release asset: ' + path);
@@ -127,7 +135,7 @@ function releaseAssetsNames() {
           'remedia-server-' + target.triple + (target.extension ?? ''),
           'remedia-server-' + target.triple + '.tar.gz',
         ]),
-  ]).concat(noticeFiles);
+  ]).concat([...noticeFiles, 'corresponding-source.tar.gz']);
 }
 
 export async function uploadDraft(

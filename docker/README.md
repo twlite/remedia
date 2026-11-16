@@ -1,7 +1,7 @@
 # Remedia in Docker
 
 A Dockerfile and Docker Compose example for the **standalone `remedia-server`**. The published image
-`ghcr.io/twlite/remedia` bundles a SHA-256-verified release and FFmpeg 9.0.2 shared libraries and downloads
+`ghcr.io/twlite/remedia` bundles a SHA-256-verified release and statically linked FFmpeg 9.0.2 and downloads
 nothing at startup. It supports `linux/amd64` and `linux/arm64`.
 
 Full guide (TLS proxy, plugin hosts, resources, updates, troubleshooting):
@@ -23,14 +23,14 @@ atomically, so the **directory** is mounted, not the file.
 
 ## Files
 
-| File                                 | Purpose                                                                 |
-| ------------------------------------ | ----------------------------------------------------------------------- |
-| `Dockerfile`                         | Multistage image; reuses `scripts/install.sh` for release and FFmpeg    |
-| `compose.yaml`                       | Service, hardening, loopback-only port, config mount                    |
-| `compose.media.yaml`                 | Optional override mounting `REMEDIA_MEDIA_DIR` read-only at `/media`    |
-| `.env.example`                       | Template for secrets and build settings (copy to `.env`; not committed) |
-| `config/remedia.config.example.json` | Starting configuration (copy to `config/remedia.config.json`)           |
-| `../.dockerignore`                   | Keeps the build context to `scripts/install.sh`                         |
+| File                                 | Purpose                                                                  |
+| ------------------------------------ | ------------------------------------------------------------------------ |
+| `Dockerfile`                         | Multistage image; reuses `scripts/install.sh` for self-contained release |
+| `compose.yaml`                       | Service, hardening, loopback-only port, config mount                     |
+| `compose.media.yaml`                 | Optional override mounting `REMEDIA_MEDIA_DIR` read-only at `/media`     |
+| `.env.example`                       | Template for secrets and build settings (copy to `.env`; not committed)  |
+| `config/remedia.config.example.json` | Starting configuration (copy to `config/remedia.config.json`)            |
+| `../.dockerignore`                   | Keeps the build context to `scripts/install.sh`                          |
 
 ## Common commands
 

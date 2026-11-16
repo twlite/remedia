@@ -19,17 +19,19 @@ include `LICENSE` and `THIRD_PARTY_NOTICES.md` plus the `THIRD_PARTY_LICENSES.tx
 [notices](https://github.com/twlite/remedia/blob/main/THIRD_PARTY_NOTICES.md) reproduce dependency
 copyright, license conditions, and disclaimers, including the bundled libopus backend.
 
-## FFmpeg builds
+## Native distribution and corresponding source
 
-FFmpeg 9 is dynamically linked. npm packages and standalone release archives require a separate FFmpeg installation. The Docker image provisions FFmpeg shared libraries during its build.
-Its license depends on your chosen build, including GPL-enabled components and external libraries.
-Remedia does not enforce LGPL-only builds. You must comply with applicable requirements for your
-selected FFmpeg build and deployment. Consult the [official FFmpeg licensing information](https://ffmpeg.org/legal.html)
-and [source code](https://git.ffmpeg.org/ffmpeg.git).
+Original Remedia source and FFmpeg-independent packages remain MIT. Native addons
+and server runtimes statically link FFmpeg configured with GPL and version3;
+combined binaries are distributed under GPLv3-or-later obligations. Native npm
+packages declare `SEE LICENSE IN LICENSES.md`. Archives include LICENSES.md,
+COPYING.GPLv3, MIT and third-party acknowledgments.
 
-## Covered source and redistribution
+Every binary GitHub release supplies `corresponding-source.tar.gz`, containing the
+exact Remedia revision, vendored Rust dependencies, FFmpeg/native dependency sources,
+patches, build scripts and target configuration records. Redistributors must meet
+the applicable source and installation-information obligations. Notices and CI
+success alone do not establish legal compliance. Review [FFmpeg's licensing
+information](https://ffmpeg.org/legal.html) and the included GPL text.
 
-Some native dependencies use MPL-2.0. The notices identify exact published source versions. Preserve
-the applicable notices and provide recipients access to the covered source as required by those
-terms when redistributing. The presence of these files is not a guarantee of legal compliance.
-See [package distribution](/docs/node/distribution) for FFmpeg ABI versions and runtime setup.
+See [bundled FFmpeg](/docs/node/ffmpeg-9) for diagnostics and target limitations.

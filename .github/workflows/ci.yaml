@@ -28,6 +28,8 @@ on:
       - '!**/*.md'
       - 'apps/docs/content/**'
       - 'LICENSE'
+      - 'LICENSES.md'
+      - 'COPYING.GPLv3'
       - 'THIRD_PARTY_NOTICES.md'
       - 'THIRD_PARTY_LICENSES.txt'
   workflow_dispatch:
@@ -130,15 +132,6 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      # The generated API reference documents the Rust crates, so every docs build needs FFmpeg.
-      - uses: mamba-org/setup-micromamba@v3
-        with:
-          environment-file: .github/native-deps/ffmpeg9.yml
-          environment-name: remedia-ffmpeg9
-          init-shell: bash
-          cache-environment: true
-          cache-environment-key: checks-ffmpeg9-${{ hashFiles('.github/native-deps/ffmpeg9.yml') }}
-          cache-downloads: true
       - name: Select the repository Rust toolchain
         run: rustup show active-toolchain
       - uses: pnpm/action-setup@v6.1.0
@@ -159,20 +152,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends libclang-dev
-      - name: Configure native dependency paths
-        shell: micromamba-shell {0}
+      - name: Build pinned static FFmpeg for checks
         run: |
-          echo "FFMPEG_DIR=$CONDA_PREFIX" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$CONDA_PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
-          libclang_path="$(find /usr/lib/llvm-* -name libclang.so -print -quit)"
-          if [ -z "$libclang_path" ]; then echo "libclang.so not found under /usr/lib/llvm-*" >&2; exit 1; fi
-          echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
-      - name: Verify FFmpeg 9 build dependencies
-        shell: micromamba-shell {0}
-        run: node .github/scripts/verify-native-deps.mjs --build
+          sudo apt-get install --yes --no-install-recommends nasm pkg-config
+          echo "LIBCLANG_PATH=$(dirname "$(find /usr/lib/llvm-* -name libclang.so -print -quit)")" >> "$GITHUB_ENV"
+          bash .github/scripts/build-ffmpeg-static.sh
       - name: Validate POSIX installer syntax
         run: sh -n scripts/install.sh
+      - run: node .github/scripts/audit-linked-licenses.mjs
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm --filter @remedia/config schema:check
@@ -230,6 +217,11 @@ jobs:
             runner: windows-2022
             os: windows
             server_suffix: .exe
+          - label: Windows ARM64 MSVC
+            target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+            os: windows
+            server_suffix: .exe
     uses: ./.github/workflows/platform.yaml
     with:
       label: ${{ matrix.label }}
@@ -262,10 +254,6 @@ jobs:
             os: linux
           - label: Windows x86 MSVC
             target: i686-pc-windows-msvc
-            runner: windows-2022
-            os: windows
-          - label: Windows ARM64 MSVC
-            target: aarch64-pc-windows-msvc
             runner: windows-2022
             os: windows
           - label: Android ARM64
@@ -322,6 +310,15 @@ jobs:
           pattern: server-*
           path: ${{ runner.temp }}/servers
           merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: native-source-*
+          path: ${{ runner.temp }}/native-sources
+          merge-multiple: true
+      - name: Assemble corresponding source before packaging binaries
+        env:
+          REMEDIA_TARGET_SOURCES: ${{ runner.temp }}/native-sources
+        run: node .github/scripts/corresponding-source.mjs "$RUNNER_TEMP/servers/corresponding-source.tar.gz" "$RUNNER_TEMP/corresponding-source"
       - name: Verify native release artifacts
         run: node .github/scripts/verify-release-artifacts.mjs "$RUNNER_TEMP/bindings" "$RUNNER_TEMP/servers"
       - name: Create and inspect N-API platform packages and pnpm tarballs

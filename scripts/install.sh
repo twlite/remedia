@@ -4,30 +4,19 @@ set -eu
 REPO="twlite/remedia"
 INSTALL_DIR="${REMEDIA_INSTALL_DIR:-$HOME/.remedia}"
 VERSION="${REMEDIA_VERSION:-latest}"
-WITH_FFMPEG=1
-WITH_SERVER=1
-
-# FFmpeg 9 shared-library ABI majors (not application versions). Keep in sync with
-# .github/scripts/ffmpeg-abi.mjs and packages/remedia-node/lib/ffmpeg-runtime.ts.
-FFMPEG_ABI="avcodec:63 avformat:63 avutil:61 avfilter:12 swresample:7"
-FFMPEG_PACKAGE="ffmpeg=9.0.2"
-
 log() {
   printf '[remedia] %s\n' "$*"
 }
 
 usage() {
   cat <<'EOF'
-Usage: install.sh [--ffmpeg-only | --no-ffmpeg]
+Usage: install.sh [--no-ffmpeg]
 
-  (default)       Install the Remedia server and FFmpeg 9.
-  --ffmpeg-only   Install or verify only FFmpeg 9 under <install dir>/ffmpeg9. No server
-                  archive is downloaded and no commands, wrappers or PATH entries are created.
-  --no-ffmpeg     Install only the Remedia server and skip FFmpeg.
+Install the self-contained Remedia server. --no-ffmpeg is accepted as a no-op.
 
 Environment:
   REMEDIA_INSTALL_DIR   Installation prefix (default: ~/.remedia)
-  REMEDIA_VERSION       Server release, latest or x.y.z (ignored by --ffmpeg-only)
+  REMEDIA_VERSION       Server release, latest or x.y.z
 EOF
 }
 
@@ -71,68 +60,6 @@ configure_shell_path() {
     *:"$path_dir":*) ;;
     *) PATH="$path_dir:$PATH"; export PATH ;;
   esac
-}
-
-# Resolve the micromamba executable into MAMBA. An existing installation is reused as is.
-# `persist` decides where a missing binary is placed: "bin" keeps it in $INSTALL_DIR/bin for later
-# runs (server installs); anything else uses the temporary directory so that --ffmpeg-only does
-# not create server directories.
-ensure_micromamba() {
-  persist="$1"
-  if command -v micromamba >/dev/null 2>&1; then
-    MAMBA="$(command -v micromamba)"
-    return 0
-  fi
-  if [ -x "$INSTALL_DIR/bin/micromamba" ]; then
-    MAMBA="$INSTALL_DIR/bin/micromamba"
-    return 0
-  fi
-  case "$os:$arch" in
-    Linux:x86_64) mm=linux-64 ;; Linux:*) mm=linux-aarch64 ;;
-    Darwin:x86_64) mm=osx-64 ;; Darwin:*) mm=osx-arm64 ;;
-  esac
-  log "Downloading micromamba..."
-  download_file "https://micro.mamba.pm/api/micromamba/$mm/latest" "$tmp/micromamba.tar.bz2"
-  log "Extracting micromamba..."
-  tar -xjf "$tmp/micromamba.tar.bz2" -C "$tmp" bin/micromamba
-  if [ "$persist" = bin ]; then
-    mkdir -p "$INSTALL_DIR/bin"
-    install -m 755 "$tmp/bin/micromamba" "$INSTALL_DIR/bin/micromamba"
-    MAMBA="$INSTALL_DIR/bin/micromamba"
-  else
-    MAMBA="$tmp/bin/micromamba"
-  fi
-}
-
-# Install or update FFmpeg 9 and its shared libraries in $INSTALL_DIR/ffmpeg9.
-provision_ffmpeg() {
-  persist="$1"
-  FFMPEG_PREFIX="$INSTALL_DIR/ffmpeg9"
-  log "Preparing FFmpeg 9 dependencies..."
-  mkdir -p "$INSTALL_DIR"
-  ensure_micromamba "$persist"
-  log "Provisioning FFmpeg 9 via micromamba (package resolution may take a while)..."
-  if [ -d "$FFMPEG_PREFIX/conda-meta" ]; then
-    "$MAMBA" install --yes --prefix "$FFMPEG_PREFIX" --override-channels -c conda-forge "$FFMPEG_PACKAGE"
-  else
-    "$MAMBA" create --yes --prefix "$FFMPEG_PREFIX" --override-channels -c conda-forge "$FFMPEG_PACKAGE"
-  fi
-  verify_ffmpeg "$FFMPEG_PREFIX"
-}
-
-# Check that every FFmpeg shared library at the required ABI major exists in the prefix.
-verify_ffmpeg() {
-  prefix="$1"
-  for entry in $FFMPEG_ABI; do
-    name="${entry%%:*}"
-    major="${entry##*:}"
-    case "$os" in
-      Darwin) library="$prefix/lib/lib$name.$major.dylib" ;;
-      *) library="$prefix/lib/lib$name.so.$major" ;;
-    esac
-    [ -e "$library" ] || { echo "FFmpeg 9 runtime missing: $library" >&2; exit 1; }
-  done
-  log "Verified FFmpeg 9 libraries ($FFMPEG_ABI) in $prefix/lib"
 }
 
 install_server() {
@@ -205,7 +132,7 @@ install_server() {
   [ "$actual" = "$digest" ] || { echo "Release checksum mismatch" >&2; exit 1; }
   log "Checking archive contents..."
   tar -tzf "$tmp/server.tar.gz" | while IFS= read -r item; do
-    case "$item" in "remedia-server-$target"|"remedia-server-runtime-$target"|LICENSE|THIRD_PARTY_NOTICES.md|THIRD_PARTY_LICENSES.txt) ;; *) echo "Unexpected archive entry $item" >&2; exit 1 ;; esac
+    case "$item" in "remedia-server-$target"|"remedia-server-runtime-$target"|LICENSE|THIRD_PARTY_NOTICES.md|THIRD_PARTY_LICENSES.txt|LICENSES.md|COPYING.GPLv3) ;; *) echo "Unexpected archive entry $item" >&2; exit 1 ;; esac
   done
   log "Extracting server archive..."
   mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/libexec" "$INSTALL_DIR/licenses"
@@ -216,7 +143,7 @@ install_server() {
   mkdir -p "$version_dir"
   install -m 755 "$tmp/remedia-server-$target" "$version_dir/remedia-server"
   install -m 755 "$tmp/$runtime_asset" "$version_dir/remedia-server-runtime"
-  for item in LICENSE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.txt; do
+  for item in LICENSE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.txt LICENSES.md COPYING.GPLv3; do
     cp "$tmp/$item" "$INSTALL_DIR/licenses/$item"
   done
 }
@@ -226,12 +153,6 @@ write_server_commands() {
 #!/bin/sh
 set -eu
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-if [ -d "$root/ffmpeg9/lib" ]; then
-  case "$(uname -s)" in
-    Darwin) export DYLD_LIBRARY_PATH="$root/ffmpeg9/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" ;;
-    *) export LD_LIBRARY_PATH="$root/ffmpeg9/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
-  esac
-fi
 if [ -f "$root/libexec/current.txt" ]; then
   current="$(cat "$root/libexec/current.txt")"
   exec "$root/libexec/$current/remedia-server" "$@"
@@ -242,29 +163,15 @@ EOF
   cp "$INSTALL_DIR/bin/remedia" "$INSTALL_DIR/bin/remedia-server"
 }
 
-ffmpeg_only=0
-no_ffmpeg=0
 for arg in "$@"; do
   case "$arg" in
-    --no-ffmpeg) no_ffmpeg=1 ;;
-    --ffmpeg-only) ffmpeg_only=1 ;;
+    --no-ffmpeg) ;;
     --help) usage; exit 0 ;;
     *) echo "Unsupported argument: $arg" >&2; usage >&2; exit 2 ;;
   esac
 done
-if [ "$ffmpeg_only" -eq 1 ] && [ "$no_ffmpeg" -eq 1 ]; then
-  echo "Conflicting options: --ffmpeg-only installs only FFmpeg and --no-ffmpeg installs only the server, so nothing would be left to install. Remove one of them." >&2
-  exit 2
-fi
-if [ "$ffmpeg_only" -eq 1 ]; then WITH_SERVER=0; fi
-if [ "$no_ffmpeg" -eq 1 ]; then WITH_FFMPEG=0; fi
-
 command -v tar >/dev/null || { echo "tar is required" >&2; exit 1; }
-# curl is needed for the release lookup and the micromamba download. An existing micromamba makes
-# an FFmpeg-only run independent of the network tools and GitHub.
-if [ "$WITH_SERVER" -eq 1 ] || { ! command -v micromamba >/dev/null 2>&1 && [ ! -x "$INSTALL_DIR/bin/micromamba" ]; }; then
-  command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
-fi
+command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 os="$(uname -s)"
 arch="$(uname -m)"
 case "$os:$arch" in
@@ -273,31 +180,17 @@ case "$os:$arch" in
   Darwin:x86_64) target=x86_64-apple-darwin ;;
   Darwin:arm64) target=aarch64-apple-darwin ;;
   *)
-    if [ "$WITH_SERVER" -eq 1 ]; then
-      echo "Unsupported remedia-server platform: $os/$arch" >&2
-    else
-      echo "Unsupported FFmpeg installer platform: $os/$arch" >&2
-    fi
+    echo "Unsupported remedia-server platform: $os/$arch" >&2
     exit 1
     ;;
 esac
+if [ "$os" = Linux ] && { ldd --version 2>&1 | grep -qi musl || ls /lib/ld-musl-*.so.1 >/dev/null 2>&1; }; then
+  target="${target%-gnu}-musl"
+fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
-if [ "$WITH_SERVER" -eq 0 ]; then
-  provision_ffmpeg tmp
-  log "FFmpeg 9 is installed in $FFMPEG_PREFIX"
-  log "@remedia/node finds this installation automatically. Set REMEDIA_FFMPEG_DIR to use another prefix."
-  exit 0
-fi
-
 install_server
-
-if [ "$WITH_FFMPEG" -eq 1 ]; then
-  provision_ffmpeg bin
-else
-  log "Skipping FFmpeg installation (--no-ffmpeg)."
-fi
 
 write_server_commands
 configure_shell_path

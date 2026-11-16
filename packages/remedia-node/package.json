@@ -2,7 +2,7 @@
   "name": "@remedia/node",
   "version": "0.1.0",
   "description": "Native Node.js playback and Discord voice bindings for Remedia",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSES.md",
   "author": "Twilight <hello@twlite.dev>",
   "repository": "https://github.com/twlite/remedia.git",
   "files": [
@@ -12,7 +12,9 @@
     "README.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
-    "THIRD_PARTY_LICENSES.txt"
+    "THIRD_PARTY_LICENSES.txt",
+    "LICENSES.md",
+    "COPYING.GPLv3"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -32,7 +34,7 @@
     "build:native:debug": "napi build --platform --esm --js native.js --dts native.d.ts && pnpm run normalize:native && pnpm run build:bootstrap:debug",
     "build:bootstrap": "node ../../.github/scripts/build-bootstrap.mjs",
     "build:bootstrap:debug": "node ../../.github/scripts/build-bootstrap.mjs --debug",
-    "normalize:native": "node ../../.github/scripts/normalize-macos-addon.mjs",
+    "normalize:native": "node ../../.github/scripts/audit-static-ffmpeg.mjs",
     "build:types": "tsc -p tsconfig.json",
     "build:debug": "pnpm run build:native:debug && pnpm run build:types",
     "test": "pnpm run build:native:debug && pnpm run build:types && pnpm run test:bindings",

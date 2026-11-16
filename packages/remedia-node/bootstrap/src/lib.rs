@@ -1,16 +1,8 @@
 //! Minimal native library loader for `@remedia/node`.
 //!
-//! The Remedia engine addon links FFmpeg dynamically, so the operating system must be able to
-//! resolve the FFmpeg shared libraries before the addon can initialize. This crate has no FFmpeg
-//! dependency. It is loaded first and opens already-selected FFmpeg libraries by explicit path, so
-//! the platform loader later satisfies the engine addon's dependencies from the loaded images:
-//!
-//! - glibc, musl, FreeBSD and Android match `DT_NEEDED` entries against loaded `SONAME`s.
-//! - macOS matches `@rpath/...` install names against loaded images.
-//! - Windows matches import-table names against loaded module base names.
-//!
-//! Discovery, ABI checks and diagnostics live in TypeScript; this crate only performs the
-//! operations that require native loader APIs.
+//! Retained for compatibility with existing platform packages. Official static addons
+//! load directly and do not use this library to locate external FFmpeg. Legacy loader
+//! operations below remain available for older callers.
 
 use std::sync::Mutex;
 

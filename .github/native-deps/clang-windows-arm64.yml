@@ -1,0 +1,7 @@
+name: remedia-native-build-tools
+channels:
+  - conda-forge
+channel_priority: strict
+dependencies:
+  # Native libclang comes from the verified upstream LLVM ARM64 installer.
+  - pkg-config=0.29.2

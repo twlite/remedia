@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn as spawnProcess, spawnSync as spawnProcessSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -18,13 +18,22 @@ import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { ffmpegAbi } from './ffmpeg-abi.mjs';
-
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const installSh = join(root, 'scripts/install.sh');
 const installPs1 = join(root, 'scripts/install.ps1');
 const windows = process.platform === 'win32';
 const unixInstallerPlatform = process.platform === 'linux' || process.platform === 'darwin';
+
+// These tests need child output, not console windows. Hiding the window also avoids
+// PowerShell's taskbar jump-list heap corruption on Windows ARM64:
+// https://github.com/dotnet/runtime/issues/131636
+function spawn(command, args, options = {}) {
+  return spawnProcess(command, args, { ...options, windowsHide: true });
+}
+
+function spawnSync(command, args, options = {}) {
+  return spawnProcessSync(command, args, { ...options, windowsHide: true });
+}
 
 // Match the Windows installer: avoid Git's GNU tar interpreting C:\... as a remote archive.
 const windowsTar = process.env.SystemRoot && join(process.env.SystemRoot, 'System32', 'tar.exe');
@@ -39,19 +48,6 @@ function packArchive(archive, payload, entries, compression = 'z') {
   assert.equal(result.status, 0, `${archiveTar}: ${result.error ?? ''}\n${result.stderr}`);
 }
 
-/** Library files the real FFmpeg 9 conda package provides on this platform. */
-function libraryFiles() {
-  return [...ffmpegAbi].map(([library, major]) => {
-    const name = library.slice(3);
-
-    if (windows) return `Library/bin/${name}-${major}.dll`;
-    if (process.platform === 'darwin') return `lib/${library}.${major}.dylib`;
-
-    return `lib/${library}.so.${major}`;
-  });
-}
-
-/** Fresh sandbox: a HOME, an install dir whose path contains spaces, and a bin dir for fakes. */
 function sandbox() {
   const base = mkdtempSync(join(tmpdir(), 'remedia installer '));
   const home = join(base, 'home dir');
@@ -73,58 +69,6 @@ function sandbox() {
   };
 }
 
-/** A fake micromamba that records its arguments and creates the FFmpeg 9 library files. */
-function installFakeMicromamba(box, { omit = [] } = {}) {
-  const files = libraryFiles().filter((file) => !omit.some((name) => file.includes(name)));
-
-  if (windows) {
-    const creates = files
-      .map((file) => `type nul > "%PREFIX%\\${file.replaceAll('/', '\\')}"`)
-      .join('\r\n');
-    const dirs = [...new Set(files.map((file) => dirname(file).replaceAll('/', '\\')))]
-      .map((dir) => `mkdir "%PREFIX%\\${dir}" 2>nul`)
-      .join('\r\n');
-
-    writeFileSync(
-      join(box.fakeBin, 'micromamba.cmd'),
-      [
-        '@echo off',
-        `echo micromamba %* >> "${box.log}"`,
-        // Arguments are: <create|install> --yes --prefix <prefix> ...
-        'set "PREFIX=%~4"',
-        'mkdir "%PREFIX%\\conda-meta" 2>nul',
-        dirs,
-        creates,
-        'exit /b 0',
-        '',
-      ].join('\r\n'),
-    );
-
-    return;
-  }
-
-  const script = [
-    '#!/bin/sh',
-    `printf 'micromamba %s\\n' "$*" >> '${box.log}'`,
-    'prefix=""',
-    'while [ $# -gt 0 ]; do [ "$1" = --prefix ] && prefix="$2"; shift; done',
-    'mkdir -p "$prefix/conda-meta"',
-    ...files.flatMap((file) => [`mkdir -p "$prefix/${dirname(file)}"`, `: > "$prefix/${file}"`]),
-    '',
-  ].join('\n');
-
-  writeFileSync(join(box.fakeBin, 'micromamba'), script);
-  chmodSync(join(box.fakeBin, 'micromamba'), 0o755);
-}
-
-/** A fake curl that records every invocation and always fails, so network use is detectable. */
-function installFailingCurl(box) {
-  const path = join(box.fakeBin, 'curl');
-
-  writeFileSync(path, `#!/bin/sh\nprintf 'curl %s\\n' "$*" >> '${box.log}'\nexit 22\n`);
-  chmodSync(path, 0o755);
-}
-
 function runSh(box, args, extraEnv = {}) {
   return spawnSync('sh', [installSh, ...args], {
     encoding: 'utf8',
@@ -138,329 +82,9 @@ function runSh(box, args, extraEnv = {}) {
   });
 }
 
-function runPs1(box, args, shell = 'pwsh') {
-  return spawnSync(shell, ['-NoProfile', '-NonInteractive', '-File', installPs1, ...args], {
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      PATH: `${box.fakeBin};${process.env.PATH}`,
-      REMEDIA_INSTALL_DIR: box.installDir,
-    },
-  });
-}
-
 function calls(box) {
   return readFileSync(box.log, 'utf8').split('\n').filter(Boolean);
 }
-
-function prefixLibraries(box) {
-  return libraryFiles().map((file) => join(box.installDir, 'ffmpeg9', file));
-}
-
-test(
-  'install.sh rejects --ffmpeg-only together with --no-ffmpeg',
-  { skip: !unixInstallerPlatform },
-  () => {
-    const box = sandbox();
-
-    try {
-      const result = runSh(box, ['--ffmpeg-only', '--no-ffmpeg']);
-
-      assert.equal(result.status, 2);
-      assert.match(result.stderr, /Conflicting options: --ffmpeg-only .* --no-ffmpeg/);
-      assert.equal(existsSync(box.installDir), false);
-    } finally {
-      box.cleanup();
-    }
-  },
-);
-
-test('install.sh --help documents the FFmpeg-only mode', { skip: !unixInstallerPlatform }, () => {
-  const box = sandbox();
-
-  try {
-    const result = runSh(box, ['--help']);
-
-    assert.equal(result.status, 0);
-    assert.match(result.stdout, /--ffmpeg-only/);
-    assert.match(result.stdout, /--no-ffmpeg/);
-  } finally {
-    box.cleanup();
-  }
-});
-
-test(
-  'install.sh --ffmpeg-only installs FFmpeg without GitHub, server files, wrappers or PATH changes',
-  { skip: !unixInstallerPlatform },
-  () => {
-    const box = sandbox();
-
-    try {
-      installFakeMicromamba(box);
-      installFailingCurl(box);
-
-      const result = runSh(box, ['--ffmpeg-only']);
-
-      assert.equal(result.status, 0, result.stderr);
-      assert.deepEqual(
-        calls(box).filter((line) => line.startsWith('curl')),
-        [],
-      );
-      assert.deepEqual(readdirSync(box.installDir), ['ffmpeg9']);
-
-      for (const library of prefixLibraries(box)) assert.ok(existsSync(library), library);
-
-      assert.match(result.stdout, /Verified FFmpeg 9 libraries/);
-      assert.ok(result.stdout.includes(join(box.installDir, 'ffmpeg9')));
-      assert.deepEqual(readdirSync(box.home), [], 'shell profiles must not be modified');
-      assert.match(calls(box)[0], /^micromamba create --yes --prefix .*ffmpeg9 .*ffmpeg=9\.0\.2$/);
-    } finally {
-      box.cleanup();
-    }
-  },
-);
-
-test(
-  'install.sh --ffmpeg-only is repeatable and leaves an existing server install intact',
-  { skip: !unixInstallerPlatform },
-  () => {
-    const box = sandbox();
-
-    try {
-      installFakeMicromamba(box);
-      installFailingCurl(box);
-
-      const serverFiles = {
-        'bin/remedia': '#!/bin/sh\necho wrapper\n',
-        'bin/remedia-server': '#!/bin/sh\necho wrapper2\n',
-        'libexec/remedia-server': 'server-binary',
-        'libexec/remedia-server-runtime': 'runtime-binary',
-        'licenses/LICENSE': 'license',
-      };
-
-      for (const [file, contents] of Object.entries(serverFiles)) {
-        mkdirSync(dirname(join(box.installDir, file)), { recursive: true });
-        writeFileSync(join(box.installDir, file), contents);
-      }
-
-      for (let run = 0; run < 2; run += 1) {
-        const result = runSh(box, ['--ffmpeg-only']);
-
-        assert.equal(result.status, 0, result.stderr);
-      }
-
-      const micromambaCalls = calls(box).filter((line) => line.startsWith('micromamba'));
-
-      assert.match(micromambaCalls[0], /^micromamba create /);
-      assert.match(micromambaCalls[1], /^micromamba install /);
-
-      for (const [file, contents] of Object.entries(serverFiles)) {
-        assert.equal(readFileSync(join(box.installDir, file), 'utf8'), contents, file);
-      }
-
-      assert.deepEqual(readdirSync(box.installDir).sort(), [
-        'bin',
-        'ffmpeg9',
-        'libexec',
-        'licenses',
-      ]);
-    } finally {
-      box.cleanup();
-    }
-  },
-);
-
-test(
-  'install.sh --ffmpeg-only fails clearly when an FFmpeg ABI library is missing',
-  { skip: !unixInstallerPlatform },
-  () => {
-    const box = sandbox();
-
-    try {
-      installFakeMicromamba(box, { omit: ['avfilter'] });
-      installFailingCurl(box);
-
-      const result = runSh(box, ['--ffmpeg-only']);
-
-      assert.equal(result.status, 1);
-      assert.match(result.stderr, /FFmpeg 9 runtime missing: .*avfilter/);
-    } finally {
-      box.cleanup();
-    }
-  },
-);
-
-test(
-  'install.sh --ffmpeg-only downloads only micromamba when it is not installed',
-  { skip: !unixInstallerPlatform },
-  () => {
-    const box = sandbox();
-
-    try {
-      // curl writes a tarball containing a fake micromamba to the requested output file.
-      const payload = join(box.base, 'payload');
-
-      mkdirSync(join(payload, 'bin'), { recursive: true });
-      installFakeMicromamba({ ...box, fakeBin: join(payload, 'bin') });
-      rmSync(join(payload, 'bin/curl'), { force: true });
-
-      const archive = join(box.base, 'micromamba.tar.bz2');
-      packArchive(archive, payload, ['bin/micromamba'], 'j');
-
-      const curl = join(box.fakeBin, 'curl');
-
-      writeFileSync(
-        curl,
-        [
-          '#!/bin/sh',
-          `printf 'curl %s\\n' "$*" >> '${box.log}'`,
-          'out=""',
-          'while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done',
-          `cp '${archive}' "$out"`,
-          '',
-        ].join('\n'),
-      );
-      chmodSync(curl, 0o755);
-
-      const result = runSh(box, ['--ffmpeg-only']);
-
-      assert.equal(result.status, 0, result.stderr);
-
-      const curlCalls = calls(box).filter((line) => line.startsWith('curl'));
-
-      assert.equal(curlCalls.length, 1);
-      assert.match(curlCalls[0], /micro\.mamba\.pm/);
-      assert.doesNotMatch(curlCalls.join('\n'), /github/);
-      assert.deepEqual(readdirSync(box.installDir), ['ffmpeg9'], 'micromamba must not create bin/');
-    } finally {
-      box.cleanup();
-    }
-  },
-);
-
-test(
-  'install.sh default mode still starts with the GitHub release lookup',
-  { skip: !unixInstallerPlatform },
-  () => {
-    const box = sandbox();
-
-    try {
-      installFakeMicromamba(box);
-      installFailingCurl(box);
-
-      const result = runSh(box, []);
-
-      assert.notEqual(result.status, 0);
-      assert.match(calls(box)[0], /api\.github\.com\/repos\/twlite\/remedia\/releases\/latest/);
-      assert.equal(
-        calls(box).some((line) => line.startsWith('micromamba')),
-        false,
-      );
-    } finally {
-      box.cleanup();
-    }
-  },
-);
-
-test('install.ps1 rejects -FFmpegOnly together with -NoFFmpeg', { skip: !windows }, () => {
-  const box = sandbox();
-
-  try {
-    const result = runPs1(box, ['-FFmpegOnly', '-NoFFmpeg']);
-
-    assert.notEqual(result.status, 0);
-    assert.match(`${result.stdout}${result.stderr}`, /Conflicting options: -FFmpegOnly/);
-  } finally {
-    box.cleanup();
-  }
-});
-
-test(
-  'install.ps1 -FFmpegOnly installs FFmpeg only, repeatably, in a path containing spaces',
-  { skip: !windows },
-  () => {
-    const box = sandbox();
-
-    try {
-      installFakeMicromamba(box);
-
-      const serverMarker = join(box.installDir, 'libexec', 'current.txt');
-
-      mkdirSync(dirname(serverMarker), { recursive: true });
-      writeFileSync(serverMarker, 'v0.0.1');
-
-      for (const shell of ['powershell.exe', 'pwsh']) {
-        const result = runPs1(box, ['-FFmpegOnly'], shell);
-
-        assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-        assert.match(result.stdout, /Verified FFmpeg 9 libraries/);
-        assert.doesNotMatch(result.stdout, /Checking GitHub releases/);
-      }
-
-      for (const library of prefixLibraries(box)) assert.ok(existsSync(library), library);
-
-      assert.equal(readFileSync(serverMarker, 'utf8'), 'v0.0.1');
-      assert.equal(existsSync(join(box.installDir, 'bin')), false, 'no bin directory');
-
-      const micromambaCalls = calls(box).filter((line) => line.startsWith('micromamba'));
-
-      assert.match(micromambaCalls[0], /^micromamba create /);
-      assert.match(micromambaCalls[1], /^micromamba install /);
-      for (const call of micromambaCalls) assert.match(call, /--platform win-64/);
-    } finally {
-      box.cleanup();
-    }
-  },
-);
-
-test(
-  'install.ps1 can be invoked through the documented scriptblock form',
-  { skip: !windows },
-  () => {
-    const box = sandbox();
-
-    try {
-      installFakeMicromamba(box);
-
-      const command = `& ([scriptblock]::Create((Get-Content -Raw -LiteralPath '${installPs1}'))) -FFmpegOnly`;
-      const result = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command', command], {
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          PATH: `${box.fakeBin};${process.env.PATH}`,
-          REMEDIA_INSTALL_DIR: box.installDir,
-        },
-      });
-
-      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-      assert.match(result.stdout, /Verified FFmpeg 9 libraries/);
-    } finally {
-      box.cleanup();
-    }
-  },
-);
-
-test(
-  'install.ps1 rejects conflicting options through the scriptblock form on every platform',
-  { skip: process.platform === 'win32' },
-  () => {
-    // The Windows-only platform guard comes after the conflict check, so this runs everywhere
-    // pwsh exists; skip quietly where PowerShell is unavailable.
-    const probe = spawnSync('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.Major'], {
-      encoding: 'utf8',
-    });
-
-    if (probe.error || probe.status !== 0) return;
-
-    const command = `& ([scriptblock]::Create((Get-Content -Raw -LiteralPath '${installPs1}'))) -FFmpegOnly -NoFFmpeg`;
-    const result = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command', command], {
-      encoding: 'utf8',
-    });
-
-    assert.notEqual(result.status, 0);
-    assert.match(`${result.stdout}${result.stderr}`, /Conflicting options: -FFmpegOnly/);
-  },
-);
 
 /** A generated release archive and fake GitHub responses exercise real installer file operations. */
 function fakeRelease(box, version, { failDownload = false, badChecksum = false } = {}) {
@@ -474,7 +98,13 @@ function fakeRelease(box, version, { failDownload = false, badChecksum = false }
   writeFileSync(binary, `#!/bin/sh\necho 'remedia-server ${version} (commit fixture)'\n`);
   chmodSync(binary, 0o755);
   writeFileSync(join(payload, `remedia-server-runtime-${target}`), 'runtime');
-  for (const name of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt'])
+  for (const name of [
+    'LICENSE',
+    'THIRD_PARTY_NOTICES.md',
+    'THIRD_PARTY_LICENSES.txt',
+    'LICENSES.md',
+    'COPYING.GPLv3',
+  ])
     writeFileSync(join(payload, name), name);
   const archive = join(box.base, 'release.tar.gz');
   packArchive(archive, payload, readdirSync(payload));
@@ -532,9 +162,8 @@ test(
         assert.equal(readFileSync(join(box.installDir, 'libexec/current.txt'), 'utf8'), pointer);
       }
       fakeRelease(box, '0.3.0');
-      installFakeMicromamba(box, { omit: ['avfilter'] });
-      assert.notEqual(runSh(box, []).status, 0);
-      assert.equal(readFileSync(join(box.installDir, 'libexec/current.txt'), 'utf8'), pointer);
+      assert.equal(runSh(box, []).status, 0);
+      assert.notEqual(readFileSync(join(box.installDir, 'libexec/current.txt'), 'utf8'), pointer);
     } finally {
       box.cleanup();
     }
@@ -561,7 +190,7 @@ for (const shell of windows ? ['powershell.exe', 'pwsh'] : ['pwsh']) {
       const source = readFileSync(installPs1, 'utf8');
       const functions = source.slice(
         source.indexOf('function Write-InstallStatus'),
-        source.indexOf('# Resolve micromamba.'),
+        source.indexOf('Write-InstallStatus "Checking GitHub releases'),
       );
       const download = source.slice(
         source.indexOf('    try {\n      Save-InstallDownload -Url $asset.browser_download_url'),
@@ -623,7 +252,7 @@ test('PowerShell installation skips current versions and keeps its pointer on do
     const source = readFileSync(installPs1, 'utf8');
     const functions = source.slice(
       source.indexOf('function Write-InstallStatus'),
-      source.indexOf('# -FFmpegOnly never'),
+      source.indexOf('Write-InstallStatus "Checking GitHub releases'),
     );
     const workflow = source.slice(
       source.indexOf('Write-InstallStatus "Checking GitHub releases..."'),
@@ -636,6 +265,8 @@ test('PowerShell installation skips current versions and keeps its pointer on do
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
       'THIRD_PARTY_LICENSES.txt',
+      'LICENSES.md',
+      'COPYING.GPLv3',
     ])
       writeFileSync(join(payload, file), file);
     const archive = join(box.base, 'archive.tar.gz');
@@ -747,6 +378,10 @@ test(
     assert.ok(existsSync(cli), cli);
 
     const box = sandbox();
+    const nativeArchitecture =
+      process.env.PROCESSOR_ARCHITEW6432 ?? process.env.PROCESSOR_ARCHITECTURE;
+    const target =
+      nativeArchitecture === 'ARM64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc';
     const realShell = spawnSync(
       'powershell.exe',
       ['-NoProfile', '-Command', '(Get-Command powershell.exe).Source'],
@@ -776,12 +411,15 @@ test(
     try {
       const payload = join(box.base, 'payload');
       mkdirSync(payload);
-      writeFileSync(join(payload, 'remedia-server-x86_64-pc-windows-msvc.exe'), readFileSync(cli));
-      writeFileSync(
-        join(payload, 'remedia-server-runtime-x86_64-pc-windows-msvc.exe'),
-        'fixture runtime',
-      );
-      for (const name of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt'])
+      writeFileSync(join(payload, `remedia-server-${target}.exe`), readFileSync(cli));
+      writeFileSync(join(payload, `remedia-server-runtime-${target}.exe`), 'fixture runtime');
+      for (const name of [
+        'LICENSE',
+        'THIRD_PARTY_NOTICES.md',
+        'THIRD_PARTY_LICENSES.txt',
+        'LICENSES.md',
+        'COPYING.GPLv3',
+      ])
         writeFileSync(join(payload, name), name);
       const archive = join(box.base, 'release.tar.gz');
       packArchive(archive, payload, readdirSync(payload));
@@ -824,7 +462,8 @@ fn main() {
       );
       // Direct rustc invocations do not read Cargo's target linker environment.
       // Use the workflow's MSVC linker rather than Git's link.exe from PATH.
-      const linker = process.env.CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER;
+      const linker =
+        process.env[`CARGO_TARGET_${target.toUpperCase().replaceAll('-', '_')}_LINKER`];
       const linkerArgs = linker ? ['-C', `linker=${linker}`] : [];
       const compiled = spawnSync(
         'rustc',
@@ -850,7 +489,7 @@ fn main() {
             tag_name: `v${version}`,
             assets: [
               {
-                name: 'remedia-server-x86_64-pc-windows-msvc.tar.gz',
+                name: `remedia-server-${target}.tar.gz`,
                 digest: `sha256:${checksum}`,
               },
             ],
@@ -916,10 +555,10 @@ pointer: ${existsSync(pointer) ? readFileSync(pointer, 'utf8') : '(missing)'}`,
         const previous = readFileSync(pointer, 'utf8');
         const oldExe = join(box.installDir, 'libexec', previous, 'remedia-server.exe');
         const oldBytes = readFileSync(oldExe);
-        for (const library of prefixLibraries(box)) {
-          mkdirSync(dirname(library), { recursive: true });
-          writeFileSync(library, 'active DLL');
-        }
+        const configFile = join(box.installDir, 'remedia.config.json');
+        const configBytes = Buffer.from('{"fixture":"preserve existing configuration"}\n');
+        writeFileSync(configFile, configBytes);
+        assert.equal(existsSync(join(box.installDir, 'ffmpeg9')), false);
         setRelease('0.2.0');
         // Remove the explicit prefix: update must infer it from its versioned executable.
         const result = runWrapper(shell === 'pwsh' ? 'update' : 'update --no-ffmpeg', {
@@ -928,8 +567,8 @@ pointer: ${existsSync(pointer) ? readFileSync(pointer, 'utf8') : '(missing)'}`,
         assert.equal(result.status, 0, result.stdout + result.stderr);
         assert.notEqual(readFileSync(pointer, 'utf8'), previous);
         assert.deepEqual(readFileSync(oldExe), oldBytes);
-        for (const library of prefixLibraries(box))
-          assert.equal(readFileSync(library, 'utf8'), 'active DLL');
+        assert.deepEqual(readFileSync(configFile), configBytes);
+        assert.equal(existsSync(join(box.installDir, 'ffmpeg9')), false);
         assert.match(
           readFileSync(box.log, 'utf8'),
           new RegExp(`${shell.replace('.', '\\.')}.*-File`),
@@ -952,6 +591,7 @@ pointer: ${existsSync(pointer) ? readFileSync(pointer, 'utf8') : '(missing)'}`,
         assert.match(failed.stdout + failed.stderr, /checksum mismatch/i);
         assert.equal(readFileSync(pointer, 'utf8'), current);
         assert.equal(runWrapper('--version').status, 0);
+        assert.deepEqual(readFileSync(configFile), configBytes);
         setRelease('0.1.0');
         const switched = runWrapper('upgrade --no-ffmpeg', { REMEDIA_VERSION: '0.1.0' });
         assert.equal(switched.status, 0, switched.stdout + switched.stderr);
@@ -974,3 +614,29 @@ pointer: ${existsSync(pointer) ? readFileSync(pointer, 'utf8') : '(missing)'}`,
     }
   },
 );
+
+test('PowerShell platform detection retains native architecture and OS boundaries', (t) => {
+  if (spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).error)
+    return t.skip('pwsh unavailable');
+  const source = readFileSync(installPs1, 'utf8');
+  const definition = source.slice(
+    source.indexOf('function Test-RemediaWindowsPlatform'),
+    source.indexOf('$osArchitecture ='),
+  );
+  const result = spawnSync(
+    'pwsh',
+    [
+      '-NoProfile',
+      '-Command',
+      `${definition}
+    if (!(Test-RemediaWindowsPlatform AMD64 19045 $true)) { exit 1 }
+    if (!(Test-RemediaWindowsPlatform ARM64 22000 $true)) { exit 2 }
+    if (Test-RemediaWindowsPlatform ARM64 19045 $true) { exit 3 }
+    if (Test-RemediaWindowsPlatform x86 22000 $true) { exit 4 }
+    if (Test-RemediaWindowsPlatform AMD64 22000 $false) { exit 5 }
+  `,
+    ],
+    { encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});

@@ -60,7 +60,7 @@ if (process.platform === 'linux') {
     if (mustNotLinkFfmpeg.has(binary)) {
       rejectDependencies(dependencies, requiredLinuxLibraries, binary);
     } else {
-      requireDependencies(dependencies, requiredLinuxLibraries, binary);
+      rejectDependencies(dependencies, requiredLinuxLibraries, binary);
     }
     const directDependencies = execFileSync('readelf', ['-d', binary], { encoding: 'utf8' });
     rejectDynamicOpus(directDependencies, binary, /libopus\.so(?:\.\d+)?/i);
@@ -76,9 +76,9 @@ if (process.platform === 'linux') {
     if (mustNotLinkFfmpeg.has(binary)) {
       rejectDependencies(dependencies, requiredMacLibraries, binary);
     } else {
-      requireDependencies(dependencies, requiredMacLibraries, binary);
+      rejectDependencies(dependencies, requiredMacLibraries, binary);
     }
-    if (binary === nativeBinaries[0]) requireRpathInstallNames(dependencies, binary);
+
     rejectDynamicOpus(dependencies, binary, /libopus(?:\.\d+)?\.dylib/i);
   }
 } else if (process.platform === 'win32') {
@@ -86,45 +86,22 @@ if (process.platform === 'linux') {
     const headers = execFileSync('dumpbin', ['/headers', binary], { encoding: 'utf8' });
     const dependencies = execFileSync('dumpbin', ['/dependents', binary], { encoding: 'utf8' });
     console.log(`${binary}\n${dependencies}`);
-    if (!headers.toLowerCase().includes('machine (x64)')) {
+    if (
+      !headers
+        .toLowerCase()
+        .includes(process.arch === 'arm64' ? 'machine (arm64)' : 'machine (x64)')
+    ) {
       throw new Error(`Unexpected PE architecture for ${binary}`);
     }
     if (mustNotLinkFfmpeg.has(binary)) {
       rejectDependencies(dependencies, requiredWindowsLibraries, binary);
     } else {
-      requireDependencies(dependencies, requiredWindowsLibraries, binary);
+      rejectDependencies(dependencies, requiredWindowsLibraries, binary);
     }
     rejectDynamicOpus(dependencies, binary, /opus\.dll/i);
   }
 } else {
   throw new Error(`Native artifact inspection is not configured for ${process.platform}`);
-}
-
-function requireDependencies(output, names, binary) {
-  for (const name of names) {
-    if (!output.toLowerCase().includes(name.toLowerCase())) {
-      throw new Error(`${binary} does not declare the expected dynamic dependency ${name}`);
-    }
-  }
-}
-
-// dyld reuses an already-loaded image only when its install name equals the requested one. The
-// engine addon must therefore request @rpath names so @remedia/node can choose the installation.
-function requireRpathInstallNames(output, binary) {
-  for (const [library, major] of ffmpegAbi) {
-    if (!output.includes(`@rpath/${library}.${major}.dylib`)) {
-      throw new Error(
-        `${binary} must depend on @rpath/${library}.${major}.dylib; run normalize-macos-addon.mjs`,
-      );
-    }
-  }
-  const loadCommands = execFileSync('otool', ['-l', binary], { encoding: 'utf8' });
-  for (const rpath of ['/opt/homebrew/opt/ffmpeg/lib', '/usr/local/opt/ffmpeg/lib']) {
-    if (!loadCommands.includes(`path ${rpath} `)) {
-      throw new Error(`${binary} is missing the fallback rpath ${rpath}`);
-    }
-  }
-  execFileSync('codesign', ['--verify', '--strict', binary]);
 }
 
 function rejectDynamicOpus(output, binary, pattern) {

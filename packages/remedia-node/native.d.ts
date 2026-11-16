@@ -160,6 +160,14 @@ export declare class NativeRemedia {
   probe(id: string, source: NativeMediaSource, timeoutMs: number): Promise<NativeStreamInfo>
 }
 
+/**
+ * Report Remedia version/commit and the actual bundled FFmpeg version, license,
+ * configuration and library ABI versions. No playback resources are created.
+ *
+ * @returns JSON containing build identity and the linked FFmpeg metadata.
+ */
+export declare function bundledFfmpegInfo(): string
+
 /** One ordered event emitted by the native staged-source worker. */
 export interface NativeCrossfadeEvent {
   kind: string
