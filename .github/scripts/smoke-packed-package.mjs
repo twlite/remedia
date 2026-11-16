@@ -53,10 +53,23 @@ try {
   const pack = (directory) => {
     const before = new Set(readdirSync(tarballs));
 
-    execFileSync('pnpm', ['pack', '--pack-destination', tarballs], {
+    // pnpm uses a cmd shim on Windows. Pass the path as data through
+    // PowerShell rather than concatenating unquoted arguments with shell: true.
+    const windows = process.platform === 'win32';
+    const command = windows ? 'pwsh' : 'pnpm';
+    const args = windows
+      ? [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          'pnpm pack --pack-destination $env:REMEDIA_PACK_DESTINATION; exit $LASTEXITCODE',
+        ]
+      : ['pack', '--pack-destination', tarballs];
+
+    execFileSync(command, args, {
       cwd: directory,
       stdio: 'inherit',
-      shell: process.platform === 'win32',
+      env: { ...process.env, REMEDIA_PACK_DESTINATION: tarballs },
     });
 
     const created = readdirSync(tarballs).filter((entry) => !before.has(entry));
