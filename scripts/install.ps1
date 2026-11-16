@@ -225,7 +225,7 @@ function Get-RemediaTar {
     $nativeTar = Join-Path $env:SystemRoot 'System32\tar.exe'
     if (Test-Path -LiteralPath $nativeTar -PathType Leaf) { return $nativeTar }
   }
-  return (Get-Command tar -CommandType Application -ErrorAction Stop).Source
+  return (Get-Command tar -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 }
 
 # Compute SHA-256 without depending on PowerShell module autoloading.

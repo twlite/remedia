@@ -761,6 +761,31 @@ test(
   },
 );
 
+test('PowerShell tar fallback selects one executable when PATH contains multiple matches', (t) => {
+  if (spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).error)
+    return t.skip('pwsh unavailable');
+  const source = readFileSync(installPs1, 'utf8');
+  const start = source.indexOf('function Get-RemediaTar {');
+  const end = source.indexOf('# Compute SHA-256', start);
+  const result = spawnSync(
+    'pwsh',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `$ErrorActionPreference = 'Stop'
+$env:SystemRoot = ''
+function Get-Command { @([pscustomobject]@{ Source = '/first/tar' }, [pscustomobject]@{ Source = '/second/tar' }) }
+${source.slice(start, end)}
+$resolved = @(Get-RemediaTar)
+if ($resolved.Count -ne 1 -or $resolved[0] -cne '/first/tar') { throw "Expected one tar executable, got: $resolved" }`,
+    ],
+    { encoding: 'utf8' },
+  );
+
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
 test('PowerShell normalizes GUID paths, preserves busy versions, and resumes atomic activation', async (t) => {
   if (spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).error)
     return t.skip('pwsh unavailable');
