@@ -9,6 +9,7 @@ export function needsChecks(paths) {
       [
         'LICENSE',
         'LICENSES.md',
+        'SOURCE_DISTRIBUTION.md',
         'COPYING.GPLv3',
         'THIRD_PARTY_NOTICES.md',
         'THIRD_PARTY_LICENSES.txt',
@@ -29,6 +30,8 @@ export function needsChecks(paths) {
         '.github/native-deps/',
       ].some((prefix) => path.startsWith(prefix)) ||
       [
+        'scripts/install.sh',
+        'scripts/install.ps1',
         'Cargo.toml',
         'Cargo.lock',
         'rust-toolchain.toml',
@@ -59,6 +62,8 @@ export function needsNativeChecks(paths) {
       path.startsWith('.github/scripts/') ||
       path.startsWith('.github/workflows/') ||
       [
+        'scripts/install.sh',
+        'scripts/install.ps1',
         'Cargo.toml',
         'Cargo.lock',
         'rust-toolchain.toml',
@@ -68,6 +73,36 @@ export function needsNativeChecks(paths) {
       ].includes(path)
     );
   });
+}
+
+// TypeScript-only engine/client changes need native integration, but not cross compilation.
+export function needsCompatibilityChecks(paths) {
+  return paths.some(
+    (path) =>
+      needsNativeChecks([path]) &&
+      !(
+        path.startsWith('packages/remedia-node/lib/') ||
+        path.startsWith('packages/remedia-node/tests/') ||
+        path.startsWith('packages/remedia-client/') ||
+        path.startsWith('packages/remedia-config/') ||
+        /^scripts\/install\.(sh|ps1)$/.test(path)
+      ),
+  );
+}
+
+export function needsSourceChecks(paths) {
+  return paths.some(
+    (path) =>
+      path === 'Cargo.lock' ||
+      /(^|\/)Cargo\.toml$/.test(path) ||
+      path === 'rust-toolchain.toml' ||
+      path.startsWith('.cargo/') ||
+      path === 'SOURCE_DISTRIBUTION.md' ||
+      path.startsWith('.github/native-deps/') ||
+      /(?:corresponding-source|source-checkout|prepare-vendor|source-archive|build-ffmpeg|patch-ffmpeg)/.test(
+        path,
+      ),
+  );
 }
 
 export function changedPaths(
@@ -109,7 +144,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const paths = changedPaths(process.env.GITHUB_EVENT_NAME, event);
   const native = paths === null || needsNativeChecks(paths);
   const checks = paths === null || needsChecks(paths);
-  const output = 'native=' + native + '\nchecks=' + checks + '\n';
+  const output =
+    'native=' +
+    native +
+    '\nchecks=' +
+    checks +
+    '\ncompatibility=' +
+    (paths === null || needsCompatibilityChecks(paths)) +
+    '\nsources=' +
+    (paths === null || needsSourceChecks(paths)) +
+    '\n';
   if (process.env.GITHUB_OUTPUT) writeFileSync(process.env.GITHUB_OUTPUT, output, { flag: 'a' });
   else process.stdout.write(output);
 }

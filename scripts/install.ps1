@@ -225,7 +225,7 @@ function Get-RemediaTar {
     $nativeTar = Join-Path $env:SystemRoot 'System32\tar.exe'
     if (Test-Path -LiteralPath $nativeTar -PathType Leaf) { return $nativeTar }
   }
-  return (Get-Command tar -CommandType Application -ErrorAction Stop).Source
+  return (Get-Command tar -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 }
 
 # Compute SHA-256 without depending on PowerShell module autoloading.
@@ -245,88 +245,159 @@ function Get-RemediaSha256 {
   }
 }
 
-Write-InstallStatus "Checking GitHub releases..."
-if ($Version -eq 'latest') {
-  # GitHub's latest endpoint excludes prereleases. Fall back only when no stable release exists.
+function Set-InstallText {
+  param([string]$Path, [string]$Value)
+  $backup = $null
+  $temporary = Join-Path (Split-Path $Path -Parent) ('.' + (Split-Path $Path -Leaf) + "-$PID-" + [guid]::NewGuid().ToString('N') + '.new')
   try {
-    $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers $headers
-  } catch {
-    if ([int]$_.Exception.Response.StatusCode -ne 404) { throw }
-    $releases = @(Invoke-RestMethod "https://api.github.com/repos/$repo/releases?per_page=100" -Headers $headers)
-    $release = $releases | Where-Object { -not $_.draft -and $_.prerelease } | Select-Object -First 1
-    if (-not $release) { throw 'No published Remedia release found.' }
-  }
-} else {
-  if ($Version -notmatch '^v?\d+\.\d+\.\d+(-[a-zA-Z0-9.-]+)?$') { throw 'Invalid version.' }
-  $tag = 'v' + $Version.TrimStart('v')
-  $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/tags/$tag" -Headers $headers
-}
-Write-InstallStatus "Selected Remedia $($release.tag_name) for Windows x64."
-$currentFile = Join-Path $InstallDir 'libexec\current.txt'
-if (Test-Path -LiteralPath $currentFile) {
-  $currentTag = (Get-Content -LiteralPath $currentFile -Raw).Trim()
-  $currentDir = Join-Path (Join-Path $InstallDir 'libexec') $currentTag
-  $installedTag = $currentTag
-  $versionFile = Join-Path $currentDir 'version.txt'
-  if (Test-Path -LiteralPath $versionFile) {
-    $installedTag = (Get-Content -LiteralPath $versionFile -Raw).Trim()
-  }
-  if ($installedTag -ceq $release.tag_name -and
-      (Test-Path -LiteralPath (Join-Path $currentDir 'remedia-server.exe')) -and
-      (Test-Path -LiteralPath (Join-Path $currentDir 'remedia-server-runtime.exe'))) {
-    Write-InstallStatus "Remedia $($release.tag_name) is already current; nothing to download or replace."
-    return
+    [IO.File]::WriteAllText($temporary, $Value, [Text.Encoding]::ASCII)
+    if (Test-Path -LiteralPath $Path) { $backup = $temporary + '.old'; [IO.File]::Replace($temporary, $Path, $backup) }
+    else { [IO.File]::Move($temporary, $Path) }
+  } finally {
+    Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    if ($backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
   }
 }
-$target = if ($osArchitecture -eq 'ARM64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
-$assetName = "remedia-server-$target.tar.gz"
-$asset = $release.assets | Where-Object name -eq $assetName | Select-Object -First 1
-if (-not $asset -or $asset.digest -notmatch '^sha256:[a-fA-F0-9]{64}$') { throw "Missing release asset or checksum: $assetName" }
-$tmp = Join-Path ([IO.Path]::GetTempPath()) ("remedia-" + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $tmp -Force | Out-Null
-try {
-  $archive = Join-Path $tmp 'server.tar.gz'
-  if ($ArchivePath) {
-    # A browser-downloaded release archive can bypass a failing CLI download route.
-    $localArchive = (Resolve-Path -LiteralPath $ArchivePath -ErrorAction Stop).ProviderPath
-    if (-not (Test-Path -LiteralPath $localArchive -PathType Leaf)) {
-      throw "Release archive is not a file: $ArchivePath"
-    }
-    Copy-Item -LiteralPath $localArchive -Destination $archive
-    Write-InstallStatus "Using locally downloaded release archive: $localArchive"
-  } else {
-    try {
-      Save-InstallDownload -Url $asset.browser_download_url -Destination $archive -Label 'Remedia server' -ExpectedBytes $asset.size -Attempts 2
-    } catch {
-      if (-not $asset.url) { throw }
-      Write-InstallStatus 'Direct GitHub download failed. Trying the release-asset API...'
-      Save-InstallDownload -Url $asset.url -Destination $archive -Label 'Remedia server (API)' -ExpectedBytes $asset.size -Attempts 2
-    }
-  }
-  Write-InstallStatus 'Verifying server archive SHA-256...'
-  $actual = Get-RemediaSha256 -Path $archive
-  if ($actual -ine $asset.digest.Substring(7)) { throw 'Release SHA-256 checksum mismatch.' }
-  Write-InstallStatus 'Extracting server archive...'
-  & (Get-RemediaTar) -xzf $archive -C $tmp
-  if ($LASTEXITCODE -ne 0) { throw 'Failed to extract server archive.' }
-  $binDir = Join-Path $InstallDir 'bin'
-  $libexec = Join-Path $InstallDir 'libexec'
-  $licenseDir = Join-Path $InstallDir 'licenses'
-  @($binDir, $libexec, $licenseDir) | ForEach-Object { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
-  $serverExe = Join-Path $tmp "remedia-server-$target.exe"
-  $runtimeExe = Join-Path $tmp "remedia-server-runtime-$target.exe"
-  if (!(Test-Path $serverExe) -or !(Test-Path $runtimeExe)) { throw 'CLI or runtime binary not present in release archive.' }
 
-  Write-InstallStatus 'Installing Remedia binaries and commands...'
-  # Windows cannot replace a running executable. Place it in a versioned directory and
-  # let the command wrapper discover the new version on the next invocation.
-  $versionDir = Join-Path $libexec ($release.tag_name + '-' + [guid]::NewGuid().ToString('N'))
-  New-Item -ItemType Directory -Path $versionDir -Force | Out-Null
-  Copy-Item $serverExe (Join-Path $versionDir 'remedia-server.exe') -Force
-  Copy-Item $runtimeExe (Join-Path $versionDir 'remedia-server-runtime.exe') -Force
-  Set-Content -LiteralPath (Join-Path $versionDir 'version.txt') -Value $release.tag_name -NoNewline -Encoding Ascii
-  foreach ($name in @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt', 'LICENSES.md', 'COPYING.GPLv3')) {
-    Copy-Item (Join-Path $tmp $name) (Join-Path $licenseDir $name) -Force
+function Test-InstalledVersion {
+  param([string]$Directory, [string]$Tag, [string]$Target)
+  try {
+    if ((Get-Content -LiteralPath (Join-Path $Directory 'version.txt') -Raw).Trim() -cne $Tag -or
+        (Get-Content -LiteralPath (Join-Path $Directory 'target.txt') -Raw).Trim() -cne $Target) { return $false }
+    foreach ($pair in @(@('remedia-server.exe', 'cli.sha256'), @('remedia-server-runtime.exe', 'runtime.sha256'))) {
+      $binary = Join-Path $Directory $pair[0]
+      if (!(Test-Path -LiteralPath $binary -PathType Leaf) -or (Get-Item -LiteralPath $binary).Length -eq 0) { return $false }
+      if ((Get-RemediaSha256 -Path $binary) -ine (Get-Content -LiteralPath (Join-Path $Directory $pair[1]) -Raw).Trim()) { return $false }
+    }
+    foreach ($name in @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt', 'LICENSES.md', 'COPYING.GPLv3')) {
+      if (!(Test-Path -LiteralPath (Join-Path $Directory "licenses/$name") -PathType Leaf)) { return $false }
+    }
+    return $true
+  } catch { return $false }
+}
+
+# Unavailable process information is not permission to remove an old executable pair.
+function Test-VersionInUse {
+  param([string]$Directory)
+  try {
+    $processes = @(Get-CimInstance Win32_Process -Filter "Name='remedia-server.exe' OR Name='remedia-server-runtime.exe'" -ErrorAction Stop)
+    $prefix = [IO.Path]::GetFullPath($Directory).TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar
+    foreach ($process in $processes) {
+      if (!$process.ExecutablePath) { return $true }
+      # Normalize both sides: Windows process paths can use 8.3 names such as RUNNER~1.
+      $executable = [IO.Path]::GetFullPath($process.ExecutablePath)
+      if ($executable.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+  } catch { return $true }
+}
+
+function Remove-ObsoleteVersions {
+  param([string]$Libexec, [string]$OldCurrent)
+  $active = (Get-Content -LiteralPath (Join-Path $Libexec 'current.txt') -Raw).Trim()
+  $previousPath = Join-Path $Libexec 'previous.txt'
+  $previous = if (Test-Path -LiteralPath $previousPath) { (Get-Content -LiteralPath $previousPath -Raw).Trim() } else { '' }
+  if ($previous -match ('^' + [regex]::Escape($active) + '-[a-fA-F0-9]{32}$') -and $OldCurrent -cne $previous -and !(Test-VersionInUse (Join-Path $Libexec $previous))) {
+    Remove-Item -LiteralPath $previousPath -Force
+    $previous = ''
+  }
+  foreach ($directory in Get-ChildItem -LiteralPath $Libexec -Directory -Force) {
+    if ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+    if ($directory.Name -ceq $active -or $directory.Name -ceq $previous) { continue }
+    if ($directory.Name -match '^\.stage-.*-(\d+)-[a-f0-9]{32}$') {
+      if (!(Get-Process -Id ([int]$Matches[1]) -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $directory.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    } elseif ($directory.Name -match '^v\d+\.\d+\.\d+' -and (Test-Path -LiteralPath (Join-Path $directory.FullName 'version.txt'))) {
+      if (!(Test-VersionInUse $directory.FullName)) { Remove-Item -LiteralPath $directory.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+      else { Write-InstallStatus "Retaining $($directory.Name): in use or process inspection unavailable. A later install can clean it." }
+    }
+  }
+}
+
+Write-InstallStatus "Checking GitHub releases..."
+$installLock = $null
+$tmp = $null
+$stage = $null
+try {
+  $libexec = Join-Path $InstallDir 'libexec'
+  $binDir = Join-Path $InstallDir 'bin'
+  $licenseDir = Join-Path $InstallDir 'licenses'
+  @($libexec, $binDir, $licenseDir) | ForEach-Object { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
+  try { $installLock = [IO.File]::Open((Join-Path $libexec '.install.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+  catch { throw "Cannot acquire installation lock (another installer may be running): $($_.Exception.Message)" }
+  $pointer = Join-Path $libexec 'current.txt'
+  $oldCurrent = if (Test-Path -LiteralPath $pointer) { (Get-Content -LiteralPath $pointer -Raw).Trim() } else { '' }
+  if ($oldCurrent -and $oldCurrent -notmatch '^v[A-Za-z0-9._+-]+$') { throw 'Invalid current installation pointer' }
+  if ($Version -eq 'latest') {
+    # GitHub's latest endpoint excludes prereleases. Fall back only when no stable release exists.
+    try {
+      $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers $headers
+    } catch {
+      if ([int]$_.Exception.Response.StatusCode -ne 404) { throw }
+      $releases = @(Invoke-RestMethod "https://api.github.com/repos/$repo/releases?per_page=100" -Headers $headers)
+      $release = $releases | Where-Object { -not $_.draft -and $_.prerelease } | Select-Object -First 1
+      if (-not $release) { throw 'No published Remedia release found.' }
+    }
+  } else {
+    if ($Version -notmatch '^v?\d+\.\d+\.\d+(-[a-zA-Z0-9.-]+)?$') { throw 'Invalid version.' }
+    $tag = 'v' + $Version.TrimStart('v')
+    $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/tags/$tag" -Headers $headers
+  }
+  $tag = $release.tag_name
+  if ($tag -notmatch '^v\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?$') { throw 'Invalid release tag' }
+  $target = if ($osArchitecture -eq 'ARM64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
+  Write-InstallStatus "Selected Remedia $tag for $target."
+  $versionDir = Join-Path $libexec $tag
+  if (Test-InstalledVersion $versionDir $tag $target) {
+    Write-InstallStatus "Remedia $tag is already current or cached; nothing to download or replace."
+  } else {
+    $assetName = "remedia-server-$target.tar.gz"
+    $asset = $release.assets | Where-Object name -eq $assetName | Select-Object -First 1
+    if (-not $asset -or $asset.digest -notmatch '^sha256:[a-fA-F0-9]{64}$') { throw "Missing release asset or checksum: $assetName" }
+    $tmp = Join-Path $libexec (".stage-download-$PID-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+    $archive = Join-Path $tmp 'server.tar.gz'
+    if ($ArchivePath) {
+      # A browser-downloaded release archive can bypass a failing CLI download route.
+      $localArchive = (Resolve-Path -LiteralPath $ArchivePath -ErrorAction Stop).ProviderPath
+      if (-not (Test-Path -LiteralPath $localArchive -PathType Leaf)) {
+        throw "Release archive is not a file: $ArchivePath"
+      }
+      Copy-Item -LiteralPath $localArchive -Destination $archive
+      Write-InstallStatus "Using locally downloaded release archive: $localArchive"
+    } else {
+      try {
+        Save-InstallDownload -Url $asset.browser_download_url -Destination $archive -Label 'Remedia server' -ExpectedBytes $asset.size -Attempts 2
+      } catch {
+        if (-not $asset.url) { throw }
+        Write-InstallStatus 'Direct GitHub download failed. Trying the release-asset API...'
+        Save-InstallDownload -Url $asset.url -Destination $archive -Label 'Remedia server (API)' -ExpectedBytes $asset.size -Attempts 2
+      }
+    }
+    Write-InstallStatus 'Verifying server archive SHA-256...'
+    $actual = Get-RemediaSha256 -Path $archive
+    if ($actual -ine $asset.digest.Substring(7)) { throw 'Release SHA-256 checksum mismatch.' }
+    Write-InstallStatus 'Extracting server archive...'
+    & (Get-RemediaTar) -xzf $archive -C $tmp
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to extract server archive.' }
+    $stage = Join-Path $libexec (".stage-$tag-$PID-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path (Join-Path $stage 'licenses') -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $tmp "remedia-server-$target.exe") -Destination (Join-Path $stage 'remedia-server.exe')
+    Copy-Item -LiteralPath (Join-Path $tmp "remedia-server-runtime-$target.exe") -Destination (Join-Path $stage 'remedia-server-runtime.exe')
+    foreach ($name in @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt', 'LICENSES.md', 'COPYING.GPLv3')) {
+      Copy-Item -LiteralPath (Join-Path $tmp $name) -Destination (Join-Path $stage "licenses/$name")
+    }
+    Set-Content -LiteralPath (Join-Path $stage 'target.txt') -Value $target -NoNewline -Encoding Ascii
+    Set-Content -LiteralPath (Join-Path $stage 'cli.sha256') -Value (Get-RemediaSha256 (Join-Path $stage 'remedia-server.exe')) -NoNewline -Encoding Ascii
+    Set-Content -LiteralPath (Join-Path $stage 'runtime.sha256') -Value (Get-RemediaSha256 (Join-Path $stage 'remedia-server-runtime.exe')) -NoNewline -Encoding Ascii
+    Set-Content -LiteralPath (Join-Path $stage 'version.txt') -Value $tag -NoNewline -Encoding Ascii
+    if (!(Test-InstalledVersion $stage $tag $target)) { throw 'Incomplete staged release' }
+    if (Test-Path -LiteralPath $versionDir) {
+      $previous = if (Test-Path -LiteralPath (Join-Path $libexec 'previous.txt')) { (Get-Content -LiteralPath (Join-Path $libexec 'previous.txt') -Raw).Trim() } else { '' }
+      if ($oldCurrent -ceq $tag -or $previous -ceq $tag -or (Test-VersionInUse $versionDir)) { throw "Existing $tag is incomplete or differs; preserving its files. Select another version or finish processes using it before repair." }
+      Remove-Item -LiteralPath $versionDir -Recurse -Force
+    }
+    [IO.Directory]::Move($stage, $versionDir)
+    $stage = $null
   }
   $wrapper = @'
 @echo off
@@ -336,19 +407,32 @@ set /p REMEDIA_CURRENT=<"%REMEDIA_ROOT%\libexec\current.txt"
 "%REMEDIA_ROOT%\libexec\%REMEDIA_CURRENT%\remedia-server.exe" %*
 exit /b %ERRORLEVEL%
 '@
-  Set-Content -LiteralPath (Join-Path $binDir 'remedia.cmd') -Value $wrapper -Encoding Ascii
-  Set-Content -LiteralPath (Join-Path $binDir 'remedia-server.cmd') -Value $wrapper -Encoding Ascii
-  Add-RemediaToPath -Directory $binDir
-  $pointer = Join-Path $libexec 'current.txt'
-  $stagedPointer = Join-Path $libexec 'current.new'
-  Set-Content -LiteralPath $stagedPointer -Value (Split-Path $versionDir -Leaf) -NoNewline -Encoding Ascii
-  if (Test-Path -LiteralPath $pointer) {
-    [IO.File]::Replace($stagedPointer, $pointer, (Join-Path $versionDir 'previous.txt'))
-  } else {
-    [IO.File]::Move($stagedPointer, $pointer)
+  foreach ($name in @('remedia.cmd', 'remedia-server.cmd')) {
+    $path = Join-Path $binDir $name
+    $content = $wrapper.Replace("`r`n", "`n").TrimEnd()
+    if (!(Test-Path -LiteralPath $path) -or [IO.File]::ReadAllText($path).Replace("`r`n", "`n").TrimEnd() -cne $content) {
+      Set-InstallText $path ($content.Replace("`n", "`r`n") + "`r`n")
+    }
   }
-  Write-Host "Installed Remedia $($release.tag_name) to $InstallDir"
+  Add-RemediaToPath -Directory $binDir
+  foreach ($name in @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt', 'LICENSES.md', 'COPYING.GPLv3')) {
+    Copy-Item -LiteralPath (Join-Path $versionDir "licenses/$name") -Destination (Join-Path $licenseDir $name) -Force
+  }
+  $previousFile = Join-Path $libexec 'previous.txt'
+  $oldPrevious = if (Test-Path -LiteralPath $previousFile) { [IO.File]::ReadAllText($previousFile) } else { $null }
+  if ($oldCurrent -and $oldCurrent -cne $tag) { Set-InstallText $previousFile $oldCurrent }
+  try { Set-InstallText $pointer $tag }
+  catch {
+    if ($null -ne $oldPrevious) { Set-InstallText $previousFile $oldPrevious }
+    else { Remove-Item -LiteralPath $previousFile -Force -ErrorAction SilentlyContinue }
+    throw
+  }
+  try { Remove-ObsoleteVersions $libexec $oldCurrent }
+  catch { Write-InstallStatus "Retaining obsolete directories after cleanup failure: $($_.Exception.Message)" }
+  Write-Host "Installed Remedia $tag to $InstallDir ($versionDir)"
   Write-Host 'Run: remedia --version'
 } finally {
-  Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+  if ($stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
+  if ($tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+  if ($installLock) { $installLock.Dispose() }
 }

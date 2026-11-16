@@ -1,3 +1,5 @@
+import { fileHash, requestWithRetry, describeError } from './release-network.mjs';
+import { setTimeout } from 'node:timers/promises';
 import { authorizeRelease } from './release-authorization.mjs';
 import { execFileSync } from 'node:child_process';
 import {
@@ -7,6 +9,7 @@ import {
   readFileSync,
   readdirSync,
   writeFileSync,
+  statSync,
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -272,16 +275,23 @@ export function assertPackedManifest(manifest, { name, version, kind }) {
   }
 }
 
-export async function registryHasVersion(name, version, fetchImpl = fetch) {
+export async function registryHasVersion(name, version, fetchImpl = fetch, tarball) {
   const encodedName = name.replace('/', '%2f');
   const url = 'https://registry.npmjs.org/' + encodedName + '/' + encodeURIComponent(version);
   let response;
   try {
-    response = await fetchImpl(url, { headers: { accept: 'application/json' } });
+    response = await requestWithRetry(
+      url,
+      { headers: { accept: 'application/json' } },
+      { fetchImpl },
+    );
   } catch (error) {
-    throw new Error('Could not query npm registry for ' + name + '@' + version + '.', {
-      cause: error,
-    });
+    throw new Error(
+      'Could not query npm registry for ' + name + '@' + version + ': ' + describeError(error),
+      {
+        cause: error,
+      },
+    );
   }
 
   if (response.status === 404) return false;
@@ -308,7 +318,36 @@ export async function registryHasVersion(name, version, fetchImpl = fetch) {
   if (metadata.name !== name || metadata.version !== version) {
     throw new Error('npm registry returned mismatched metadata for ' + name + '@' + version + '.');
   }
+  if (tarball) {
+    const integrity = 'sha512-' + (await fileHash(tarball, 'sha512', 'base64'));
+    const shasum = await fileHash(tarball, 'sha1');
+    if (metadata.dist?.integrity !== integrity || metadata.dist?.shasum !== shasum) {
+      throw new Error('Published package differs from verified tarball: ' + name + '@' + version);
+    }
+  }
   return true;
+}
+
+export async function verifyPublishedPackages(
+  packages,
+  version,
+  { check = registryHasVersion, wait = setTimeout } = {},
+) {
+  for (const item of packages.filter((candidate) => candidate.manifest?.private !== true)) {
+    for (let attempt = 0; ; attempt++) {
+      if (await check(item.name, version, fetch, item.tarball)) break;
+      if (attempt === 8)
+        throw new Error(
+          'npm publication is not visible yet: ' +
+            item.name +
+            '@' +
+            version +
+            '; rerun failed jobs to resume',
+        );
+      await wait(Math.min(30_000, 2000 * 2 ** attempt));
+    }
+  }
+  console.log('Verified every npm package against the exact packed tarball hashes.');
 }
 
 function readTarManifest(tarball) {
@@ -318,22 +357,11 @@ function readTarManifest(tarball) {
   return JSON.parse(manifestJson);
 }
 
-/**
- * File name of the FFmpeg-free bootstrap addon that accompanies an engine addon
- * (`node.<suffix>.node` -> `bootstrap.<suffix>.node`).
- */
-export function bootstrapFileName(engineFileName) {
-  if (!/^node\..+\.node$/.test(engineFileName)) {
-    throw new Error('Unexpected N-API engine addon name: ' + engineFileName);
-  }
-  return 'bootstrap.' + engineFileName.slice('node.'.length);
-}
-
 export function assertTarContents(tarball, manifest, kind) {
   const entries = execFileSync('tar', ['-tzf', tarball], { encoding: 'utf8' }).trim().split('\n');
   const required =
     kind === 'platform'
-      ? ['package/' + manifest.main, 'package/' + bootstrapFileName(manifest.main)]
+      ? ['package/' + manifest.main]
       : kind === 'node'
         ? [
             'package/dist/index.js',
@@ -349,7 +377,7 @@ export function assertTarContents(tarball, manifest, kind) {
     'package/THIRD_PARTY_NOTICES.md',
     'package/THIRD_PARTY_LICENSES.txt',
     ...(kind === 'platform' || kind === 'node'
-      ? ['package/LICENSES.md', 'package/COPYING.GPLv3']
+      ? ['package/LICENSES.md', 'package/COPYING.GPLv3', 'package/SOURCE_DISTRIBUTION.md']
       : []),
   );
   for (const file of required) {
@@ -361,12 +389,20 @@ export function assertTarContents(tarball, manifest, kind) {
     'LICENSE',
     'THIRD_PARTY_NOTICES.md',
     'THIRD_PARTY_LICENSES.txt',
-    ...(kind === 'platform' || kind === 'node' ? ['LICENSES.md', 'COPYING.GPLv3'] : []),
+    ...(kind === 'platform' || kind === 'node'
+      ? ['LICENSES.md', 'COPYING.GPLv3', 'SOURCE_DISTRIBUTION.md']
+      : []),
   ]) {
     const actual = execFileSync('tar', ['-xOf', tarball, 'package/' + file]);
     if (!actual.equals(readFileSync(join(rootDir, file))))
       throw new Error('Packed notice differs: ' + file);
   }
+}
+
+function assertPackedSource(tarball, manifestPath) {
+  const packed = execFileSync('tar', ['-xOf', tarball, 'package/source-manifest.json']);
+  if (!packed.equals(readFileSync(manifestPath)))
+    throw new Error('Packed source manifest differs from verified release metadata');
 }
 
 function run(command, args, cwd = rootDir) {
@@ -402,7 +438,6 @@ export function verifyReleaseArtifacts(bindingsDirectory, serversDirectory) {
   }
   for (const target of RELEASE_TARGETS) {
     const addon = join(bindingsDirectory, 'node.' + target.suffix + '.node');
-    const bootstrap = join(bindingsDirectory, bootstrapFileName('node.' + target.suffix + '.node'));
     const server =
       target.server === false
         ? undefined
@@ -412,13 +447,12 @@ export function verifyReleaseArtifacts(bindingsDirectory, serversDirectory) {
         ? undefined
         : join(serversDirectory, 'remedia-server-runtime-' + target.triple) +
           (target.extension ?? '');
-    for (const required of [addon, bootstrap, ...(server ? [server, serverRuntime] : [])]) {
+    for (const required of [addon, ...(server ? [server, serverRuntime] : [])]) {
       if (!existsSync(required))
         throw new Error('Required verified release artifact is missing: ' + required);
-      if (readFileSync(required).byteLength === 0)
-        throw new Error('Release artifact is empty: ' + required);
+      if (statSync(required).size === 0) throw new Error('Release artifact is empty: ' + required);
     }
-    artifacts.push({ ...target, addon, bootstrap, ...(server ? { server, serverRuntime } : {}) });
+    artifacts.push({ ...target, addon, ...(server ? { server, serverRuntime } : {}) });
   }
   return artifacts;
 }
@@ -431,6 +465,7 @@ export function stageReleaseLicenses(directory, workspaceRoot = rootDir) {
     'THIRD_PARTY_LICENSES.txt',
     'LICENSES.md',
     'COPYING.GPLv3',
+    'SOURCE_DISTRIBUTION.md',
   ]) {
     copyFileSync(join(workspaceRoot, file), join(directory, file));
   }
@@ -476,7 +511,17 @@ export function packRelease(
 ) {
   parseReleaseVersion(version);
   const artifactSet = verifyReleaseArtifacts(bindingsDirectory, serversDirectory);
+  mkdirSync(outputDirectory, { recursive: true });
+  const sourceManifestPath = join(serversDirectory, 'source-manifest.json');
+  if (!existsSync(sourceManifestPath)) throw new Error('Missing release source manifest');
+  const sourceManifest = JSON.parse(readFileSync(sourceManifestPath, 'utf8'));
+  if (sourceManifest.version !== version) throw new Error('Source manifest version mismatch');
+  copyFileSync(sourceManifestPath, join(outputDirectory, 'source-manifest.json'));
   packServerArchives(serversDirectory, workspaceRoot);
+  copyFileSync(
+    sourceManifestPath,
+    join(workspaceRoot, 'packages/remedia-node/source-manifest.json'),
+  );
   const nodeManifestPath = join(workspaceRoot, 'packages/remedia-node/package.json');
   const nodeManifest = JSON.parse(readFileSync(nodeManifestPath, 'utf8'));
   // Release packaging must not silently drop any configured napi-rs target.
@@ -529,22 +574,20 @@ export function packRelease(
   for (const target of artifactSet) {
     const directory = join(platformDirectory, target.suffix);
     stageReleaseLicenses(directory, workspaceRoot);
+    copyFileSync(sourceManifestPath, join(directory, 'source-manifest.json'));
     const platformManifestPath = join(directory, 'package.json');
     const platformManifest = JSON.parse(readFileSync(platformManifestPath, 'utf8'));
-    // The bootstrap loads before the FFmpeg-linked engine addon and selects the FFmpeg runtime,
-    // so it ships in the same platform package, next to the engine addon it belongs to.
-    const bootstrapFile = bootstrapFileName(platformManifest.main);
-    copyFileSync(target.bootstrap, join(directory, bootstrapFile));
     platformManifest.license = 'SEE LICENSE IN LICENSES.md';
     platformManifest.files = [
       ...new Set([
         ...(platformManifest.files ?? [platformManifest.main]),
-        bootstrapFile,
         'LICENSE',
         'THIRD_PARTY_NOTICES.md',
         'THIRD_PARTY_LICENSES.txt',
         'LICENSES.md',
         'COPYING.GPLv3',
+        'SOURCE_DISTRIBUTION.md',
+        'source-manifest.json',
       ]),
     ];
     writeFileSync(platformManifestPath, JSON.stringify(platformManifest, null, 2) + '\n');
@@ -556,6 +599,7 @@ export function packRelease(
       kind: 'platform',
     });
     assertTarContents(tarball, manifest, 'platform');
+    assertPackedSource(tarball, sourceManifestPath);
     packed.push({
       name: manifest.name,
       version,
@@ -574,6 +618,7 @@ export function packRelease(
     const manifest = readTarManifest(tarball);
     assertPackedManifest(manifest, { name, version, kind });
     assertTarContents(tarball, manifest, kind);
+    if (kind === 'node') assertPackedSource(tarball, sourceManifestPath);
     packed.push({ name, version, kind, tarball: basename(tarball), manifest });
   }
 
@@ -637,6 +682,10 @@ export async function publishRelease({
     pluginHostPackage,
     clientPackage,
   ];
+  for (const item of ordered) {
+    if (item.manifest?.private !== true && existsSync(item.tarball))
+      await registryCheck(item.name, version, fetch, item.tarball);
+  }
   const publishedThisRun = new Set();
   for (const item of ordered) {
     if (item.manifest?.private === true) {
@@ -655,7 +704,7 @@ export async function publishRelease({
       for (const platform of platformPackages) {
         if (
           !publishedThisRun.has(platform.name) &&
-          !(await registryCheck(platform.name, version))
+          !(await registryCheck(platform.name, version, fetch, platform.tarball))
         ) {
           throw new Error(
             'Cannot publish ' +
@@ -671,7 +720,7 @@ export async function publishRelease({
         }
       }
     }
-    if (await registryCheck(item.name, version)) {
+    if (await registryCheck(item.name, version, fetch, item.tarball)) {
       log(
         'Skipping already published ' +
           item.name +
@@ -757,14 +806,15 @@ async function main() {
       ...item,
       tarball: resolve(packageDirectory, item.tarball),
     }));
-    return publishRelease({ packages, version, npmTag });
+    await publishRelease({ packages, version, npmTag });
+    return verifyPublishedPackages(packages, version);
   }
   throw new Error('Commands: detect, authorize, sync, pack, publish');
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    console.error('Release pipeline error: ' + error.message);
+    console.error('Release pipeline error: ' + describeError(error));
     process.exitCode = 1;
   });
 }

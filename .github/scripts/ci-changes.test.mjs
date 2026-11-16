@@ -4,7 +4,13 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { changedPaths, needsChecks, needsNativeChecks } from './ci-changes.mjs';
+import {
+  changedPaths,
+  needsChecks,
+  needsNativeChecks,
+  needsCompatibilityChecks,
+  needsSourceChecks,
+} from './ci-changes.mjs';
 import { detectRelease } from './release.mjs';
 
 test('unrelated pushes skip checks while previously watched paths still run them', () => {
@@ -32,15 +38,21 @@ test('unrelated pushes skip checks while previously watched paths still run them
 test('pushes always reach detection and release jobs bypass path selection', () => {
   const workflow = readFileSync(new URL('../workflows/ci.yaml', import.meta.url), 'utf8');
   const push = workflow.split('  push:')[1].split('  pull_request:')[0];
-  assert.match(push, /branches: \[main, 'fix\/\*\*'\]/);
+  assert.match(push, /branches: \[main\]/);
   assert.doesNotMatch(push, /paths(?:-ignore)?:/);
   assert.match(workflow, /checks: \$\{\{ steps\.changes\.outputs\.checks \}\}/);
-  for (const job of ['checks', 'supported-platforms', 'additional-platforms', 'package-release']) {
+  for (const job of [
+    'checks',
+    'native-checks',
+    'supported-platforms',
+    'additional-platforms',
+    'package-release',
+  ]) {
     const block = workflow.split('\n  ' + job + ':')[1]?.split(/\n  [a-z][\w-]*:/)[0];
     assert.ok(block, job);
     assert.match(
       block,
-      /if: needs\.release-detection\.outputs\.(checks|native) == 'true' \|\| needs\.release-detection\.outputs\.is_release == 'true'/,
+      /if: needs\.release-detection\.outputs\.(checks|native|compatibility) == 'true' \|\| needs\.release-detection\.outputs\.is_release == 'true'/,
       job,
     );
   }
@@ -184,4 +196,32 @@ test('real git history catches native deletions and renames into ignored documen
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('TypeScript integration uses native checks without duplicating cross-platform builds', () => {
+  for (const path of [
+    'packages/remedia-node/lib/native-binding.ts',
+    'packages/remedia-client/tests/server-integration.test.ts',
+  ]) {
+    assert.equal(needsNativeChecks([path]), true);
+    assert.equal(needsCompatibilityChecks([path]), false);
+  }
+  for (const path of [
+    'crates/remedia-core/src/decoder.rs',
+    '.github/workflows/platform.yaml',
+    '.github/scripts/release.mjs',
+  ])
+    assert.equal(needsCompatibilityChecks([path]), true);
+  for (const path of [
+    'Cargo.lock',
+    '.github/native-deps/source-inputs.json',
+    'Cargo.toml',
+    'crates/remedia-core/Cargo.toml',
+    'rust-toolchain.toml',
+    '.cargo/config.toml',
+    '.github/scripts/build-ffmpeg-static.sh',
+    'SOURCE_DISTRIBUTION.md',
+  ])
+    assert.equal(needsSourceChecks([path]), true);
+  assert.equal(needsSourceChecks(['packages/remedia-client/lib/index.ts']), false);
 });

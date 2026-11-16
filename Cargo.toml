@@ -1,16 +1,20 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "packages/remedia-node", "packages/remedia-node/bootstrap"]
+members = ["crates/*", "packages/remedia-node"]
 
 [workspace.package]
 license = "MIT"
 edition = "2024"
 rust-version = "1.88"
 
-# Whole-program optimization across the engine, bindings, and statically linked codecs' Rust
-# glue. Release builds link more slowly; development and test profiles are unchanged.
+# Measured native releases retain fat LTO for size. Ordinary tests use the test profile;
+# PR artifact validation uses optimized code without whole-program linking.
 [profile.release]
 lto = "fat"
+
+[profile.ci]
+inherits = "release"
+lto = false
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

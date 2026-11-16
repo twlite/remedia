@@ -169,7 +169,10 @@ fn one_opus_source_switches_between_passthrough_and_live_filtering() {
         let _ = response_tx.send(update_session.set_volume(1.0));
     });
     assert!(wait_for_volume(&session, 1.0));
-    handle.release(1);
+    // Returning to packets can flush pending PCM before publishing the mode.
+    // No more controls follow, so drain the sink instead of allowing only one
+    // send and blocking the worker before it can complete the transition.
+    handle.release(1_000);
     assert!(wait_for_processing_mode(
         &session,
         PlaybackProcessingMode::Passthrough
@@ -194,7 +197,6 @@ fn one_opus_source_switches_between_passthrough_and_live_filtering() {
         Some(PlaybackProcessingMode::Passthrough),
         "unity gain returns to passthrough on the same source"
     );
-    handle.release(1_000);
     response_rx.recv_timeout(TEST_TIMEOUT).unwrap().unwrap();
     restore_gain.join().unwrap();
     assert_eq!(

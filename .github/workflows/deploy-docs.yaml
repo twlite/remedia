@@ -43,27 +43,34 @@ jobs:
           persist-credentials: false
       # The API reference is generated from the Rust crates with rustdoc JSON. Documenting them compiles
       # the FFmpeg bindings, so the same native build dependencies as CI are required.
-      - uses: mamba-org/setup-micromamba@v3
-        with:
-          environment-file: .github/native-deps/ffmpeg9.yml
-          environment-name: remedia-ffmpeg9
-          init-shell: bash
-          cache-environment: true
-          cache-environment-key: docs-ffmpeg9-${{ hashFiles('.github/native-deps/ffmpeg9.yml') }}
-          cache-downloads: true
-      - name: Install libclang development files
+      - name: Install native documentation build tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libclang-dev
-      - name: Configure native dependency paths
-        shell: micromamba-shell {0}
-        run: |
-          echo "FFMPEG_DIR=$CONDA_PREFIX" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$CONDA_PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
-          libclang_path="$(find /usr/lib/llvm-* -name libclang.so -print -quit)"
-          if [ -z "$libclang_path" ]; then echo "libclang.so not found under /usr/lib/llvm-*" >&2; exit 1; fi
-          echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
+          sudo apt-get install --yes --no-install-recommends libclang-dev pkg-config nasm
+          echo "LIBCLANG_PATH=$(dirname "$(find /usr/lib/llvm-* -name libclang.so -print -quit)")" >> "$GITHUB_ENV"
+      - name: Fingerprint native dependency inputs
+        id: native-key
+        env:
+          RUST_TARGET: x86_64-unknown-linux-gnu
+        run: node .github/scripts/native-cache-key.mjs
+      - uses: actions/cache/restore@v5
+        id: native-cache
+        with:
+          path: ${{ runner.temp }}/remedia-static/install
+          key: ${{ steps.native-key.outputs.key }}
+      - name: Build or audit cached static FFmpeg
+        env:
+          RUST_TARGET: x86_64-unknown-linux-gnu
+        run: bash .github/scripts/build-ffmpeg-static.sh
+      - uses: actions/cache/save@v5
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/remedia-static/install
+          key: ${{ steps.native-key.outputs.key }}
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          shared-key: docs-static-v2
+          key: native-${{ steps.native-key.outputs.key }}
       - name: Select the repository Rust toolchain
         run: rustup show active-toolchain
       - uses: pnpm/action-setup@v6.1.0

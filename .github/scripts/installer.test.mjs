@@ -95,9 +95,15 @@ function fakeRelease(box, version, { failDownload = false, badChecksum = false }
   const payload = join(box.base, 'release');
   mkdirSync(payload, { recursive: true });
   const binary = join(payload, `remedia-server-${target}`);
-  writeFileSync(binary, `#!/bin/sh\necho 'remedia-server ${version} (commit fixture)'\n`);
+  writeFileSync(
+    binary,
+    `#!/bin/sh\nif [ "\${1:-}" = --pair ]; then printf '%s\\n' "$0"; exec "$(dirname "$0")/remedia-server-runtime"; fi\necho 'remedia-server ${version} (commit fixture)'\n`,
+  );
   chmodSync(binary, 0o755);
-  writeFileSync(join(payload, `remedia-server-runtime-${target}`), 'runtime');
+  writeFileSync(
+    join(payload, `remedia-server-runtime-${target}`),
+    `#!/bin/sh\nprintf '%s\\n' 'runtime ${version}'\n`,
+  );
   for (const name of [
     'LICENSE',
     'THIRD_PARTY_NOTICES.md',
@@ -142,6 +148,11 @@ test(
         let result = runSh(box, ['--no-ffmpeg']);
         assert.equal(result.status, 0, result.stderr);
         const pointer = readFileSync(join(box.installDir, 'libexec/current.txt'), 'utf8');
+        assert.equal(pointer, 'v' + version);
+        assert.equal(
+          readdirSync(join(box.installDir, 'libexec')).some((name) => name.startsWith('.stage-')),
+          false,
+        );
         const command = join(box.installDir, 'bin/remedia');
         assert.match(
           spawnSync(command, ['--version'], { encoding: 'utf8' }).stdout,
@@ -192,16 +203,22 @@ for (const shell of windows ? ['powershell.exe', 'pwsh'] : ['pwsh']) {
         source.indexOf('function Write-InstallStatus'),
         source.indexOf('Write-InstallStatus "Checking GitHub releases'),
       );
-      const download = source.slice(
-        source.indexOf('    try {\n      Save-InstallDownload -Url $asset.browser_download_url'),
-        source.indexOf("  Write-InstallStatus 'Verifying server archive"),
+      const start = source.indexOf(
+        '      try {\n        Save-InstallDownload -Url $asset.browser_download_url',
       );
+      assert.notEqual(start, -1, 'production download fallback is present');
+      const end = source.indexOf(
+        "\n    }\n    Write-InstallStatus 'Verifying server archive",
+        start,
+      );
+      assert.notEqual(end, -1);
+      const download = source.slice(start, end);
       const script = join(box.base, 'download.ps1');
       const base = `http://127.0.0.1:${server.address().port}`;
       // Execute the production fallback block, including the same HttpClient constructor.
       writeFileSync(
         script,
-        `$ErrorActionPreference = 'Stop'\n${functions}\n$archive = '${join(box.base, 'download')}'\nSave-InstallDownload -Url '${base}/direct' -Destination $archive -Label direct -Attempts 1\n$asset = @{ browser_download_url = '${base}/failed'; url = '${base}/asset'; size = 7 }\n${download.slice(0, download.lastIndexOf('\n  }'))}\nif ((Get-Content -Raw $archive) -ne 'archive') { throw 'Bad download' }\n`,
+        `$ErrorActionPreference = 'Stop'\n${functions}\n$archive = '${join(box.base, 'download')}'\nSave-InstallDownload -Url '${base}/direct' -Destination $archive -Label direct -Attempts 1\n$asset = @{ browser_download_url = '${base}/failed'; url = '${base}/asset'; size = 7 }\n${download}\nif ((Get-Content -Raw $archive) -ne 'archive') { throw 'Bad download' }\n`,
       );
       const result = await new Promise((finish) => {
         const child = spawn(shell, ['-NoProfile', '-NonInteractive', '-File', script]);
@@ -271,7 +288,6 @@ test('PowerShell installation skips current versions and keeps its pointer on do
       writeFileSync(join(payload, file), file);
     const archive = join(box.base, 'archive.tar.gz');
     packArchive(archive, payload, readdirSync(payload));
-    const digest = createHash('sha256').update(readFileSync(archive)).digest('hex');
     const script = join(box.base, 'workflow.ps1');
     const pointer = join(box.installDir, 'libexec/current.txt');
     for (const [version, failure] of [
@@ -281,6 +297,7 @@ test('PowerShell installation skips current versions and keeps its pointer on do
       ['0.2.0', 'download'],
       ['0.2.0', 'checksum'],
     ]) {
+      const digest = createHash('sha256').update(readFileSync(archive)).digest('hex');
       const previous = existsSync(pointer) ? readFileSync(pointer, 'utf8') : null;
       writeFileSync(
         script,
@@ -412,7 +429,12 @@ test(
       const payload = join(box.base, 'payload');
       mkdirSync(payload);
       writeFileSync(join(payload, `remedia-server-${target}.exe`), readFileSync(cli));
-      writeFileSync(join(payload, `remedia-server-runtime-${target}.exe`), 'fixture runtime');
+      writeFileSync(
+        join(payload, `remedia-server-runtime-${target}.exe`),
+        process.env.REMEDIA_TEST_RUNTIME
+          ? readFileSync(process.env.REMEDIA_TEST_RUNTIME)
+          : 'fixture runtime',
+      );
       for (const name of [
         'LICENSE',
         'THIRD_PARTY_NOTICES.md',
@@ -640,3 +662,456 @@ test('PowerShell platform detection retains native architecture and OS boundarie
   );
   assert.equal(result.status, 0, result.stderr);
 });
+
+test(
+  'Unix normalizes legacy paths, retains busy versions, rolls back, and resumes staged installs',
+  { skip: !unixInstallerPlatform },
+  () => {
+    const box = sandbox();
+    const libexec = join(box.installDir, 'libexec');
+    const pointer = join(libexec, 'current.txt');
+    const previous = join(libexec, 'previous.txt');
+    const lsof = join(box.fakeBin, 'lsof');
+    writeFileSync(
+      lsof,
+      '#!/bin/sh\ncase "$*" in *"$FIXTURE_BUSY_DIR"*) [ -z "$FIXTURE_BUSY_DIR" ] || { echo 123; exit 0; } ;; esac\nexit 1\n',
+    );
+    chmodSync(lsof, 0o755);
+    try {
+      fakeRelease(box, '0.3.0');
+      assert.equal(runSh(box, []).status, 0);
+      const legacy = 'v0.3.0-tmp.legacy';
+      const move = spawnSync('mv', [join(libexec, 'v0.3.0'), join(libexec, legacy)]);
+      assert.equal(move.status, 0);
+      for (const name of ['version.txt', 'target.txt', 'cli.sha256', 'runtime.sha256'])
+        rmSync(join(libexec, legacy, name));
+      writeFileSync(pointer, legacy);
+      const legacyBytes = readFileSync(join(libexec, legacy, 'remedia-server-runtime'));
+      const busy = { FIXTURE_BUSY_DIR: join(libexec, legacy) };
+      let result = runSh(box, [], busy);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(readFileSync(pointer, 'utf8'), 'v0.3.0');
+      assert.deepEqual(readFileSync(join(libexec, legacy, 'remedia-server-runtime')), legacyBytes);
+      result = runSh(box, [], busy);
+      assert.equal(result.status, 0, result.stderr);
+      assert.ok(existsSync(join(libexec, legacy)));
+      assert.equal(runSh(box, []).status, 0);
+      assert.equal(existsSync(join(libexec, legacy)), false);
+      const stale = join(libexec, '.stage-v0.9.0-2147483647.abandoned');
+      mkdirSync(stale);
+      writeFileSync(join(stale, 'remedia-server'), 'interrupted copy');
+      fakeRelease(box, '0.4.0');
+      assert.equal(runSh(box, []).status, 0);
+      assert.equal(existsSync(stale), false);
+      fakeRelease(box, '0.5.0');
+      result = runSh(box, [], { FIXTURE_BUSY_DIR: join(libexec, 'v0.3.0') });
+      assert.equal(result.status, 0, result.stderr);
+      assert.ok(existsSync(join(libexec, 'v0.3.0')));
+      assert.equal(readFileSync(previous, 'utf8'), 'v0.4.0');
+      assert.equal(runSh(box, []).status, 0);
+      assert.equal(existsSync(join(libexec, 'v0.3.0')), false);
+      fakeRelease(box, '0.4.0', { failDownload: true });
+      result = runSh(box, []);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(readFileSync(pointer, 'utf8'), 'v0.4.0');
+      const pair = spawnSync(join(box.installDir, 'bin/remedia'), ['--pair'], { encoding: 'utf8' });
+      assert.equal(pair.status, 0, pair.stderr);
+      assert.ok(pair.stdout.includes(join(libexec, 'v0.4.0/remedia-server')));
+      assert.match(pair.stdout, /runtime 0\.4\.0/);
+      const originalPointer = readFileSync(pointer);
+      const originalPrevious = readFileSync(previous);
+      // Fail after copying the CLI but before completing its runtime pair.
+      const install = join(box.fakeBin, 'install');
+      writeFileSync(
+        install,
+        '#!/bin/sh\nfor last do :; done\ncase "$last" in *remedia-server-runtime) exit 23 ;; esac\nexec /usr/bin/install "$@"\n',
+      );
+      chmodSync(install, 0o755);
+      fakeRelease(box, '0.6.0');
+      result = runSh(box, []);
+      assert.notEqual(result.status, 0);
+      assert.deepEqual(readFileSync(pointer), originalPointer);
+      assert.deepEqual(readFileSync(previous), originalPrevious);
+      assert.equal(existsSync(join(libexec, 'v0.6.0')), false);
+      assert.equal(
+        readdirSync(libexec).some((name) => name.startsWith('.stage-')),
+        false,
+      );
+      rmSync(install);
+      // A failure replacing current.txt leaves a complete inactive cache, and preserves both pointers.
+      const mv = join(box.fakeBin, 'mv');
+      writeFileSync(
+        mv,
+        '#!/bin/sh\nfor last do :; done\ncase "$last" in */current.txt) exit 24 ;; esac\nexec /bin/mv "$@"\n',
+      );
+      chmodSync(mv, 0o755);
+      result = runSh(box, []);
+      assert.notEqual(result.status, 0);
+      assert.deepEqual(readFileSync(pointer), originalPointer);
+      assert.deepEqual(readFileSync(previous), originalPrevious);
+      assert.ok(existsSync(join(libexec, 'v0.6.0/remedia-server-runtime')));
+      rmSync(mv);
+      fakeRelease(box, '0.6.0', { failDownload: true });
+      result = runSh(box, []);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(readFileSync(pointer, 'utf8'), 'v0.6.0');
+    } finally {
+      box.cleanup();
+    }
+  },
+);
+
+test('PowerShell tar fallback selects one executable when PATH contains multiple matches', (t) => {
+  if (spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).error)
+    return t.skip('pwsh unavailable');
+  const source = readFileSync(installPs1, 'utf8');
+  const start = source.indexOf('function Get-RemediaTar {');
+  const end = source.indexOf('# Compute SHA-256', start);
+  const result = spawnSync(
+    'pwsh',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `$ErrorActionPreference = 'Stop'
+$env:SystemRoot = ''
+function Get-Command { @([pscustomobject]@{ Source = '/first/tar' }, [pscustomobject]@{ Source = '/second/tar' }) }
+${source.slice(start, end)}
+$resolved = @(Get-RemediaTar)
+if ($resolved.Count -ne 1 -or $resolved[0] -cne '/first/tar') { throw "Expected one tar executable, got: $resolved" }`,
+    ],
+    { encoding: 'utf8' },
+  );
+
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
+test('PowerShell normalizes running executable paths before allowing version cleanup', (t) => {
+  if (spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).error)
+    return t.skip('pwsh unavailable');
+  const box = sandbox();
+  try {
+    const source = readFileSync(installPs1, 'utf8');
+    const start = source.indexOf('function Test-VersionInUse {');
+    const end = source.indexOf('function Remove-ObsoleteVersions {', start);
+    const directory = join(box.installDir, 'libexec/v0.3.0');
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, 'remedia-server-runtime.exe'), 'fixture');
+    const result = spawnSync(
+      'pwsh',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `$ErrorActionPreference = 'Stop'
+${source.slice(start, end)}
+function Get-CimInstance { [pscustomobject]@{ ExecutablePath = $script:executable } }
+$directory = '${directory}'
+$script:executable = (Split-Path $directory -Parent) + '/./v0.3.0/remedia-server-runtime.exe'
+if (!(Test-VersionInUse $directory)) { throw 'Equivalent process path must retain the version' }
+$script:executable = $directory + '-other/remedia-server-runtime.exe'
+if (Test-VersionInUse $directory) { throw 'A sibling version does not use this directory' }
+$script:executable = $null
+if (!(Test-VersionInUse $directory)) { throw 'Unknown process paths must retain the version' }`,
+      ],
+      { encoding: 'utf8' },
+    );
+
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  } finally {
+    box.cleanup();
+  }
+});
+
+test('PowerShell normalizes GUID paths, preserves busy versions, and resumes atomic activation', async (t) => {
+  if (spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).error)
+    return t.skip('pwsh unavailable');
+  const box = sandbox();
+  const source = readFileSync(installPs1, 'utf8');
+  const start = source.indexOf('Write-InstallStatus "Checking GitHub releases');
+  const functions = source.slice(source.indexOf('function Write-InstallStatus'), start);
+  const workflow = source.slice(start);
+  const payload = join(box.base, 'payload');
+  const archive = join(box.base, 'release.tar.gz');
+  const libexec = join(box.installDir, 'libexec');
+  const pointer = join(libexec, 'current.txt');
+  const previous = join(libexec, 'previous.txt');
+  mkdirSync(payload);
+  for (const file of [
+    'remedia-server-x86_64-pc-windows-msvc.exe',
+    'remedia-server-runtime-x86_64-pc-windows-msvc.exe',
+    'LICENSE',
+    'THIRD_PARTY_NOTICES.md',
+    'THIRD_PARTY_LICENSES.txt',
+    'LICENSES.md',
+    'COPYING.GPLv3',
+  ])
+    writeFileSync(join(payload, file), file);
+  packArchive(archive, payload, readdirSync(payload));
+  const digest = createHash('sha256').update(readFileSync(archive)).digest('hex');
+  const invoke = (version, { busy = '', failPointer = false, missingArchive = false } = {}) => {
+    const script = join(box.base, 'layout.ps1');
+    writeFileSync(
+      script,
+      `$ErrorActionPreference = 'Stop'
+$InstallDir = '${box.installDir}'
+$Version = 'latest'
+$repo = 'fixture'
+$osArchitecture = 'AMD64'
+$ArchivePath = '${missingArchive ? join(box.base, 'missing.tar.gz') : archive}'
+${failPointer ? functions.replace('function Set-InstallText {', 'function Invoke-OriginalInstallText {') + `\nfunction Set-InstallText { param($Path, $Value) if ((Split-Path $Path -Leaf) -eq 'current.txt') { throw 'activation interrupted' }; Invoke-OriginalInstallText $Path $Value }` : functions}
+function Add-RemediaToPath {}
+function Get-CimInstance { ${busy ? `return [pscustomobject]@{ ExecutablePath = '${join(busy, 'remedia-server-runtime.exe')}' }` : 'return @()'} }
+function Invoke-RestMethod { return @{ tag_name = 'v${version}'; assets = @(@{ name = 'remedia-server-x86_64-pc-windows-msvc.tar.gz'; digest = 'sha256:${digest}'; size = 7 }) } }
+${workflow}`,
+    );
+    return spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-File', script], {
+      encoding: 'utf8',
+      env: { ...process.env, SystemRoot: process.env.SystemRoot || join(box.base, 'windows') },
+    });
+  };
+  try {
+    let result = invoke('0.3.0');
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(readFileSync(pointer, 'utf8'), 'v0.3.0');
+    const legacy = 'v0.3.0-' + 'a'.repeat(32);
+    const { renameSync } = await import('node:fs');
+    renameSync(join(libexec, 'v0.3.0'), join(libexec, legacy));
+    for (const name of ['target.txt', 'cli.sha256', 'runtime.sha256'])
+      rmSync(join(libexec, legacy, name));
+    writeFileSync(pointer, legacy);
+    result = invoke('0.3.0', { busy: join(libexec, legacy) });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(readFileSync(pointer, 'utf8'), 'v0.3.0');
+    assert.ok(existsSync(join(libexec, legacy)));
+    result = invoke('0.3.0', { busy: join(libexec, legacy) });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.ok(existsSync(join(libexec, legacy)));
+    result = invoke('0.3.0');
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(existsSync(join(libexec, legacy)), false);
+    const stale = join(libexec, '.stage-v0.9.0-2147483647-' + 'a'.repeat(32));
+    mkdirSync(stale);
+    for (const version of ['0.4.0', '0.5.0']) {
+      result = invoke(version, { busy: join(libexec, 'v0.3.0') });
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+    }
+    assert.equal(existsSync(stale), false);
+    assert.ok(existsSync(join(libexec, 'v0.3.0')));
+    result = invoke('0.5.0');
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(existsSync(join(libexec, 'v0.3.0')), false);
+    result = invoke('0.4.0', { missingArchive: true });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(readFileSync(pointer, 'utf8'), 'v0.4.0');
+    assert.equal(readFileSync(previous, 'utf8'), 'v0.5.0');
+    const oldPointer = readFileSync(pointer);
+    const oldPrevious = readFileSync(previous);
+    result = invoke('0.6.0', { failPointer: true });
+    assert.notEqual(result.status, 0);
+    assert.deepEqual(readFileSync(pointer), oldPointer);
+    assert.deepEqual(readFileSync(previous), oldPrevious);
+    assert.ok(existsSync(join(libexec, 'v0.6.0/remedia-server-runtime.exe')));
+    assert.equal(
+      readdirSync(libexec).some((name) => name.startsWith('.stage-')),
+      false,
+    );
+    result = invoke('0.6.0', { missingArchive: true });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(readFileSync(pointer, 'utf8'), 'v0.6.0');
+  } finally {
+    box.cleanup();
+  }
+});
+
+test('installed Unix native server starts at its final path and survives updates', async (t) => {
+  const cli = process.env.REMEDIA_TEST_CLI;
+  const runtime = process.env.REMEDIA_TEST_RUNTIME;
+  if (!unixInstallerPlatform || !cli || !runtime)
+    return t.skip('native CLI/runtime paths required');
+  const box = sandbox();
+  const { copyFileSync } = await import('node:fs');
+  const nativeVersion = spawnSync(cli, ['--version'], { encoding: 'utf8' })
+    .stdout.split('\n')[0]
+    .split(' ')[1];
+  const nativeRelease = (version) => {
+    fakeRelease(box, version);
+    const payload = join(box.base, 'release');
+    const files = readdirSync(payload);
+    copyFileSync(
+      cli,
+      join(
+        payload,
+        files.find((name) => /^remedia-server-(?!runtime)/.test(name)),
+      ),
+    );
+    copyFileSync(
+      runtime,
+      join(
+        payload,
+        files.find((name) => /^remedia-server-runtime-/.test(name)),
+      ),
+    );
+    const archive = join(box.base, 'release.tar.gz');
+    packArchive(archive, payload, files);
+    const metadata = join(box.base, 'release.json');
+    const release = JSON.parse(readFileSync(metadata, 'utf8'));
+    release.assets[0].digest =
+      'sha256:' + createHash('sha256').update(readFileSync(archive)).digest('hex');
+    writeFileSync(metadata, JSON.stringify(release, null, 2));
+  };
+  let child;
+  let socket;
+  try {
+    nativeRelease(nativeVersion);
+    let result = runSh(box, []);
+    assert.equal(result.status, 0, result.stderr);
+    const installed = join(box.installDir, 'libexec', 'v' + nativeVersion, 'remedia-server');
+    const runtimePath = join(dirname(installed), 'remedia-server-runtime');
+    const runtimeBytes = readFileSync(runtimePath);
+    const environment = {
+      ...process.env,
+      HOME: box.home,
+      LD_LIBRARY_PATH: '',
+      DYLD_LIBRARY_PATH: '',
+      REMEDIA_SERVER_RUNTIME: undefined,
+    };
+    const version = spawnSync(installed, ['--version'], { encoding: 'utf8', env: environment });
+    assert.equal(version.status, 0, version.stderr);
+    assert.match(version.stdout, /GPL version 3/);
+    assert.doesNotMatch(version.stdout, /native runtime could not be loaded/);
+    const config = join(box.base, 'server.json');
+    writeFileSync(
+      config,
+      JSON.stringify({
+        listen: '127.0.0.1:0',
+        users: [{ username: 'installer-test', password: 'fixture-password' }],
+        observability: { console: false },
+      }),
+    );
+    child = spawn(installed, ['--config', config, '--shutdown-on-stdin-close'], {
+      env: environment,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let errors = '';
+    child.stderr.on('data', (data) => {
+      errors += data;
+    });
+    const address = await new Promise((resolveAddress, reject) => {
+      let output = '';
+      const timer = setTimeout(
+        () => reject(new Error('installed server startup timed out: ' + errors)),
+        15_000,
+      );
+      child.on('error', (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.once('close', (code) => {
+        clearTimeout(timer);
+        reject(new Error(`installed server exited ${code}: ${errors}`));
+      });
+      child.stdout.on('data', (data) => {
+        output += data;
+        const match = /remedia-server listening on ([^\s]+)/.exec(output);
+        if (match) {
+          clearTimeout(timer);
+          resolveAddress(match[1]);
+        }
+      });
+    });
+    const { createRequire } = await import('node:module');
+    const clientRequire = createRequire(join(root, 'packages/remedia-client/package.json'));
+    const WebSocket = clientRequire('ws');
+    socket = new WebSocket(`ws://${address}/v1/ws`, {
+      headers: {
+        Authorization: 'Basic ' + Buffer.from('installer-test:fixture-password').toString('base64'),
+        'X-Remedia-Bot-Id': '100000000000000001',
+      },
+    });
+    await new Promise((resolveOpen, reject) => {
+      socket.once('open', resolveOpen);
+      socket.once('error', reject);
+    });
+    // The same native bits use fixture release tags to exercise two pointer switches.
+    for (const versionTag of ['99.0.1', '99.0.2']) {
+      nativeRelease(versionTag);
+      result = runSh(box, []);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(child.exitCode, null, errors);
+      assert.deepEqual(readFileSync(runtimePath), runtimeBytes);
+      assert.equal(socket.readyState, WebSocket.OPEN);
+      await new Promise((resolvePong, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error('existing WebSocket stopped responding')),
+          3_000,
+        );
+        socket.once('pong', () => {
+          clearTimeout(timer);
+          resolvePong();
+        });
+        socket.ping();
+      });
+    }
+    socket.close();
+    socket = undefined;
+    await new Promise((resolveExit, reject) => {
+      const timer = setTimeout(() => {
+        child.kill();
+        reject(new Error('server did not stop after stdin closed'));
+      }, 10_000);
+      child.once('close', () => {
+        clearTimeout(timer);
+        resolveExit();
+      });
+      child.stdin.end();
+    });
+    child = undefined;
+    result = runSh(box, []);
+    assert.equal(result.status, 0, result.stderr);
+    if (!spawnSync('lsof', ['-v']).error) assert.equal(existsSync(runtimePath), false);
+  } finally {
+    socket?.terminate();
+    child?.kill();
+    box.cleanup();
+  }
+});
+
+test(
+  'Unix serializes installers and releases the lock when its owner exits',
+  { skip: !unixInstallerPlatform },
+  async () => {
+    const box = sandbox();
+    const libexec = join(box.installDir, 'libexec');
+    const lock = join(libexec, '.install.lock');
+    mkdirSync(libexec, { recursive: true });
+    let holder;
+    try {
+      fakeRelease(box, '0.3.0');
+      const args =
+        process.platform === 'darwin' ? ['lockf', '-k', '-t', '0', lock] : ['flock', lock];
+      holder = spawn(args[0], [...args.slice(1), 'sh', '-c', 'echo ready; read release'], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      await new Promise((resolveReady, reject) => {
+        holder.stdout.once('data', resolveReady);
+        holder.once('error', reject);
+      });
+      const result = runSh(box, []);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /Another Remedia installer/);
+      assert.equal(existsSync(join(libexec, 'current.txt')), false);
+      await new Promise((resolveExit) => {
+        holder.once('close', resolveExit);
+        holder.stdin.end();
+      });
+      holder = undefined;
+      const recovered = runSh(box, []);
+      assert.equal(recovered.status, 0, recovered.stderr);
+      assert.equal(readFileSync(join(libexec, 'current.txt'), 'utf8'), 'v0.3.0');
+    } finally {
+      holder?.stdin.end();
+      box.cleanup();
+    }
+  },
+);

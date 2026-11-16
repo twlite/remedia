@@ -1,6 +1,6 @@
 ---
 title: 'Build the Node addon'
-description: Build the engine, bootstrap loader, and TypeScript declarations from source.
+description: Build the engine and TypeScript declarations from source.
 ---
 
 ## Building from source
@@ -29,6 +29,15 @@ uses the pinned Clang/libclang conda environment. See
 No build tools are required to use a prebuilt package.
 
 The generated native.js and native.d.ts files must be regenerated from Rust by
-`napi build`. Bootstrap artifacts remain packaged for compatibility, but the addon
-no longer uses them to discover external FFmpeg. The static dependency audit rejects
+`napi build`. The regular platform addon loader is retained; no bootstrap is built. The static dependency audit rejects
 media shared libraries. See [distribution](/docs/node/distribution) for licensing.
+
+Compiled native dependencies are cached by target, compiler/toolchain versions,
+pinned sources, build scripts and configuration. Cache hits still run configuration,
+ABI and final binary dependency audits. CI's `ci` profile uses release optimization
+without LTO for PR artifact validation; distributed releases retain measured fat LTO.
+Ordinary Rust tests use the test profile.
+
+See [licensing](/docs/licensing) and the root `SOURCE_DISTRIBUTION.md` for rebuilding
+from the retained, checksum-verified corresponding-source snapshots without fetching
+upstream dependency sources.

@@ -40,3 +40,9 @@ packages/remedia-plugin-host/THIRD_PARTY_LICENSES.txt
 
 # Local Docker deployment state (see docker/README.md)
 docker/config/remedia.config.json
+
+# Generated native package source-distribution metadata
+packages/remedia-node/SOURCE_DISTRIBUTION.md
+packages/remedia-node/source-manifest.json
+
+.ci-freebsd-native/

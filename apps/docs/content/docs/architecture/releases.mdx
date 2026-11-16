@@ -17,28 +17,45 @@ the GitHub release public. Missing identities, insufficient access, and API fail
 actions. Normal pushes, pull requests, and manual dispatches without a release commit continue to
 run their existing checks. Releases remain restricted to `main`.
 
-## Package publication
+## Build and validation
 
-The release publisher verifies this package is present before publishing and reuses an
-already published exact version when resuming an interrupted release. Configure npm Trusted
-Publishing for `@remedia/plugin-host` with the same `twlite/remedia` repository and `ci.yaml`
-workflow as the other release packages. Publishing uses npm OIDC Trusted Publishing.
+Fast lint, TypeScript and script checks run independently of native compilation.
+A separate job validates Rust, source distribution and the documentation export.
+Native integration uses the existing platform workflow. Low-level Rust, toolchain,
+recipe and release infrastructure changes run all 13 addon targets and packaging;
+TypeScript-only integration changes omit additional cross builds. Every release
+runs the full target matrix and Node 22.18/24/26 coverage. PR native integration
+uses Node 24. No supported release target is removed.
 
-## Static native artifacts and source
+Ordinary Rust tests use the test profile. PR artifacts use an optimized `ci` profile
+without LTO; distributed artifacts retain fat LTO based on measured build/size
+tradeoffs. Server and addon builds share the same explicit Cargo target directory.
+Compiled FFmpeg dependencies are cached by target, compiler and recipe inputs;
+cache hits retain policy and final dependency audits. No bootstrap is compiled.
 
-The existing platform workflow builds pinned GPL-enabled static FFmpeg 9, retains
-all 13 addon targets, and packages server candidates for Windows ARM64 and Linux
-x64/ARM64 musl in addition to the five original server targets. Windows ARM64 uses
-an ARM64 runner; musl startup and addon decoding run in native-architecture Alpine
-containers. Android and other cross targets remain provisional. ARMv7, Windows
-x86 and FreeBSD server builds are investigated without publishing untested server
-assets as supported releases.
+## Source and publication ordering
 
-A matching native dependency source bundle is required for every target. The
-release packer combines these with the exact Remedia revision, release patch,
-vendored Cargo dependencies, license inventory, configuration records and build
-scripts into `corresponding-source.tar.gz`. Upload and finalization gates require
-that archive alongside binary assets. FFmpeg configuration and dependency-license
-allowlists fail closed on nonfree or unaudited additions; binary import checks
-reject external FFmpeg, Opus and OpenSSL libraries. CI success does not establish
-legal compliance. See [licensing](/docs/licensing).
+1. Authorize the actors and verify the immutable release tag before creating a draft.
+2. Build and runtime-test the existing native targets, then pack and verify binaries.
+3. Reuse or publish a hash-identified dependency source snapshot on this repository's
+   source-only GitHub release. Add the small, exact Remedia source/configuration
+   archive there using an immutable asset name. Source publication is authorized.
+4. Upload missing binary draft assets; verify sizes and SHA-256 digests. Matching
+   assets are preserved. A mismatched completed asset blocks the release.
+5. Verify the complete corresponding source is public without authentication.
+6. Publish original npm tarballs through OIDC in dependency order. Verify hashes
+   before skipping any existing immutable version; wait for registry visibility and
+   verify every package after publication.
+7. Recheck draft assets and finalize GitHub only after npm succeeds. Publish GHCR
+   afterward through the existing Docker workflow.
+
+Retry failed jobs to resume an interrupted stage without rebuilding successful
+native jobs. Upload retries reconcile accepted files before sending more data;
+network errors include the failing operation and nested cause. Public binary
+release assets are never overwritten. No new version is published by PR validation.
+
+Source manifests, snapshots and instructions are described in
+[licensing](/docs/licensing) and the distributed `SOURCE_DISTRIBUTION.md`. v0.3.0
+retains its original assets. The source mechanism does not replace GPL obligations
+with a lockfile or upstream URL list; automated audits do not establish legal
+compliance. Android, Windows x86 and ARMv7 retain their experimental runtime status.

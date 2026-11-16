@@ -2,13 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main, 'fix/**']
+    branches: [main]
   pull_request:
     paths:
       - 'crates/**'
       - 'packages/**'
       - 'apps/docs/**'
       - 'apps/discord/**'
+      - 'scripts/install.sh'
+      - 'scripts/install.ps1'
       - '.cargo/**'
       - '.github/workflows/**'
       - '.github/scripts/**'
@@ -29,6 +31,7 @@ on:
       - 'apps/docs/content/**'
       - 'LICENSE'
       - 'LICENSES.md'
+      - 'SOURCE_DISTRIBUTION.md'
       - 'COPYING.GPLv3'
       - 'THIRD_PARTY_NOTICES.md'
       - 'THIRD_PARTY_LICENSES.txt'
@@ -52,6 +55,8 @@ jobs:
     outputs:
       checks: ${{ steps.changes.outputs.checks }}
       native: ${{ steps.changes.outputs.native }}
+      compatibility: ${{ steps.changes.outputs.compatibility }}
+      sources: ${{ steps.changes.outputs.sources }}
       is_release: ${{ steps.detect.outputs.is_release }}
       version: ${{ steps.detect.outputs.version }}
       npm_tag: ${{ steps.detect.outputs.npm_tag }}
@@ -125,8 +130,51 @@ jobs:
 
   checks:
     if: needs.release-detection.outputs.checks == 'true' || needs.release-detection.outputs.is_release == 'true'
-    name: Lint, types, tests, and docs
+    name: Fast lint, types, and unit tests
     needs: release-detection
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 12.16.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Apply the release version before package installation
+        if: needs.release-detection.outputs.is_release == 'true'
+        env:
+          RELEASE_VERSION: ${{ needs.release-detection.outputs.version }}
+        run: node .github/scripts/release.mjs sync "$RELEASE_VERSION"
+      - run: pnpm install --frozen-lockfile
+      - name: Validate POSIX installer syntax
+        run: sh -n scripts/install.sh
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm --filter @remedia/config schema:check
+      - run: pnpm --filter @remedia/config test
+      - name: Check formatting
+        id: formatting
+        run: pnpm format:check
+      - name: Show expected formatting changes
+        if: failure() && steps.formatting.outcome == 'failure'
+        run: |
+          pnpm exec oxfmt .
+          git diff -- .github/scripts apps/docs/content/docs/server
+      - run: pnpm --filter @remedia/plugin-host test
+      - run: pnpm --filter @remedia/client test
+      - run: pnpm --filter discord-app test
+      - run: pnpm test:ci
+      - run: pnpm test:release
+
+  native-checks:
+    if: needs.release-detection.outputs.checks == 'true' || needs.release-detection.outputs.is_release == 'true'
+    name: Rust, source, and documentation validation
+    needs: [release-detection, checks]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
@@ -151,43 +199,54 @@ jobs:
       - name: Install libclang development files for Rust checks
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libclang-dev
-      - name: Build pinned static FFmpeg for checks
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev
+      - name: Install static FFmpeg build tools
+        run: sudo apt-get install --yes --no-install-recommends nasm pkg-config
+      - name: Fingerprint native dependency inputs
+        id: native-key
+        env:
+          RUST_TARGET: x86_64-unknown-linux-gnu
+        run: node .github/scripts/native-cache-key.mjs
+      - uses: actions/cache/restore@v5
+        id: native-cache
+        with:
+          path: ${{ runner.temp }}/remedia-static/install
+          key: ${{ steps.native-key.outputs.key }}
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          shared-key: checks-static-v2
+          key: native-${{ steps.native-key.outputs.key }}
+      - name: Build or audit cached static FFmpeg for checks
+        env:
+          RUST_TARGET: x86_64-unknown-linux-gnu
         run: |
-          sudo apt-get install --yes --no-install-recommends nasm pkg-config
           echo "LIBCLANG_PATH=$(dirname "$(find /usr/lib/llvm-* -name libclang.so -print -quit)")" >> "$GITHUB_ENV"
           bash .github/scripts/build-ffmpeg-static.sh
-      - name: Validate POSIX installer syntax
-        run: sh -n scripts/install.sh
-      - run: node .github/scripts/audit-linked-licenses.mjs
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm --filter @remedia/config schema:check
-      - run: pnpm --filter @remedia/config test
-      - name: Check formatting
-        id: formatting
-        run: pnpm format:check
-      - name: Show expected formatting changes
-        if: failure() && steps.formatting.outcome == 'failure'
+      - uses: actions/cache/save@v5
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/remedia-static/install
+          key: ${{ steps.native-key.outputs.key }}
+      - name: Validate a complete dependency source snapshot when its inputs change
+        if: needs.release-detection.outputs.sources == 'true'
         run: |
-          pnpm exec oxfmt .
-          git diff -- .github/scripts apps/docs/content/docs/server
+          node .github/scripts/corresponding-source.mjs snapshot "$RUNNER_TEMP/source-validation"
+          REMEDIA_SOURCE_DIR="$RUNNER_TEMP/source-validation/native" RUNNER_TEMP="$RUNNER_TEMP/offline-source-build" bash .github/scripts/build-ffmpeg-static.sh
+          node .github/scripts/prepare-vendor.mjs "$RUNNER_TEMP/source-validation/vendor"
+          cargo check --workspace --locked --offline --config "$RUNNER_TEMP/source-validation/vendor-config.toml" --config "source.vendored-sources.directory=\"$RUNNER_TEMP/source-validation/vendor\""
+      - run: node .github/scripts/audit-linked-licenses.mjs
+      - run: node .github/scripts/update-third-party-notices.mjs --check
       - run: cargo fmt --all -- --check
         if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
         if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
       - run: pnpm docs:test
-      - run: pnpm --filter @remedia/plugin-host test
-      - run: pnpm --filter @remedia/client test
-      - run: pnpm --filter discord-app test
-      - run: pnpm test:ci
-      - run: pnpm test:release
       - run: pnpm --filter docs build
 
   supported-platforms:
     if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
     name: Required native targets
-    needs: release-detection
+    needs: [release-detection, checks]
     strategy:
       fail-fast: false
       matrix:
@@ -233,9 +292,9 @@ jobs:
       release_version: ${{ needs.release-detection.outputs.version }}
 
   additional-platforms:
-    if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
+    if: needs.release-detection.outputs.compatibility == 'true' || needs.release-detection.outputs.is_release == 'true'
     name: Additional native npm release targets
-    needs: release-detection
+    needs: [release-detection, checks]
     strategy:
       fail-fast: false
       matrix:
@@ -278,10 +337,12 @@ jobs:
       release_version: ${{ needs.release-detection.outputs.version }}
 
   package-release:
-    if: needs.release-detection.outputs.native == 'true' || needs.release-detection.outputs.is_release == 'true'
+    if: needs.release-detection.outputs.compatibility == 'true' || needs.release-detection.outputs.is_release == 'true'
     name: Verify and pack npm release
-    needs: [release-detection, checks, supported-platforms, additional-platforms]
+    needs: [release-detection, checks, native-checks, supported-platforms, additional-platforms]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -315,10 +376,15 @@ jobs:
           pattern: native-source-*
           path: ${{ runner.temp }}/native-sources
           merge-multiple: true
-      - name: Assemble corresponding source before packaging binaries
+      - name: Assemble versioned corresponding source before packaging binaries
         env:
+          GH_TOKEN: ${{ github.token }}
+          REMEDIA_PUBLISH_SOURCES: ${{ needs.release-detection.outputs.is_release }}
+          RELEASE_VERSION: ${{ needs.release-detection.outputs.version }}
           REMEDIA_TARGET_SOURCES: ${{ runner.temp }}/native-sources
-        run: node .github/scripts/corresponding-source.mjs "$RUNNER_TEMP/servers/corresponding-source.tar.gz" "$RUNNER_TEMP/corresponding-source"
+        run: |
+          version="${RELEASE_VERSION:-$(node -p "require('./packages/remedia-node/package.json').version")}"
+          node .github/scripts/corresponding-source.mjs prepare "$RUNNER_TEMP/servers" "$RUNNER_TEMP/corresponding-source" "$version"
       - name: Verify native release artifacts
         run: node .github/scripts/verify-release-artifacts.mjs "$RUNNER_TEMP/bindings" "$RUNNER_TEMP/servers"
       - name: Create and inspect N-API platform packages and pnpm tarballs
@@ -410,6 +476,10 @@ jobs:
         with:
           name: npm-release-packages
           path: ${{ runner.temp }}/npm-release-packages
+      - name: Verify public corresponding source before npm publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/corresponding-source.mjs verify "$RUNNER_TEMP/npm-release-packages/source-manifest.json"
       - name: Publish in dependency order; skip exact versions already in npm
         env:
           RELEASE_VERSION: ${{ needs.release-detection.outputs.version }}

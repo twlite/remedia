@@ -3,18 +3,20 @@ title: FFmpeg runtime API
 description: Inspect bundled FFmpeg and Remedia build identity.
 ---
 
-`getFfmpegRuntime()` reports bundled FFmpeg metadata without creating playback
+`getFFmpegRuntime()` reports bundled FFmpeg metadata without creating playback
 resources, searching the filesystem, or downloading dependencies.
 
 ```ts
-import { getFfmpegRuntime } from '@remedia/node';
-const runtime = getFfmpegRuntime();
+import { getFFmpegRuntime } from '@remedia/node';
+const runtime = getFFmpegRuntime();
 console.log(runtime.version, runtime.license, runtime.configuration);
 console.log(runtime.remediaVersion, runtime.remediaCommit);
 ```
 
 The source is `bundled`; directory is null and considered candidates are empty.
 Library entries report names, ABI majors and versions; their paths are empty.
-Existing discovery error types remain exported for source compatibility but the
-static loader does not use external FFmpeg discovery.
+The former `getFfmpegRuntime()` export is renamed to `getFFmpegRuntime()`.
+Update imports when upgrading after v0.3.0. Obsolete discovery-only error and
+candidate types (`FfmpegLoadError`, `FfmpegFailureReason`, `FfmpegCandidateReport`)
+are removed; the remaining metadata describes the bundled engine.
 See [bundled FFmpeg](/docs/node/ffmpeg-9) for licensing and source distribution.

@@ -12,9 +12,9 @@ pinned vcpkg manifest in `.github/native-deps/windows-cross` (Windows).
 ## Inspect the bundle
 
 ```ts
-import { getFfmpegRuntime } from '@remedia/node';
+import { getFFmpegRuntime } from '@remedia/node';
 
-const info = getFfmpegRuntime();
+const info = getFFmpegRuntime();
 console.log(info.source); // bundled
 console.log(info.version, info.license, info.configuration);
 console.log(info.remediaVersion, info.remediaCommit);
@@ -22,7 +22,7 @@ console.log(info.libraries);
 ```
 
 `directory` is null, `considered` is empty, and each library `path` is empty because
-there are no separate library files. Existing diagnostics types remain exported.
+there are no separate library files. The metadata API is `getFFmpegRuntime()` (renamed after v0.3.0).
 The server exposes equivalent build information through `remedia --version` and
 `remedia doctor`; doctor also checks library ABI capabilities and configuration.
 The metadata comes from the linked FFmpeg API, including the configure command.
@@ -35,11 +35,21 @@ addons and server runtimes are distributed subject to GPLv3-or-later obligations
 See `LICENSES.md`, `COPYING.GPLv3`, and the third-party acknowledgments distributed
 with the packages and installed alongside server executables.
 
-Every binary release must provide `corresponding-source.tar.gz` on the same GitHub
-release. It includes Remedia, vendored Rust dependencies, native dependency sources,
-patches, build scripts and target configuration records. Redistributing binaries
-requires satisfying the applicable GPL obligations. Automated checks do not
-establish legal compliance.
+Complete corresponding source is retrieved using the exact binary version, as
+explained in `SOURCE_DISTRIBUTION.md` included with native npm packages; server archives carry retrieval directions in
+`LICENSES.md`. The binary release's `source-manifest.json` names the Remedia revision,
+hash-verified release source archive and target configurations, and a public,
+content-addressed dependency snapshot. Snapshot assets are hosted on this same
+repository's source-only GitHub releases and reused when inputs match. Both source
+parts are publicly available before npm publication; no upstream clone is required.
+The original v0.3.0 source archive remains unchanged.
+
+This implements equivalent network source access under GPLv3 §6(d). Source must
+remain available while the binaries are distributed. Redistributors must meet
+applicable source, notice and installation-information obligations. Automated
+checks do not establish legal compliance. See the
+[GPLv3 text](https://www.gnu.org/licenses/gpl-3.0.html) and
+[FFmpeg licensing information](https://ffmpeg.org/legal.html).
 
 ## Target verification
 

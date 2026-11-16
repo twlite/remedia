@@ -256,6 +256,16 @@ fn pump_until<T>(gate: &GateHandle, seek: thread::JoinHandle<T>) -> T {
     seek.join().expect("seek thread joins")
 }
 
+/// Wait for a control that can finish while output stays blocked, without advancing media.
+fn join_without_pumping<T>(worker: thread::JoinHandle<T>) -> T {
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    while !worker.is_finished() {
+        assert!(Instant::now() < deadline, "the control never completed");
+        thread::sleep(Duration::from_millis(1));
+    }
+    worker.join().expect("control thread joins")
+}
+
 /// The index of the one frame where the source position jumps by more than `threshold` ms.
 fn find_jump(frames: &[(u64, i64, usize)], threshold: i64) -> usize {
     let jumps: Vec<usize> = (1..frames.len())
@@ -502,7 +512,10 @@ fn a_tempo_filter_scales_the_compensation_by_source_time() {
     let tempo = Arc::clone(&session);
     let apply = thread::spawn(move || tempo.set_filter_graph(Some("atempo=1.5")));
     assert!(wait_for_pending_filter_update(&session));
-    assert!(pump_until(&gate, apply).is_ok());
+    // Replacing the initial empty graph needs one worker boundary, not an
+    // arbitrary amount of media while the caller waits to be scheduled.
+    consume(&gate, 1);
+    assert!(join_without_pumping(apply).is_ok());
     consume(&gate, 10);
     server.hold_new_connections();
 
@@ -521,7 +534,8 @@ fn a_tempo_filter_scales_the_compensation_by_source_time() {
     assert!(wait_for_condition(&session.shared, TEST_TIMEOUT, |data| {
         data.fallback_signal
     }));
-    assert_applied(pump_until(&gate, seek));
+    consume(&gate, 1);
+    assert_applied(join_without_pumping(seek));
     consume(&gate, 10);
 
     let frames = delivered(&gate);
@@ -583,9 +597,18 @@ fn only_the_latest_of_rapid_consecutive_seeks_replaces_the_source() {
     let second = start_seek(&session, &gate, 14_000);
     assert!(wait_for_pending_seek(&session));
     consume(&gate, 1);
-    // The newer seek makes the older one obsolete straight away.
+    // Superseding does not require further output. Keep the finite playhead
+    // blocked while the old preparation is cancelled and its caller wakes.
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    while !first.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "the first seek was not superseded"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
     assert!(matches!(
-        pump_until(&gate, first),
+        first.join().expect("first seek thread joins"),
         Err(PlaybackError::SeekSuperseded)
     ));
 
@@ -593,7 +616,13 @@ fn only_the_latest_of_rapid_consecutive_seeks_replaces_the_source() {
         server.wait_for_connections(3),
         "the latest seek is preparing"
     );
+    assert!(gate.wait_for_calls(gate.snapshot().accepted.len() + 1));
     server.release();
+    // A slow runner must not pump six seconds of source time past the
+    // target before the replacement is ready, exhausting this 20-second track.
+    assert!(wait_for_condition(&session.shared, TEST_TIMEOUT, |data| {
+        data.fallback_signal
+    }));
     assert_applied(pump_until(&gate, second));
     consume(&gate, 5);
 

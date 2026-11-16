@@ -10,7 +10,7 @@ import {
   rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 const base = '--enable-static --disable-shared --enable-gpl --enable-version3 --disable-autodetect';
@@ -87,13 +87,11 @@ test('Windows FFmpeg port patch writes literal files without provider-specific p
     return t.skip('pwsh unavailable');
   const directory = mkdtempSync(join(tmpdir(), 'remedia port patch '));
   try {
-    const workflow = readFileSync('.github/workflows/platform.yaml', 'utf8');
+    const workflow = readFileSync('.github/scripts/build-ffmpeg-windows.ps1', 'utf8');
     const snippets = [
-      ...workflow.matchAll(
-        /          \$portFile =[^]*?          (?:Set-Content[^\n]*|\[IO\.File\]::WriteAllText[^\n]*)/g,
-      ),
+      ...workflow.matchAll(/\$portFile =[^]*?\[IO\.File\]::WriteAllText[^\n]*/g),
     ].map(([script]) => script);
-    assert.equal(snippets.length, 2, 'both native and cross Windows jobs must be exercised');
+    assert.equal(snippets.length, 1, 'shared Windows recipe must be exercised');
     mkdirSync(join(directory, 'ports/ffmpeg'), { recursive: true });
     mkdirSync(join(directory, '.github/native-deps'), { recursive: true });
     const portFile = join(directory, 'ports/ffmpeg/portfile.cmake');
@@ -142,7 +140,7 @@ for (const [compiler, hostCompiler] of [
         ['uname', '#!/bin/sh\nprintf Darwin\n'],
         [
           'git',
-          '#!/bin/sh\ncase "$*" in *rev-parse*) printf 946fcce07b6dcd0331c8cc609192aeff5e1924f8 ;; *show*) printf 1790000000 ;; esac\nexit 0\n',
+          '#!/bin/sh\ncase "$*" in *ls-files*) exec /usr/bin/git "$@" ;; *rev-parse*) printf 946fcce07b6dcd0331c8cc609192aeff5e1924f8 ;; *show*) printf 1790000000 ;; esac\nexit 0\n',
         ],
         ['make', '#!/bin/sh\nexit 0\n'],
       ]) {
@@ -211,11 +209,11 @@ test('Windows jobs select the configured MSVC host and target linker directories
     return t.skip('pwsh unavailable');
   const directory = mkdtempSync(join(tmpdir(), 'remedia msvc linker '));
   try {
-    const workflow = readFileSync('.github/workflows/platform.yaml', 'utf8');
-    const snippets = [
-      ...workflow.matchAll(/          \$msvcTarget =[^]*?          "CARGO_TARGET_[^\n]+/g),
-    ].map(([script]) => script);
-    assert.equal(snippets.length, 2);
+    const workflow = readFileSync('.github/scripts/build-ffmpeg-windows.ps1', 'utf8');
+    const snippets = [...workflow.matchAll(/\$msvcTarget =[^]*?"CARGO_TARGET_[^\n]+/g)].map(
+      ([script]) => script,
+    );
+    assert.equal(snippets.length, 1);
     for (const [architecture, host, target, triple, triplet] of [
       ['AMD64', 'x64', 'x64', 'x86_64-pc-windows-msvc', 'x64-windows-static-md'],
       ['AMD64', 'x64', 'x86', 'i686-pc-windows-msvc', 'x86-windows-static-md'],
@@ -258,10 +256,7 @@ test('cross recipes leave musl Rust linking to cargo-zigbuild and retain target 
   const directory = mkdtempSync(join(tmpdir(), 'remedia musl linker '));
   try {
     const recipe = readFileSync('.github/scripts/build-ffmpeg-cross.sh', 'utf8');
-    const block = recipe.slice(
-      recipe.indexOf('  target_env='),
-      recipe.indexOf('  configure_args=('),
-    );
+    const block = recipe.slice(recipe.indexOf('target_env='), recipe.indexOf('configure_args=('));
     assert.ok(block.includes('GITHUB_ENV'));
     for (const [target, zigTriple] of [
       ['x86_64-unknown-linux-musl', 'x86_64-linux-musl'],
@@ -310,11 +305,11 @@ test('Windows jobs expose vcpkg metadata at the location used by the pinned Rust
     return t.skip('pwsh unavailable');
   const directory = mkdtempSync(join(tmpdir(), 'remedia vcpkg metadata '));
   try {
-    const workflow = readFileSync('.github/workflows/platform.yaml', 'utf8');
-    const snippets = [
-      ...workflow.matchAll(/          \$triplet =[^]*?(?=          # Git for Windows)/g),
-    ].map(([script]) => script);
-    assert.equal(snippets.length, 2);
+    const workflow = readFileSync('.github/scripts/build-ffmpeg-windows.ps1', 'utf8');
+    const snippets = [...workflow.matchAll(/\$triplet =[^]*?(?=# Git for Windows)/g)].map(
+      ([script]) => script,
+    );
+    assert.equal(snippets.length, 1);
     for (const [target, triplet] of [
       ['i686-pc-windows-msvc', 'x86-windows-static-md'],
       ['x86_64-pc-windows-msvc', 'x64-windows-static-md'],
@@ -327,8 +322,8 @@ test('Windows jobs expose vcpkg metadata at the location used by the pinned Rust
         writeFileSync(output, '');
         // Execute path selection and environment exports, without downloading or
         // building FFmpeg; both sections surround the existing vcpkg invocation.
-        const configuration = snippet.slice(0, snippet.indexOf('          Push-Location'));
-        const exports = snippet.slice(snippet.indexOf('          "VCPKG_ROOT='));
+        const configuration = snippet.slice(0, snippet.indexOf('Push-Location'));
+        const exports = snippet.slice(snippet.indexOf('"VCPKG_ROOT='));
         writeFileSync(
           script,
           '$ErrorActionPreference = "Stop"\n$vcpkgRoot = $env:TEST_VCPKG_ROOT\n' +
@@ -411,61 +406,53 @@ test('core build metadata supplies Schannel libraries to every MSVC target', () 
   }
 });
 
-test('Windows source capture normalizes the runner path and preserves source/configuration files', (t) => {
-  if (process.platform === 'win32') return t.skip('POSIX-hosted Git Bash path fixture');
+test('source capture contains only configuration records, never source or compiled caches', (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX shell fixture');
   const directory = mkdtempSync(join(tmpdir(), 'remedia source capture '));
   try {
-    const work = join(directory, 'runner temp');
-    const bin = join(directory, 'bin');
-    const target = 'i686-pc-windows-msvc';
-    mkdirSync(bin);
-    const cygpath = join(bin, 'cygpath');
-    writeFileSync(
-      cygpath,
-      '#!/bin/sh\n[ "$1" = -u ] || exit 1\nprintf "%s\\n" "$REMEDIA_TEST_SOURCE_ROOT"\n',
-    );
-    chmodSync(cygpath, 0o755);
-    const fixtureFiles = {
-      'ports/ffmpeg/portfile.cmake': 'pinned FFmpeg build recipe',
-      'buildtrees/ffmpeg/x86-rel/config.h':
-        '#define CONFIG_GPL 1\n#define CONFIG_VERSION3 1\n#define CONFIG_NONFREE 0\n',
-      'downloads/ffmpeg-source.tar.xz': 'verified source download fixture',
-      'installed/x86-windows-static-md/lib/avcodec.lib':
-        'compiled artifact excluded from vcpkg source',
-    };
-    for (const [name, content] of Object.entries(fixtureFiles)) {
-      const path = join(work, 'remedia-vcpkg', name);
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, content);
-    }
-    const script = resolve('.github/scripts/capture-native-source.sh');
-    const result = spawnSync('bash', [script], {
-      cwd: directory,
+    const prefix = join(directory, 'installed');
+    const records = join(prefix, 'share/remedia-build');
+    mkdirSync(records, { recursive: true });
+    writeFileSync(join(records, 'config.h'), '#define CONFIG_GPL 1\n');
+    writeFileSync(join(records, 'config.mak'), 'configured audio build');
+    mkdirSync(join(prefix, 'lib'));
+    writeFileSync(join(prefix, 'lib/avcodec.lib'), 'must not be captured');
+    const result = spawnSync('bash', ['.github/scripts/capture-native-source.sh'], {
       encoding: 'utf8',
       env: {
         ...process.env,
-        PATH: `${bin}:${process.env.PATH}`,
-        RUNNER_TEMP: 'D:\\a\\_temp',
-        RUST_TARGET: target,
-        REMEDIA_TEST_SOURCE_ROOT: work,
+        RUNNER_TEMP: directory,
+        RUST_TARGET: 'i686-pc-windows-msvc',
+        REMEDIA_STATIC_FFMPEG_DIR: prefix,
       },
     });
     assert.equal(result.status, 0, result.stderr);
-    const archive = join(work, `native-source-${target}.tar.gz`);
-    for (const [name, expected] of [
-      ['./vcpkg-source/ports/ffmpeg/portfile.cmake', fixtureFiles['ports/ffmpeg/portfile.cmake']],
-      ['./ffmpeg-port/portfile.cmake', fixtureFiles['ports/ffmpeg/portfile.cmake']],
-      ['./ffmpeg-build/x86-rel/config.h', fixtureFiles['buildtrees/ffmpeg/x86-rel/config.h']],
-      ['./downloads/ffmpeg-source.tar.xz', fixtureFiles['downloads/ffmpeg-source.tar.xz']],
-    ]) {
-      const extracted = spawnSync('tar', ['-xOf', archive, name], { encoding: 'utf8' });
-      assert.equal(extracted.status, 0, extracted.stderr);
-      assert.equal(extracted.stdout, expected);
-    }
+    const archive = join(directory, 'native-source-i686-pc-windows-msvc.tar.gz');
     const entries = spawnSync('tar', ['-tzf', archive], { encoding: 'utf8' });
     assert.equal(entries.status, 0, entries.stderr);
-    assert.ok(!entries.stdout.includes('/installed/'));
-    assert.equal(existsSync(join(directory, 'D:\\a\\_temp')), false);
+    for (const file of ['config.h', 'config.mak', 'compiler.txt', 'rustc.txt'])
+      assert.ok(entries.stdout.includes('./' + file));
+    assert.doesNotMatch(entries.stdout, /\.lib|buildtrees|downloads|vendor/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('source archives are byte-identical after staging timestamps change', (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX Python fixture');
+  const directory = mkdtempSync(join(tmpdir(), 'remedia deterministic source '));
+  try {
+    const source = join(directory, 'source');
+    mkdirSync(source);
+    const file = join(source, 'configuration');
+    writeFileSync(file, 'exact source');
+    const first = join(directory, 'first.tar.gz');
+    const second = join(directory, 'second.tar.gz');
+    const script = '.github/scripts/source-archive.py';
+    assert.equal(spawnSync('python3', [script, source, first]).status, 0);
+    writeFileSync(file, 'exact source');
+    assert.equal(spawnSync('python3', [script, source, second]).status, 0);
+    assert.deepEqual(readFileSync(first), readFileSync(second));
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

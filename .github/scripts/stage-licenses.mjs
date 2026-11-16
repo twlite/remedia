@@ -7,7 +7,9 @@ for (const name of [
   'LICENSE',
   'THIRD_PARTY_NOTICES.md',
   'THIRD_PARTY_LICENSES.txt',
-  ...(process.cwd().endsWith('remedia-node') ? ['LICENSES.md', 'COPYING.GPLv3'] : []),
+  ...(process.cwd().endsWith('remedia-node')
+    ? ['LICENSES.md', 'COPYING.GPLv3', 'SOURCE_DISTRIBUTION.md']
+    : []),
 ]) {
   copyFileSync(resolve(root, name), resolve(process.cwd(), name));
 }
