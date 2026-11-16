@@ -645,6 +645,9 @@ jobs:
           set -euo pipefail
           sudo pkg update -f
           sudo pkg install -y curl git node24 npm-node24 cmake pkgconf llvm19 gmake nasm python3
+          sudo pkg clean -ay
+          # The VM disk is small; debug assertions stay enabled without large DWARF files.
+          export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
           export RUNNER_TEMP="$PWD/.ci-freebsd-native"
           export GITHUB_ENV="$RUNNER_TEMP/environment"
           mkdir -p "$RUNNER_TEMP"
@@ -662,7 +665,11 @@ jobs:
             node .github/scripts/release.mjs sync "$RELEASE_VERSION"
           fi
           pnpm install --frozen-lockfile
+          df -h .
           cargo test --workspace --locked
+          # Tests use target/debug; distributed artifacts use a separate ci/release profile.
+          cargo clean --profile test
+          df -h .
           cargo build --profile ${{ inputs.release_version != '' && 'release' || 'ci' }} --locked -p remedia-server --bins --target ${{ inputs.target }}
           pnpm --filter @remedia/node exec napi build --platform --esm --js native.js --dts native.d.ts --profile ${{ inputs.release_version != '' && 'release' || 'ci' }} --target x86_64-unknown-freebsd
           node .github/scripts/audit-static-ffmpeg.mjs packages/remedia-node/node.freebsd-x64.node target/${{ inputs.target }}/${{ inputs.release_version != '' && 'release' || 'ci' }}/remedia-server target/${{ inputs.target }}/${{ inputs.release_version != '' && 'release' || 'ci' }}/remedia-server-runtime

@@ -94,6 +94,11 @@ libraries/metadata/configuration are cached, never buildtrees/download caches.
 Audited prefixes are saved before Rust/tests, so later job failures preserve them.
 FreeBSD caches its prefix across VM runs and independently fingerprints its actual
 compiler before reuse. All cache hits retain dependency/configuration audits.
+The first hosted FreeBSD run exhausted its VM disk while linking full-DWARF test
+binaries. That job now disables dev/test debug symbols (retaining debug assertions
+and the full test suite), clears downloaded pkg archives, and removes completed
+test-profile outputs before optimized artifact builds. Disk usage is logged around
+the test stage. Release optimization and native dependency settings are unchanged.
 
 The retained dependency snapshot is 119,578,611 bytes (114.04 MiB), versus
 1,965,145,303 bytes (1.83 GiB) for v0.3.0's combined archive: 93.9% smaller even
