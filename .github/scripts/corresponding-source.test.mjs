@@ -241,7 +241,10 @@ test('release sources use separate immutable releases and are safely reusable', 
     }
     if (options?.method === 'DELETE') {
       for (const [id, items] of assets)
-        assets.set(id, items.filter((asset) => path !== '/releases/assets/' + asset.id));
+        assets.set(
+          id,
+          items.filter((asset) => path !== '/releases/assets/' + asset.id),
+        );
       return null;
     }
     if (path.startsWith('/releases/tags/')) {
@@ -320,7 +323,9 @@ test('release sources use separate immutable releases and are safely reusable', 
     assert.equal(builds, 1);
     assert.equal(sourceUploads, 0);
     await assert.rejects(prepare(), /four attempts.*release source connection failed/);
-    const commit = process.env.GITHUB_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const commit =
+      process.env.GITHUB_SHA ??
+      execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     const sourceTag = releaseSourceTag('1.0.0', commit);
     assert.equal(releases.get(sourceTag).draft, true);
     assert.equal(builds, 1);

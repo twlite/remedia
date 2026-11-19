@@ -221,7 +221,6 @@ export async function ensureSnapshot(
   return verifySnapshot(release, await listAssets(release, request), identity);
 }
 
-
 export function releaseSourceTag(version, commit) {
   return `source-v${version}-${commit}`;
 }
@@ -249,11 +248,10 @@ async function verifyReleaseSource(manifest, request) {
   const source = (await listAssets(release, request)).find(
     (asset) => asset.name === releaseSource.name,
   );
-  if (
-    !assetMatches(source, releaseSource) ||
-    source.browser_download_url !== releaseSource.url
-  )
-    throw new Error('Release-specific corresponding source is not publicly available or mismatched');
+  if (!assetMatches(source, releaseSource) || source.browser_download_url !== releaseSource.url)
+    throw new Error(
+      'Release-specific corresponding source is not publicly available or mismatched',
+    );
   return release;
 }
 
@@ -292,9 +290,7 @@ async function publishReleaseSource(
     return;
   }
   await upload(release, [file], { request });
-  const uploaded = (await listAssets(release, request)).find(
-    (asset) => asset.name === file.name,
-  );
+  const uploaded = (await listAssets(release, request)).find((asset) => asset.name === file.name);
   if (!assetMatches(uploaded, file))
     throw new Error('Release-specific corresponding source digest mismatch');
   await authorize();
