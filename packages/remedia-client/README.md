@@ -4,7 +4,8 @@ One TypeScript SDK for playing audio into Discord voice channels. It runs the Re
 your process (an **embedded** node), on `remedia-server` processes (**remote** nodes), or both,
 behind the same session API. Each guild stays on the node it was assigned to.
 
-Requires Node.js 22.18 or newer (ESM).
+Requires Node.js 22.18 or newer. Load it with `import` or `require()`; see
+[module formats](https://remedia.twlite.dev/docs/node/distribution#esm-and-commonjs).
 
 ## Install
 

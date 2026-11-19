@@ -4,7 +4,8 @@ Embed the Remedia audio engine in your Node.js process. It plays audio into Disc
 and decodes local files, HTTP(S) URLs, in-memory bytes, and Node.js streams. The engine runs in the
 same process; there is no server to start.
 
-Requires Node.js 22.18 or newer (ESM) with bundled FFmpeg 9.
+Requires Node.js 22.18 or newer with bundled FFmpeg 9. Load it with `import` or `require()`; see
+[module formats](https://remedia.twlite.dev/docs/node/distribution#esm-and-commonjs).
 
 ## Install
 
