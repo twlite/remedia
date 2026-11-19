@@ -16,11 +16,10 @@ The manifest names the exact Remedia commit, the SHA-256 and size of the release
 source archive, all target records, and a public content-addressed dependency
 snapshot. Download `dependencies.tar.gz` from the manifest's dependencies.url.
 Check both archives against their size and SHA-256 in the manifest. The releaseSource.url
-is a public copy of the release source archive, available before npm publication;
+points to a separate, public, immutable release containing the version-specific source archive, available before npm publication;
 the binary release also carries a copy. This is actual
 retained source, not an instruction to retrieve moving upstream branches. No login,
-fee, or binary download is required. Source assets have immutable names and are never overwritten. New release-specific
-archives are added to the source-only release for the matching dependency identity.
+fee, or binary download is required. Source assets have immutable names and are never overwritten. Each release-specific source archive is published in its own immutable source-only release; published dependency snapshots are never modified.
 Snapshot identity format v2 hashes Cargo.lock, Cargo manifests/configuration, the
 pinned Rust toolchain, native input/patch metadata, and the vendoring, filtering,
 patching and archive recipes. Changing these inputs selects a new source snapshot;

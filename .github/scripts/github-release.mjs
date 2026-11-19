@@ -173,7 +173,6 @@ export async function uploadAssets(
     upload = (tag, paths) =>
       execFileSync('gh', ['release', 'upload', tag, ...paths], { stdio: 'inherit' }),
     wait = setTimeout,
-    allowPublished = false,
   } = {},
 ) {
   for (const file of assets) {
@@ -185,7 +184,7 @@ export async function uploadAssets(
         console.log('Verified existing asset; skipping upload: ' + file.name);
         break;
       }
-      if (!release.draft && (!allowPublished || !release.tag_name.startsWith('sources-')))
+      if (!release.draft)
         throw new Error('Release is already public; refusing to upload: ' + file.name);
       if (existing) {
         if (existing.state !== 'starter')

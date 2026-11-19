@@ -221,6 +221,97 @@ export async function ensureSnapshot(
   return verifySnapshot(release, await listAssets(release, request), identity);
 }
 
+
+export function releaseSourceTag(version, commit) {
+  return `source-v${version}-${commit}`;
+}
+
+async function findReleaseSource(version, commit, request) {
+  const tag = releaseSourceTag(version, commit);
+  try {
+    return await request(`/releases/tags/${tag}`);
+  } catch (error) {
+    if (error.status !== 404) throw error;
+    for (let page = 1; ; page++) {
+      const releases = await request('/releases?per_page=100&page=' + page);
+      const release = releases.find((item) => item.tag_name === tag);
+      if (release) return release;
+      if (releases.length < 100) return null;
+    }
+  }
+}
+
+async function verifyReleaseSource(manifest, request) {
+  const { version, commit, releaseSource } = manifest;
+  const release = await findReleaseSource(version, commit, request);
+  if (!release || release.draft || release.tag_name !== releaseSourceTag(version, commit))
+    throw new Error('Release-specific corresponding source is not publicly available');
+  const source = (await listAssets(release, request)).find(
+    (asset) => asset.name === releaseSource.name,
+  );
+  if (
+    !assetMatches(source, releaseSource) ||
+    source.browser_download_url !== releaseSource.url
+  )
+    throw new Error('Release-specific corresponding source is not publicly available or mismatched');
+  return release;
+}
+
+async function publishReleaseSource(
+  manifest,
+  file,
+  { request = api, authorize = authorizeRelease, upload = uploadAssets } = {},
+) {
+  const tag = releaseSourceTag(manifest.version, manifest.commit);
+  let release = await findReleaseSource(manifest.version, manifest.commit, request);
+  if (release && !release.draft) {
+    await verifyReleaseSource(manifest, request);
+    return;
+  }
+  await authorize();
+  if (!release) {
+    try {
+      release = await request('/releases', {
+        method: 'POST',
+        body: {
+          tag_name: tag,
+          target_commitish: manifest.commit,
+          name: `Corresponding source ${manifest.version} (${manifest.commit.slice(0, 12)})`,
+          draft: true,
+          prerelease: true,
+          body: 'Version-specific corresponding source for Remedia. The source-manifest.json in the matching binary release links this archive and its retained dependency snapshot.',
+        },
+      });
+    } catch (error) {
+      release = await findReleaseSource(manifest.version, manifest.commit, request);
+      if (!release) throw error;
+    }
+  }
+  if (!release.draft) {
+    await verifyReleaseSource(manifest, request);
+    return;
+  }
+  await upload(release, [file], { request });
+  const uploaded = (await listAssets(release, request)).find(
+    (asset) => asset.name === file.name,
+  );
+  if (!assetMatches(uploaded, file))
+    throw new Error('Release-specific corresponding source digest mismatch');
+  await authorize();
+  try {
+    release = await request('/releases/' + release.id, {
+      method: 'PATCH',
+      body: { draft: false, prerelease: true, make_latest: 'false' },
+    });
+  } catch (error) {
+    // The PATCH may have succeeded before the network response was lost.
+    const published = await findReleaseSource(manifest.version, manifest.commit, request);
+    if (!published || published.draft) throw error;
+    release = published;
+  }
+  await verifyReleaseSource(manifest, request);
+}
+
 export async function prepareSource(
   destination,
   staging,
@@ -280,20 +371,18 @@ export async function prepareSource(
   execFileSync('python3', ['.github/scripts/source-archive.py', staging, archive]);
   manifest.releaseSource = {
     name: `remedia-${version}-${commit}.tar.gz`,
-    url: `https://github.com/twlite/remedia/releases/download/sources-${snapshot.identity}/remedia-${version}-${commit}.tar.gz`,
+    url: `https://github.com/twlite/remedia/releases/download/${releaseSourceTag(version, commit)}/remedia-${version}-${commit}.tar.gz`,
     sha256: await fileHash(archive),
     size: statSync(archive).size,
   };
   if (publish) {
-    const existing = await findSnapshot(snapshot.identity, request);
-    await authorize();
-    // Append immutable release sources before npm publishes; the binary draft stays private.
     const sourcePath = resolve(staging, '..', manifest.releaseSource.name);
     cpSync(archive, sourcePath);
-    await upload(existing.release, [{ path: sourcePath, ...manifest.releaseSource }], {
-      request,
-      allowPublished: true,
-    });
+    await publishReleaseSource(
+      manifest,
+      { path: sourcePath, ...manifest.releaseSource },
+      { request, authorize, upload },
+    );
   }
   writeFileSync(
     join(destination, 'source-manifest.json'),
@@ -351,15 +440,7 @@ export async function verifySourceManifest(path, request = publicApi) {
   for (const key of ['url', 'sha256', 'size'])
     if (verified[key] !== manifest.dependencies[key])
       throw new Error('Source snapshot metadata mismatch: ' + key);
-  const source = existing.assets.find((asset) => asset.name === manifest.releaseSource?.name);
-  if (
-    !source ||
-    !assetMatches(source, manifest.releaseSource) ||
-    source.browser_download_url !== manifest.releaseSource.url
-  )
-    throw new Error(
-      'Release-specific corresponding source is not publicly available or mismatched',
-    );
+  await verifyReleaseSource(manifest, request);
   return manifest;
 }
 

@@ -10,6 +10,7 @@ import {
   verifySourceManifest,
   ensureSnapshot,
   prepareSource,
+  releaseSourceTag,
 } from './corresponding-source.mjs';
 import { RELEASE_TARGETS } from './release.mjs';
 import { uploadAssets } from './github-release.mjs';
@@ -19,7 +20,9 @@ function fixture() {
   const identity = snapshotIdentity();
   const commit = process.env.GITHUB_SHA ?? 'a'.repeat(40);
   const url = `https://github.com/twlite/remedia/releases/download/sources-${identity}`;
+  const sourceTag = releaseSourceTag('1.0.0', commit);
   const release = { id: 7, draft: false, tag_name: `sources-${identity}` };
+  const sourceRelease = { id: 8, draft: false, tag_name: sourceTag };
   const assets = [
     {
       name: 'dependencies.tar.gz',
@@ -33,7 +36,7 @@ function fixture() {
       size: 50,
       state: 'uploaded',
       digest: 'sha256:' + 'b'.repeat(64),
-      browser_download_url: url + `/remedia-1.0.0-${commit}.tar.gz`,
+      browser_download_url: `https://github.com/twlite/remedia/releases/download/${sourceTag}/remedia-1.0.0-${commit}.tar.gz`,
     },
   ];
   const manifest = {
@@ -49,8 +52,14 @@ function fixture() {
       url: assets[1].browser_download_url,
     },
   };
-  const request = async (path) => (path.endsWith('/assets?per_page=100&page=1') ? assets : release);
-  return { identity, release, assets, manifest, request };
+  const request = async (path) => {
+    if (path === `/releases/tags/sources-${identity}`) return release;
+    if (path === `/releases/tags/${sourceTag}`) return sourceRelease;
+    if (path.startsWith('/releases/7/assets?')) return assets.slice(0, 1);
+    if (path.startsWith('/releases/8/assets?')) return assets.slice(1);
+    throw new Error('Unexpected request: ' + path);
+  };
+  return { identity, release, sourceRelease, assets, manifest, request };
 }
 
 test('reuses an existing published dependency snapshot without downloading or rebuilding', async () => {
@@ -195,47 +204,55 @@ test('snapshot identity changes with manifests, patches, transformations and arc
   }
 });
 
-test('first source publication resumes after public dependencies and a failed release-source upload', async () => {
+test('release sources use separate immutable releases and are safely reusable', async () => {
   const root = mkdtempSync(join(tmpdir(), 'remedia-source-retry-'));
   const targetsDirectory = join(root, 'targets');
   const records = join(root, 'records');
-  let release;
-  let assets = [];
+  const releases = new Map();
+  const assets = new Map();
+  let releaseId = 7;
+  let assetId = 1;
   let builds = 0;
   let creations = 0;
   let authorizations = 0;
   let sourceUploads = 0;
   let mode = 'fail';
-  let losePublicationResponse = true;
+  let loseDependencyPublicationResponse = true;
   const identity = snapshotIdentity();
-  const baseUrl = `https://github.com/twlite/remedia/releases/download/sources-${identity}/`;
+  const dependencyTag = `sources-${identity}`;
   const request = async (path, options) => {
     if (options?.method === 'POST') {
       assert.equal(path, '/releases');
       creations++;
-      release = { id: 7, ...options.body };
+      const release = { id: releaseId++, ...options.body };
+      releases.set(release.tag_name, release);
+      assets.set(release.id, []);
       return release;
     }
     if (options?.method === 'PATCH') {
-      assert.equal(path, '/releases/7');
+      const release = [...releases.values()].find((r) => path === '/releases/' + r.id);
+      assert.ok(release);
       Object.assign(release, options.body);
-      if (losePublicationResponse) {
-        losePublicationResponse = false;
+      if (release.tag_name === dependencyTag && loseDependencyPublicationResponse) {
+        loseDependencyPublicationResponse = false;
         throw new Error('dependency publication response lost');
       }
       return release;
     }
     if (options?.method === 'DELETE') {
-      assets = assets.filter((asset) => path !== '/releases/assets/' + asset.id);
+      for (const [id, items] of assets)
+        assets.set(id, items.filter((asset) => path !== '/releases/assets/' + asset.id));
       return null;
     }
-    if (path.includes('/assets?')) return assets;
     if (path.startsWith('/releases/tags/')) {
+      const release = releases.get(path.slice('/releases/tags/'.length));
       if (!release) throw Object.assign(new Error('missing'), { status: 404 });
       return release;
     }
-    assert.ok(path.startsWith('/releases?'));
-    return release ? [release] : [];
+    const assetMatch = path.match(/^\/releases\/(\d+)\/assets\?/);
+    if (assetMatch) return assets.get(Number(assetMatch[1])) ?? [];
+    if (path.startsWith('/releases?')) return [...releases.values()];
+    throw new Error('Unexpected request: ' + path);
   };
   const options = {
     version: '1.0.0',
@@ -257,33 +274,30 @@ test('first source publication resumes after public dependencies and a failed re
         sha256: await fileHash(path),
       };
     },
-    upload: (sourceRelease, files, uploadOptions) =>
-      uploadAssets(sourceRelease, files, {
+    upload: (release, files, uploadOptions) =>
+      uploadAssets(release, files, {
         ...uploadOptions,
         wait: async () => {},
         upload: async (tag, [path]) => {
-          assert.equal(tag, 'sources-' + identity);
+          assert.equal(tag, release.tag_name);
+          assert.equal(release.draft, true, 'never upload to an immutable public release');
           const name = basename(path);
+          const stored = assets.get(release.id);
           if (name !== 'dependencies.tar.gz') {
-            assert.equal(
-              sourceRelease.draft,
-              false,
-              'dependencies must be public before release sources',
-            );
             sourceUploads++;
             if (mode === 'fail') {
-              assets.push({ id: 99, name, state: 'starter' });
+              stored.push({ id: assetId++, name, state: 'starter' });
               throw new Error('release source connection failed');
             }
             assert.notEqual(mode, 'forbid', 'matching public assets must not be reuploaded');
           }
-          assets.push({
-            id: assets.length + 1,
+          stored.push({
+            id: assetId++,
             name,
             state: 'uploaded',
             size: readFileSync(path).length,
             digest: 'sha256:' + (await fileHash(path)),
-            browser_download_url: baseUrl + name,
+            browser_download_url: `https://github.com/twlite/remedia/releases/download/${tag}/${name}`,
           });
           if (name !== 'dependencies.tar.gz') throw new Error('connection lost after acceptance');
         },
@@ -302,24 +316,22 @@ test('first source publication resumes after public dependencies and a failed re
       ]);
     const prepare = () => prepareSource(join(root, 'output'), join(root, 'staging'), options);
     await assert.rejects(prepare(), /dependency publication response lost/);
-    assert.equal(release.draft, false);
+    assert.equal(releases.get(dependencyTag).draft, false);
     assert.equal(builds, 1);
     assert.equal(sourceUploads, 0);
     await assert.rejects(prepare(), /four attempts.*release source connection failed/);
-    assert.equal(release.draft, false);
+    const commit = process.env.GITHUB_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const sourceTag = releaseSourceTag('1.0.0', commit);
+    assert.equal(releases.get(sourceTag).draft, true);
     assert.equal(builds, 1);
-    assert.equal(creations, 1);
+    assert.equal(creations, 2);
     assert.equal(sourceUploads, 4);
-    const dependencies = structuredClone(
-      assets.find((asset) => asset.name === 'dependencies.tar.gz'),
-    );
+    const dependencies = structuredClone(assets.get(releases.get(dependencyTag).id));
 
     mode = 'accept';
     const manifest = await prepare();
-    assert.deepEqual(
-      assets.find((asset) => asset.name === 'dependencies.tar.gz'),
-      dependencies,
-    );
+    assert.deepEqual(assets.get(releases.get(dependencyTag).id), dependencies);
+    assert.equal(releases.get(sourceTag).draft, false);
     assert.equal(sourceUploads, 5, 'ambiguous accepted upload is reconciled without duplication');
     assert.deepEqual(
       await verifySourceManifest(join(root, 'output/source-manifest.json'), request),
@@ -328,12 +340,26 @@ test('first source publication resumes after public dependencies and a failed re
     mode = 'forbid';
     assert.deepEqual(await prepare(), manifest);
     assert.equal(builds, 1, 'public dependencies must not be rebuilt on retry');
-    assert.equal(creations, 1, 'retry must not create a second source release');
+    assert.equal(creations, 2, 'retry must not create another source release');
     assert.equal(sourceUploads, 5);
+
+    // A new version with the same inputs uses the original public dependency snapshot.
+    mode = 'accept';
+    options.version = '1.0.1';
+    const nextManifest = await prepare();
+    assert.equal(releases.get(releaseSourceTag('1.0.1', commit)).draft, false);
+    assert.equal(builds, 1);
+    assert.equal(creations, 3);
+    assert.equal(sourceUploads, 6);
+    assert.deepEqual(
+      await verifySourceManifest(join(root, 'output/source-manifest.json'), request),
+      nextManifest,
+    );
+    const release = releases.get(releaseSourceTag('1.0.1', commit));
+    assets.get(release.id)[0].digest = 'sha256:wrong';
+    await assert.rejects(prepare(), /mismatched/);
+    assert.equal(sourceUploads, 6);
     assert.ok(authorizations >= 5);
-    assets.find((asset) => asset.name === manifest.releaseSource.name).digest = 'sha256:wrong';
-    await assert.rejects(prepare(), /refusing to overwrite/);
-    assert.equal(sourceUploads, 5);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
