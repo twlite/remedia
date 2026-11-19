@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -80,6 +80,52 @@ void result;
     );
 
     execFileSync(process.execPath, [join(dir, 'runtime.mjs')], { stdio: 'pipe' });
+
+    // CommonJS consumers load the same ESM build through require(esm). TypeScript models this
+    // only for `module: NodeNext` (or Node20), so check the types and the runtime separately.
+    writeFileSync(
+      join(dir, 'consumer.cts'),
+      `
+import { createPluginHost, type ExecuteResult, type Operation } from '@remedia/plugin-host';
+import { createNodeMiddleware } from '@remedia/plugin-host/node';
+type Schema = { resolve: Operation<{ id: string }, { title: string }> };
+const host = createPluginHost<Schema>({ name: 'Consumer' });
+const result: Promise<ExecuteResult<{ title: string }>> = host.handle({ pluginId: 'example', operation: 'resolve', input: { id: 'x' } });
+createNodeMiddleware(host);
+void result;
+`,
+    );
+    writeFileSync(
+      join(dir, 'tsconfig.json'),
+      JSON.stringify({
+        compilerOptions: {
+          target: 'ES2022',
+          module: 'NodeNext',
+          moduleResolution: 'NodeNext',
+          strict: true,
+          exactOptionalPropertyTypes: true,
+          noEmit: true,
+          skipLibCheck: false,
+          types: ['node'],
+        },
+        include: ['consumer.cts'],
+      }),
+    );
+    execFileSync(
+      process.execPath,
+      [require.resolve('typescript/bin/tsc'), '-p', join(dir, 'tsconfig.json')],
+      { stdio: 'pipe' },
+    );
+
+    writeFileSync(
+      join(dir, 'runtime.cjs'),
+      `const { createPluginHost, PluginHost } = require('@remedia/plugin-host'); const { createNodeMiddleware } = require('@remedia/plugin-host/node'); const h = createPluginHost({name:'x'}); if(typeof createNodeMiddleware(h)!=='function') throw Error('adapter'); import('@remedia/plugin-host').then(async (m) => { if (m.PluginHost !== PluginHost) throw Error('identity'); await h.close(); });`,
+    );
+
+    const cjs = spawnSync(process.execPath, [join(dir, 'runtime.cjs')], { encoding: 'utf8' });
+
+    expect(cjs.status, cjs.stderr).toBe(0);
+    expect(cjs.stderr).not.toMatch(/warning/i);
     expect(readFileSync(join(pkg, 'dist/index.d.ts'), 'utf8')).toContain('class PluginHost');
   } finally {
     rmSync(dir, { recursive: true, force: true });
