@@ -16,3 +16,11 @@ console.log(getFFmpegRuntime());
 The report contains actual bundled versions, license and configuration. Include it
 with platform details in bug reports. For playback errors after import succeeds,
 inspect the source and [debug events](/docs/node/diagnostics).
+
+## `require()` errors
+
+The packages load through `require()` on Node.js 22.18 and newer
+([module formats](/docs/node/distribution#esm-and-commonjs)). `ERR_REQUIRE_ESM` means Node.js is
+older than the supported minimum. `ERR_PACKAGE_PATH_NOT_EXPORTED` means the subpath is not one of
+the published exports. A missing platform package throws `Cannot find native binding` from both
+`require()` and `import`; its `cause` chain lists every candidate the loader tried.

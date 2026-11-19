@@ -23,7 +23,7 @@ Pick how you want to run the engine:
 
 To run the server in a container instead, see the [Docker guide](https://remedia.twlite.dev/docs/server/docker) and [`docker/`](docker).
 
-Node.js 22.18 or newer is required. FFmpeg 9 is bundled in the native binaries. On Windows, use the PowerShell installer
+Node.js 22.18 or newer is required; the packages load with `import` or `require()`. FFmpeg 9 is bundled in the native binaries. On Windows, use the PowerShell installer
 from the [server installation guide](https://remedia.twlite.dev/docs/server/installation).
 
 ## Example

@@ -79,7 +79,8 @@ actual released @remedia/node version.
 version and dist-tag as `@remedia/node` and `@remedia/client`. Release packaging builds it,
 verifies both the main entrypoint and the `@remedia/plugin-host/node` HTTP middleware
 entrypoint (JavaScript and declarations), and includes the shared license notices.
-It requires Node.js 22.18 or newer and ESM, and does not require FFmpeg or the native addon.
+It requires Node.js 22.18 or newer, loads through `import` or `require()`, and does not require
+FFmpeg or the native addon.
 
 ```sh
 npm install @remedia/plugin-host
@@ -95,8 +96,58 @@ npm install @remedia/node
 npm install @remedia/client
 ```
 
-Both packages require Node.js 22.18.0 or newer and use ESM. See
-[bindings](/docs/node/bindings) and [client configuration](/docs/client/overview) for API examples.
+Both packages require Node.js 22.18.0 or newer. See [bindings](/docs/node/bindings) and
+[client configuration](/docs/client/overview) for API examples.
+
+## ESM and CommonJS
+
+`@remedia/node`, `@remedia/client`, `@remedia/plugin-host` and `@remedia/config` each ship one ES
+module build with no top-level await. Their export maps use the `default` condition, so both
+import styles load the same files:
+
+```js
+// ES modules
+import { RemediaClient } from '@remedia/client';
+import { Remedia, getFFmpegRuntime } from '@remedia/node';
+import { createPluginHost } from '@remedia/plugin-host';
+import { createNodeMiddleware } from '@remedia/plugin-host/node';
+import { RemediaConfigSchema } from '@remedia/config';
+import schema from '@remedia/config/schema.json' with { type: 'json' };
+```
+
+```js
+// CommonJS
+const { RemediaClient } = require('@remedia/client');
+const { Remedia, getFFmpegRuntime } = require('@remedia/node');
+const { createPluginHost } = require('@remedia/plugin-host');
+const { createNodeMiddleware } = require('@remedia/plugin-host/node');
+const { RemediaConfigSchema } = require('@remedia/config');
+const schema = require('@remedia/config/schema.json');
+```
+
+CommonJS loading relies on Node.js `require()` of synchronous ES modules, which every supported
+Node.js version (22.18 and newer) enables without a flag or warning. Because there is a single build,
+`require()` and `import()` return the same module instance in one process: classes keep their
+identity across both styles and the native addon loads once.
+
+Loading is synchronous; startup is not. Importing `@remedia/node` loads the platform addon but
+starts no engine, thread or socket. `Remedia.create()` and `RemediaClient.create()` stay
+asynchronous and are where resources begin. `@remedia/client` loads `@remedia/node` only when an
+embedded node starts, so remote-only CommonJS and ESM applications never resolve the native package.
+
+Limitations:
+
+- Node.js versions before 22.12 cannot `require()` these packages. They are below the supported
+  minimum.
+- CommonJS has no top-level await, so call `Remedia.create()` and `RemediaClient.create()` inside an
+  async function.
+- TypeScript CommonJS projects need `"module": "NodeNext"` (or `"Node20"`) with TypeScript 5.8 or
+  newer. `"Node16"` reports TS1479 because it models a Node.js version without `require()` of ES
+  modules.
+
+Release packing installs the packed tarballs into clean projects and checks both import styles,
+mixed `require()` and `import()`, subpath exports, embedded and remote-only clients, and a missing
+platform package on every tested Node.js version.
 
 ## Runtime diagnostics and distribution
 

@@ -326,8 +326,7 @@ jobs:
         run: node .github/scripts/verify-native-artifacts.mjs
       - run: pnpm --filter @remedia/node build:types
       - run: pnpm --filter @remedia/client build
-      - name: Test clean native npm installation
-        if: matrix.node == '24'
+      - name: Test clean npm installation with ESM and CommonJS consumers
         run: node .github/scripts/smoke-packed-package.mjs ${{ inputs.target }}
       - run: pnpm --filter @remedia/node test:bindings
       - run: pnpm --filter @remedia/client test

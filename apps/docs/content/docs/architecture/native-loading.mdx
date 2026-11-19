@@ -4,7 +4,9 @@ description: How the static native addon and server runtime load.
 ---
 
 The engine addon statically links FFmpeg, including avfilter and resampling.
-Importing `@remedia/node` loads the matching platform addon directly. No bootstrap addon or external FFmpeg loader is involved.
+Importing `@remedia/node` loads the matching platform addon directly and synchronously, through
+`import` or `require()`. No bootstrap addon or external FFmpeg loader is involved. Loading the addon
+starts no engine; `Remedia.create()` does.
 `getFFmpegRuntime()` reads identity from the compiled FFmpeg functions.
 
 The administrative server CLI continues to launch the adjacent runtime executable.

@@ -6,7 +6,7 @@ audio an operation returns, and your application can run operations through Reme
 application-defined data (catalog, metadata, lyrics) without knowing the host's address.
 
 It is framework-independent, has no runtime dependencies, never starts a listener on its own, and does
-not sandbox plugins. Requires Node.js 22.18 or newer.
+not sandbox plugins. Requires Node.js 22.18 or newer and loads with `import` or `require()`.
 
 ```sh
 npm install @remedia/plugin-host
