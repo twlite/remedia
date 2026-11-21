@@ -176,6 +176,7 @@ pub fn parse_execute_response(body: &[u8]) -> Result<ExecuteOutcome, PluginError
 pub struct Descriptor {
     pub url: url::Url,
     pub expires_at_ms: Option<u64>,
+    pub headers: std::collections::HashMap<String, String>,
 }
 
 pub fn parse_descriptor(value: &Value) -> Result<Descriptor, PluginError> {
@@ -210,7 +211,26 @@ pub fn parse_descriptor(value: &Value) -> Result<Descriptor, PluginError> {
         ),
     };
 
-    Ok(Descriptor { url, expires_at_ms })
+    let mut headers = std::collections::HashMap::new();
+    if let Some(raw_headers) = object.get("headers") {
+        let entries = raw_headers.as_object().ok_or_else(|| invalid("media headers must be an object"))?;
+        let mut bytes = 0usize;
+        for (name, value) in entries {
+            let value = value.as_str().ok_or_else(|| invalid("media header values must be strings"))?;
+            bytes += name.len() + value.len() + 4;
+            if bytes > 16 * 1024
+                || name.is_empty()
+                || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+                || value.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
+                || ["host", "content-length", "transfer-encoding"].iter().any(|blocked| name.eq_ignore_ascii_case(blocked))
+            {
+                return Err(invalid("invalid media request headers"));
+            }
+            headers.insert(name.clone(), value.to_owned());
+        }
+    }
+
+    Ok(Descriptor { url, expires_at_ms, headers })
 }
 
 /// Map a non-success execute status and optional protocol error code to a failure.
