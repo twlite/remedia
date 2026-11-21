@@ -13,6 +13,8 @@ pub enum InputSource {
     File(PathBuf),
     /// An HTTP or HTTPS URL.
     HttpUrl(String),
+    /// An HTTP(S) URL with per-request headers. Headers are reused when the source is reopened.
+    HttpUrlWithHeaders { url: String, headers: Vec<(String, String)> },
     /// An HTTP or HTTPS URL that can be read exactly once, from the first byte
     /// to the last. See [`InputSource::sequential_http_url`].
     SequentialHttpUrl(String),
@@ -45,6 +47,15 @@ impl InputSource {
     ///
     /// URL syntax and scheme are validated when the decoder is opened. A resource
     /// which does not return the complete body for a plain `GET` is not supported.
+    /// Construct an HTTP(S) source with custom request headers (including Cookie).
+    /// The caller must trust the destination and any redirect targets when providing credentials.
+    pub fn http_url_with_headers(
+        url: impl Into<String>,
+        headers: impl IntoIterator<Item = (String, String)>,
+    ) -> Self {
+        Self::HttpUrlWithHeaders { url: url.into(), headers: headers.into_iter().collect() }
+    }
+
     pub fn sequential_http_url(url: impl Into<String>) -> Self {
         Self::SequentialHttpUrl(url.into())
     }
@@ -74,7 +85,7 @@ impl InputSource {
     pub const fn kind(&self) -> &'static str {
         match self {
             Self::File(_) => "file",
-            Self::HttpUrl(_) => "http",
+            Self::HttpUrl(_) | Self::HttpUrlWithHeaders { .. } => "http",
             Self::SequentialHttpUrl(_) => "http_sequential",
             Self::Bytes(_) => "buffer",
             Self::ByteStream(_) => "byte_stream",
@@ -93,7 +104,7 @@ impl InputSource {
     /// queue. Those need a [`SourceReopener`].
     pub(crate) fn reopen_in_place(&self) -> Option<Self> {
         match self {
-            Self::File(_) | Self::HttpUrl(_) | Self::Bytes(_) => Some(self.clone()),
+            Self::File(_) | Self::HttpUrl(_) | Self::HttpUrlWithHeaders { .. } | Self::Bytes(_) => Some(self.clone()),
             Self::SequentialHttpUrl(_) | Self::ByteStream(_) => None,
         }
     }
