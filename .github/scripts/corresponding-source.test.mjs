@@ -284,10 +284,9 @@ test('public source metadata uses the GitHub token and exposes permission failur
     assert.equal(options.headers['X-GitHub-Api-Version'], '2022-11-28');
     return { ok: true, json: async () => ({ tag_name: 'v1.0.0' }) };
   };
-  assert.deepEqual(
-    await publicApi('/releases/tags/v1.0.0', { token: 'fixture-token', request }),
-    { tag_name: 'v1.0.0' },
-  );
+  assert.deepEqual(await publicApi('/releases/tags/v1.0.0', { token: 'fixture-token', request }), {
+    tag_name: 'v1.0.0',
+  });
   assert.equal(calls, 1);
   await assert.rejects(
     publicApi('/releases/tags/v1.0.0', { token: '', request }),
@@ -300,7 +299,7 @@ test('public source metadata uses the GitHub token and exposes permission failur
       request: async () => ({
         ok: false,
         status: 403,
-        headers: { get: (key) => key === 'x-ratelimit-remaining' ? '0' : null },
+        headers: { get: (key) => (key === 'x-ratelimit-remaining' ? '0' : null) },
         text: async () => '{"message":"API rate limit exceeded"}',
       }),
     }),
