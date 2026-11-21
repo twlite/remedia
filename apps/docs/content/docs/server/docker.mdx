@@ -144,3 +144,8 @@ Use a fixed published version. For compiling the binaries from source, see
 [installation](/docs/server/installation). The repository's `docker/compose.build.yaml`
 provides an optional local image build override. GitHub API rate limits can affect builds.
 See `docker/README.md` for the supported BuildKit token secret.
+
+Installed runtime and license directories remain owned by root with mode `0755`, so the
+service user can traverse versioned release paths without write access. The image build
+runs the CLI and `doctor` as UID/GID `10001` to verify runtime access and native dependencies
+before producing the image.
