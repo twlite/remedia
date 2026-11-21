@@ -203,6 +203,7 @@ export interface NativeMediaSource {
   /** Explicitly `file`, `url`, `buffer`, or `stream`. */
   kind: string
   value?: string
+  headers?: { [key: string]: string }
   bytes?: Buffer
 }
 
