@@ -36,18 +36,22 @@ cache hits retain policy and final dependency audits. No bootstrap is compiled.
 ## Source and publication ordering
 
 1. Authorize the actors and verify the immutable release tag before creating a draft.
-2. Build and runtime-test the existing native targets, then pack and verify binaries.
-3. Reuse or publish a hash-identified dependency source snapshot on this repository's
-   source-only GitHub release. Add the small, exact Remedia source/configuration
-   archive there using an immutable asset name. Source publication is authorized.
-4. Upload missing binary draft assets; verify sizes and SHA-256 digests. Matching
-   assets are preserved. A mismatched completed asset blocks the release.
-5. Verify the complete corresponding source is public without authentication.
-6. Publish original npm tarballs through OIDC in dependency order. Verify hashes
-   before skipping any existing immutable version; wait for registry visibility and
-   verify every package after publication.
-7. Recheck draft assets and finalize GitHub only after npm succeeds. Publish GHCR
-   afterward through the existing Docker workflow.
+2. Build and runtime-test the native targets, then pack and verify binaries.
+3. Reuse or publish a hash-identified dependency snapshot on a separate source-only
+   GitHub release. Prepare the exact version-specific source/configuration archive
+   and include it in the regular binary release draft, with its manifest.
+4. Upload missing binary and corresponding-source assets to the regular draft;
+   verify sizes and SHA-256 digests. Matching assets are preserved. A mismatched
+   completed asset blocks the release.
+5. Finalize the regular GitHub release after complete asset verification.
+6. Verify the public regular release and dependency snapshot using authenticated
+   GitHub API metadata, including source hashes, before publishing npm packages
+   through OIDC in dependency order. Verify hashes before skipping existing versions,
+   and wait for registry visibility after publication.
+7. Publish GHCR afterward through the existing Docker workflow, only when npm and
+   the regular GitHub release have both succeeded. npm failure may leave a public
+   regular release with complete sources; it cannot leave a published version-specific
+   source-only release without a corresponding regular release.
 
 Retry failed jobs to resume an interrupted stage without rebuilding successful
 native jobs. Upload retries reconcile accepted files before sending more data;

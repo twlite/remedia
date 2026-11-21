@@ -120,16 +120,19 @@ platform packages publish before @remedia/node, followed by @remedia/plugin-host
 A detected release first creates (or reuses) a GitHub draft and verifies that its immutable tag
 points to the release commit. After checks, native builds, and packaging pass, all 13 `.node`
 addons, eight server executables, eight server archives, and license/source-distribution files are
-uploaded to that draft. Upload completeness, sizes, and SHA-256 digests are verified
-before npm publication starts. The final job waits for every npm package publish to succeed,
-rechecks the assets, and only then makes the GitHub release public. Prerelease versions remain
-marked as prereleases and are not promoted to GitHub's latest stable release.
+uploaded to that draft. Upload completeness, sizes, and SHA-256 digests are verified,
+including the corresponding source archive. The regular GitHub release is made public
+before npm publication starts. npm publishing verifies the public release and the
+shared dependency source snapshot, then publishes packages in dependency order.
+Prerelease versions remain marked as prereleases and are not promoted to GitHub's latest stable release.
 
-Failures before finalization leave the draft and tag in place for inspection or a rerun. Matching draft
-assets are preserved on retries; mismatched completed assets block publication. A release that is already public is never changed back to a
-draft or overwritten by a fresh full run; retrying only the final publication job is harmless.
-The npm registry and GitHub are separate systems: npm versions published before a later failure
-remain published. The existing exact-version checks allow a failed npm stage to resume.
+Failures before GitHub finalization leave the draft and tag in place for inspection
+or a rerun. Matching draft assets are preserved on retries; mismatched completed
+assets block publication. A public release is never changed back to a draft or
+overwritten. GitHub Releases and npm cannot be published atomically: an npm failure
+after GitHub finalization leaves a public release with complete binaries and sources.
+The existing exact-version checks allow a failed npm stage to resume. GHCR publication
+waits for npm success as well as public GitHub release completion.
 
 For token-free releases, configure npm Trusted Publishing for each package the workflow publishes:
 

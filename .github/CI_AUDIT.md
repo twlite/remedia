@@ -114,9 +114,13 @@ The source mechanism is implemented in corresponding-source.mjs and documented i
 Cargo sources, native sources, port patches and exact controlling scripts. Unused
 vendored test binaries and unsupported-target objects are omitted; NAPI's embedded
 helper is regenerated from its retained C source before offline checks. Necessary
-MSVC System Library import stubs remain. Dependency snapshots and immutable
-release-specific source assets become public before npm; anonymous API metadata,
-SHA-256 identities and all target records are checked before publishing binaries.
+MSVC System Library import stubs remain. Shared dependency snapshots
+remain separate and public before packaging; version-specific corresponding source
+is included in the regular release draft. The regular release is finalized only
+after verifying all uploaded binaries and source assets and before npm publication.
+Authenticated GitHub API metadata, SHA-256 identities and target records are checked
+before npm publishes binaries. A failed npm publish can now leave a public regular
+release, but cannot leave a newly published version-specific source-only release.
 No source snapshot or new binary release was published to test this change.
 
 The historical no-op `--no-ffmpeg` / `-NoFFmpeg` installer switches remain because
