@@ -88,6 +88,11 @@ RUN apt-get update \
 COPY --from=installer /opt/remedia/libexec /opt/remedia/libexec
 COPY --from=installer /opt/remedia/licenses /opt/remedia/licenses
 
+# The installer atomically promotes mktemp directories, which retain mode 0700.
+# Make the installed directories (including versioned runtimes and notices) traversable
+# without changing root ownership or granting the service account write access.
+RUN find /opt/remedia -type d -exec chmod 0755 {} +
+
 # `remedia` is the documented command; `remedia-server` is the same lightweight CLI. The
 # CLI finds remedia-server-runtime next to its real (symlink-resolved) path.
 RUN if [ -f /opt/remedia/libexec/current.txt ]; then \
@@ -99,7 +104,13 @@ RUN if [ -f /opt/remedia/libexec/current.txt ]; then \
     && ln -s /opt/remedia/libexec/remedia-server /usr/local/bin/remedia-server \
     && ln -s /opt/remedia/licenses /usr/share/doc/remedia-licenses
 
-# Verify the finished image once at build time: every shared library the runtime needs
+ENV HOME=/home/remedia
+
+USER 10001:10001
+WORKDIR /config
+
+# Verify the finished image as the service user at build time: the CLI must find and
+# execute its native runtime through the installed paths. Every shared library it needs
 # must resolve (including FFmpeg's transitive dependencies), and the loaded FFmpeg
 # versions must match the required ABI majors. `doctor` needs a valid configuration, so a
 # throwaway one is generated; the placeholder value below is not a credential.
@@ -107,14 +118,12 @@ RUN set -eu; \
     remedia --version; \
     missing="$(ldd /opt/remedia/libexec/remedia-server-runtime | grep 'not found' || true)"; \
     [ -z "$missing" ] || { echo "Unresolved libraries:" >&2; echo "$missing" >&2; exit 1; }; \
-    cd "$(mktemp -d)"; \
+    check_dir="$(mktemp -d)"; \
+    trap 'rm -rf "$check_dir"' EXIT; \
+    cd "$check_dir"; \
     remedia --generate-config-file ./check.json >/dev/null; \
     REMEDIA_RPC_PASSWORD=build-time-placeholder remedia doctor --config ./check.json
 
-ENV HOME=/home/remedia
-
-USER 10001:10001
-WORKDIR /config
 EXPOSE 8787
 
 # Local status check: `remedia --list --json` asks the running server, over its private
