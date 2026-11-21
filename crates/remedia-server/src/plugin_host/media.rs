@@ -1,8 +1,8 @@
-//! Fetching host-served media with the server's own pinned, redirect-free HTTP client.
+//! Fetching host-served media with explicit per-hop redirect validation.
 //!
 //! FFmpeg never talks to a plugin host's media origin. The server redeems the URL,
-//! validates the response and feeds a bounded forward-only byte stream to the
-//! decoder, so DNS answers and redirects are never re-resolved by a second client.
+//! validates each redirect and response, then feeds a bounded forward-only byte stream
+//! to the decoder. FFmpeg does not make HTTP requests for this source.
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -59,54 +59,68 @@ pub(crate) async fn open_media(
     cancel: &CancellationToken,
     permit: OwnedSemaphorePermit,
 ) -> Result<(InputSource, MediaGuard), PluginError> {
-    host.ensure_literal_ip_allowed(&url)?;
-
-    // Credentials are deliberately absent: the media URL is its own bearer capability
-    // and may be served by a different origin than the execution endpoint.
-    let request = host.client().get(url).header("accept", "*/*");
-    let response = send_cancellable(
-        request,
-        cancel,
-        host.registry_shutdown(),
-        host.config().limits.request_timeout,
-    )
-    .await
-    .map_err(|error| match error.kind {
-        PluginErrorKind::HostUnavailable | PluginErrorKind::Timeout => PluginError::new(
-            PluginErrorKind::MediaFailed,
-            "media origin could not be reached",
-        ),
-        _ => error,
-    })?;
-    let status = response.status().as_u16();
-
-    match status {
-        200 => {}
-        404 | 410 => {
-            return Err(PluginError::new(
-                PluginErrorKind::MediaExpired,
-                "media grant is expired or was already redeemed",
-            ));
-        }
-        401 | 403 => {
+    // Follow redirects only for media downloads. Plugin discovery and execution remain redirect-free.
+    // Each hop is checked against the same DNS/IP policy as the original request.
+    let mut target = url;
+    let mut redirect_count = 0usize;
+    let response = loop {
+        host.ensure_literal_ip_allowed(&target)?;
+        if !matches!(target.scheme(), "http" | "https")
+            || (target.scheme() == "http" && !host.config().allow_http)
+        {
             return Err(PluginError::new(
                 PluginErrorKind::MediaInvalid,
-                "media origin rejected the media request",
+                "media redirect uses a disallowed scheme",
             ));
         }
-        300..=399 => {
-            return Err(PluginError::new(
-                PluginErrorKind::MediaInvalid,
-                "media origin attempted a redirect, which is never followed",
-            ));
-        }
-        _ => {
-            return Err(PluginError::new(
+        // Do not send plugin-host credentials or reuse authentication headers on redirects.
+        let request = host.client().get(target.clone()).header("accept", "*/*");
+        let response = send_cancellable(
+            request,
+            cancel,
+            host.registry_shutdown(),
+            host.config().limits.request_timeout,
+        )
+        .await
+        .map_err(|error| match error.kind {
+            PluginErrorKind::HostUnavailable | PluginErrorKind::Timeout => PluginError::new(
                 PluginErrorKind::MediaFailed,
-                "media origin returned an unexpected status",
-            ));
+                "media origin could not be reached",
+            ),
+            _ => error,
+        })?;
+        let status = response.status().as_u16();
+        if matches!(status, 301 | 302 | 303 | 307 | 308) {
+            if redirect_count >= 10 {
+                return Err(PluginError::new(
+                    PluginErrorKind::MediaInvalid,
+                    "media redirect limit exceeded",
+                ));
+            }
+            let location = response.headers().get(reqwest::header::LOCATION)
+                .and_then(|header| header.to_str().ok())
+                .ok_or_else(|| PluginError::new(
+                    PluginErrorKind::MediaInvalid, "media redirect has no valid location",
+                ))?;
+            target = target.join(location).map_err(|_| PluginError::new(
+                PluginErrorKind::MediaInvalid, "media redirect has an invalid location",
+            ))?;
+            redirect_count += 1;
+            continue;
         }
-    }
+        match status {
+            200 => break response,
+            404 | 410 => return Err(PluginError::new(
+                PluginErrorKind::MediaExpired, "media grant is expired or was already redeemed",
+            )),
+            401 | 403 => return Err(PluginError::new(
+                PluginErrorKind::MediaInvalid, "media origin rejected the media request",
+            )),
+            _ => return Err(PluginError::new(
+                PluginErrorKind::MediaFailed, "media origin returned an unexpected status",
+            )),
+        }
+    };
 
     let limits = &host.config().limits;
 
