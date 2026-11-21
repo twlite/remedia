@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join, dirname, basename } from 'node:path';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
 import {
@@ -13,7 +13,6 @@ import {
   publicApi,
 } from './corresponding-source.mjs';
 import { RELEASE_TARGETS } from './release.mjs';
-import { uploadAssets } from './github-release.mjs';
 import { fileHash } from './release-network.mjs';
 
 function fixture() {
