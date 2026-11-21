@@ -56,11 +56,13 @@ enum PumpEnd {
 pub(crate) async fn open_media(
     host: &Arc<HostState>,
     url: url::Url,
+    headers: &std::collections::HashMap<String, String>,
     cancel: &CancellationToken,
     permit: OwnedSemaphorePermit,
 ) -> Result<(InputSource, MediaGuard), PluginError> {
     // Follow redirects only for media downloads. Plugin discovery and execution remain redirect-free.
     // Each hop is checked against the same DNS/IP policy as the original request.
+    let original_origin = url.origin();
     let mut target = url;
     let mut redirect_count = 0usize;
     let response = loop {
@@ -74,7 +76,18 @@ pub(crate) async fn open_media(
             ));
         }
         // Do not send plugin-host credentials or reuse authentication headers on redirects.
-        let request = host.client().get(target.clone()).header("accept", "*/*");
+        let mut request = host.client().get(target.clone()).header("accept", "*/*");
+        for (name, value) in headers {
+            // Do not leak credentials to a different origin after a redirect.
+            if target.origin() != original_origin
+                && (name.eq_ignore_ascii_case("authorization")
+                    || name.eq_ignore_ascii_case("proxy-authorization")
+                    || name.eq_ignore_ascii_case("cookie"))
+            {
+                continue;
+            }
+            request = request.header(name.as_str(), value.as_str());
+        }
         let response = send_cancellable(
             request,
             cancel,
