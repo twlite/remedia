@@ -118,6 +118,32 @@ pub(crate) fn open(
         // the chunk-end state available to subsequent reads, which then see EOF.
         options.set("multiple_requests", "1");
     }
+    if let InputSource::HttpUrlWithHeaders { headers, .. } = source {
+        let mut serialized = String::new();
+        let mut total = 0usize;
+        for (name, value) in headers {
+            if name.is_empty()
+                || !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&\'*+-.^_`|~".contains(&byte))
+                || value.bytes().any(|byte| byte == b'\r' || byte == b'\n' || byte == 0)
+                || name.eq_ignore_ascii_case("host")
+                || name.eq_ignore_ascii_case("content-length")
+                || name.eq_ignore_ascii_case("transfer-encoding")
+            {
+                return Err(DecoderError::InvalidOptions("invalid HTTP request header"));
+            }
+            total += name.len() + value.len() + 4;
+            if total > 16 * 1024 {
+                return Err(DecoderError::InvalidOptions("HTTP request headers are too large"));
+            }
+            serialized.push_str(name);
+            serialized.push_str(": ");
+            serialized.push_str(value);
+            serialized.push_str("\r\n");
+        }
+        if !serialized.is_empty() {
+            options.set("headers", &serialized);
+        }
+    }
     if sequential_http {
         // A forward-only resource cannot answer `Range: bytes=0-` (FFmpeg sends it
         // by default) and cannot be reopened. Disable seeking, which also stops the
@@ -234,7 +260,8 @@ unsafe extern "C" fn interrupt_callback(opaque: *mut c_void) -> c_int {
 fn source_locator(source: &InputSource) -> Result<Option<(String, bool)>, DecoderError> {
     match source {
         InputSource::File(path) => Ok(Some((path_to_string(path)?, false))),
-        InputSource::HttpUrl(value) | InputSource::SequentialHttpUrl(value) => {
+        InputSource::HttpUrl(value) | InputSource::SequentialHttpUrl(value)
+        | InputSource::HttpUrlWithHeaders { url: value, .. } => {
             let url = url::Url::parse(value)
                 .map_err(|error| DecoderError::InvalidUrl(error.to_string()))?;
             if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
