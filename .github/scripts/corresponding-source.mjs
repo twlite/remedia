@@ -221,91 +221,36 @@ export async function ensureSnapshot(
   return verifySnapshot(release, await listAssets(release, request), identity);
 }
 
-export function releaseSourceTag(version, commit) {
-  return `source-v${version}-${commit}`;
-}
-
-async function findReleaseSource(version, commit, request) {
-  const tag = releaseSourceTag(version, commit);
-  try {
-    return await request(`/releases/tags/${tag}`);
-  } catch (error) {
-    if (error.status !== 404) throw error;
-    for (let page = 1; ; page++) {
-      const releases = await request('/releases?per_page=100&page=' + page);
-      const release = releases.find((item) => item.tag_name === tag);
-      if (release) return release;
-      if (releases.length < 100) return null;
-    }
-  }
-}
-
+// Version-specific sources ship with the regular release, not a separate
+// source-only release. npm publication is gated on this release being public.
 async function verifyReleaseSource(manifest, request) {
-  const { version, commit, releaseSource } = manifest;
-  const release = await findReleaseSource(version, commit, request);
-  if (!release || release.draft || release.tag_name !== releaseSourceTag(version, commit))
-    throw new Error('Release-specific corresponding source is not publicly available');
-  const source = (await listAssets(release, request)).find(
-    (asset) => asset.name === releaseSource.name,
-  );
-  if (!assetMatches(source, releaseSource) || source.browser_download_url !== releaseSource.url)
-    throw new Error(
-      'Release-specific corresponding source is not publicly available or mismatched',
-    );
-  return release;
-}
-
-async function publishReleaseSource(
-  manifest,
-  file,
-  { request = api, authorize = authorizeRelease, upload = uploadAssets } = {},
-) {
-  const tag = releaseSourceTag(manifest.version, manifest.commit);
-  let release = await findReleaseSource(manifest.version, manifest.commit, request);
-  if (release && !release.draft) {
-    await verifyReleaseSource(manifest, request);
-    return;
-  }
-  await authorize();
-  if (!release) {
-    try {
-      release = await request('/releases', {
-        method: 'POST',
-        body: {
-          tag_name: tag,
-          target_commitish: manifest.commit,
-          name: `Corresponding source ${manifest.version} (${manifest.commit.slice(0, 12)})`,
-          draft: true,
-          prerelease: true,
-          body: 'Version-specific corresponding source for Remedia. The source-manifest.json in the matching binary release links this archive and its retained dependency snapshot.',
-        },
-      });
-    } catch (error) {
-      release = await findReleaseSource(manifest.version, manifest.commit, request);
-      if (!release) throw error;
-    }
-  }
-  if (!release.draft) {
-    await verifyReleaseSource(manifest, request);
-    return;
-  }
-  await upload(release, [file], { request });
-  const uploaded = (await listAssets(release, request)).find((asset) => asset.name === file.name);
-  if (!assetMatches(uploaded, file))
-    throw new Error('Release-specific corresponding source digest mismatch');
-  await authorize();
+  const tag = `v${manifest.version}`;
+  let release;
   try {
-    release = await request('/releases/' + release.id, {
-      method: 'PATCH',
-      body: { draft: false, prerelease: true, make_latest: 'false' },
-    });
+    release = await request(`/releases/tags/${tag}`);
   } catch (error) {
-    // The PATCH may have succeeded before the network response was lost.
-    const published = await findReleaseSource(manifest.version, manifest.commit, request);
-    if (!published || published.draft) throw error;
-    release = published;
+    if (error.status === 404)
+      throw new Error('Regular release and its corresponding source are not publicly available', {
+        cause: error,
+      });
+    throw error;
   }
-  await verifyReleaseSource(manifest, request);
+  if (
+    !release ||
+    release.draft ||
+    release.tag_name !== tag ||
+    release.target_commitish !== manifest.commit
+  )
+    throw new Error('Regular release is not public or does not match the source commit');
+  const source = (await listAssets(release, request)).find(
+    (asset) => asset.name === manifest.releaseSource.name,
+  );
+  if (
+    !assetMatches(source, manifest.releaseSource) ||
+    source.browser_download_url !== manifest.releaseSource.url
+  )
+    throw new Error('Regular release corresponding source is missing or mismatched');
+  return release;
 }
 
 export async function prepareSource(
@@ -366,20 +311,11 @@ export async function prepareSource(
   const archive = join(destination, 'corresponding-source.tar.gz');
   execFileSync('python3', ['.github/scripts/source-archive.py', staging, archive]);
   manifest.releaseSource = {
-    name: `remedia-${version}-${commit}.tar.gz`,
-    url: `https://github.com/twlite/remedia/releases/download/${releaseSourceTag(version, commit)}/remedia-${version}-${commit}.tar.gz`,
+    name: 'corresponding-source.tar.gz',
+    url: `https://github.com/twlite/remedia/releases/download/v${version}/corresponding-source.tar.gz`,
     sha256: await fileHash(archive),
     size: statSync(archive).size,
   };
-  if (publish) {
-    const sourcePath = resolve(staging, '..', manifest.releaseSource.name);
-    cpSync(archive, sourcePath);
-    await publishReleaseSource(
-      manifest,
-      { path: sourcePath, ...manifest.releaseSource },
-      { request, authorize, upload },
-    );
-  }
   writeFileSync(
     join(destination, 'source-manifest.json'),
     JSON.stringify(manifest, null, 2) + '\n',
@@ -390,12 +326,30 @@ export async function prepareSource(
   return manifest;
 }
 
-async function publicApi(path) {
-  const response = await requestWithRetry('https://api.github.com/repos/twlite/remedia' + path, {
-    headers: { accept: 'application/vnd.github+json' },
+// Authenticate GitHub API metadata requests to avoid shared-runner anonymous IP
+// rate limits. The release itself must still be non-draft and match the manifest.
+export async function publicApi(
+  path,
+  { token = process.env.GH_TOKEN, request = requestWithRetry } = {},
+) {
+  if (!token) throw new Error('GH_TOKEN is required for corresponding source verification');
+  const response = await request('https://api.github.com/repos/twlite/remedia' + path, {
+    headers: {
+      accept: 'application/vnd.github+json',
+      authorization: `Bearer ${token}`,
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
   });
   if (!response.ok) {
-    const error = new Error(`Public source API ${path}: HTTP ${response.status}`);
+    const body = await response.text();
+    const remaining = response.headers?.get('x-ratelimit-remaining');
+    const retryAfter = response.headers?.get('retry-after');
+    const error = new Error(
+      `Public source API ${path}: HTTP ${response.status}` +
+        (remaining === null || remaining === undefined ? '' : ` (rate-limit remaining: ${remaining})`) +
+        (retryAfter ? ` (retry after: ${retryAfter}s)` : '') +
+        (body ? `: ${body.slice(0, 2048)}` : ''),
+    );
     error.status = response.status;
     throw error;
   }
@@ -414,7 +368,9 @@ export async function verifySourceManifest(path, request = publicApi) {
   parseReleaseVersion(manifest.version);
   if (
     !/^[a-f0-9]{40}$/.test(manifest.commit ?? '') ||
-    manifest.releaseSource?.name !== `remedia-${manifest.version}-${manifest.commit}.tar.gz`
+    manifest.releaseSource?.name !== 'corresponding-source.tar.gz' ||
+    manifest.releaseSource?.url !==
+      `https://github.com/twlite/remedia/releases/download/v${manifest.version}/corresponding-source.tar.gz`
   )
     throw new Error('Release source identity does not match the version and commit');
   if (process.env.GITHUB_SHA && manifest.commit !== process.env.GITHUB_SHA)
