@@ -446,10 +446,38 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  github-release:
+    name: Publish verified GitHub release with corresponding source
+    if: needs.release-detection.outputs.is_release == 'true'
+    needs: [release-detection, upload-release]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+      - name: Require repository collaborator write access
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/release.mjs authorize
+      - uses: actions/download-artifact@v8
+        with:
+          name: github-release-assets
+          path: ${{ runner.temp }}/release-assets
+      - name: Verify every uploaded asset and publish source-bearing release before npm
+        env:
+          RELEASE_VERSION: ${{ needs.release-detection.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/github-release.mjs finalize "$RELEASE_VERSION" "$RUNNER_TEMP/release-assets/github-release-assets.json"
+
   publish:
     name: Publish verified packages via npm OIDC
     if: needs.release-detection.outputs.is_release == 'true'
-    needs: [release-detection, package-release, upload-release]
+    needs: [release-detection, package-release, github-release]
     runs-on: ubuntu-24.04
     concurrency:
       group: npm-release-${{ github.repository }}
@@ -489,41 +517,13 @@ jobs:
           printf 'registry=https://registry.npmjs.org/\n' > "$NPM_CONFIG_USERCONFIG"
           node .github/scripts/release.mjs publish "$RELEASE_VERSION" "$NPM_TAG" "$RUNNER_TEMP/npm-release-packages/release-packages.json"
 
-  github-release:
-    name: Make the completed GitHub release public
-    if: needs.release-detection.outputs.is_release == 'true'
-    needs: [release-detection, upload-release, publish]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v7.1.0
-        with:
-          node-version: 24
-      - name: Require repository collaborator write access
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node .github/scripts/release.mjs authorize
-      - uses: actions/download-artifact@v8
-        with:
-          name: github-release-assets
-          path: ${{ runner.temp }}/release-assets
-      - name: Verify every uploaded asset and publish the draft after npm succeeds
-        env:
-          RELEASE_VERSION: ${{ needs.release-detection.outputs.version }}
-          GH_TOKEN: ${{ github.token }}
-        run: node .github/scripts/github-release.mjs finalize "$RELEASE_VERSION" "$RUNNER_TEMP/release-assets/github-release-assets.json"
-
   docker:
     name: Publish container image to GHCR
     # The Dockerfile installs the published release, so this runs only after the release is
     # public. It is a separate job: a failure here cannot undo npm or GitHub releases, and
     # "Re-run failed jobs" retries just this publication.
     if: needs.release-detection.outputs.is_release == 'true'
-    needs: [release-detection, github-release]
+    needs: [release-detection, github-release, publish]
     permissions:
       contents: read
       packages: write
