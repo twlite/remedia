@@ -97,7 +97,7 @@ impl AudioPacketReader {
         if options.cancellation.is_cancelled() {
             return Err(DecoderError::Cancelled);
         }
-        let network_input = matches!(&source, InputSource::HttpUrl(_));
+        let network_input = matches!(&source, InputSource::HttpUrl(_) | InputSource::HttpUrlWithHeaders { .. });
         let input = input::open(&source, options.io_timeout, options.cancellation.clone())?;
         let stream = input
             .streams()

@@ -106,3 +106,51 @@ fn network_reads_obey_the_configured_timeout() {
     assert!(matches!(result, Err(DecoderError::InputTimeout)));
     server.join().unwrap();
 }
+
+#[test]
+fn forwards_http_headers_and_decodes_media() {
+    let bytes = pcm16_wave(48_000, &[vec![4096; 2400]]);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut received = String::new();
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" || line.is_empty() { break; }
+            received.push_str(&line);
+        }
+        assert!(received.contains("Cookie: session=test") || received.contains("cookie: session=test"));
+        assert!(received.to_ascii_lowercase().contains("referer: https://example.com/"));
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", bytes.len()).unwrap();
+        stream.write_all(&bytes).unwrap();
+    });
+    let mut decoder = AudioDecoder::open(InputSource::http_url_with_headers(
+        format!("http://{address}/audio.wav"),
+        [
+            ("Cookie".to_string(), "session=test".to_string()),
+            ("Referer".to_string(), "https://example.com/".to_string()),
+        ],
+    )).unwrap();
+    assert_eq!(frame_count(&collect_frames(&mut decoder)), 2400);
+    server.join().unwrap();
+}
+
+#[test]
+fn rejects_injected_or_oversized_http_headers() {
+    for (name, value) in [
+        ("Cookie", "a=b\r\nX-Evil: yes".to_string()),
+        ("Host", "example.net".to_string()),
+        ("X-Test", "x".repeat(16 * 1024)),
+    ] {
+        assert!(matches!(
+            AudioDecoder::open(InputSource::http_url_with_headers(
+                "http://127.0.0.1:9/audio.wav",
+                [(name.to_string(), value)],
+            )),
+            Err(DecoderError::InvalidOptions(_))
+        ));
+    }
+}

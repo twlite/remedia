@@ -47,7 +47,7 @@ println!("Decoded {total_sample_frames} sample frames per channel");
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Use `InputSource::http_url(url)` for `http://` or `https://` sources. HTTP redirects and responses
+Use `InputSource::http_url(url)` for `http://` or `https://` sources. To send request headers, use `InputSource::http_url_with_headers(url, [(String::from("Referer"), String::from("https://example.com/"))])`. Cookies may be passed as the `Cookie` header. Do not use this with untrusted redirect destinations when headers contain credentials: FFmpeg controls redirects for direct URL playback.\n\nHTTP redirects and responses
 without a known content length are handled by FFmpeg's demuxer. HTTP status failures, network
 timeouts, invalid media, and missing audio streams return errors. The server must expose a supported
 FFmpeg HTTP(S) protocol and the requested media must be reachable from the process.

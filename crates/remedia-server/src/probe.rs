@@ -54,13 +54,11 @@ pub(crate) async fn execute(
                         "operation sources cannot be probed; resolve them only for playback",
                     ));
                 }
-                PlaySource::Url { url } => InputSource::http_url(
-                    server
-                        .config
-                        .authorize_url(&url)
-                        .await
-                        .map_err(media_error)?,
-                ),
+                PlaySource::Url { url, headers } => {
+                    let url = server.config.authorize_url(&url).await.map_err(media_error)?;
+                    if headers.is_empty() { InputSource::http_url(url) }
+                    else { InputSource::http_url_with_headers(url, headers) }
+                },
             };
             let info = tokio::task::spawn_blocking(move || {
                 let _permit = permit;

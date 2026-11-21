@@ -14,6 +14,8 @@ export type MediaSource =
   | {
       /** HTTP(S) media URL opened by the selected engine; remote nodes enforce server URL policy. */
       url: string;
+      /** HTTP request headers, including Cookie and Referer, passed to FFmpeg. */
+      headers?: Record<string, string>;
     }
   | {
       /** Owned encoded media bytes, supported by embedded nodes only. */
@@ -48,7 +50,7 @@ export function toNativeSource(
   source: Exclude<MediaSource, { stream: Readable }>,
 ): NativeMediaSource {
   if ('file' in source) return { kind: 'file', value: source.file };
-  if ('url' in source) return { kind: 'url', value: source.url };
+  if ('url' in source) return { kind: 'url', value: source.url, ...(source.headers ? { headers: source.headers } : {}) };
   return { kind: 'buffer', bytes: Buffer.from(source.buffer) };
 }
 

@@ -16,7 +16,10 @@ pub(crate) fn parse_source(source: NativeMediaSource) -> NativeResult<InputSourc
         }
         "url" => {
             let value = source_value(source.value, "media URL")?;
-            Ok(InputSource::http_url(value))
+            match source.headers {
+                Some(headers) if !headers.is_empty() => Ok(InputSource::http_url_with_headers(value, headers)),
+                _ => Ok(InputSource::http_url(value)),
+            }
         }
         "buffer" => {
             let bytes = source.bytes.ok_or_else(|| {
