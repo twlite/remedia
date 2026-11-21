@@ -34,9 +34,11 @@ hash-verified release source archive and target configurations, and a public,
 content-addressed dependency snapshot. Its versioned identity includes pinned inputs,
 Cargo manifests/configuration, the toolchain and source transformation/archive recipes,
 so changing these selects a new snapshot. Archive hashes verify the downloaded bytes.
-Publication retries reuse matching completed sources. Snapshot assets are hosted on this same
-repository's source-only GitHub releases and reused when inputs match. Both source
-parts are publicly available before npm publication; no upstream clone is required.
+Publication retries reuse matching completed sources. Shared dependency snapshots
+are hosted on this repository's source-only GitHub releases and reused when inputs
+match. The release-specific source archive ships with the regular public GitHub
+release. Both source parts are publicly available before npm publication; no
+upstream clone is required.
 The original v0.3.0 source archive remains unchanged.
 
 This implements equivalent network source access under GPLv3 §6(d). Source must
