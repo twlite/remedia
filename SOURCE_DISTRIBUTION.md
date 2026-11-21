@@ -15,21 +15,24 @@ implemented mechanism below: download `source-manifest.json` and
 The manifest names the exact Remedia commit, the SHA-256 and size of the release
 source archive, all target records, and a public content-addressed dependency
 snapshot. Download `dependencies.tar.gz` from the manifest's dependencies.url.
-Check both archives against their size and SHA-256 in the manifest. The releaseSource.url
-points to a separate, public, immutable release containing the version-specific source archive, available before npm publication;
-the binary release also carries a copy. This is actual
-retained source, not an instruction to retrieve moving upstream branches. No login,
-fee, or binary download is required. Source assets have immutable names and are never overwritten. Each release-specific source archive is published in its own immutable source-only release; published dependency snapshots are never modified.
-Snapshot identity format v2 hashes Cargo.lock, Cargo manifests/configuration, the
-pinned Rust toolchain, native input/patch metadata, and the vendoring, filtering,
-patching and archive recipes. Changing these inputs selects a new source snapshot;
-archive bytes are verified separately by SHA-256. Keep the format version in sync
-with any output-affecting tool semantics not represented by those inputs.
-A retry reuses verified public dependencies and matching release-source assets;
-partial uploads are retried without overwriting completed mismatched assets.
-Source snapshots must remain available for as
-long as any associated binaries are distributed. Redistributors must retain them
-or provide equivalent source access, with these directions next to their binaries.
+Check both archives against their size and SHA-256 in the manifest. The
+releaseSource.url points to `corresponding-source.tar.gz` on the same public
+regular release as the binaries. The release is published only after all assets
+and their digests have been verified, and before npm publication begins. No login,
+fee, or binary download is required. The source archive is retained alongside
+the matching binary release; published assets are never overwritten. Published
+dependency snapshots remain separate and immutable so multiple releases can
+reuse unchanged native inputs. Snapshot identity format v2 hashes Cargo.lock,
+Cargo manifests/configuration, the pinned Rust toolchain, native input/patch
+metadata, and the vendoring, filtering, patching and archive recipes. Changing
+these inputs selects a new source snapshot; archive bytes are verified separately
+by SHA-256. Keep the format version in sync with any output-affecting tool
+semantics not represented by those inputs.
+A retry reuses verified public dependencies and matching regular-release assets;
+partial draft uploads are retried without overwriting completed mismatched assets.
+Source snapshots must remain available for as long as any associated binaries
+are distributed. Redistributors must retain them or provide equivalent source
+access, with these directions next to their binaries.
 
 Extract the release archive into `release-source/` and `remedia.tar` into a working
 directory. Apply `release.patch` with `git apply --binary` in that directory. It
