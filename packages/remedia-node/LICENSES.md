@@ -29,7 +29,8 @@ in licenses/LICENSES.md alongside their other notices.
 The source includes the exact Remedia revision and release changes, locked Rust
 vendor sources, FFmpeg/native sources, patches, build scripts and target records.
 Unchanged dependency snapshots are reused on this repository's source-only GitHub
-releases. Both source parts are public before native npm publication, available
+releases. The version-specific source archive ships with the regular GitHub
+release. Both source parts are public before native npm publication, available
 without login or charge, and must remain available while associated binaries are
 distributed. A repository URL or upstream revision list alone is insufficient.
 
