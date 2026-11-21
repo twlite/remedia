@@ -231,10 +231,7 @@ test('workflow publishes verified source-bearing release before npm and gates Do
     /needs: \[release-detection, draft-release, package-release\]/,
   );
   assert.match(job('github-release'), /needs: \[release-detection, upload-release\]/);
-  assert.match(
-    job('publish'),
-    /needs: \[release-detection, package-release, github-release\]/,
-  );
+  assert.match(job('publish'), /needs: \[release-detection, package-release, github-release\]/);
   assert.match(job('docker'), /needs: \[release-detection, github-release, publish\]/);
   assert.match(job('publish'), /corresponding-source\.mjs verify/);
   assert.doesNotMatch(job('github-release'), /always\(\)|continue-on-error/);
