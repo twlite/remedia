@@ -372,6 +372,21 @@ mod tests {
                 .unwrap();
 
         assert_eq!(descriptor.expires_at_ms, Some(12));
+        let descriptor = parse_descriptor(&json!({
+            "url": "https://media.example/audio",
+            "headers": { "Cookie": "session=example", "Referer": "https://example.com/" }
+        })).unwrap();
+        assert_eq!(descriptor.headers.get("Cookie").map(String::as_str), Some("session=example"));
+        for headers in [
+            json!({"Host":"localhost"}),
+            json!({"Cookie":"one\r\nX-Injected: true"}),
+            json!({"X-Test":42}),
+        ] {
+            assert!(parse_descriptor(&json!({
+                "url":"https://media.example/audio", "headers":headers
+            })).is_err());
+        }
+
 
         for value in [
             json!({"url": "file:///etc/passwd"}),
