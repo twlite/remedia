@@ -222,7 +222,7 @@ test('finds existing unpublished drafts beyond the first page', async () => {
   assert.equal(calls.length, 2);
 });
 
-test('workflow gates npm on verified uploads and public release on successful npm completion', () => {
+test('workflow publishes verified source-bearing release before npm and gates Docker on npm', () => {
   const workflow = readFileSync(new URL('../workflows/ci.yaml', import.meta.url), 'utf8');
   const job = (name) => workflow.split('\n  ' + name + ':\n')[1].split(/\n  [a-z][\w-]*:\n/)[0];
   assert.match(job('draft-release'), /needs: release-detection/);
@@ -230,7 +230,12 @@ test('workflow gates npm on verified uploads and public release on successful np
     job('upload-release'),
     /needs: \[release-detection, draft-release, package-release\]/,
   );
-  assert.match(job('publish'), /needs: \[release-detection, package-release, upload-release\]/);
-  assert.match(job('github-release'), /needs: \[release-detection, upload-release, publish\]/);
+  assert.match(job('github-release'), /needs: \[release-detection, upload-release\]/);
+  assert.match(
+    job('publish'),
+    /needs: \[release-detection, package-release, github-release\]/,
+  );
+  assert.match(job('docker'), /needs: \[release-detection, github-release, publish\]/);
+  assert.match(job('publish'), /corresponding-source\.mjs verify/);
   assert.doesNotMatch(job('github-release'), /always\(\)|continue-on-error/);
 });
