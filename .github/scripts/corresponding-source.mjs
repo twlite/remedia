@@ -346,7 +346,9 @@ export async function publicApi(
     const retryAfter = response.headers?.get('retry-after');
     const error = new Error(
       `Public source API ${path}: HTTP ${response.status}` +
-        (remaining === null || remaining === undefined ? '' : ` (rate-limit remaining: ${remaining})`) +
+        (remaining === null || remaining === undefined
+          ? ''
+          : ` (rate-limit remaining: ${remaining})`) +
         (retryAfter ? ` (retry after: ${retryAfter}s)` : '') +
         (body ? `: ${body.slice(0, 2048)}` : ''),
     );
