@@ -116,3 +116,26 @@ cargo run --release --locked -p remedia-core --example resource_audit_fixtures -
 
 The fixture generator passed targeted Clippy with `-D warnings`; all four generated sources were
 decoded through the exact original-main benchmark executable.
+
+## Original-main codec concurrency sweep
+
+The baseline completed all 63 fresh-process cases: Opus passthrough, MP3 transcoding, and AAC
+transcoding at 1, 8, 32, 64, 128, 256, and 512 sessions, with three repetitions each. Each session
+processed the entire deterministic 60-second input at output complexity 9. Every Opus run produced
+exactly 3001 packets per session (including the trimmed edge packet); MP3 and AAC produced exactly 3000. Total submitted audio was exactly 60 seconds per session in every case.
+
+Raw rows: [resource-audit-main-codecs.jsonl](data/resource-audit-main-codecs.jsonl). The existing
+`benchmarks/playback.py` runner recorded exact child user+system CPU deltas and sampled process
+RSS/thread peaks at approximately 20 ms. These sampled peaks can miss short-lived maxima; the
+one-second in-process snapshots are even coarser. All figures include startup and teardown, and
+other audit builds may have been active, so later small CPU deltas require an interleaved rerun.
+These unpaced controlled-sink cases do not measure RTP send deadlines or audible continuity.
+
+```sh
+python3 benchmarks/playback.py \
+  --binary /tmp/remedia-audit-main-target/release/examples/concurrent_playback_benchmark \
+  --output /tmp/remedia-audit-main-codecs.jsonl \
+  --counts 1,8,32,64,128,256,512 --repeats 3 \
+  --fixtures /tmp/remedia-audit-fixtures/music60.opus,/tmp/remedia-audit-fixtures/music60.mp3,/tmp/remedia-audit-fixtures/music60.m4a \
+  --workloads passthrough --pacing unpaced
+```
