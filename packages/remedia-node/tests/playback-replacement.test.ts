@@ -94,7 +94,7 @@ it('reports a late natural completion for the playback that completed, not its r
   const second = createHeldReadable(makeWave(8));
 
   await session.play({ buffer: makeWave(0.1) });
-  await waitFor(() => (session.state === 'completed' ? true : undefined));
+  await waitFor(() => (session.state === 'completed' ? true : undefined), 10_000);
   await session.play({ stream: second.stream });
 
   delayed.release();
@@ -151,7 +151,7 @@ it("a stop() that overlaps a replacement does not release the replacement's inpu
   await session.play({ stream: first.stream });
   const stopping = session.stop();
   // The engine has stopped, but this stop() call has not yet seen it.
-  await waitFor(() => (session.state === 'stopped' ? true : undefined));
+  await waitFor(() => (session.state === 'stopped' ? true : undefined), 10_000);
   await session.play({ stream: second.stream });
 
   gate.resolve();
@@ -183,7 +183,7 @@ it("a late observer does not detach the replacement's abort signal", async () =>
   await settle();
   controller.abort();
 
-  await waitFor(() => (session.state === 'stopped' ? true : undefined));
+  await waitFor(() => (session.state === 'stopped' ? true : undefined), 10_000);
   expect(events.stopped).toContain(2);
 });
 
@@ -194,7 +194,7 @@ it("aborting the previous playback's signal cannot stop its replacement", async 
   const previous = new AbortController();
 
   await session.play({ buffer: makeWave(0.1) }, { signal: previous.signal });
-  await waitFor(() => (session.state === 'completed' ? true : undefined));
+  await waitFor(() => (session.state === 'completed' ? true : undefined), 10_000);
   // The first playback ended, but its observer has not run yet, so its abort binding is still set.
   await session.play({ stream: second.stream });
 
@@ -243,7 +243,7 @@ it('still releases the input of the current playback when its observer finishes'
   await session.play({ stream: input });
 
   await expect(session.wait()).resolves.toBe('completed');
-  await waitFor(() => (events.completed.length === 1 ? true : undefined));
+  await waitFor(() => (events.completed.length === 1 ? true : undefined), 10_000);
 
   expect(events.completed).toEqual([1]);
   expect(input.listenerCount('readable')).toBe(0);

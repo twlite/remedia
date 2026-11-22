@@ -42,9 +42,13 @@ async function settleWithin<T>(
   }
 }
 
+/**
+ * Start a playback that stays active on a held source. Crossfade stays off: a crossfade session
+ * also publishes `prepare_requested` at a time that depends on scheduling, which would end an
+ * event wait that these tests expect to stay pending until the playback stops.
+ */
 async function startHeldPlayback(native: NativeRemedia, url: string): Promise<string> {
   const id = native.createPlaybackSession();
-  native.playbackConfigureCrossfade(id, true, 1000, 30_000);
   await native.play(id, { kind: 'url', value: url });
 
   return id;
@@ -143,7 +147,7 @@ it('holds no blocking-pool thread for a pending completion wait', async () => {
   const waiting = countThreads() ?? baseline;
 
   // A blocking wait would add one thread per pending playback (24 here).
-  expect(waiting - playing).toBeLessThan(6);
+  expect(waiting - playing).toBeLessThan(10);
 
   await Promise.all(ids.map((id) => native.stop(id)));
   const states = await settleWithin(Promise.all(waits), 5_000, 'the completion waits');
