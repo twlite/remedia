@@ -34,3 +34,15 @@ For direct calls, the caller receives the exact source or stream and owns openin
 For HTTP calls, streams and sources become `{ url, expiresAtMs }` descriptors. No source is opened until the media URL is redeemed. Eager streams are also supported but may buffer while waiting. Prefer lazy factories. Unredeemed tokens expire automatically. URLs use 256-bit random tokens, can be redeemed once, and remain tied to their registration during delivery. Expiration limits redemption time. It does not terminate an already redeemed stream. Streams use bounded transport buffering and are pulled by consumers. Producers must honor their stream implementation's backpressure.
 
 Media is non-seekable. Range requests return 416 without consuming the token. The factory signature does not promise offsets, lengths or seek support. `remedia-server` honors this: it redeems each grant with one plain `GET` and decodes it as a forward-only stream (see [Playing audio through plugins](/docs/server/plugin-operations)). Seeking or reopening a single grant requires a separate, capability-negotiated contract which does not exist yet. A node whose guild opted in to [fallback seeking](/docs/server/plugin-operations#seeking-with-fallback-seeking) obtains a **new grant** by running the operation again, so a handler must be safe to run more than once for the same input.
+
+### Server-side transfer
+
+The server streams a redeemed response into the decoder through a bounded per-stream queue. When the decoder falls behind or pauses, the queue fills and the server stops pulling response chunks until the decoder catches up; it does not buffer the full media body. `maxMediaBytes` is checked against the declared length and again as chunks arrive. A stalled or interrupted response fails playback, and stopping or cancelling playback closes the transfer and releases its active-stream slot. See [plugin-host configuration](/docs/server/plugin-configuration) for the queue size and idle timeout.
+
+Core byte-stream producers can pass a bytes::Bytes chunk to ByteStreamWriter::write_bytes. It blocks until a fitting chunk is accepted and returns the existing ByteStreamError cancellation, consumer-closure, or producer-termination errors.
+
+```rust
+writer.write_bytes(response_chunk)?;
+```
+
+Here, response_chunk is a bytes::Bytes value. A chunk that fits the queue is retained without an intermediate queue-ingress copy. The decoder still copies bytes into FFmpeg's input buffer. Chunks larger than the queue capacity are copied into bounded pieces, and a shared slice may keep its backing allocation alive until it is consumed.
