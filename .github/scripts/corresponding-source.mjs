@@ -165,9 +165,23 @@ async function findSnapshot(identity, request) {
   }
 }
 
+/**
+ * Title and description of a snapshot release. The release is addressed by content, so a bare
+ * hash says nothing about which Remedia release it serves; both name the version it was built for.
+ */
+export function snapshotReleaseText(identity, version) {
+  const short = identity.slice(0, 12);
+
+  return {
+    name: `Corresponding dependency sources for v${version} (${short})`,
+    body: `Retained corresponding dependency source for the native binaries of Remedia v${version} (snapshot ${short}). It was first published for v${version}. A later release reuses it unchanged while its pinned inputs, manifests, patches, vendoring and archive recipes stay the same (content identity, format v2). Do not delete while any associated binary remains distributed. See SOURCE_DISTRIBUTION.md in each binary release.`,
+  };
+}
+
 export async function ensureSnapshot(
   work,
   {
+    version,
     publish = false,
     request = api,
     inputDirectory,
@@ -186,6 +200,7 @@ export async function ensureSnapshot(
       url: `https://github.com/twlite/remedia/releases/download/sources-${identity}/dependencies.tar.gz`,
       pending: true,
     };
+  if (!version) throw new Error('A release version is required to publish a dependency snapshot');
   await authorize();
   const archive = await build(work, { inputDirectory });
   // Retry after an ambiguous POST failure by looking up the same tag, never making another release blindly.
@@ -197,10 +212,9 @@ export async function ensureSnapshot(
         body: {
           tag_name: `sources-${identity}`,
           target_commitish: process.env.GITHUB_SHA,
-          name: `Corresponding dependency sources ${identity.slice(0, 12)}`,
+          ...snapshotReleaseText(identity, version),
           draft: true,
           prerelease: true,
-          body: 'Retained corresponding dependency source for Remedia native binaries. Content identity covers pinned inputs, manifests, patches, vendoring and archive recipes (format v2). Do not delete while any associated binary remains distributed. See SOURCE_DISTRIBUTION.md in each binary release.',
         },
       });
     } catch (error) {
@@ -270,6 +284,7 @@ export async function prepareSource(
   mkdirSync(destination, { recursive: true });
   mkdirSync(staging, { recursive: true });
   const snapshot = await ensureSnapshot(resolve(staging, '../dependency-snapshot'), {
+    version,
     publish,
     request,
     authorize,

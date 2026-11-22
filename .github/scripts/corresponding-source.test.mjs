@@ -9,6 +9,7 @@ import {
   verifySnapshot,
   verifySourceManifest,
   ensureSnapshot,
+  snapshotReleaseText,
   prepareSource,
   publicApi,
 } from './corresponding-source.mjs';
@@ -135,6 +136,73 @@ test('dry runs mark absent snapshots as pending and never publish', async () => 
   });
   assert.equal(result.pending, true);
   assert.equal(result.identity, snapshotIdentity());
+});
+
+test('a published snapshot names the release version in its title and description', async () => {
+  const identity = snapshotIdentity();
+  const text = snapshotReleaseText(identity, '0.4.0');
+
+  assert.equal(text.name, `Corresponding dependency sources for v0.4.0 (${identity.slice(0, 12)})`);
+  assert.match(text.body, /Remedia v0\.4\.0 \(snapshot /);
+  assert.match(text.body, /first published for v0\.4\.0/);
+
+  const created = [];
+  const archive = {
+    name: 'dependencies.tar.gz',
+    path: '/unused',
+    size: 123,
+    sha256: 'a'.repeat(64),
+  };
+  const url = `https://github.com/twlite/remedia/releases/download/sources-${identity}`;
+  const uploaded = {
+    name: archive.name,
+    size: 123,
+    state: 'uploaded',
+    digest: 'sha256:' + archive.sha256,
+    browser_download_url: url + '/dependencies.tar.gz',
+  };
+  const release = { id: 9, draft: true, tag_name: `sources-${identity}` };
+  const result = await ensureSnapshot('/unused', {
+    version: '0.4.0',
+    publish: true,
+    authorize: async () => {},
+    build: async () => archive,
+    upload: async () => {},
+    request: async (path, options) => {
+      if (path.startsWith('/releases/tags/'))
+        throw Object.assign(new Error('missing'), { status: 404 });
+      if (path === '/releases?per_page=100&page=1') return [];
+      if (path === '/releases' && options?.method === 'POST') {
+        created.push(options.body);
+        return release;
+      }
+      if (path === '/releases/9' && options?.method === 'PATCH')
+        return { ...release, draft: false };
+      if (path.startsWith('/releases/9/assets?')) return [uploaded];
+      throw new Error('Unexpected request: ' + path);
+    },
+  });
+
+  assert.equal(result.identity, identity);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].name, text.name);
+  assert.equal(created[0].body, text.body);
+  assert.equal(created[0].tag_name, `sources-${identity}`);
+});
+
+test('publishing a dependency snapshot requires the release version', async () => {
+  await assert.rejects(
+    ensureSnapshot('/unused', {
+      publish: true,
+      authorize: async () => assert.fail('must not authorize without a version'),
+      request: async (path) => {
+        if (path.startsWith('/releases/tags/'))
+          throw Object.assign(new Error('missing'), { status: 404 });
+        return [];
+      },
+    }),
+    /release version is required/,
+  );
 });
 
 test('native recipes and source inventory retain the same exact dependency revisions', async () => {
