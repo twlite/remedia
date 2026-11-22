@@ -97,3 +97,22 @@ A separate source archive of `1980846a515cd650958cef3b85c8864d93d7960f` was buil
 release profile, lockfile, and command-local native flags. The standalone playback executable
 SHA-256 is `8b951d2eee8317ba4c082cf4709611cb3ba99393447a75d340926289bc539d20`. This exact-main
 executable supersedes the early completion-only build as the full-engine baseline.
+
+## Native compressed fixtures
+
+`resource_audit_fixtures` generates deterministic stereo material directly with native FFmpeg
+encoders: 60-second Opus, MP3, AAC and a 15-second Opus transition source. It invokes no media
+subprocess. Encoder and muxer failures are propagated; output timestamps use the muxer's final
+stream time base. All baseline decodes submitted exactly 60 or 15 seconds of media, including
+codec delay/trimming. The checked-in fixture manifest records SHA-256, sizes, and those original-main
+decode results. Fixture generation reported linked FFmpeg 9.0.2. These synthetic files are
+controlled workload inputs, not a broad subjective audio-quality corpus.
+
+Generate them with the same native environment described above:
+
+```sh
+cargo run --release --locked -p remedia-core --example resource_audit_fixtures -- /tmp/remedia-audit-fixtures
+```
+
+The fixture generator passed targeted Clippy with `-D warnings`; all four generated sources were
+decoded through the exact original-main benchmark executable.

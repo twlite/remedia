@@ -1,0 +1,186 @@
+[
+  {
+    "file": "music60.opus",
+    "sha256": "5c69a6bedf73081ddefb261744ef15c52410932742ba502fcbb49bc38bc2efd1",
+    "bytes": 1440230,
+    "baseline": {
+      "audio_s": 60.0,
+      "command_p95_us": 0,
+      "command_p99_us": 0,
+      "heap": null,
+      "packet_capacity_bytes": 1431876,
+      "packets": 3001,
+      "passthrough_fraction": null,
+      "resource_samples": [
+        {
+          "collectedAtUnixMs": 1795331050225,
+          "collectionDurationMs": 0.014375,
+          "cpu": {
+            "availableParallelism": 10,
+            "loadAverage1m": 2.46142578125,
+            "processPercent": null,
+            "systemTimeMs": 7.605,
+            "threadCount": 2,
+            "userTimeMs": 27.973
+          },
+          "cpuSampleIntervalMs": null,
+          "memory": {
+            "committedPrivateBytes": null,
+            "footprintBytes": 3506704,
+            "peakResidentBytes": 10715136,
+            "privateResidentBytes": null,
+            "proportionalResidentBytes": null,
+            "reservedVirtualBytes": null,
+            "residentBytes": 10715136,
+            "virtualBytes": 500565147648
+          },
+          "openHandles": 3,
+          "samplingIntervalMs": 1000
+        }
+      ],
+      "sink_delay_p95_us": 0,
+      "sink_delay_p99_us": 0,
+      "startup_p99_us": 3108,
+      "transitions": 0,
+      "wall_s": 0.007649
+    }
+  },
+  {
+    "file": "music15.opus",
+    "sha256": "1b1d0469d61e248a14b9b70970f95f487f7e84252c6b3c63c54676293c180f0f",
+    "bytes": 361157,
+    "baseline": {
+      "audio_s": 15.0,
+      "command_p95_us": 0,
+      "command_p99_us": 0,
+      "heap": null,
+      "packet_capacity_bytes": 358706,
+      "packets": 751,
+      "passthrough_fraction": null,
+      "resource_samples": [
+        {
+          "collectedAtUnixMs": 1795331050255,
+          "collectionDurationMs": 0.01025,
+          "cpu": {
+            "availableParallelism": 10,
+            "loadAverage1m": 2.46142578125,
+            "processPercent": null,
+            "systemTimeMs": 2.351,
+            "threadCount": 3,
+            "userTimeMs": 16.799
+          },
+          "cpuSampleIntervalMs": null,
+          "memory": {
+            "committedPrivateBytes": null,
+            "footprintBytes": 3555880,
+            "peakResidentBytes": 10878976,
+            "privateResidentBytes": null,
+            "proportionalResidentBytes": null,
+            "reservedVirtualBytes": null,
+            "residentBytes": 10878976,
+            "virtualBytes": 500567900160
+          },
+          "openHandles": 3,
+          "samplingIntervalMs": 1000
+        }
+      ],
+      "sink_delay_p95_us": 0,
+      "sink_delay_p99_us": 0,
+      "startup_p99_us": 647,
+      "transitions": 0,
+      "wall_s": 0.002515208
+    }
+  },
+  {
+    "file": "music60.mp3",
+    "sha256": "2824e06c1892288364be6a1ed0f633219b0f6e485ca4d72c605fb4e00de08f20",
+    "bytes": 960812,
+    "baseline": {
+      "audio_s": 60.0,
+      "command_p95_us": 0,
+      "command_p99_us": 0,
+      "heap": null,
+      "packet_capacity_bytes": 963070,
+      "packets": 3000,
+      "passthrough_fraction": null,
+      "resource_samples": [
+        {
+          "collectedAtUnixMs": 1795331050275,
+          "collectionDurationMs": 0.009458,
+          "cpu": {
+            "availableParallelism": 10,
+            "loadAverage1m": 2.46142578125,
+            "processPercent": null,
+            "systemTimeMs": 2.041,
+            "threadCount": 2,
+            "userTimeMs": 13.735
+          },
+          "cpuSampleIntervalMs": null,
+          "memory": {
+            "committedPrivateBytes": null,
+            "footprintBytes": 3555880,
+            "peakResidentBytes": 10862592,
+            "privateResidentBytes": null,
+            "proportionalResidentBytes": null,
+            "reservedVirtualBytes": null,
+            "residentBytes": 10862592,
+            "virtualBytes": 500567179264
+          },
+          "openHandles": 3,
+          "samplingIntervalMs": 1000
+        }
+      ],
+      "sink_delay_p95_us": 0,
+      "sink_delay_p99_us": 0,
+      "startup_p99_us": 890,
+      "transitions": 0,
+      "wall_s": 0.286648041
+    }
+  },
+  {
+    "file": "music60.m4a",
+    "sha256": "cf3b49b5a9c482a22a3b8bbf2fa0a1896d08c5a61f44a717d46e654be8879323",
+    "bytes": 993523,
+    "baseline": {
+      "audio_s": 60.0,
+      "command_p95_us": 0,
+      "command_p99_us": 0,
+      "heap": null,
+      "packet_capacity_bytes": 963133,
+      "packets": 3000,
+      "passthrough_fraction": null,
+      "resource_samples": [
+        {
+          "collectedAtUnixMs": 1795331050579,
+          "collectionDurationMs": 0.011667,
+          "cpu": {
+            "availableParallelism": 10,
+            "loadAverage1m": 2.46142578125,
+            "processPercent": null,
+            "systemTimeMs": 2.022,
+            "threadCount": 3,
+            "userTimeMs": 12.321
+          },
+          "cpuSampleIntervalMs": null,
+          "memory": {
+            "committedPrivateBytes": null,
+            "footprintBytes": 3555880,
+            "peakResidentBytes": 10878976,
+            "privateResidentBytes": null,
+            "proportionalResidentBytes": null,
+            "reservedVirtualBytes": null,
+            "residentBytes": 10878976,
+            "virtualBytes": 500568080384
+          },
+          "openHandles": 3,
+          "samplingIntervalMs": 1000
+        }
+      ],
+      "sink_delay_p95_us": 0,
+      "sink_delay_p99_us": 0,
+      "startup_p99_us": 1151,
+      "transitions": 0,
+      "wall_s": 0.279956375
+    }
+  }
+]
