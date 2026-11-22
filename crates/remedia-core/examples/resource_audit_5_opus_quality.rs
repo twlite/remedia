@@ -204,8 +204,10 @@ fn read_pcm_wav(path: &Path) -> Result<Vec<f32>, Box<dyn Error>> {
     }
 
     Ok(data
-        .chunks_exact(2)
-        .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]) as f32 / 32_768.0)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|bytes| i16::from_le_bytes(*bytes) as f32 / 32_768.0)
         .collect())
 }
 
@@ -213,8 +215,8 @@ fn quality_metrics(reference: &[f32], decoded: &[f32]) -> Result<(f64, Vec<f64>)
     let reference_frames = reference.len() / CHANNELS;
     let decoded_frames = decoded.len() / CHANNELS;
     let compared_frames = reference_frames.saturating_sub(LOOKAHEAD_SAMPLES);
-    if reference.len() % CHANNELS != 0
-        || decoded.len() % CHANNELS != 0
+    if !reference.len().is_multiple_of(CHANNELS)
+        || !decoded.len().is_multiple_of(CHANNELS)
         || decoded_frames < compared_frames + LOOKAHEAD_SAMPLES
     {
         return Err("decoded Opus output is too short to align with the input".into());

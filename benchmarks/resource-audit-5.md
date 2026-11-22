@@ -40,10 +40,10 @@ resulting samples to the input. Each run produced 3000 20 ms packets and exactly
 samples. The compared range contains 2,879,688 samples per channel; segment SNR uses 100 ms windows.
 
 | Complexity | 32 sessions before CPU seconds | 32 sessions after CPU seconds | 1 session after CPU seconds | 8 sessions after CPU seconds | Overall SNR | 100 ms segment SNR p10 | Minimum segment SNR |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 5 | 8.1674 (8.1339–8.1908) | 8.0622 (7.8345–8.1830) | 0.2145 (0.2119–0.2381) | 1.9682 (1.9043–1.9909) | 20.9673 dB | 20.0459 dB | 19.3356 dB |
-| 6 | 8.2115 (7.9287–8.4051) | 8.2012 (7.8731–8.3104) | 0.2461 (0.1985–0.2806) | 1.9980 (1.8348–2.0396) | 20.9673 dB | 20.0459 dB | 19.3356 dB |
-| 9 | 12.2208 (12.2068–12.3965) | 11.9915 (11.9358–11.9971) | 0.3021 (0.2972–0.3602) | 2.9382 (2.8094–2.9648) | 21.2326 dB | 20.2956 dB | 19.7034 dB |
+| ---------: | -----------------------------: | ----------------------------: | --------------------------: | ---------------------------: | ----------: | ---------------------: | ------------------: |
+|          5 |         8.1674 (8.1339–8.1908) |        8.0622 (7.8345–8.1830) |      0.2145 (0.2119–0.2381) |       1.9682 (1.9043–1.9909) |  20.9673 dB |             20.0459 dB |          19.3356 dB |
+|          6 |         8.2115 (7.9287–8.4051) |        8.2012 (7.8731–8.3104) |      0.2461 (0.1985–0.2806) |       1.9980 (1.8348–2.0396) |  20.9673 dB |             20.0459 dB |          19.3356 dB |
+|          9 |      12.2208 (12.2068–12.3965) |     11.9915 (11.9358–11.9971) |      0.3021 (0.2972–0.3602) |       2.9382 (2.8094–2.9648) |  21.2326 dB |             20.2956 dB |          19.7034 dB |
 
 CPU figures are medians and min/max ranges from three fresh-process runs. Each session consumed the
 same 60-second file without pacing or passthrough; 32 sessions therefore processed 1920 seconds
@@ -70,10 +70,10 @@ The ignored packetization benchmark warms each sender with 1000 packets and then
 dependencies for before/after builds. The per-thread counting global allocator only observes Rust
 allocator calls; it does not count native allocations made by FFmpeg, Opus, DAVE, or the OS.
 
-| Encryption mode | Before allocations / packet | After allocations / packet | Before ns / packet median (range) | After ns / packet median (range) |
-| --- | ---: | ---: | ---: | ---: |
-| AES-256-GCM | 1.00 | 0.00 | 948 (938–971) | 932 (927–986) |
-| XChaCha20-Poly1305 | 1.00 | 0.00 | 1307 (1303–1342) | 1291 (1288–2358) |
+| Encryption mode    | Before allocations / packet | After allocations / packet | Before ns / packet median (range) | After ns / packet median (range) |
+| ------------------ | --------------------------: | -------------------------: | --------------------------------: | -------------------------------: |
+| AES-256-GCM        |                        1.00 |                       0.00 |                     948 (938–971) |                    932 (927–986) |
+| XChaCha20-Poly1305 |                        1.00 |                       0.00 |                  1307 (1303–1342) |                 1291 (1288–2358) |
 
 There are nine interleaved before/after runs per mode. Both paths still produce decryptable RTP
 and DAVE payloads with the expected source Opus bytes. The AES median moved by 1.7% and the

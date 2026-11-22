@@ -31,10 +31,10 @@ command. The expiry-task counter and weak-reference probes exist only in `cfg(te
 figures measure Rust object liveness, not Rust heap bytes, native heap bytes, RSS, or allocator
 retention.
 
-| State | Elapsed median (min–max) for 1,000 cycles | Closed sessions still live | Expiry tasks still live | Session map | Active players |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Before | 42.996 ms (41.846–51.137) | 1,000 | 1,000 | 0 | 0 |
-| After | 106.638 ms (50.551–304.454) | 0 | 0 | 0 | 0 |
+| State  | Elapsed median (min–max) for 1,000 cycles | Closed sessions still live | Expiry tasks still live | Session map | Active players |
+| ------ | ----------------------------------------: | -------------------------: | ----------------------: | ----------: | -------------: |
+| Before |                 42.996 ms (41.846–51.137) |                      1,000 |                   1,000 |           0 |              0 |
+| After  |               106.638 ms (50.551–304.454) |                          0 |                       0 |           0 |              0 |
 
 Raw runs are in [`data/resource-audit-6.jsonl`](data/resource-audit-6.jsonl). The after median is
 higher, but the after samples also vary widely. This suggests a possible debug-profile slowdown;

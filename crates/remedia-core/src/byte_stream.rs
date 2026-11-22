@@ -705,12 +705,12 @@ mod tests {
             wait_for_state(&writer.inner, |state| state.waiting_writers == 1);
             assert_eq!(writer.pending_bytes(), writer.capacity_bytes());
 
-            drop(reader);
-
             let expected_error = if cycle % 2 == 0 {
                 writer.cancel();
+                drop(reader);
                 ByteStreamError::Cancelled
             } else {
+                drop(reader);
                 ByteStreamError::ConsumerClosed
             };
 
