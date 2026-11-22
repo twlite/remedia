@@ -40,8 +40,8 @@ pub(crate) struct RtpSender {
     clock: RtpClock,
     nonce: u32,
     cipher: TransportCipher,
-    /// Reused datagram storage. Its capacity settles at the largest packet seen, so steady-state
-    /// packetization performs no heap allocation.
+    /// Reused DAVE and RTP datagram storage. Capacity is bounded by the largest accepted
+    /// datagram, so steady-state packetization performs no heap allocation.
     datagram: Vec<u8>,
 }
 
@@ -79,20 +79,28 @@ impl RtpSender {
         if !dave.is_ready() {
             return Err(VoiceError::DaveNotReady);
         }
-        let dave_payload = dave.encrypt_opus(&packet.bytes)?;
+        self.datagram.clear();
+        dave.encrypt_opus_into(&packet.bytes, &mut self.datagram)?;
+        let dave_payload_bytes = self.datagram.len();
         let header = serialize_rtp_header(self.clock.sequence, self.clock.timestamp, self.ssrc);
         let packet_size =
-            RTP_HEADER_BYTES + dave_payload.len() + AUTH_TAG_BYTES + TRANSPORT_NONCE_BYTES;
+            RTP_HEADER_BYTES + dave_payload_bytes + AUTH_TAG_BYTES + TRANSPORT_NONCE_BYTES;
         if packet_size > MAX_UDP_PACKET_BYTES {
+            // A caller-supplied oversized frame can make DAVE grow its output Vec before the
+            // transport limit is known. Drop that oversized storage rather than retaining it on
+            // this long-lived connection.
+            self.datagram = Vec::with_capacity(MAX_UDP_PACKET_BYTES);
             return Err(VoiceError::PacketTooLarge {
                 actual: packet_size,
                 maximum: MAX_UDP_PACKET_BYTES,
             });
         }
 
-        self.datagram.clear();
-        self.datagram.extend_from_slice(&header);
-        self.datagram.extend_from_slice(&dave_payload);
+        self.datagram
+            .resize(RTP_HEADER_BYTES + dave_payload_bytes, 0);
+        self.datagram
+            .copy_within(0..dave_payload_bytes, RTP_HEADER_BYTES);
+        self.datagram[..RTP_HEADER_BYTES].copy_from_slice(&header);
         self.cipher
             .seal_in_place(&header, self.nonce, &mut self.datagram, RTP_HEADER_BYTES)?;
         debug_assert_eq!(self.datagram.len(), packet_size);
@@ -165,5 +173,34 @@ mod tests {
         packet.samples_per_channel = 960;
         packet.media_samples_per_channel = 961;
         assert!(validate_opus_packet(&packet).is_err());
+    }
+
+    #[test]
+    fn rejected_oversized_dave_output_does_not_remain_in_the_reused_datagram() {
+        let (_, mut dave, _) = crate::dave::tests::established_group();
+        let mut sender = RtpSender::new(1, 0, 0, 0, EncryptionMode::Aes256Gcm, &[9; 32]).unwrap();
+        let packet = EncodedOpusPacket {
+            bytes: vec![0x55; 2_000],
+            samples_per_channel: 960,
+            media_samples_per_channel: 960,
+            start_sample: 0,
+        };
+
+        assert!(matches!(
+            sender.encode_packet(&packet, &mut dave),
+            Err(VoiceError::PacketTooLarge { .. })
+        ));
+        assert!(sender.datagram.capacity() <= MAX_UDP_PACKET_BYTES);
+
+        let valid_packet = EncodedOpusPacket {
+            bytes: vec![0x55; 90],
+            samples_per_channel: 960,
+            media_samples_per_channel: 960,
+            start_sample: 0,
+        };
+        let datagram = sender.encode_packet(&valid_packet, &mut dave).unwrap();
+        assert_eq!(datagram[2..4], 0_u16.to_be_bytes());
+        assert_eq!(datagram[4..8], 0_u32.to_be_bytes());
+        assert_eq!(&datagram[datagram.len() - TRANSPORT_NONCE_BYTES..], &[0; 4]);
     }
 }

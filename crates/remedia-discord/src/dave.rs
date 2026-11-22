@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU16;
 
-use davey::{DaveSession, ProposalsOperationType};
+use davey::{Codec, DaveSession, MediaType, ProposalsOperationType};
 use serde_json::{Value, json};
 
 use crate::error::VoiceError;
@@ -84,6 +84,7 @@ impl DaveProtocol {
         self.recognized_user_ids.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn encrypt_opus<'a>(
         &mut self,
         opus: &'a [u8],
@@ -93,6 +94,22 @@ impl DaveProtocol {
         }
         self.session
             .encrypt_opus(opus)
+            .map_err(|error| VoiceError::Dave(error.to_string()))
+    }
+
+    /// Encrypt one Opus packet into caller-owned storage so RTP packetization can reuse its
+    /// bounded datagram allocation.
+    pub(crate) fn encrypt_opus_into(
+        &mut self,
+        opus: &[u8],
+        encrypted: &mut Vec<u8>,
+    ) -> Result<(), VoiceError> {
+        if !self.is_ready() {
+            return Err(VoiceError::DaveNotReady);
+        }
+
+        self.session
+            .encrypt_into(MediaType::AUDIO, Codec::OPUS, opus, encrypted)
             .map_err(|error| VoiceError::Dave(error.to_string()))
     }
 

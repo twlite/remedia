@@ -487,14 +487,23 @@ fn rtp_packets_reuse_one_datagram_buffer_and_decrypt_to_the_source_opus_packet()
             .decrypt(sender.user_id, davey::MediaType::AUDIO, &dave_payload)
             .unwrap();
         assert_eq!(opus, packet.bytes);
+
+        let (_, allocations) = crate::test_alloc::count_allocations(|| {
+            for _ in 0..100 {
+                std::hint::black_box(rtp.encode_packet(&packet, &mut sender).unwrap().len());
+            }
+        });
+        assert_eq!(
+            allocations, 0,
+            "{mode:?} DAVE and RTP packetization reuses its output buffer"
+        );
     }
 }
 
 /// `cargo test --release -p remedia-discord packetization_cost -- --ignored --nocapture`
 ///
-/// Reports heap allocations and wall time per RTP datagram built from a 90-byte Opus packet
-/// under an established DAVE group. DAVE's own encryption allocates inside `davey` and is
-/// included in both figures.
+/// Reports Rust allocator calls and wall time per RTP datagram built from a 90-byte Opus packet
+/// under an established DAVE group. Native allocations are not counted.
 #[test]
 #[ignore = "benchmark; run explicitly with --ignored --nocapture"]
 fn packetization_cost() {
