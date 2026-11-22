@@ -499,8 +499,6 @@ fn run(mode: &str, waiter_count: usize) -> Result<Value, Box<dyn Error>> {
         "completionUs": completion_us,
         "outputFinishToAllWaitersUs": finish_to_waiters_us,
         "releaseToAllWaitersUs": completion_us,
-        "futureWakerRegistrationsPending": if mode == "async" { Some(waiter_count) } else { Some(0) },
-        "futureWakerRegistrationsAfterCompletion": 0,
         "retainedTaskWakersPending": wakers_pending,
         "retainedTaskWakersAfterCompletion": wakers_completed,
         "completedWaiters": waiter_count,

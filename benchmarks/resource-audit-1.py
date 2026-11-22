@@ -50,8 +50,6 @@ def run_case(binary: Path, mode: str, count: int, alloc: bool) -> dict[str, Any]
         raise RuntimeError(f"benchmark did not complete all waiters: {result!r}")
     if result["sampleFramesPerChannel"] != 960:
         raise RuntimeError(f"PCM sample count changed: {result!r}")
-    if result["futureWakerRegistrationsAfterCompletion"] != 0:
-        raise RuntimeError(f"completion retained waker registrations: {result!r}")
     if mode == "async" and result["retainedTaskWakersAfterCompletion"] != 0:
         raise RuntimeError(f"async completion retained wakers: {result!r}")
 
