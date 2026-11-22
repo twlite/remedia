@@ -439,6 +439,8 @@ impl PlaybackSession {
             data.state = PlaybackState::Failed;
             data.last_error = Some(error.clone());
             self.shared.changed.notify_all();
+            drop(data);
+            self.shared.notify_completion_waiters();
             return Err(error);
         }
         if active {
@@ -447,6 +449,7 @@ impl PlaybackSession {
         let terminal_state = data.state;
         self.shared.changed.notify_all();
         drop(data);
+        self.shared.notify_completion_waiters();
         if needs_cleanup {
             with_dispatch(&self.shared.observability, || {
                 tracing::info!(

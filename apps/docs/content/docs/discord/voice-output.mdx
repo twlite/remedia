@@ -47,12 +47,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let source = InputSource::file("media/track.wav");
     let output = OpusEncoderOutput::new_with_observability(connection.opus_sender(), handle)?;
 
-    // PlaybackSession methods are synchronous, so keep them off Tokio workers.
+    // Starting playback is synchronous, so keep it off Tokio workers.
     let starting_session = Arc::clone(&session);
     tokio::task::spawn_blocking(move || starting_session.play(source, output)).await??;
 
-    let waiting_session = Arc::clone(&session);
-    let state = tokio::task::spawn_blocking(move || waiting_session.wait()).await?;
+    let state = session.completion().wait_async().await;
     if state != PlaybackState::Completed {
         if let Some(error) = session.last_error() {
             return Err(error.into());

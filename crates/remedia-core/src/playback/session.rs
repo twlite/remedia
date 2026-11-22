@@ -49,6 +49,7 @@ impl PlaybackSession {
                     stopping: false,
                 }),
                 changed: Condvar::new(),
+                completion_waiters: completion::CompletionWaiters::default(),
                 observability,
                 events: Mutex::new(VecDeque::new()),
             }),
@@ -254,6 +255,7 @@ impl PlaybackSession {
                     data.output = None;
                     self.shared.changed.notify_all();
                     drop(data);
+                    self.shared.notify_completion_waiters();
                     drop(start_guard);
                     self.shared.observability.metrics().playback_failed();
                     with_dispatch(&self.shared.observability, || {
@@ -272,6 +274,7 @@ impl PlaybackSession {
             (generation, playback_id)
         };
 
+        self.shared.notify_completion_waiters();
         drop(start_guard);
         with_dispatch(&self.shared.observability, || {
             tracing::info!(
@@ -437,15 +440,15 @@ impl PlaybackSession {
         self.completion().wait()
     }
 
-    /// Capture the active playback so a wait scheduled on another thread stays
+    /// Capture the active playback so a synchronous or asynchronous wait stays
     /// bound to that source even if it is stopped and replaced before waiting
     /// begins.
     pub fn completion(&self) -> PlaybackWaiter {
         self.completion_for_generation(self.completion_generation())
     }
 
-    /// Return the current source generation for adapters that must capture a wait
-    /// before scheduling blocking work on another runtime.
+    /// Return the current source generation for adapters that must capture a
+    /// wait before crossing an asynchronous scheduling boundary.
     pub fn completion_generation(&self) -> u64 {
         lock(&self.shared.data).generation
     }
@@ -479,6 +482,17 @@ impl PlaybackWaiter {
             return PlaybackState::Stopped;
         }
         data.state
+    }
+
+    /// Await the captured source without blocking the calling thread.
+    ///
+    /// The future is independent of any async runtime and creates no OS thread.
+    /// It returns the same generation-specific state as [`wait`](Self::wait):
+    /// if another source replaces this one before the future observes its
+    /// terminal state, it returns [`PlaybackState::Stopped`]. Dropping a
+    /// pending future removes its waker registration.
+    pub fn wait_async(&self) -> impl Future<Output = PlaybackState> + Send + '_ {
+        completion::CompletionWait::new(self)
     }
 }
 

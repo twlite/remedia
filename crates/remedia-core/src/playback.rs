@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::fmt;
+use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
@@ -234,6 +235,7 @@ pub struct PlaybackWaiter {
 struct SessionShared {
     data: Mutex<SessionData>,
     changed: Condvar,
+    completion_waiters: completion::CompletionWaiters,
     observability: ObservabilityHandle,
     events: Mutex<VecDeque<CrossfadeEvent>>,
 }
@@ -298,6 +300,7 @@ enum WorkerAction {
 #[cfg(test)]
 mod tests;
 
+mod completion;
 mod crossfade_worker;
 mod fallback;
 mod seek;

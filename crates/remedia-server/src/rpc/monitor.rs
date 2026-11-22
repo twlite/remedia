@@ -238,16 +238,13 @@ pub(super) fn spawn_playback_monitor(
     }
     let waiter = guild.playback.completion_for_generation(core_generation);
     tokio::spawn(async move {
-        let state = tokio::task::spawn_blocking(move || waiter.wait()).await;
+        let state = waiter.wait_async().await;
         if guild.closed.load(Ordering::Acquire) {
             return;
         }
         if guild.source_generation.load(Ordering::Acquire) != generation {
             return;
         }
-        let Ok(state) = state else {
-            return;
-        };
         if guild.claim_terminal_event(generation)
             && let Some(session) = session.upgrade()
         {
