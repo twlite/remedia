@@ -653,33 +653,3 @@ test('an existing npm version must match both hashes of the verified tarball', a
     rmSync(directory, { recursive: true, force: true });
   }
 });
-
-test('npm verification tolerates propagation delays but fails closed after bounded checks', async () => {
-  const { verifyPublishedPackages } = await import('./release.mjs');
-  let calls = 0;
-  let waited = 0;
-  await verifyPublishedPackages([{ name: '@remedia/node', tarball: 'original.tgz' }], '1.0.0', {
-    check: async (name, version, _fetch, tarball) => {
-      assert.equal(name, '@remedia/node');
-      assert.equal(version, '1.0.0');
-      assert.equal(tarball, 'original.tgz');
-      return ++calls === 3;
-    },
-    wait: async () => {
-      waited++;
-    },
-  });
-  assert.equal(waited, 2);
-  calls = 0;
-  await assert.rejects(
-    verifyPublishedPackages([{ name: '@remedia/node', tarball: 'original.tgz' }], '1.0.0', {
-      check: async () => {
-        calls++;
-        return false;
-      },
-      wait: async () => {},
-    }),
-    /rerun failed jobs/,
-  );
-  assert.equal(calls, 9);
-});

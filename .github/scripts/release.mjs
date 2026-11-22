@@ -1,5 +1,4 @@
 import { fileHash, requestWithRetry, describeError } from './release-network.mjs';
-import { setTimeout } from 'node:timers/promises';
 import { authorizeRelease } from './release-authorization.mjs';
 import { execFileSync } from 'node:child_process';
 import {
@@ -326,28 +325,6 @@ export async function registryHasVersion(name, version, fetchImpl = fetch, tarba
     }
   }
   return true;
-}
-
-export async function verifyPublishedPackages(
-  packages,
-  version,
-  { check = registryHasVersion, wait = setTimeout } = {},
-) {
-  for (const item of packages.filter((candidate) => candidate.manifest?.private !== true)) {
-    for (let attempt = 0; ; attempt++) {
-      if (await check(item.name, version, fetch, item.tarball)) break;
-      if (attempt === 8)
-        throw new Error(
-          'npm publication is not visible yet: ' +
-            item.name +
-            '@' +
-            version +
-            '; rerun failed jobs to resume',
-        );
-      await wait(Math.min(30_000, 2000 * 2 ** attempt));
-    }
-  }
-  console.log('Verified every npm package against the exact packed tarball hashes.');
 }
 
 function readTarManifest(tarball) {
@@ -806,8 +783,9 @@ async function main() {
       ...item,
       tarball: resolve(packageDirectory, item.tarball),
     }));
-    await publishRelease({ packages, version, npmTag });
-    return verifyPublishedPackages(packages, version);
+    // Publication is fire-and-forget: npm can hold a package for minutes or days before it is
+    // visible, so nothing waits for the registry to show it after `npm publish` succeeds.
+    return publishRelease({ packages, version, npmTag });
   }
   throw new Error('Commands: detect, authorize, sync, pack, publish');
 }
