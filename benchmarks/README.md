@@ -164,3 +164,10 @@ cargo test --release -p remedia-discord -- packetization_cost routed_delivery_co
 ```
 
 Results and their interpretation are in [phase3.md](phase3.md).
+
+## Server lifecycle resource audit
+
+Agent 6's repeated client/guild create, detach, resume, close, and expiry-waiter measurement is
+documented in [resource-audit-6.md](resource-audit-6.md), with raw runs in
+[`data/resource-audit-6.jsonl`](data/resource-audit-6.jsonl). It uses an ignored `remedia-server`
+unit workload rather than the concurrent playback matrix.

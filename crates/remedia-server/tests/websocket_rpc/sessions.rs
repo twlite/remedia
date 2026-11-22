@@ -128,5 +128,47 @@ async fn server_shutdown_closes_all_remaining_sessions() {
     .expect("server should close the socket after sending queued events");
 }
 
+#[tokio::test]
+async fn a_failed_start_on_an_occupied_port_does_not_disturb_the_running_server() {
+    let running = RunningServer::start(60, 4).await;
+    let config_dir = std::env::temp_dir().join(format!(
+        "remedia-server-failed-start-{}-{}",
+        std::process::id(),
+        NEXT_CONFIG.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../remedia-core/tests/fixtures")
+        .canonicalize()
+        .unwrap();
+    let config_path = config_dir.join("remedia.config.json");
+    let config_json = json!({
+        "listen": format!("127.0.0.1:{}", running.server.local_addr().port()),
+        "users": [{"username": "bot-a", "password": "password-a"}],
+        "sessionResumptionTimeoutSeconds": 60,
+        "media": {
+            "allowedFileRoots": [fixture_root],
+            "allowedUrlHosts": ["*"],
+            "allowHttp": true,
+            "blockPrivateNetworks": false
+        },
+        "pluginHosts": [],
+        "audio": {"opus": {"bitrate": 96000, "complexity": 5, "vbr": false}},
+        "observability": {"console": false}
+    });
+    std::fs::write(&config_path, config_json.to_string()).unwrap();
+
+    let failed = ServerHandle::start(ServerConfig::from_file(&config_path).unwrap()).await;
+
+    assert!(matches!(failed, Err(ServerError::Io(_))));
+    let mut socket = running.connect("bot-a", "password-a").await.unwrap();
+    let health = rpc(&mut socket, "health", "node.health", json!({})).await;
+    assert_eq!(health["result"]["status"], "ok");
+
+    drop(socket);
+    running.shutdown().await;
+    let _ = std::fs::remove_dir_all(config_dir);
+}
+
 #[allow(dead_code)]
 fn _assert_tungstenite_client_support_is_present(_: tungstenite::protocol::Role) {}

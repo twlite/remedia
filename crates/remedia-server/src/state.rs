@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -10,7 +11,8 @@ use remedia_observability::{Observability, ObservabilityHandle};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 use tokio::sync::watch;
-use tokio::sync::{Semaphore, broadcast};
+use tokio::sync::{Semaphore, broadcast, oneshot};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken as TokioCancellationToken;
 use tracing::instrument::WithSubscriber;
 
@@ -25,11 +27,16 @@ pub(crate) struct ServerInner {
     pub(crate) sessions: Mutex<HashMap<String, Arc<ClientSession>>>,
     pub(crate) active_players: AtomicUsize,
     pub(crate) active_connections: AtomicUsize,
+    background_tasks: Mutex<JoinSet<()>>,
+    shutdown_lock: tokio::sync::Mutex<()>,
+    shutdown_complete: AtomicBool,
     pub(crate) node_id: String,
     pub(crate) started_at: Instant,
     pub(crate) connection_slots: Arc<Semaphore>,
     pub(crate) observability_owner: Mutex<Option<Observability>>,
     pub(crate) shutdown: TokioCancellationToken,
+    #[cfg(test)]
+    expiry_tasks_active: Arc<AtomicUsize>,
 }
 
 pub(crate) struct ClientSession {
@@ -40,6 +47,7 @@ pub(crate) struct ClientSession {
     attached_connection: Mutex<Option<String>>,
     detached_deadline: Mutex<Option<Instant>>,
     expiry_generation: AtomicU64,
+    expiry_cancel: Mutex<Option<TokioCancellationToken>>,
     pub(crate) guilds: Mutex<HashMap<String, Arc<GuildSession>>>,
     pub(crate) event_sequence: AtomicU64,
     pub(crate) event_tx: broadcast::Sender<serde_json::Value>,
@@ -156,14 +164,76 @@ pub(crate) fn new_inner(
         sessions: Mutex::new(HashMap::new()),
         active_players: AtomicUsize::new(0),
         active_connections: AtomicUsize::new(0),
+        background_tasks: Mutex::new(JoinSet::new()),
+        shutdown_lock: tokio::sync::Mutex::new(()),
+        shutdown_complete: AtomicBool::new(false),
         node_id: opaque_id(16),
         started_at: Instant::now(),
         observability_owner: Mutex::new(Some(observability)),
         shutdown,
+        #[cfg(test)]
+        expiry_tasks_active: Arc::new(AtomicUsize::new(0)),
     })
 }
 
+#[cfg(test)]
+struct ExpiryTaskGuard(Arc<AtomicUsize>);
+
+#[cfg(test)]
+impl ExpiryTaskGuard {
+    fn new(active: Arc<AtomicUsize>) -> Self {
+        active.fetch_add(1, Ordering::AcqRel);
+        Self(active)
+    }
+}
+
+#[cfg(test)]
+impl Drop for ExpiryTaskGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 impl ServerInner {
+    pub(crate) fn spawn_cleanup(
+        &self,
+        future: impl Future<Output = Result<(), StateError>> + Send + 'static,
+    ) -> oneshot::Receiver<Result<(), StateError>> {
+        let (result_tx, result_rx) = oneshot::channel();
+        let cleanup = async move {
+            let result = future.await;
+            if let Err(Err(error)) = result_tx.send(result) {
+                tracing::warn!(
+                    name: "server.session.cleanup_failed",
+                    target: "remedia_server::session",
+                    error = %error,
+                    "session cleanup failed after its RPC connection ended"
+                );
+            }
+        };
+        let cleanup = match self.observability.dispatch().cloned() {
+            Some(dispatch) => cleanup.with_subscriber(dispatch),
+            None => cleanup.with_subscriber(tracing::Dispatch::none()),
+        };
+        let mut tasks = lock(&self.background_tasks);
+        Self::reap_finished_tasks(&mut tasks);
+        tasks.spawn(cleanup);
+        result_rx
+    }
+
+    fn reap_finished_tasks(tasks: &mut JoinSet<()>) {
+        while let Some(result) = tasks.try_join_next() {
+            if let Err(error) = result {
+                tracing::error!(
+                    name: "server.background_task.failed",
+                    target: "remedia_server::lifecycle",
+                    error = %error,
+                    "server-owned background task failed"
+                );
+            }
+        }
+    }
+
     pub(crate) fn active_player_count(&self) -> usize {
         self.active_players.load(Ordering::Acquire)
     }
@@ -179,6 +249,10 @@ impl ServerInner {
             return Err(StateError::InvalidState);
         }
         let mut sessions = lock(&self.sessions);
+        if self.shutdown.is_cancelled() {
+            return Err(StateError::InvalidState);
+        }
+
         if sessions
             .values()
             .filter(|session| {
@@ -199,6 +273,7 @@ impl ServerInner {
             attached_connection: Mutex::new(Some(connection_id.to_owned())),
             detached_deadline: Mutex::new(None),
             expiry_generation: AtomicU64::new(1),
+            expiry_cancel: Mutex::new(None),
             guilds: Mutex::new(HashMap::new()),
             event_sequence: AtomicU64::new(0),
             event_tx,
@@ -236,7 +311,12 @@ impl ServerInner {
         bot_user_id: u64,
         connection_id: &str,
     ) -> Result<(Arc<ClientSession>, String), StateError> {
-        let session = lock(&self.sessions)
+        let sessions = lock(&self.sessions);
+        if self.shutdown.is_cancelled() {
+            return Err(StateError::InvalidState);
+        }
+
+        let session = sessions
             .get(session_id)
             .cloned()
             .ok_or(StateError::UnknownSession)?;
@@ -265,6 +345,9 @@ impl ServerInner {
         *attached = Some(connection_id.to_owned());
         *deadline = None;
         session.expiry_generation.fetch_add(1, Ordering::AcqRel);
+        if let Some(expiry_cancel) = lock(&session.expiry_cancel).take() {
+            expiry_cancel.cancel();
+        }
         drop(deadline);
         drop(attached);
         // Keep the opaque credential stable for the lifetime of this session. If the resume
@@ -279,53 +362,119 @@ impl ServerInner {
         session: Arc<ClientSession>,
         connection_id: &str,
     ) {
-        if session.closed.load(Ordering::Acquire) {
-            return;
-        }
-        let mut attached = lock(&session.attached_connection);
-        if attached.as_deref() != Some(connection_id) {
-            return;
-        }
-        *attached = None;
         let deadline = Instant::now() + Duration::from_secs(self.config.resume_timeout_seconds);
-        *lock(&session.detached_deadline) = Some(deadline);
-        let generation = session.expiry_generation.fetch_add(1, Ordering::AcqRel) + 1;
-        drop(attached);
-
         let server = Arc::clone(self);
         let dispatch = server.observability.dispatch().cloned();
+        let (generation, expiry_cancel) = {
+            let sessions = lock(&self.sessions);
+            let Some(current) = sessions.get(&session.id) else {
+                return;
+            };
+            if !Arc::ptr_eq(current, &session) || session.closed.load(Ordering::Acquire) {
+                return;
+            }
+
+            let mut attached = lock(&session.attached_connection);
+            if attached.as_deref() != Some(connection_id) {
+                return;
+            }
+
+            *attached = None;
+            *lock(&session.detached_deadline) = Some(deadline);
+            let generation = session.expiry_generation.fetch_add(1, Ordering::AcqRel) + 1;
+            let expiry_cancel = TokioCancellationToken::new();
+            if let Some(previous) = lock(&session.expiry_cancel).replace(expiry_cancel.clone()) {
+                previous.cancel();
+            }
+
+            (generation, expiry_cancel)
+        };
+
+        #[cfg(test)]
+        let task_guard = ExpiryTaskGuard::new(Arc::clone(&server.expiry_tasks_active));
+        let task_server = Arc::clone(&server);
         let expiry = async move {
             tokio::select! {
                 _ = server.shutdown.cancelled() => {},
+                _ = expiry_cancel.cancelled() => {},
                 _ = tokio::time::sleep_until(deadline.into()) => {
-                    let current = session.expiry_generation.load(Ordering::Acquire) == generation;
-                    let detached = lock(&session.attached_connection).is_none();
-                    let expired = lock(&session.detached_deadline)
-                        .is_some_and(|expires| expires <= Instant::now());
-                    if current && detached && expired {
-                        let _ = server.close_client(&session.id).await;
-                    }
+                    server.expire_detached_client(session, generation).await;
                 }
             }
+            #[cfg(test)]
+            drop(task_guard);
         };
-        if let Some(dispatch) = dispatch {
-            tokio::spawn(expiry.with_subscriber(dispatch));
+        let expiry = if let Some(dispatch) = dispatch {
+            expiry.with_subscriber(dispatch)
         } else {
-            tokio::spawn(expiry.with_subscriber(tracing::Dispatch::none()));
-        }
+            expiry.with_subscriber(tracing::Dispatch::none())
+        };
+        let mut tasks = lock(&task_server.background_tasks);
+        Self::reap_finished_tasks(&mut tasks);
+        tasks.spawn(expiry);
     }
 
     pub(crate) async fn close_client(&self, session_id: &str) -> Result<(), StateError> {
-        let Some(session) = lock(&self.sessions).remove(session_id) else {
-            return Err(StateError::UnknownSession);
+        let session = {
+            let mut sessions = lock(&self.sessions);
+            let Some(session) = sessions.remove(session_id) else {
+                return Err(StateError::UnknownSession);
+            };
+
+            Self::mark_client_closed(&session);
+            session
         };
+
+        self.close_client_resources(session).await
+    }
+
+    async fn expire_detached_client(&self, session: Arc<ClientSession>, generation: u64) {
+        let expired = {
+            let mut sessions = lock(&self.sessions);
+            let Some(current) = sessions.get(&session.id) else {
+                return;
+            };
+            if !Arc::ptr_eq(current, &session) {
+                return;
+            }
+
+            let attached = lock(&session.attached_connection);
+            let detached_deadline = lock(&session.detached_deadline);
+            let is_expired = session.expiry_generation.load(Ordering::Acquire) == generation
+                && attached.is_none()
+                && detached_deadline.is_some_and(|deadline| deadline <= Instant::now());
+            drop(detached_deadline);
+            drop(attached);
+            if !is_expired {
+                return;
+            }
+
+            sessions.remove(&session.id);
+            Self::mark_client_closed(&session);
+            session
+        };
+
+        let _ = self.close_client_resources(expired).await;
+    }
+
+    fn mark_client_closed(session: &ClientSession) {
         if session.closed.swap(true, Ordering::AcqRel) {
-            return Ok(());
+            return;
         }
+
         session.expiry_generation.fetch_add(1, Ordering::AcqRel);
         session.scope.cancel();
         *lock(&session.attached_connection) = None;
         *lock(&session.detached_deadline) = None;
+        if let Some(expiry_cancel) = lock(&session.expiry_cancel).take() {
+            expiry_cancel.cancel();
+        }
+    }
+
+    async fn close_client_resources(&self, session: Arc<ClientSession>) -> Result<(), StateError> {
+        if !session.closed.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let guilds = std::mem::take(&mut *lock(&session.guilds));
         let mut cleanup_failed = false;
         for guild in guilds.into_values() {
@@ -461,12 +610,50 @@ impl ServerInner {
     }
 
     pub(crate) async fn shutdown(&self) {
-        self.shutdown.cancel();
-        let session_ids = lock(&self.sessions).keys().cloned().collect::<Vec<_>>();
-        for id in session_ids {
-            let _ = self.close_client(&id).await;
+        let _shutdown = self.shutdown_lock.lock().await;
+
+        if self.shutdown_complete.load(Ordering::Acquire) {
+            return;
         }
+
+        self.shutdown.cancel();
+        let sessions = {
+            let mut sessions = lock(&self.sessions);
+            let sessions = std::mem::take(&mut *sessions);
+            for session in sessions.values() {
+                Self::mark_client_closed(session);
+            }
+            sessions
+        };
+        for (id, session) in sessions {
+            if let Err(error) = self.close_client_resources(session).await {
+                tracing::warn!(
+                    name: "server.session.cleanup_failed",
+                    target: "remedia_server::session",
+                    session_id = id.as_str(),
+                    error = %error,
+                    "client session cleanup failed during server shutdown"
+                );
+            }
+        }
+
+        let mut background_tasks = {
+            let mut tasks = lock(&self.background_tasks);
+            std::mem::replace(&mut *tasks, JoinSet::new())
+        };
+        while let Some(result) = background_tasks.join_next().await {
+            if let Err(error) = result {
+                tracing::error!(
+                    name: "server.background_task.failed",
+                    target: "remedia_server::lifecycle",
+                    error = %error,
+                    "server-owned background task failed during shutdown"
+                );
+            }
+        }
+
         self.plugin_hosts.close().await;
+        self.shutdown_complete.store(true, Ordering::Release);
     }
 
     pub(crate) fn health(&self) -> &'static str {
