@@ -209,3 +209,25 @@ Raw data: [resource-audit-main-paced.jsonl](data/resource-audit-main-paced.jsonl
 thread count, startup/command/sink latency percentiles, delivered audio, packets, and transitions.
 Its one-second snapshots can miss short-lived thread/footprint peaks; it does not measure native
 allocator live bytes.
+
+## Plugin ingress: independent verification
+
+The orchestrator reviewed queue locking, shared allocation lifetime, terminal producer errors,
+backpressure, and reader/producer cancellation. A new stress test was corrected to request
+cancellation before dropping its reader in cancellation-specific iterations; otherwise the
+producer could legitimately observe reader closure first. No production error precedence was changed.
+
+Independent checks passed all ten byte-stream tests (including 2048 blocked-producer and
+1024 blocked-reader cycles), 22 loopback plugin-forwarding WebSocket tests, workspace-wide
+Clippy with `-D warnings`, Rust formatting, and repository formatting. The Clippy failures in
+the newly added quality example were fixed, without suppressing any lint.
+
+The independent 12-case allocation run matched every decoded sample count, frame count, and
+checksum. Each paired 8 MiB input removed exactly 8,388,608 producer allocation-request bytes.
+Queue occupancy stayed within its visible-byte cap. This confirms reduced queue-ingress allocation,
+not a throughput gain or a strict bound on hidden shared backing memory. Raw rows:
+[plugin-media-queue-independent.jsonl](data/plugin-media-queue-independent.jsonl).
+
+The existing dedicated transfer thread is retained: the tested blocking-pool candidate could
+starve unrelated blocking work, while the async-idle comparison did not transfer or decode media.
+No default media queue size was changed without an equivalent stalled-source audio benchmark.
