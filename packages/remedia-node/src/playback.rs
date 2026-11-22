@@ -516,6 +516,13 @@ fn native_crossfade_event(event: CrossfadeEvent) -> NativeCrossfadeEvent {
         info: None,
     };
     match event {
+        CrossfadeEvent::EventsDropped { count } => {
+            // The overflow marker has no generation. Consumers must discard the rest of the
+            // batch, so only the kind and the number of evicted events are meaningful.
+            value.kind = "events_dropped".into();
+            value.generation = "0".into();
+            value.reason = Some(format!("{count} crossfade events were dropped"));
+        }
         CrossfadeEvent::TimelineChanged {
             previous_generation,
             generation,

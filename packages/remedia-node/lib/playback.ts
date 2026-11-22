@@ -689,6 +689,10 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
       return;
     }
     for (const event of events) {
+      // The native queue overflowed and evicted older events. The remaining events in this batch
+      // cannot be applied reliably as a complete history, so they are discarded.
+      if (event.kind === 'events_dropped') return;
+
       const generation = numericGeneration(event.generation);
       const stage =
         event.entryId === undefined

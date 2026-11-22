@@ -83,6 +83,9 @@ fn replaced_completion_waker_is_dropped_outside_playback_locks() {
         unlocked: Arc<AtomicBool>,
     }
 
+    // `wake` is intentionally a no-op, but the probe cannot be replaced by
+    // `Waker::noop()`: its `Drop` observes whether the session lock is free.
+    #[allow(clippy::manual_noop_waker)]
     impl Wake for DropProbe {
         fn wake(self: Arc<Self>) {}
     }
