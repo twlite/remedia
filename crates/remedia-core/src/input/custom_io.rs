@@ -240,8 +240,9 @@ pub(super) fn custom_io_for(
     match source {
         InputSource::Bytes(bytes) => CustomIo::memory(Arc::clone(bytes)).map(Some),
         InputSource::ByteStream(source) => CustomIo::stream(source, cancellation).map(Some),
-        InputSource::File(_) | InputSource::HttpUrl(_) | InputSource::HttpUrlWithHeaders { .. } | InputSource::SequentialHttpUrl(_) => {
-            Ok(None)
-        }
+        InputSource::File(_)
+        | InputSource::HttpUrl(_)
+        | InputSource::HttpUrlWithHeaders { .. }
+        | InputSource::SequentialHttpUrl(_) => Ok(None),
     }
 }

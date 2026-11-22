@@ -663,7 +663,8 @@ impl HostState {
 
         if self.config.owns_media_origin(&descriptor.url) {
             let permit = self.acquire(&self.streams)?;
-            let (source, guard) = open_media(self, descriptor.url, &descriptor.headers, cancel, permit).await?;
+            let (source, guard) =
+                open_media(self, descriptor.url, &descriptor.headers, cancel, permit).await?;
 
             return Ok(ResolvedMedia {
                 source,

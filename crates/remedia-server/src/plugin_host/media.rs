@@ -110,28 +110,45 @@ pub(crate) async fn open_media(
                     "media redirect limit exceeded",
                 ));
             }
-            let location = response.headers().get(reqwest::header::LOCATION)
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
                 .and_then(|header| header.to_str().ok())
-                .ok_or_else(|| PluginError::new(
-                    PluginErrorKind::MediaInvalid, "media redirect has no valid location",
-                ))?;
-            target = target.join(location).map_err(|_| PluginError::new(
-                PluginErrorKind::MediaInvalid, "media redirect has an invalid location",
-            ))?;
+                .ok_or_else(|| {
+                    PluginError::new(
+                        PluginErrorKind::MediaInvalid,
+                        "media redirect has no valid location",
+                    )
+                })?;
+            target = target.join(location).map_err(|_| {
+                PluginError::new(
+                    PluginErrorKind::MediaInvalid,
+                    "media redirect has an invalid location",
+                )
+            })?;
             redirect_count += 1;
             continue;
         }
         match status {
             200 => break response,
-            404 | 410 => return Err(PluginError::new(
-                PluginErrorKind::MediaExpired, "media grant is expired or was already redeemed",
-            )),
-            401 | 403 => return Err(PluginError::new(
-                PluginErrorKind::MediaInvalid, "media origin rejected the media request",
-            )),
-            _ => return Err(PluginError::new(
-                PluginErrorKind::MediaFailed, "media origin returned an unexpected status",
-            )),
+            404 | 410 => {
+                return Err(PluginError::new(
+                    PluginErrorKind::MediaExpired,
+                    "media grant is expired or was already redeemed",
+                ));
+            }
+            401 | 403 => {
+                return Err(PluginError::new(
+                    PluginErrorKind::MediaInvalid,
+                    "media origin rejected the media request",
+                ));
+            }
+            _ => {
+                return Err(PluginError::new(
+                    PluginErrorKind::MediaFailed,
+                    "media origin returned an unexpected status",
+                ));
+            }
         }
     };
 

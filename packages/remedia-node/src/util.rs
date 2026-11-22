@@ -17,7 +17,9 @@ pub(crate) fn parse_source(source: NativeMediaSource) -> NativeResult<InputSourc
         "url" => {
             let value = source_value(source.value, "media URL")?;
             match source.headers {
-                Some(headers) if !headers.is_empty() => Ok(InputSource::http_url_with_headers(value, headers)),
+                Some(headers) if !headers.is_empty() => {
+                    Ok(InputSource::http_url_with_headers(value, headers))
+                }
                 _ => Ok(InputSource::http_url(value)),
             }
         }

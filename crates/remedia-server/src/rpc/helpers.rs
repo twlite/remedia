@@ -156,13 +156,17 @@ async fn resolve_source_inner(
             .map(|path| ResolvedInput::plain(InputSource::file(path)))
             .map_err(media_error),
         PlaySource::Url { url, headers } => {
-            let url = server.config.authorize_url(&url).await.map_err(media_error)?;
+            let url = server
+                .config
+                .authorize_url(&url)
+                .await
+                .map_err(media_error)?;
             Ok(ResolvedInput::plain(if headers.is_empty() {
                 InputSource::http_url(url)
             } else {
                 InputSource::http_url_with_headers(url, headers)
             }))
-        },
+        }
         PlaySource::Operation {
             host_id,
             plugin_id,

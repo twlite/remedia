@@ -50,7 +50,12 @@ export function toNativeSource(
   source: Exclude<MediaSource, { stream: Readable }>,
 ): NativeMediaSource {
   if ('file' in source) return { kind: 'file', value: source.file };
-  if ('url' in source) return { kind: 'url', value: source.url, ...(source.headers ? { headers: source.headers } : {}) };
+  if ('url' in source)
+    return {
+      kind: 'url',
+      value: source.url,
+      ...(source.headers ? { headers: source.headers } : {}),
+    };
   return { kind: 'buffer', bytes: Buffer.from(source.buffer) };
 }
 

@@ -119,11 +119,19 @@ fn forwards_http_headers_and_decodes_media() {
         loop {
             let mut line = String::new();
             reader.read_line(&mut line).unwrap();
-            if line == "\r\n" || line.is_empty() { break; }
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
             received.push_str(&line);
         }
-        assert!(received.contains("Cookie: session=test") || received.contains("cookie: session=test"));
-        assert!(received.to_ascii_lowercase().contains("referer: https://example.com/"));
+        assert!(
+            received.contains("Cookie: session=test") || received.contains("cookie: session=test")
+        );
+        assert!(
+            received
+                .to_ascii_lowercase()
+                .contains("referer: https://example.com/")
+        );
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", bytes.len()).unwrap();
         stream.write_all(&bytes).unwrap();
     });
@@ -133,7 +141,8 @@ fn forwards_http_headers_and_decodes_media() {
             ("Cookie".to_string(), "session=test".to_string()),
             ("Referer".to_string(), "https://example.com/".to_string()),
         ],
-    )).unwrap();
+    ))
+    .unwrap();
     assert_eq!(frame_count(&collect_frames(&mut decoder)), 2400);
     server.join().unwrap();
 }

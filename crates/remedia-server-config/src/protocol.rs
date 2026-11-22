@@ -213,16 +213,24 @@ pub fn parse_descriptor(value: &Value) -> Result<Descriptor, PluginError> {
 
     let mut headers = std::collections::HashMap::new();
     if let Some(raw_headers) = object.get("headers") {
-        let entries = raw_headers.as_object().ok_or_else(|| invalid("media headers must be an object"))?;
+        let entries = raw_headers
+            .as_object()
+            .ok_or_else(|| invalid("media headers must be an object"))?;
         let mut bytes = 0usize;
         for (name, value) in entries {
-            let value = value.as_str().ok_or_else(|| invalid("media header values must be strings"))?;
+            let value = value
+                .as_str()
+                .ok_or_else(|| invalid("media header values must be strings"))?;
             bytes += name.len() + value.len() + 4;
             if bytes > 16 * 1024
                 || name.is_empty()
-                || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
                 || value.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
-                || ["host", "content-length", "transfer-encoding"].iter().any(|blocked| name.eq_ignore_ascii_case(blocked))
+                || ["host", "content-length", "transfer-encoding"]
+                    .iter()
+                    .any(|blocked| name.eq_ignore_ascii_case(blocked))
             {
                 return Err(invalid("invalid media request headers"));
             }
@@ -230,7 +238,11 @@ pub fn parse_descriptor(value: &Value) -> Result<Descriptor, PluginError> {
         }
     }
 
-    Ok(Descriptor { url, expires_at_ms, headers })
+    Ok(Descriptor {
+        url,
+        expires_at_ms,
+        headers,
+    })
 }
 
 /// Map a non-success execute status and optional protocol error code to a failure.
@@ -375,18 +387,24 @@ mod tests {
         let descriptor = parse_descriptor(&json!({
             "url": "https://media.example/audio",
             "headers": { "Cookie": "session=example", "Referer": "https://example.com/" }
-        })).unwrap();
-        assert_eq!(descriptor.headers.get("Cookie").map(String::as_str), Some("session=example"));
+        }))
+        .unwrap();
+        assert_eq!(
+            descriptor.headers.get("Cookie").map(String::as_str),
+            Some("session=example")
+        );
         for headers in [
             json!({"Host":"localhost"}),
             json!({"Cookie":"one\r\nX-Injected: true"}),
             json!({"X-Test":42}),
         ] {
-            assert!(parse_descriptor(&json!({
-                "url":"https://media.example/audio", "headers":headers
-            })).is_err());
+            assert!(
+                parse_descriptor(&json!({
+                    "url":"https://media.example/audio", "headers":headers
+                }))
+                .is_err()
+            );
         }
-
 
         for value in [
             json!({"url": "file:///etc/passwd"}),

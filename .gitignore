@@ -46,3 +46,4 @@ packages/remedia-node/SOURCE_DISTRIBUTION.md
 packages/remedia-node/source-manifest.json
 
 .ci-freebsd-native/
+.native-build
