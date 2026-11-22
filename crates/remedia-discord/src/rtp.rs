@@ -80,7 +80,15 @@ impl RtpSender {
             return Err(VoiceError::DaveNotReady);
         }
         self.datagram.clear();
-        dave.encrypt_opus_into(&packet.bytes, &mut self.datagram)?;
+        if let Err(error) = dave.encrypt_opus_into(&packet.bytes, &mut self.datagram) {
+            // DAVE resizes output before encrypting. Failed encryption must not retain
+            // oversized scratch storage on the connection either.
+            if self.datagram.capacity() > MAX_UDP_PACKET_BYTES {
+                self.datagram = Vec::with_capacity(MAX_UDP_PACKET_BYTES);
+            }
+            return Err(error);
+        }
+
         let dave_payload_bytes = self.datagram.len();
         let header = serialize_rtp_header(self.clock.sequence, self.clock.timestamp, self.ssrc);
         let packet_size =
