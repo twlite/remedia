@@ -88,6 +88,7 @@ pub(super) fn handle_commands(
                     {
                         let mut state = lock(&shared.data);
                         state.source_generation = fade.previous_generation;
+                        state.active_stage = fade.previous_active_stage.clone();
                         state.info = Some(fade.outgoing_info.clone());
                         state.duration = fade.outgoing_info.duration;
                     }

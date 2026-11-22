@@ -100,6 +100,25 @@ export declare class NativeRemedia {
    * using the same event names and generation semantics as remote mode.
    */
   playbackTakeCrossfadeEvents(playbackId: string): Array<NativeCrossfadeEvent>
+  /**
+   * Read the current notification revision. Read it before draining crossfade events and pass
+   * it to `playbackWaitEvents`; that order closes the race between draining and waiting, so a
+   * change published after the read always resolves the wait.
+   */
+  playbackEventsRevision(playbackId: string): string
+  /**
+   * Resolve with the next revision once crossfade events or a terminal playback change have
+   * been published since `revision`, or immediately when `revision` is already stale.
+   *
+   * The wait registers a waker and occupies no thread. It deliberately does not hold the
+   * runtime operation guard: it touches only the session's notification signal, and every
+   * path that tears a session down (`stop`, `disposePlaybackSession`, `close`) publishes a
+   * terminal notification that resolves it. It rejects when the playback is unknown, so a
+   * caller that raced with disposal stops waiting.
+   */
+  playbackWaitEvents(playbackId: string, revision: string): Promise<string>
+  /** The staged entry that became the active source through crossfade promotion, if any. */
+  playbackActiveStage(playbackId: string): NativeStageIdentity | null
   playbackSourceGeneration(playbackId: string): string
   /** Request playback pause at the current output frame boundary. */
   pause(playbackId: string): Promise<void>
@@ -179,6 +198,8 @@ export interface NativeCrossfadeEvent {
   remainingMs?: number
   reason?: string
   info?: NativeStreamInfo
+  /** Number of older events evicted from the bounded queue; set only for `events_dropped`. */
+  droppedEvents?: number
 }
 
 export interface NativeDiagnosticEvent {
@@ -203,8 +224,8 @@ export interface NativeMediaSource {
   /** Explicitly `file`, `url`, `buffer`, or `stream`. */
   kind: string
   value?: string
-  headers?: { [key: string]: string }
   bytes?: Buffer
+  headers?: Record<string, string>
 }
 
 export interface NativePlaybackPosition {
@@ -222,6 +243,14 @@ export interface NativeSeekOutcome {
   appliedMs: number
   /** A replacement decoder took over, so the output timeline continued instead of restarting. */
   replacedSource: boolean
+}
+
+/** Identity of a staged queue occurrence, as promoted into the active source. */
+export interface NativeStageIdentity {
+  expectedGeneration: string
+  entryId: string
+  queueRevision: string
+  sourceRevision: string
 }
 
 /** A bounded native stage with an application-owned queue occurrence identity. */

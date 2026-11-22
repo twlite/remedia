@@ -12,7 +12,7 @@ use crate::native::NativeRemedia;
 use crate::runtime::{PlaybackEntry, lock, run_blocking};
 use crate::types::{
     NativeCrossfadeEvent, NativeMediaSource, NativePlaybackPosition, NativeSeekOutcome,
-    NativeStageSnapshot, NativeStreamInfo,
+    NativeStageIdentity, NativeStageSnapshot, NativeStreamInfo,
 };
 use crate::util::{
     duration_from_millis, duration_millis, napi_error, native_stream_info, parse_source,
@@ -269,6 +269,65 @@ impl NativeRemedia {
             .collect())
     }
 
+    /// Read the current notification revision. Read it before draining crossfade events and pass
+    /// it to `playbackWaitEvents`; that order closes the race between draining and waiting, so a
+    /// change published after the read always resolves the wait.
+    #[napi]
+    pub fn playback_events_revision(&self, playback_id: String) -> napi::Result<String> {
+        self.inner.ensure_open()?;
+
+        Ok(self
+            .inner
+            .playback(&playback_id)?
+            .session
+            .crossfade_events_revision()
+            .to_string())
+    }
+
+    /// Resolve with the next revision once crossfade events or a terminal playback change have
+    /// been published since `revision`, or immediately when `revision` is already stale.
+    ///
+    /// The wait registers a waker and occupies no thread. It deliberately does not hold the
+    /// runtime operation guard: it touches only the session's notification signal, and every
+    /// path that tears a session down (`stop`, `disposePlaybackSession`, `close`) publishes a
+    /// terminal notification that resolves it. It rejects when the playback is unknown, so a
+    /// caller that raced with disposal stops waiting.
+    #[napi]
+    pub async fn playback_wait_events(
+        &self,
+        playback_id: String,
+        revision: String,
+    ) -> napi::Result<String> {
+        self.inner.ensure_open()?;
+        let revision = revision
+            .parse::<u64>()
+            .map_err(|_| napi_error(Status::InvalidArg, "invalid events revision"))?;
+        let wait = self
+            .inner
+            .playback(&playback_id)?
+            .session
+            .wait_for_crossfade_events(revision);
+
+        Ok(wait.await.to_string())
+    }
+
+    /// The staged entry that became the active source through crossfade promotion, if any.
+    #[napi]
+    pub fn playback_active_stage(
+        &self,
+        playback_id: String,
+    ) -> napi::Result<Option<NativeStageIdentity>> {
+        self.inner.ensure_open()?;
+        let session = self.inner.playback(&playback_id)?.session;
+
+        Ok(session.active_stage().map(|identity| NativeStageIdentity {
+            expected_generation: identity.expected_generation.to_string(),
+            entry_id: identity.entry_id,
+            queue_revision: identity.queue_revision.to_string(),
+            source_revision: identity.source_revision.to_string(),
+        }))
+    }
+
     #[napi]
     pub fn playback_source_generation(&self, playback_id: String) -> napi::Result<String> {
         Ok(self
@@ -422,7 +481,9 @@ impl NativeRemedia {
             .completion_for_generation(generation);
         let _operation = self.inner.operations.read().await;
         self.inner.ensure_open()?;
-        let state = run_blocking(move || waiter.wait()).await?;
+        // The waiter future is runtime-independent and creates no thread, so a pending wait costs
+        // no blocking-pool slot. Dropping this promise's future unregisters its waker.
+        let state = waiter.wait_async().await;
         Ok(playback_state_name(state).to_owned())
     }
 
@@ -503,7 +564,7 @@ fn native_stage_snapshot(value: StageSnapshot) -> NativeStageSnapshot {
     }
 }
 
-fn native_crossfade_event(event: CrossfadeEvent) -> NativeCrossfadeEvent {
+pub(crate) fn native_crossfade_event(event: CrossfadeEvent) -> NativeCrossfadeEvent {
     let mut value = NativeCrossfadeEvent {
         kind: String::new(),
         generation: String::new(),
@@ -514,14 +575,15 @@ fn native_crossfade_event(event: CrossfadeEvent) -> NativeCrossfadeEvent {
         remaining_ms: None,
         reason: None,
         info: None,
+        dropped_events: None,
     };
     match event {
         CrossfadeEvent::EventsDropped { count } => {
             // The overflow marker has no generation. Consumers must discard the rest of the
-            // batch, so only the kind and the number of evicted events are meaningful.
+            // batch and reconcile against the session, so only the kind and count are meaningful.
             value.kind = "events_dropped".into();
             value.generation = "0".into();
-            value.reason = Some(format!("{count} crossfade events were dropped"));
+            value.dropped_events = Some(count as f64);
         }
         CrossfadeEvent::TimelineChanged {
             previous_generation,

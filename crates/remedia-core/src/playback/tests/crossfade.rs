@@ -186,6 +186,7 @@ fn opted_in_crossfade_promotes_staged_decoder_without_restarting_output_with(
         Some(PlaybackProcessingMode::Transcoding)
     );
     assert!(gate.wait_for_calls(1));
+    assert_eq!(session.active_stage(), None);
 
     let identity = StageIdentity {
         expected_generation: session.source_generation(),
@@ -228,6 +229,11 @@ fn opted_in_crossfade_promotes_staged_decoder_without_restarting_output_with(
     gate.release(1_000);
     assert_eq!(session.wait(), PlaybackState::Completed);
     assert_eq!(session.source_generation(), 2);
+    assert_eq!(
+        session.active_stage().map(|stage| stage.entry_id),
+        Some("entry-b".to_string()),
+        "promotion records which staged entry is now the active source",
+    );
     let frames = gate.snapshot();
     assert!(frames.finished);
     // 10 seconds outgoing + 10 seconds incoming - 5 seconds overlapped.
@@ -354,6 +360,11 @@ fn crossfade_supports_consecutive_promotions_and_rejects_stale_revisions_with(
     gate.release(2_000);
     assert_eq!(session.wait(), PlaybackState::Completed);
     assert_eq!(session.source_generation(), 3);
+    assert_eq!(
+        session.active_stage().map(|stage| stage.entry_id),
+        Some("third".to_string()),
+        "the latest promotion replaces the previous active entry",
+    );
     let frames = gate.snapshot();
     assert_eq!(frames.accepted.len(), 1_000);
     assert!(frames.accepted.windows(2).all(|w| w[0].0 + 960 == w[1].0));
@@ -980,6 +991,11 @@ fn seeking_during_an_adaptive_overlap_cancels_it_and_restores_outgoing_playback(
         session.source_generation(),
         3,
         "a seek starts a new timeline"
+    );
+    assert_eq!(
+        session.active_stage(),
+        None,
+        "cancelling the fade restores the entry that was active before it began",
     );
 
     gate.release(1_000);

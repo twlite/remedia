@@ -10,6 +10,8 @@ struct Transition {
     next: Arc<PreparedStage>,
     info: AudioStreamInfo,
     identity: StageIdentity,
+    /// The promoted stage that was active before this transition began.
+    previous_active_stage: Option<StageIdentity>,
     fading: PcmCrossfade,
     previous_generation: u64,
     incoming_generation: u64,
@@ -259,12 +261,13 @@ fn worker_loop(
                             data.source_serial = data.source_serial.saturating_add(1);
                             data.source_serial
                         };
-                        {
+                        let previous_active_stage = {
                             let mut data = lock(&shared.data);
                             data.source_generation = incoming_generation;
                             data.info = Some(info.clone());
                             data.duration = info.duration;
-                        }
+                            data.active_stage.replace(next.identity.clone())
+                        };
                         shared.publish_crossfade_event(CrossfadeEvent::TransitionStarted {
                             outgoing_generation: source_generation,
                             incoming_generation,
@@ -311,6 +314,7 @@ fn worker_loop(
                             next: Arc::clone(&next),
                             info,
                             identity: next.identity.clone(),
+                            previous_active_stage,
                             fading: PcmCrossfade::with_curve(fade_samples, config.curve),
                             previous_generation: source_generation,
                             incoming_generation,
@@ -541,6 +545,7 @@ fn worker_loop(
             {
                 let mut data = lock(&shared.data);
                 data.source_generation = failed.previous_generation;
+                data.active_stage = failed.previous_active_stage.clone();
                 data.info = Some(failed.outgoing_info.clone());
                 data.duration = failed.outgoing_info.duration;
             }

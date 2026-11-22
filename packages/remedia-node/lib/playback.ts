@@ -30,6 +30,71 @@ import { FilterControls, validateVolume } from './filters.js';
 const CROSSFADE_CURVES: readonly CrossfadeCurve[] = ['equalPower', 'adaptive'];
 
 /**
+ * Most generations remembered for lifecycle deduplication. At most a few generations are live at
+ * once (the active source and one fading out), so this only has to outlast late duplicates.
+ *
+ * @internal
+ */
+export const GENERATION_HISTORY_LIMIT = 16;
+
+/** Attempts to read native state while the crossfade event queue is still changing. */
+const RECONCILE_ATTEMPTS = 5;
+
+/**
+ * Extra time, beyond the fade length, before an input whose fade state is unknown is released
+ * after the native event queue overflowed.
+ */
+const OVERFLOW_RELEASE_MARGIN_MS = 2000;
+
+/** Identifies one staged queue occurrence, matching the identity the native engine reports. */
+interface StageKeyParts {
+  generation: number;
+  entryId: string;
+  queueRevision: number;
+  sourceRevision: number;
+}
+
+/** Local bookkeeping for one staged occurrence and the input that feeds it. */
+interface StageRecord<Metadata> {
+  input: ReadableInputHandle | undefined;
+  metadata: Metadata | undefined;
+  identity: StageKeyParts;
+  /** True until the native staging call for this entry settles; its stage may not exist yet. */
+  pending: boolean;
+}
+
+/** Native playback state read together, used to repair local state after lost events. */
+interface NativeSnapshot {
+  generation: number;
+  staged: StageKeyParts | null;
+  active: StageKeyParts | null;
+}
+
+function stageKey(parts: StageKeyParts): string {
+  return JSON.stringify([
+    parts.generation,
+    parts.entryId,
+    parts.queueRevision,
+    parts.sourceRevision,
+  ]);
+}
+
+/**
+ * Add `generation` as the most recent entry, evicting the oldest beyond the history limit.
+ *
+ * @internal
+ */
+export function rememberGeneration(generations: Set<number>, generation: number): void {
+  generations.delete(generation);
+  generations.add(generation);
+  while (generations.size > GENERATION_HISTORY_LIMIT) {
+    const oldest = generations.values().next().value;
+    if (oldest === undefined) break;
+    generations.delete(oldest);
+  }
+}
+
+/**
  * Controls one playback session. Local sessions decode into a no-op output.
  * @typeParam Metadata - Application-owned metadata attached to playback generations.
  */
@@ -54,8 +119,10 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
   readonly #native: NativeRemedia;
   readonly #playbackId: string;
   readonly #onDispose: (() => void) | undefined;
+  /** Most recent generations that already emitted a terminal event, bounded for deduplication. */
   readonly #terminalGenerations = new Set<number>();
   readonly #metadata = new Map<number, Metadata | undefined>();
+  /** Most recent generations started but not yet terminal, bounded; see rememberGeneration. */
   readonly #startedGenerations = new Set<number>();
   /** Ordered, awaited local pre-play hooks; listeners are separate from hooks. */
   readonly hooks: PlaybackHooks<Metadata>;
@@ -72,15 +139,21 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
   #crossfadeEnabled = false;
   #seekSerial = 0;
   #fadeDurationMs = 5000;
-  #crossfadeTimer: ReturnType<typeof setInterval> | undefined;
+  /** Token of the running native notification loop; replacing or clearing it stops that loop. */
+  #eventLoop: object | undefined;
   #stageInput: ReadableInputHandle | undefined;
   #stageEntryId: string | undefined;
   #stageWork: Promise<void> = Promise.resolve();
-  readonly #stages = new Map<
-    string,
-    { input: ReadableInputHandle | undefined; metadata: Metadata | undefined }
-  >();
+  readonly #stages = new Map<string, StageRecord<Metadata>>();
   #outgoingInput: ReadableInputHandle | undefined;
+  /** Key of the promoted stage that feeds the active source; undefined for a plain `play()`. */
+  #activeStageKey: string | undefined;
+  /** Key of the entry fading out while a transition is in progress. */
+  #outgoingStageKey: string | undefined;
+  /** Releases the outgoing input once a fade of unknown progress has certainly finished. */
+  #outgoingRelease: ReturnType<typeof setTimeout> | undefined;
+  /** Inputs of stages that vanished with lost events, each released by its own timer. */
+  readonly #retiring = new Map<ReadableInputHandle, ReturnType<typeof setTimeout>>();
 
   /**
    * Construct this wrapper with its owning services. Use the owning engine or client factory for application code.
@@ -261,13 +334,24 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
       'stream' in source
         ? (input = createReadableInput(this.#native, source.stream)).source
         : toNativeSource(source);
-    const key = JSON.stringify([
-      expectedGeneration,
-      options.entryId,
-      options.queueRevision,
+    const key = stageKey({
+      generation: expectedGeneration,
+      entryId: options.entryId,
+      queueRevision: options.queueRevision,
       sourceRevision,
-    ]);
-    this.#stages.set(key, { input, metadata: options.customMetadata });
+    });
+    const record: StageRecord<Metadata> = {
+      input,
+      metadata: options.customMetadata,
+      identity: {
+        generation: expectedGeneration,
+        entryId: options.entryId,
+        queueRevision: options.queueRevision,
+        sourceRevision,
+      },
+      pending: true,
+    };
+    this.#stages.set(key, record);
     try {
       const result = await this.#native.playbackStageNext(
         this.#playbackId,
@@ -288,6 +372,8 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
       this.#stages.delete(key);
       await input?.cancel();
       throw error;
+    } finally {
+      record.pending = false;
     }
   }
 
@@ -414,14 +500,16 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
       this.#latestGeneration = generation;
       this.#metadata.set(generation, options.customMetadata);
       this.#boundMetadata(generation);
-      this.#startedGenerations.add(generation);
+      rememberGeneration(this.#startedGenerations, generation);
+      this.#activeStageKey = undefined;
+      this.#outgoingStageKey = undefined;
       this.emit(PlaybackEvent.playbackStarted, {
         ...this.#eventContext(generation),
         state: 'playing',
         info,
       });
       this.#starting = false;
-      if (this.#crossfadeEnabled) this.#startCrossfadePoll();
+      this.#startEventLoop();
       void this.#observeGeneration(workerGeneration, input);
       return info;
     } catch (error) {
@@ -578,11 +666,12 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     } finally {
       await this.#releaseInput();
       this.#disposed = true;
-      this.#stopCrossfadePoll();
-      await this.#stageInput?.cancel();
-      await this.#outgoingInput?.cancel();
+      this.#stopEventLoop();
+      await this.#releaseStagedResources();
       this.hooks.clear();
       this.#metadata.clear();
+      this.#startedGenerations.clear();
+      this.#terminalGenerations.clear();
       this.emit(PlaybackEvent.sessionDisposed, {
         sessionId: this.sessionId,
         ...(this.#guildId === undefined ? {} : { guildId: this.#guildId }),
@@ -656,28 +745,92 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
           this.#emitTerminal('failed', this.#latestGeneration, asError(error));
       }
     } finally {
-      this.#stopCrossfadePoll();
       this.#clearAbortBinding(this.#playController);
-      await this.#outgoingInput?.cancel();
-      this.#outgoingInput = undefined;
-      await this.#stageInput?.cancel();
-      this.#stageInput = undefined;
-      for (const stage of this.#stages.values()) await stage.input?.cancel();
-      this.#stages.clear();
+      // This wait also ends when a newer playback replaces the source. That playback then owns
+      // the staged inputs and the notification loop, so they are released only when none is active.
+      if (!this.#hasActivePlayback()) {
+        this.#stopEventLoop();
+        await this.#releaseStagedResources();
+      }
       await this.#releaseInput();
       if (input !== this.#input) await input?.cancel();
     }
   }
 
-  #startCrossfadePoll(): void {
-    if (this.#crossfadeTimer) return;
-    this.#crossfadeTimer = setInterval(() => this.#drainCrossfadeEvents(), 25);
-    this.#crossfadeTimer.unref?.();
+  #hasActivePlayback(): boolean {
+    if (this.#starting) return true;
+    try {
+      return isPlaybackActive(this.state);
+    } catch {
+      // The native session is gone, so nothing is playing.
+      return false;
+    }
   }
 
-  #stopCrossfadePoll(): void {
-    if (this.#crossfadeTimer) clearInterval(this.#crossfadeTimer);
-    this.#crossfadeTimer = undefined;
+  /** Cancel every staged, outgoing and prepared input and forget which stage is active. */
+  async #releaseStagedResources(): Promise<void> {
+    this.#clearOutgoingRelease();
+    for (const timer of this.#retiring.values()) clearTimeout(timer);
+    const inputs = new Set<ReadableInputHandle | undefined>([
+      this.#outgoingInput,
+      this.#stageInput,
+      ...this.#retiring.keys(),
+      ...[...this.#stages.values()].map((stage) => stage.input),
+    ]);
+    this.#retiring.clear();
+    this.#outgoingInput = undefined;
+    this.#stageInput = undefined;
+    this.#stageEntryId = undefined;
+    this.#stages.clear();
+    this.#activeStageKey = undefined;
+    this.#outgoingStageKey = undefined;
+    for (const staged of inputs) await staged?.cancel();
+  }
+
+  /**
+   * Start the native notification loop for the active playback. It replaces the former fixed
+   * interval: the loop sleeps in native code until crossfade events or a terminal change are
+   * published, so an idle or paused session wakes nothing.
+   */
+  #startEventLoop(): void {
+    if (this.#eventLoop || !this.#crossfadeEnabled || this.#disposed) return;
+    const loop = {};
+    this.#eventLoop = loop;
+    void this.#runEventLoop(loop);
+  }
+
+  #stopEventLoop(): void {
+    // The native wait resolves when the session stops or is disposed; the loop then sees that
+    // its token was replaced and exits without touching newer state.
+    this.#eventLoop = undefined;
+  }
+
+  async #runEventLoop(loop: object): Promise<void> {
+    try {
+      while (this.#eventLoop === loop && !this.#disposed) {
+        // Read the revision before draining. Anything published after this read changes the
+        // revision and resolves the wait below, so no notification can fall between the drain and
+        // the registration of the wait.
+        const revision = this.#native.playbackEventsRevision(this.#playbackId);
+        try {
+          this.#drainCrossfadeEvents();
+        } catch (error) {
+          // Listener failures are isolated by emit(). Anything else is a genuine bookkeeping
+          // failure; it must not end notifications for the rest of the playback, so surface it
+          // where a timer callback's error would have surfaced, as an uncaught exception.
+          queueMicrotask(() => {
+            throw error;
+          });
+        }
+        if (!isPlaybackActive(this.state)) break;
+        await this.#native.playbackWaitEvents(this.#playbackId, revision);
+      }
+    } catch {
+      // The native session was disposed or the engine closed. Terminal lifecycle events come from
+      // #observeGeneration, which owns them.
+    } finally {
+      if (this.#eventLoop === loop) this.#eventLoop = undefined;
+    }
   }
 
   #drainCrossfadeEvents(): void {
@@ -688,127 +841,321 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     } catch {
       return;
     }
+    if (events.some((event) => event.kind === 'events_dropped')) {
+      // Older events were evicted, so the history is incomplete and applying the rest of this
+      // batch could corrupt local state. Rebuild that state from the engine instead.
+      this.#reconcileAfterOverflow();
+      return;
+    }
+    // Local bookkeeping must stay consistent with the engine, so one event that fails to apply
+    // cannot skip the rest of the batch. The first error is rethrown once all are applied.
+    let failure: { error: unknown } | undefined;
     for (const event of events) {
-      // The native queue overflowed and evicted older events. The remaining events in this batch
-      // cannot be applied reliably as a complete history, so they are discarded.
-      if (event.kind === 'events_dropped') return;
+      try {
+        this.#applyCrossfadeEvent(event);
+      } catch (error) {
+        failure ??= { error };
+      }
+    }
+    if (failure) throw failure.error;
+  }
 
-      const generation = numericGeneration(event.generation);
-      const stage =
-        event.entryId === undefined
-          ? null
-          : {
-              entryId: event.entryId,
-              queueRevision: numericGeneration(event.queueRevision ?? '0'),
-              sourceRevision: numericGeneration(event.sourceRevision ?? '0'),
-            };
-      const stageKey = JSON.stringify([
+  #readNativeSnapshot(): NativeSnapshot {
+    const toKey = (identity: {
+      expectedGeneration: string;
+      entryId: string;
+      queueRevision: string;
+      sourceRevision: string;
+    }): StageKeyParts => ({
+      generation: numericGeneration(identity.expectedGeneration),
+      entryId: identity.entryId,
+      queueRevision: numericGeneration(identity.queueRevision),
+      sourceRevision: numericGeneration(identity.sourceRevision),
+    });
+    const staged = this.#native.playbackStagedSource(this.#playbackId);
+    const active = this.#native.playbackActiveStage(this.#playbackId);
+
+    return {
+      generation: numericGeneration(this.#native.playbackSourceGeneration(this.#playbackId)),
+      staged: staged ? toKey(staged) : null,
+      active: active ? toKey(active) : null,
+    };
+  }
+
+  /**
+   * Repair local state after the bounded native event queue overflowed.
+   *
+   * The engine's current generation, staged entry and promoted entry are authoritative. Events
+   * queued before the read are discarded, because the snapshot already reflects them. Replaying
+   * them on top of it would apply a transition twice. The read is repeated while the queue keeps
+   * changing, so an event cannot be discarded without being reflected in the snapshot. Events that
+   * race past this point are applied normally; their handlers are idempotent against this state.
+   *
+   * Lifecycle events that were lost, such as `playbackStarted` for a promotion, are not replayed.
+   * Staged entries that are no longer staged or active are reported through `stageInvalidated`.
+   */
+  #reconcileAfterOverflow(): void {
+    let snapshot: NativeSnapshot;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        const before = this.#native.playbackEventsRevision(this.#playbackId);
+        this.#native.playbackTakeCrossfadeEvents(this.#playbackId);
+        snapshot = this.#readNativeSnapshot();
+        const after = this.#native.playbackEventsRevision(this.#playbackId);
+        if (after === before || attempt + 1 >= RECONCILE_ATTEMPTS) break;
+      }
+    } catch {
+      // The native session was disposed while reconciling; there is no state left to repair.
+      return;
+    }
+
+    const activeKey = snapshot.active ? stageKey(snapshot.active) : undefined;
+    const stagedKey = snapshot.staged ? stageKey(snapshot.staged) : undefined;
+    const previousGeneration = this.#latestGeneration;
+    let adopted: StageRecord<Metadata> | undefined;
+
+    if (activeKey !== this.#activeStageKey) {
+      adopted = activeKey === undefined ? undefined : this.#stages.get(activeKey);
+      if (adopted && activeKey !== undefined) {
+        // The promotion was lost. The staged input now feeds the active source and the previous
+        // input is fading out, or already silent.
+        void this.#outgoingInput?.cancel();
+        this.#clearOutgoingRelease();
+        this.#outgoingInput = this.#input;
+        this.#input = adopted.input;
+        this.#outgoingStageKey = this.#activeStageKey;
+        this.#activeStageKey = activeKey;
+        this.#stages.delete(activeKey);
+        if (this.#stageEntryId === activeKey) {
+          this.#stageInput = undefined;
+          this.#stageEntryId = undefined;
+        }
+        this.#metadata.set(snapshot.generation, adopted.metadata);
+      } else if (activeKey === this.#outgoingStageKey) {
+        // The transition was cancelled and the previous source is active again.
+        const abandoned = this.#input;
+        this.#input = this.#outgoingInput;
+        this.#outgoingInput = undefined;
+        void abandoned?.cancel();
+        this.#activeStageKey = activeKey;
+        this.#outgoingStageKey = undefined;
+      } else {
+        // Only the identity is tracked: the engine's active entry has no local record, so no
+        // local input can be attributed to it and none is touched.
+        this.#activeStageKey = activeKey;
+      }
+    }
+
+    if (snapshot.generation !== previousGeneration) {
+      if (!adopted) {
+        this.#metadata.set(snapshot.generation, this.#metadata.get(previousGeneration));
+      }
+      this.#latestGeneration = snapshot.generation;
+    }
+    this.#boundMetadata(snapshot.generation);
+    rememberGeneration(this.#startedGenerations, snapshot.generation);
+
+    const gone: Array<StageRecord<Metadata>> = [];
+    for (const [key, record] of [...this.#stages]) {
+      if (key === stagedKey || record.pending) continue;
+      this.#stages.delete(key);
+      if (record.input) this.#retireAfterFade(record.input);
+      gone.push(record);
+    }
+    if (this.#stageEntryId !== undefined && !this.#stages.has(this.#stageEntryId)) {
+      this.#stageInput = undefined;
+      this.#stageEntryId = undefined;
+    }
+    this.#scheduleOutgoingRelease();
+
+    // Listeners run last, against settled state.
+    let failure: { error: unknown } | undefined;
+    for (const record of gone) {
+      try {
+        this.emit(PlaybackEvent.stageInvalidated, {
+          ...this.#eventContext(record.identity.generation),
+          entryId: record.identity.entryId,
+          queueRevision: record.identity.queueRevision,
+          sourceRevision: record.identity.sourceRevision,
+        });
+      } catch (error) {
+        failure ??= { error };
+      }
+    }
+    if (failure) throw failure.error;
+  }
+
+  /**
+   * Release an input that a lost event may have left feeding an audible fade. Its fade cannot be
+   * longer than the configured one, so it is released shortly after that.
+   */
+  #retireAfterFade(input: ReadableInputHandle): void {
+    if (this.#retiring.has(input)) return;
+    const timer = setTimeout(() => {
+      this.#retiring.delete(input);
+      void input.cancel();
+    }, this.#fadeDurationMs + OVERFLOW_RELEASE_MARGIN_MS);
+    timer.unref?.();
+    this.#retiring.set(input, timer);
+  }
+
+  /**
+   * After an overflow the outgoing input's fade may or may not have finished, and its
+   * `transitionCompleted` event may have been lost. Release it once the fade certainly has. A
+   * newer transition or a cancellation replaces `#outgoingInput`, which makes this a no-op.
+   */
+  #scheduleOutgoingRelease(): void {
+    if (this.#outgoingRelease) clearTimeout(this.#outgoingRelease);
+    this.#outgoingRelease = undefined;
+    const outgoing = this.#outgoingInput;
+    if (!outgoing) return;
+    this.#outgoingRelease = setTimeout(() => {
+      this.#outgoingRelease = undefined;
+      if (this.#outgoingInput !== outgoing) return;
+      this.#outgoingInput = undefined;
+      this.#outgoingStageKey = undefined;
+      void outgoing.cancel();
+    }, this.#fadeDurationMs + OVERFLOW_RELEASE_MARGIN_MS);
+    this.#outgoingRelease.unref?.();
+  }
+
+  #clearOutgoingRelease(): void {
+    if (this.#outgoingRelease) clearTimeout(this.#outgoingRelease);
+    this.#outgoingRelease = undefined;
+  }
+
+  #applyCrossfadeEvent(event: NativeCrossfadeEvent): void {
+    const generation = numericGeneration(event.generation);
+    const stage =
+      event.entryId === undefined
+        ? null
+        : {
+            entryId: event.entryId,
+            queueRevision: numericGeneration(event.queueRevision ?? '0'),
+            sourceRevision: numericGeneration(event.sourceRevision ?? '0'),
+          };
+    const stageKeyValue = stageKey({
+      generation:
         event.kind === 'transition_started'
           ? numericGeneration(event.previousGeneration ?? '0')
           : generation,
-        stage?.entryId,
-        stage?.queueRevision,
-        stage?.sourceRevision,
-      ]);
-      switch (event.kind) {
-        case 'timeline_changed': {
-          const previous = numericGeneration(event.previousGeneration ?? '0');
-          this.#metadata.set(generation, this.#metadata.get(previous));
-          this.#startedGenerations.add(generation);
-          this.#latestGeneration = generation;
-          break;
-        }
-        case 'prepare_requested': {
-          const remainingMs = event.remainingMs ?? 0;
-          this.emit(PlaybackEvent.prepareRequested, {
+      entryId: stage?.entryId as string,
+      queueRevision: stage?.queueRevision as number,
+      sourceRevision: stage?.sourceRevision as number,
+    });
+    switch (event.kind) {
+      case 'timeline_changed': {
+        const previous = numericGeneration(event.previousGeneration ?? '0');
+        this.#metadata.set(generation, this.#metadata.get(previous));
+        this.#boundMetadata(generation);
+        rememberGeneration(this.#startedGenerations, generation);
+        this.#latestGeneration = generation;
+        break;
+      }
+      case 'prepare_requested': {
+        const remainingMs = event.remainingMs ?? 0;
+        this.emit(PlaybackEvent.prepareRequested, {
+          ...this.#eventContext(generation),
+          remainingMs,
+          transitionInMs: Math.max(0, remainingMs - this.#fadeDurationMs),
+        });
+        break;
+      }
+      case 'stage_ready':
+        if (stage)
+          this.emit(PlaybackEvent.stageReady, {
             ...this.#eventContext(generation),
-            remainingMs,
-            transitionInMs: Math.max(0, remainingMs - this.#fadeDurationMs),
+            ...stage,
           });
-          break;
-        }
-        case 'stage_ready':
-          if (stage)
-            this.emit(PlaybackEvent.stageReady, {
-              ...this.#eventContext(generation),
-              ...stage,
-            });
-          break;
-        case 'stage_failed':
-          void this.#stages.get(stageKey)?.input?.cancel();
-          this.#stages.delete(stageKey);
-          if (stage)
-            this.emit(PlaybackEvent.stageFailed, {
-              ...this.#eventContext(generation),
-              ...stage,
-              reason: event.reason ?? 'staged source failed',
-            });
-          break;
-        case 'stage_invalidated':
-          void this.#stages.get(stageKey)?.input?.cancel();
-          this.#stages.delete(stageKey);
-          if (stage) {
-            this.emit(PlaybackEvent.stageInvalidated, {
-              ...this.#eventContext(generation),
-              ...stage,
-            });
-            if (this.#stageEntryId === stageKey) {
-              void this.#stageInput?.cancel();
-              this.#stageInput = undefined;
-              this.#stageEntryId = undefined;
-            }
-          }
-          break;
-        case 'transition_started': {
-          if (!stage || !event.info) break;
-          const previous = numericGeneration(event.previousGeneration ?? '0');
-          const prepared = this.#stages.get(stageKey);
-          this.#stages.delete(stageKey);
-          this.#metadata.set(generation, prepared?.metadata);
-          this.#boundMetadata(generation);
-          this.#startedGenerations.add(generation);
-          this.#latestGeneration = generation;
-          this.#outgoingInput = this.#input;
-          this.#input = prepared?.input;
-          if (this.#stageEntryId === stageKey) {
+        break;
+      case 'stage_failed':
+        void this.#stages.get(stageKeyValue)?.input?.cancel();
+        this.#stages.delete(stageKeyValue);
+        if (stage)
+          this.emit(PlaybackEvent.stageFailed, {
+            ...this.#eventContext(generation),
+            ...stage,
+            reason: event.reason ?? 'staged source failed',
+          });
+        break;
+      case 'stage_invalidated':
+        void this.#stages.get(stageKeyValue)?.input?.cancel();
+        this.#stages.delete(stageKeyValue);
+        if (stage) {
+          this.emit(PlaybackEvent.stageInvalidated, {
+            ...this.#eventContext(generation),
+            ...stage,
+          });
+          if (this.#stageEntryId === stageKeyValue) {
+            void this.#stageInput?.cancel();
             this.#stageInput = undefined;
             this.#stageEntryId = undefined;
           }
-          this.emit(PlaybackEvent.playbackStarted, {
-            ...this.#eventContext(generation),
-            state: 'playing',
-            info: toStreamInfo(event.info),
-            transition: { type: 'crossfade', outgoingGeneration: previous, entryId: stage.entryId },
-          });
-          break;
         }
-        case 'transition_completed': {
-          if (!stage) break;
-          const promoted = numericGeneration(event.previousGeneration ?? '0');
-          this.#emitTerminal('completed', generation, undefined, undefined, {
-            type: 'promoted',
-            generation: promoted,
-            entryId: stage.entryId,
-          });
-          void this.#outgoingInput?.cancel();
-          this.#outgoingInput = undefined;
-          break;
+        break;
+      case 'transition_started': {
+        if (!stage || !event.info) break;
+        const previous = numericGeneration(event.previousGeneration ?? '0');
+        // A reconciliation may already have adopted this promotion; its bookkeeping is done.
+        if (this.#activeStageKey !== stageKeyValue) {
+          const prepared = this.#stages.get(stageKeyValue);
+          this.#stages.delete(stageKeyValue);
+          this.#metadata.set(generation, prepared?.metadata);
+          this.#clearOutgoingRelease();
+          this.#outgoingInput = this.#input;
+          this.#input = prepared?.input;
+          this.#outgoingStageKey = this.#activeStageKey;
+          this.#activeStageKey = stageKeyValue;
+          if (this.#stageEntryId === stageKeyValue) {
+            this.#stageInput = undefined;
+            this.#stageEntryId = undefined;
+          }
         }
-        case 'transition_cancelled': {
-          if (!stage) break;
-          const failedGeneration = numericGeneration(event.previousGeneration ?? '0');
+        this.#boundMetadata(generation);
+        rememberGeneration(this.#startedGenerations, generation);
+        this.#latestGeneration = generation;
+        this.emit(PlaybackEvent.playbackStarted, {
+          ...this.#eventContext(generation),
+          state: 'playing',
+          info: toStreamInfo(event.info),
+          transition: { type: 'crossfade', outgoingGeneration: previous, entryId: stage.entryId },
+        });
+        break;
+      }
+      case 'transition_completed': {
+        if (!stage) break;
+        const promoted = numericGeneration(event.previousGeneration ?? '0');
+        this.#emitTerminal('completed', generation, undefined, undefined, {
+          type: 'promoted',
+          generation: promoted,
+          entryId: stage.entryId,
+        });
+        this.#clearOutgoingRelease();
+        void this.#outgoingInput?.cancel();
+        this.#outgoingInput = undefined;
+        this.#outgoingStageKey = undefined;
+        break;
+      }
+      case 'transition_cancelled': {
+        if (!stage) break;
+        const failedGeneration = numericGeneration(event.previousGeneration ?? '0');
+        // A reconciliation may already have restored the outgoing source.
+        if (this.#activeStageKey === stageKeyValue) {
           const abandoned = this.#input;
           this.#input = this.#outgoingInput;
           this.#outgoingInput = undefined;
+          this.#activeStageKey = this.#outgoingStageKey;
+          this.#outgoingStageKey = undefined;
+          this.#clearOutgoingRelease();
           void abandoned?.cancel();
-          this.#latestGeneration = generation;
-          this.emit(PlaybackEvent.transitionCancelled, {
-            ...this.#eventContext(generation),
-            failedGeneration,
-            entryId: stage.entryId,
-          });
-          break;
         }
+        this.#latestGeneration = generation;
+        this.emit(PlaybackEvent.transitionCancelled, {
+          ...this.#eventContext(generation),
+          failedGeneration,
+          entryId: stage.entryId,
+        });
+        break;
       }
     }
   }
@@ -825,12 +1172,9 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
       this.#terminalGenerations.has(generation)
     )
       return;
-    this.#terminalGenerations.add(generation);
-    while (this.#terminalGenerations.size > 16) {
-      const oldest = this.#terminalGenerations.values().next().value;
-      if (oldest === undefined) break;
-      this.#terminalGenerations.delete(oldest);
-    }
+    rememberGeneration(this.#terminalGenerations, generation);
+    // The terminal set now deduplicates this generation, so its started record can be released.
+    this.#startedGenerations.delete(generation);
     const base = this.#eventContext(generation);
     if (state === 'completed') {
       this.emit(PlaybackEvent.playbackCompleted, {

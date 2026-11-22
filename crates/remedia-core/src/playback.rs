@@ -246,6 +246,8 @@ struct SessionData {
     source_generation: u64,
     source_serial: u64,
     latest_stage: Option<StageIdentity>,
+    /// The staged entry that was promoted into the active source, if any.
+    active_stage: Option<StageIdentity>,
     playback_id: u64,
     processing_mode: Option<PlaybackProcessingMode>,
     passthrough_available: bool,

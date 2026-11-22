@@ -25,6 +25,7 @@ impl PlaybackSession {
                     source_generation: 0,
                     source_serial: 0,
                     latest_stage: None,
+                    active_stage: None,
                     playback_id: 0,
                     processing_mode: None,
                     passthrough_available: false,
@@ -161,6 +162,7 @@ impl PlaybackSession {
             data.source_serial = data.source_serial.wrapping_add(1);
             data.source_generation = data.source_serial;
             data.latest_stage = None;
+            data.active_stage = None;
             let generation = data.generation;
             let playback_id = next_correlation_id();
             data.playback_id = playback_id;

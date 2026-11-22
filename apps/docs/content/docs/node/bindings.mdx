@@ -130,6 +130,27 @@ It is off by default and can be changed at any time; the next seek reads it. `Di
 
 Discord sessions also expose `connect()`, `disconnect()`, `move()`, `setSelfDeaf()`, and `setSelfMute()`. Direct Node sessions have no node pool or cross-node `migrate()` API.
 
+## Crossfade event delivery
+
+A crossfade-enabled session wakes only when the native engine publishes a crossfade event or a
+terminal playback change. The wrapper does not poll on a timer. While a source plays it keeps one
+native wait pending for the session, which holds no thread; stopping, disposing or closing resolves it.
+A session that is idle, paused, or has no crossfade configured holds no wait.
+
+`wait()` is also a thread-free native wait. Many playbacks can be waited on at once without using a
+blocking-pool thread each.
+
+The native event queue holds 64 events. If your JavaScript thread is blocked long enough for it to
+overflow, the wrapper discards the stale batch and rebuilds its state from the engine. It then
+adopts the current source generation and keeps the metadata attached to it. It also works out
+which staged input is now the live source and which one is fading out.
+
+The wrapper does not replay lost lifecycle events, such as `playbackStarted` with a `transition` or
+the outgoing `playbackCompleted` with a `continuation`. A stage that is no longer staged or active is
+reported through `stageInvalidated`, and its input is released once a fade could no longer be using it,
+which is the configured fade length plus two seconds. After a gap, compare `generation` and
+`stagedSource` with your queue instead of relying on having seen every event.
+
 ## Detailed contracts
 
 | Topic                                         | Reference                                                                         |

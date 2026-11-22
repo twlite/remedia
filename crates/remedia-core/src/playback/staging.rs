@@ -430,6 +430,17 @@ impl PlaybackSession {
         lock(&self.stage).as_ref().map(|stage| stage.snapshot())
     }
 
+    /// Return the identity of the staged entry that was promoted into the active source.
+    ///
+    /// The identity is set when a crossfade begins, so it already names the incoming entry while
+    /// the fade is in progress. It reverts to the previous value if that transition is cancelled
+    /// and is `None` for a source started with `play`. Seeks keep it, since they continue the same
+    /// source. Adapters that track one external input per entry use it to find out which input is
+    /// live after they have lost crossfade events (see [`CrossfadeEvent::EventsDropped`]).
+    pub fn active_stage(&self) -> Option<StageIdentity> {
+        lock(&self.shared.data).active_stage.clone()
+    }
+
     /// Discard prepared audio when the timeline changes or playback stops.
     pub fn clear_staged_source(&self) {
         clear_stage(&self.shared, &self.stage);
