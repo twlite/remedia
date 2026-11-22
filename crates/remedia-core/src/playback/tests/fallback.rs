@@ -511,7 +511,12 @@ fn a_tempo_filter_scales_the_compensation_by_source_time() {
     consume(&gate, 3);
     let tempo = Arc::clone(&session);
     let apply = thread::spawn(move || tempo.set_filter_graph(Some("atempo=1.5")));
-    assert!(wait_for_pending_filter_update(&session));
+    // The worker is free to run between released frames, so it may take the queued update before
+    // this thread observes the transient pending slot. Wait for the durable requested graph that
+    // `set_filter_graph` records at the same time instead.
+    assert!(wait_for_condition(&session.shared, TEST_TIMEOUT, |data| {
+        data.filter_graph.as_deref() == Some("atempo=1.5")
+    }));
     // Replacing the initial empty graph needs one worker boundary, not an
     // arbitrary amount of media while the caller waits to be scheduled.
     consume(&gate, 1);
