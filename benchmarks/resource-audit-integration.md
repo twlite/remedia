@@ -52,3 +52,27 @@ cargo build --release --locked -p remedia-core \
 This host emitted a warning about the obsolete QTKit framework lacking an arm64 slice;
 the build and the independent waiter tests nevertheless completed successfully. Hosted CI's
 pinned native libraries and other operating systems remain separate verification requirements.
+
+## Server lifecycle patch review and independent checks
+
+The orchestrator reviewed session-map locking against resume/expiry races, cancellation token
+ownership, per-connection request/task retirement, shutdown ordering, and cleanup after response
+receivers disappear. A stale generation previously prevented expiry from closing a resumed session
+but did not release the expiry future's strong references. Resume and close now cancel that future.
+Initiated destructive cleanup is owned by the server before an RPC handler awaits it, and shutdown
+joins those tasks before closing plugin hosts. This fixes excess retention within the configured
+resume timeout; it is not evidence of a native allocator leak.
+
+At integrated revision `5a3aa12`, independent `cargo test -p remedia-server --locked` passed
+107 tests, with the one audit workload ignored by default. This includes local WebSocket/RPC,
+resume/expiry, probe/plugin cancellation, occupied-port startup failure, and shutdown tests.
+The separately run ignored workload passed three repetitions of 1,000 client-and-guild lifecycle
+cycles: closed-session liveness, pending expiry tasks, session-map size, and active players all
+returned to zero. Raw results are in
+[resource-audit-independent-server.jsonl](data/resource-audit-independent-server.jsonl).
+
+Independent debug timings were 44.487, 42.586, and 42.564 ms for 1,000 cycles. They do not reproduce
+the agent's higher final median consistently; neither invocation isolates production latency.
+No speedup or stable slowdown is claimed. The workload opens no media or Discord connection,
+and does not measure native heap, RSS, file descriptors, or simultaneous WebSocket capacity.
+The same command-local native build flags above were used for the independent server checks.

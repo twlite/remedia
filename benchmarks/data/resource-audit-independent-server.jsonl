@@ -1,0 +1,3 @@
+{"activePlayers": 0, "cycles": 1000, "elapsedMs": 44.487, "label": "orchestrator-independent", "pendingExpiryTasks": 0, "profile": "test", "repeat": 0, "retainedSessions": 0, "sessionsInMap": 0, "sourceRevision": "5a3aa129cf2d63da1bf29dfb18729f57d7d04ec6"}
+{"activePlayers": 0, "cycles": 1000, "elapsedMs": 42.586, "label": "orchestrator-independent", "pendingExpiryTasks": 0, "profile": "test", "repeat": 1, "retainedSessions": 0, "sessionsInMap": 0, "sourceRevision": "5a3aa129cf2d63da1bf29dfb18729f57d7d04ec6"}
+{"activePlayers": 0, "cycles": 1000, "elapsedMs": 42.564, "label": "orchestrator-independent", "pendingExpiryTasks": 0, "profile": "test", "repeat": 2, "retainedSessions": 0, "sessionsInMap": 0, "sourceRevision": "5a3aa129cf2d63da1bf29dfb18729f57d7d04ec6"}
