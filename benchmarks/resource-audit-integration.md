@@ -231,3 +231,8 @@ not a throughput gain or a strict bound on hidden shared backing memory. Raw row
 The existing dedicated transfer thread is retained: the tested blocking-pool candidate could
 starve unrelated blocking work, while the async-idle comparison did not transfer or decode media.
 No default media queue size was changed without an equivalent stalled-source audio benchmark.
+
+The new `write_bytes` Rustdoc example also passed independently. On this host rustdoc does not
+accept rustc's `-l c++` option directly: `RUSTDOCFLAGS` used the same native search paths with
+`-C link-arg=-lc++`, alongside the existing `RUSTFLAGS` native settings. This was a command-local
+linking correction, without changes to installed dependencies or the distributed build.
