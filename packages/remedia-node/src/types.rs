@@ -25,7 +25,6 @@ pub struct NativeMediaSource {
     pub value: Option<String>,
     pub bytes: Option<Buffer>,
     pub headers: Option<HashMap<String, String>>,
-    pub headers: Option<HashMap<String, String>>,
 }
 
 #[napi(object)]
