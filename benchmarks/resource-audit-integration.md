@@ -76,3 +76,24 @@ the agent's higher final median consistently; neither invocation isolates produc
 No speedup or stable slowdown is claimed. The workload opens no media or Discord connection,
 and does not measure native heap, RSS, file descriptors, or simultaneous WebSocket capacity.
 The same command-local native build flags above were used for the independent server checks.
+
+## Discord packet path: independent review and checks
+
+The caller-owned DAVE buffer API was checked against the installed `davey 0.2.0` source: it
+uses the same codec, encryption, and Opus silence handling as the allocating API. The orchestrator
+also added cleanup for output storage grown before an encryption error. Neither a rejected
+packet nor failed encryption advances the RTP sequence, timestamp, or transport nonce.
+
+After that change, the independent release suite passed 48 tests (two benchmark tests ignored).
+The separately run packetization workload processed 50,000 packets for each transport cipher
+and reported zero Rust allocator calls per packet for both AES-GCM and XChaCha20-Poly1305.
+Observed times were 1750 and 2994 ns/packet during other audit activity. No CPU speedup is claimed.
+The suite covers DAVE/transport decryption round-trip and oversize rejection; live Discord and
+native heap use remain unverified. Opus complexity 9 remains unchanged.
+
+## Exact original-main build
+
+A separate source archive of `1980846a515cd650958cef3b85c8864d93d7960f` was built with the same
+release profile, lockfile, and command-local native flags. The standalone playback executable
+SHA-256 is `8b951d2eee8317ba4c082cf4709611cb3ba99393447a75d340926289bc539d20`. This exact-main
+executable supersedes the early completion-only build as the full-engine baseline.
