@@ -63,6 +63,20 @@ interface StageRecord<Metadata> {
   pending: boolean;
 }
 
+/**
+ * One `play()` call and the resources it owns until a newer `play()` replaces it. Cleanup that
+ * runs after an asynchronous gap (the lifecycle observer, `wait()`, `stop()`) compares its run with
+ * the session's current one first, so a late callback never releases what a replacement owns.
+ */
+interface PlaybackRun {
+  /** Cancels this run's startup and, through its abort binding, its playback. */
+  readonly controller: AbortController;
+  /** The input the run started with. Promoted stage inputs replace it as the session's input. */
+  input: ReadableInputHandle | undefined;
+  /** Generation that was current when a newer run replaced this one, for its late terminal event. */
+  finalGeneration?: number;
+}
+
 /** Native playback state read together, used to repair local state after lost events. */
 interface NativeSnapshot {
   generation: number;
@@ -129,6 +143,8 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
   /** Persistent raw FFmpeg filtergraph controls for this session. */
   readonly filters: FilterControls;
   #input: ReadableInputHandle | undefined;
+  /** The latest `play()` call; its observer and callers may release `#input`, older ones may not. */
+  #run: PlaybackRun | undefined;
   #disposed = false;
   #starting = false;
   #playController: AbortController | undefined;
@@ -457,6 +473,9 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     }
     if (options.signal?.aborted) throw abortError(options.signal.reason);
 
+    // The previous playback has ended. If its observer has not run yet, its abort listener is
+    // still attached, and aborting that signal later would stop this playback instead.
+    this.#clearAbortBinding(this.#playController);
     this.#starting = true;
     const controller = new AbortController();
     let nativeAttempted = false;
@@ -472,6 +491,7 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     options.signal?.addEventListener('abort', abortListener, { once: true });
 
     let input: ReadableInputHandle | undefined;
+    let run: PlaybackRun | undefined;
     const previousGeneration = numericGeneration(this.#native.playbackGeneration(this.#playbackId));
     try {
       await this.hooks.runBeforePlay({
@@ -481,11 +501,20 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
       });
       this.#assertActive();
       if (controller.signal.aborted) throw abortError(controller.signal.reason);
+
+      // From here this call owns the session's input. Replacing the run before the first await
+      // makes every pending observer, wait() and stop() of the previous run a bystander, and the
+      // previous run's inputs and stages are released here instead of by those late callbacks.
+      if (this.#run) this.#run.finalGeneration = this.#latestGeneration;
+      run = { controller, input: undefined };
+      this.#run = run;
       await this.#releaseInput();
+      await this.#releaseStagedResources();
 
       let nativeSource: NativeMediaSource;
       if ('stream' in source) {
         input = createReadableInput(this.#native, source.stream);
+        run.input = input;
         nativeSource = input.source;
         this.#input = input;
       } else {
@@ -510,7 +539,7 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
       });
       this.#starting = false;
       this.#startEventLoop();
-      void this.#observeGeneration(workerGeneration, input);
+      void this.#observeGeneration(workerGeneration, run);
       return info;
     } catch (error) {
       if (input && this.#input === input) await this.#releaseInput();
@@ -627,13 +656,16 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     this.#assertActive();
     const previousState = this.state;
     const generation = this.#latestGeneration;
+    const run = this.#run;
     try {
       await this.#native.stop(this.#playbackId);
       if (isPlaybackActive(previousState) && this.state === 'stopped') {
         this.#emitTerminal('stopped', generation, undefined, 'stop');
       }
     } finally {
-      await this.#releaseInput();
+      // A play() that started while this stop was settling owns the input and the abort binding.
+      if (run) this.#clearAbortBinding(run.controller);
+      if (this.#run === run) await this.#releaseInput();
     }
   }
 
@@ -646,10 +678,13 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     // Capture synchronously so the native blocking waiter stays bound to the source
     // that was active when wait() was called, even if play() replaces it first.
     const generation = this.#native.playbackGeneration(this.#playbackId);
+    const run = this.#run;
     try {
       return (await this.#native.wait(this.#playbackId, generation)) as PlaybackState;
     } finally {
-      await this.#releaseInput();
+      // Only the playback this wait observed may be released. If a newer one replaced it while
+      // the wait was pending, the newer playback owns the input.
+      if (this.#run === run) await this.#releaseInput();
     }
   }
 
@@ -715,10 +750,11 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
     return this.#guildId === undefined ? context : { ...context, guildId: this.#guildId };
   }
 
-  async #observeGeneration(
-    generation: number,
-    input: ReadableInputHandle | undefined,
-  ): Promise<void> {
+  async #observeGeneration(generation: number, run: PlaybackRun): Promise<void> {
+    // A newer play() makes this observer late. It still reports how its own playback ended, as
+    // that generation, but it must not touch state that now belongs to the replacement.
+    const terminalGeneration = (): number =>
+      this.#run === run ? this.#latestGeneration : (run.finalGeneration ?? this.#latestGeneration);
     try {
       const state = (await this.#native.wait(
         this.#playbackId,
@@ -727,10 +763,10 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
       if (state === 'completed' || state === 'failed' || state === 'stopped') {
         this.#drainCrossfadeEvents();
         const error = state === 'failed' ? new Error(this.error ?? 'playback failed') : undefined;
-        this.#emitTerminal(state, this.#latestGeneration, error);
+        this.#emitTerminal(state, terminalGeneration(), error);
       }
     } catch (error) {
-      if (!this.#disposed) {
+      if (!this.#disposed && this.#run === run) {
         // Native disposal can remove the session before this generation-bound
         // wait settles. In that race, reading playbackState also rejects; the
         // disposal lifecycle event is authoritative and no terminal event is
@@ -745,15 +781,17 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
           this.#emitTerminal('failed', this.#latestGeneration, asError(error));
       }
     } finally {
-      this.#clearAbortBinding(this.#playController);
+      this.#clearAbortBinding(run.controller);
       // This wait also ends when a newer playback replaces the source. That playback then owns
       // the staged inputs and the notification loop, so they are released only when none is active.
       if (!this.#hasActivePlayback()) {
         this.#stopEventLoop();
         await this.#releaseStagedResources();
       }
-      await this.#releaseInput();
-      if (input !== this.#input) await input?.cancel();
+      // The session's input belongs to the latest run, including any stage promoted into it. A
+      // replaced run's own input was already released by its replacement.
+      if (this.#run === run) await this.#releaseInput();
+      await run.input?.cancel();
     }
   }
 
@@ -1134,6 +1172,8 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
         void this.#outgoingInput?.cancel();
         this.#outgoingInput = undefined;
         this.#outgoingStageKey = undefined;
+        // The first track is over, which is where its abort binding used to end.
+        this.#clearAbortBinding(this.#playController);
         break;
       }
       case 'transition_cancelled': {
@@ -1192,7 +1232,6 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
       this.emit(PlaybackEvent.playbackFailed, { ...base, state, error: asError(error) });
     }
     this.#metadata.delete(generation);
-    this.#clearAbortBinding(this.#playController);
   }
 
   #boundMetadata(generation: number): void {
