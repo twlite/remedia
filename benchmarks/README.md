@@ -165,6 +165,15 @@ cargo test --release -p remedia-discord -- packetization_cost routed_delivery_co
 
 Results and their interpretation are in [phase3.md](phase3.md).
 
+## Plugin media transfer and queue audit
+
+The added `ByteStreamWriter::write_bytes` path removes the server's `Bytes::to_vec()` ingress
+allocation for fitting response chunks. [plugin-media-transfer.md](plugin-media-transfer.md)
+records the identical-sample decoder check, producer-side allocation counts, separate queue
+occupancy/RSS/thread measurements, reqwest/Hyper chunk ownership review, and cancellation tests.
+The pending-byte cap is not a strict retained-memory bound for caller-owned `Vec` capacity or
+shared `Bytes` backing allocations.
+
 ## Server lifecycle resource audit
 
 Agent 6's repeated client/guild create, detach, resume, close, and expiry-waiter measurement is

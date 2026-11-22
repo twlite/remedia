@@ -1421,6 +1421,19 @@ mod reopening {
         }
 
         async fn start_with_declared_length(body: Vec<u8>, declared_length: usize) -> Self {
+            Self::start_with_delay(body, declared_length, Duration::ZERO).await
+        }
+
+        async fn start_delayed(body: Vec<u8>, initial_delay: Duration) -> Self {
+            let declared_length = body.len();
+            Self::start_with_delay(body, declared_length, initial_delay).await
+        }
+
+        async fn start_with_delay(
+            body: Vec<u8>,
+            declared_length: usize,
+            initial_delay: Duration,
+        ) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("http://{}/media.wav", listener.local_addr().unwrap());
             let body = Arc::new(body);
@@ -1446,6 +1459,7 @@ mod reopening {
                         stream,
                         Arc::clone(&accept_body),
                         accept_declared_length,
+                        initial_delay,
                         Arc::clone(&accept_requests),
                         Arc::clone(&accept_interrupted),
                         accept_shutdown.clone(),
@@ -1474,6 +1488,7 @@ mod reopening {
         stream: TcpStream,
         body: Arc<Vec<u8>>,
         declared_length: usize,
+        initial_delay: Duration,
         requests: Arc<AtomicUsize>,
         interrupted: Arc<AtomicUsize>,
         shutdown: tokio_util::sync::CancellationToken,
@@ -1498,6 +1513,11 @@ mod reopening {
         );
         if write.write_all(header.as_bytes()).await.is_err() {
             return;
+        }
+
+        tokio::select! {
+            () = shutdown.cancelled() => return,
+            () = tokio::time::sleep(initial_delay) => {}
         }
 
         for chunk in body.chunks(8 * 1024) {
@@ -1647,6 +1667,7 @@ mod reopening {
             assert_eq!(stats["totals"]["grantsOpened"], cycle);
             assert!(stats["totals"]["mediaBytes"].as_u64().unwrap() > 0);
 
+            let stop_started = Instant::now();
             let stopped = rpc(
                 &mut socket,
                 "stop",
@@ -1667,6 +1688,10 @@ mod reopening {
             })
             .await
             .unwrap_or_else(|_| panic!("cycle {cycle} left an active media transfer"));
+            assert!(
+                stop_started.elapsed() < Duration::from_secs(2),
+                "cycle {cycle} took too long to release its media transfer"
+            );
 
             tokio::time::timeout(Duration::from_secs(5), async {
                 while origin.interrupted.load(Ordering::SeqCst) < cycle as usize {
@@ -1734,6 +1759,63 @@ mod reopening {
         })
         .await
         .expect("a malformed response must release its active-stream slot");
+        assert_eq!(origin.requests.load(Ordering::SeqCst), 1);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn stalled_plugin_media_times_out_and_releases_its_upstream() {
+        let host = MockHost::start(&[("example.metadata", "media.resolve")]).await;
+        let origin = MediaOrigin::start_delayed(silent_wave(20), Duration::from_millis(500)).await;
+        let server =
+            server_for_media_origin(&host, json!({"mediaIdleTimeoutMs": 100}), &origin.url).await;
+        let mut socket = session(&server, BOT_A).await;
+        let created = rpc(
+            &mut socket,
+            "guild",
+            "guild.create",
+            json!({"guildId": GUILD}),
+        )
+        .await;
+        assert_eq!(created["ok"], true, "{created}");
+
+        let played = rpc(
+            &mut socket,
+            "play",
+            "player.play",
+            json!({"guildId": GUILD, "source": {
+                "type": "operation",
+                "hostId": "meta-host",
+                "pluginId": "example.metadata",
+                "operation": "media.resolve",
+                "input": {"mode": "media-url", "url": origin.url}
+            }}),
+        )
+        .await;
+        assert_eq!(played["ok"], false, "{played}");
+        assert_eq!(played["error"]["code"], "playback_failed", "{played}");
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let stats = plugin_stats(&mut socket, "meta-host").await;
+                if stats["resources"]["activeStreams"] == 0 {
+                    assert_eq!(stats["totals"]["mediaFailures"], 1);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("stalled media must release its active-stream slot promptly");
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while origin.interrupted.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("stalled media failure must close the upstream response");
+
         assert_eq!(origin.requests.load(Ordering::SeqCst), 1);
         server.shutdown().await;
     }

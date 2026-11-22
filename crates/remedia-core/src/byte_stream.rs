@@ -63,7 +63,7 @@ impl PartialEq for ByteStreamInput {
 
 impl Eq for ByteStreamInput {}
 
-/// A bounded producer for a [`ByteStreamInput`]. Writes block when the pending
+/// A bounded producer for a [`crate::InputSource::byte_stream`] input. Writes block when the pending
 /// byte limit is reached. Cancellation and reader shutdown wake blocked calls.
 #[derive(Clone)]
 pub struct ByteStreamWriter {
@@ -175,7 +175,10 @@ impl ByteStreamWriter {
     }
 
     /// Write a native-owned chunk. A chunk that fits the queue is moved into it
-    /// without another copy; larger chunks are split to respect the byte cap.
+    /// without another copy; larger chunks are split to respect the pending-byte cap.
+    ///
+    /// The cap counts `Vec::len()`, not `Vec::capacity()`. A vector that fits the queue and has
+    /// excess capacity keeps that allocation until its queued bytes are consumed.
     pub fn write_owned(&self, bytes: Vec<u8>) -> Result<(), ByteStreamError> {
         let _writer = lock(&self.inner.writer);
         if bytes.is_empty() {
@@ -208,18 +211,34 @@ impl ByteStreamWriter {
         Ok(())
     }
 
-    /// Queue a shared bytes::Bytes chunk without copying when its visible length fits the queue.
+    /// Queue a `bytes::Bytes` chunk without an ingress copy when its visible length fits the queue.
     ///
-    /// A fitting chunk may retain its original backing allocation until the decoder consumes it,
-    /// even when the `Bytes` value is a slice. Chunks larger than the queue capacity are copied
-    /// into bounded pieces. As with other write methods, this blocks while the queue lacks room
-    /// and returns when the whole fitting chunk has been accepted.
+    /// A fitting chunk retains its shared backing allocation until the decoder consumes it. A
+    /// `Bytes` slice can therefore keep a much larger allocation alive than its visible length;
+    /// the pending-byte limit does not bound that backing allocation. If a small slice comes from
+    /// a large allocation, copy it into a right-sized `Bytes` before calling this method. For
+    /// example, use `Bytes::copy_from_slice(&slice)` when retaining the slice's parent would cost
+    /// more than copying it. Chunks larger than the queue capacity are copied into bounded pieces.
+    /// As with other write methods, this blocks while the queue lacks room and returns when the
+    /// whole input has been accepted.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bytes::Bytes;
+    /// use remedia_core::InputSource;
+    ///
+    /// let (_source, writer) = InputSource::byte_stream(64 * 1024)?;
+    /// writer.write_bytes(Bytes::from_static(b"encoded media"))?;
+    /// writer.finish()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns ByteStreamError::ConsumerClosed if the decoder stopped reading,
-    /// ByteStreamError::Cancelled if the stream was cancelled, or a terminal producer error
-    /// if the stream was already finished or failed.
+    /// Returns [`ByteStreamError::ConsumerClosed`] if the decoder stopped reading,
+    /// [`ByteStreamError::Cancelled`] if the stream was cancelled, or the existing terminal
+    /// producer error if the stream was already finished or failed.
     pub fn write_bytes(&self, bytes: Bytes) -> Result<(), ByteStreamError> {
         let _writer = lock(&self.inner.writer);
         if bytes.is_empty() {
@@ -510,9 +529,9 @@ mod tests {
     }
 
     #[test]
-    fn fitting_shared_bytes_keep_their_backing_storage_until_read() {
+    fn fitting_slices_retain_their_full_shared_backing_until_read() {
         let (input, writer) = ByteStreamWriter::new_pair(8).unwrap();
-        let mut backing = vec![0x7f; 12];
+        let mut backing = vec![0x7f; 1024 * 1024];
         backing[2..6].copy_from_slice(b"data");
         let bytes = Bytes::from(backing).slice(2..6);
         let expected_pointer = bytes.as_ptr();
@@ -527,6 +546,25 @@ mod tests {
         let mut output = [0; 4];
         assert_eq!(reader.read(&mut output, &CancellationToken::new()), Ok(4));
         assert_eq!(&output, b"data");
+        assert_eq!(writer.pending_bytes(), 0);
+    }
+
+    #[test]
+    fn producer_failure_delivers_queued_bytes_then_surfaces_the_error() {
+        let (input, writer) = ByteStreamWriter::new_pair(8).unwrap();
+        writer.write_bytes(Bytes::from_static(b"partial")).unwrap();
+        writer.fail("truncated response").unwrap();
+
+        let reader = input.reader();
+        let mut output = [0; 8];
+        assert_eq!(reader.read(&mut output, &CancellationToken::new()), Ok(7));
+        assert_eq!(&output[..7], b"partial");
+        assert_eq!(
+            reader.read(&mut output, &CancellationToken::new()),
+            Err(ByteStreamError::ProducerFailed(
+                "truncated response".to_owned()
+            ))
+        );
         assert_eq!(writer.pending_bytes(), 0);
     }
 
@@ -595,6 +633,27 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_wakes_blocked_readers_across_repeated_streams() {
+        for _ in 0..1_024 {
+            let (input, _writer) = ByteStreamWriter::new_pair(4).unwrap();
+            let reader = input.reader();
+            let cancellation = CancellationToken::new();
+            reader.register_cancellation(&cancellation);
+            let decode_token = cancellation.clone();
+            let worker = thread::spawn(move || {
+                let mut output = [0; 4];
+                reader.read(&mut output, &decode_token)
+            });
+
+            wait_for_state(&input.inner, |state| state.waiting_readers == 1);
+            cancellation.cancel();
+
+            assert_eq!(worker.join().unwrap(), Err(ByteStreamError::Cancelled));
+            drop(input);
+        }
+    }
+
+    #[test]
     fn dropping_every_input_without_reading_wakes_a_blocked_writer() {
         let (input, writer) = ByteStreamWriter::new_pair(4).unwrap();
         writer.write(b"full").unwrap();
@@ -631,17 +690,16 @@ mod tests {
     }
 
     #[test]
-    fn delayed_producers_unblock_after_reader_drop_across_repeated_streams() {
-        for _ in 0..32 {
+    fn blocked_shared_producers_release_after_cancel_or_reader_drop_repeatedly() {
+        for cycle in 0..2_048 {
             let (input, writer) = ByteStreamWriter::new_pair(4).unwrap();
             let reader = input.reader();
-            let delayed_writer = writer.clone();
+            let producer_writer = writer.clone();
             let producer = thread::spawn(move || {
-                delayed_writer.write(b"full").unwrap();
-
-                thread::sleep(std::time::Duration::from_millis(5));
-
-                delayed_writer.write(b"next")
+                producer_writer
+                    .write_bytes(Bytes::from(vec![b'f', b'u', b'l', b'l']))
+                    .unwrap();
+                producer_writer.write_bytes(Bytes::from(vec![b'n', b'e', b'x', b't']))
             });
 
             wait_for_state(&writer.inner, |state| state.waiting_writers == 1);
@@ -649,13 +707,18 @@ mod tests {
 
             drop(reader);
 
-            assert_eq!(
-                producer.join().unwrap(),
-                Err(ByteStreamError::ConsumerClosed)
-            );
+            let expected_error = if cycle % 2 == 0 {
+                writer.cancel();
+                ByteStreamError::Cancelled
+            } else {
+                ByteStreamError::ConsumerClosed
+            };
+
+            drop(input);
+
+            assert_eq!(producer.join().unwrap(), Err(expected_error));
             assert_eq!(writer.pending_bytes(), 0);
             assert!(writer.is_closed());
-            drop(input);
         }
     }
 }

@@ -124,9 +124,18 @@ producer.join().expect("producer thread panicked")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-The queue capacity limits bytes waiting inside Remedia. Producers may hold their current chunk and
-their own upstream buffers, so they should also use bounded buffers. For Node.js Readables and the
-JavaScript ownership rules, see [Node.js bindings](/docs/node/bindings).
+When a producer already owns a `bytes::Bytes` chunk, `writer.write_bytes(chunk)` avoids an
+additional queue-ingress copy when the chunk fits the queue. Larger chunks are copied into bounded
+pieces. The decoder still copies queued bytes into FFmpeg's input buffer.
+
+The pending-byte capacity counts each chunk's visible length. A `write_owned(Vec<u8>)` chunk that
+fits the queue can retain its vector's excess capacity, and `write_bytes(Bytes)` can retain the full
+shared allocation behind a slice, even when only a few bytes are visible. If a small slice points
+into a much larger backing buffer, copy it into a right-sized `Bytes` first. This capacity is a
+backpressure limit for queued payload bytes, not a strict bound on total retained memory: producers
+can hold a current chunk and their own upstream buffers too. For Node.js Readables and JavaScript
+ownership rules, see
+[Node.js bindings](/docs/node/bindings).
 
 ## Metadata
 

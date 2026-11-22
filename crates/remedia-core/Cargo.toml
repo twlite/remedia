@@ -5,6 +5,9 @@ license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+bench-allocation-metrics = []
+
 [dependencies]
 bytes = "1.12"
 ffmpeg-next = { version = "=9.0.0", default-features = false, features = [

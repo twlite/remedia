@@ -8,12 +8,16 @@
 //! cargo run --release -p remedia-core --example plugin_media_queue -- <copy|bytes> <chunk-bytes> <media-bytes>
 //! ```
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
 use std::hint::black_box;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Instant;
+
+#[cfg(feature = "bench-allocation-metrics")]
+use std::alloc::{GlobalAlloc, Layout, System};
+#[cfg(feature = "bench-allocation-metrics")]
+use std::cell::Cell;
+#[cfg(feature = "bench-allocation-metrics")]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
 use remedia_core::{AudioDecoder, InputSource};
@@ -21,17 +25,22 @@ use remedia_core::{AudioDecoder, InputSource};
 const QUEUE_BYTES: usize = 256 * 1024;
 const SLICE_PREFIX_BYTES: usize = 64;
 
+#[cfg(feature = "bench-allocation-metrics")]
 thread_local! {
     static TRACK_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
 }
 
+#[cfg(feature = "bench-allocation-metrics")]
 static WRITE_ALLOCATION_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "bench-allocation-metrics")]
 static WRITE_ALLOCATION_COUNT: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(feature = "bench-allocation-metrics")]
 struct TrackingAllocator;
 
 // SAFETY: This wrapper forwards each allocation operation unchanged to `System`; the counters
 // only observe requests made while the current benchmark producer thread is measuring a write.
+#[cfg(feature = "bench-allocation-metrics")]
 unsafe impl GlobalAlloc for TrackingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if is_tracking_allocations() {
@@ -70,6 +79,7 @@ unsafe impl GlobalAlloc for TrackingAllocator {
 }
 
 #[global_allocator]
+#[cfg(feature = "bench-allocation-metrics")]
 static ALLOCATOR: TrackingAllocator = TrackingAllocator;
 
 fn main() {
@@ -93,8 +103,12 @@ fn main() {
     assert!(media_bytes <= u32::MAX as usize - 36);
 
     let chunk_count = media_bytes / chunk_bytes;
-    let expected_samples = media_bytes / 2;
-    let header = wave_header(expected_samples);
+    let expected_wave = wave_media(media_bytes);
+    let (expected_samples, expected_frames, expected_checksum) = decode(&expected_wave);
+    assert_eq!(expected_samples, media_bytes / 2);
+    drop(expected_wave);
+
+    let header = wave_header(media_bytes / 2);
     let (source, writer) = InputSource::byte_stream(QUEUE_BYTES).unwrap();
     let started = Instant::now();
     let producer_mode = mode.clone();
@@ -123,8 +137,8 @@ fn main() {
                     "bytes" => writer.write_bytes(response_chunk).unwrap(),
                     _ => unreachable!("mode was validated above"),
                 });
-            write_allocation_bytes += allocated_bytes;
-            write_allocation_count += allocation_count;
+            write_allocation_bytes += allocated_bytes.unwrap_or_default();
+            write_allocation_count += allocation_count.unwrap_or_default();
             max_pending_bytes = max_pending_bytes.max(writer.pending_bytes());
         }
 
@@ -137,22 +151,14 @@ fn main() {
     });
 
     let mut decoder = AudioDecoder::open(source).unwrap();
-    let mut samples_per_channel = 0_usize;
-    let mut checksum = 0xcbf2_9ce4_8422_2325_u64;
-
-    while let Some(frame) = decoder.next_frame().unwrap() {
-        samples_per_channel += frame.samples_per_channel;
-
-        for sample in frame.samples {
-            checksum ^= u64::from(sample.to_bits());
-            checksum = checksum.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
+    let (samples_per_channel, frames, checksum) = decode_decoder(&mut decoder);
 
     let (max_pending_bytes, write_allocation_bytes, write_allocation_count) =
         producer.join().unwrap();
     let elapsed = started.elapsed();
     assert_eq!(samples_per_channel, expected_samples);
+    assert_eq!(frames, expected_frames);
+    assert_eq!(checksum, expected_checksum);
     assert!(max_pending_bytes <= QUEUE_BYTES);
     black_box(checksum);
 
@@ -160,20 +166,60 @@ fn main() {
     println!(
         "{{\"mode\":\"{mode}\",\"chunk_bytes\":{chunk_bytes},\"chunk_count\":{chunk_count},\
          \"media_bytes\":{media_bytes},\"samples_per_channel\":{samples_per_channel},\
-         \"checksum\":{checksum},\"max_pending_bytes\":{max_pending_bytes},\
+         \"decoded_frames\":{frames},\"checksum\":{checksum},\
+         \"queue_capacity_bytes\":{QUEUE_BYTES},\"max_pending_bytes\":{max_pending_bytes},\
          \"write_allocation_bytes\":{write_allocation_bytes},\
          \"write_allocation_count\":{write_allocation_count},\
+         \"allocation_metrics_enabled\":{},\
          \"elapsed_us\":{},\"mib_per_second\":{:.3}}}",
+        cfg!(feature = "bench-allocation-metrics"),
         elapsed.as_micros(),
         mebibytes / elapsed.as_secs_f64(),
     );
 }
 
+fn decode(bytes: &[u8]) -> (usize, usize, u64) {
+    let mut decoder = AudioDecoder::open(InputSource::bytes(bytes.to_vec())).unwrap();
+    decode_decoder(&mut decoder)
+}
+
+fn decode_decoder(decoder: &mut AudioDecoder) -> (usize, usize, u64) {
+    let mut samples_per_channel = 0_usize;
+    let mut frames = 0_usize;
+    let mut checksum = 0xcbf2_9ce4_8422_2325_u64;
+
+    while let Some(frame) = decoder.next_frame().unwrap() {
+        samples_per_channel += frame.samples_per_channel;
+        frames += 1;
+
+        for sample in frame.samples {
+            checksum ^= u64::from(sample.to_bits());
+            checksum = checksum.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    (samples_per_channel, frames, checksum)
+}
+
+fn wave_media(media_bytes: usize) -> Vec<u8> {
+    let mut bytes = wave_header(media_bytes / 2);
+    bytes.reserve(media_bytes);
+
+    for sample_index in 0..media_bytes / 2 {
+        let sample = ((sample_index * 31) % 30_000) as i16;
+        bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+
+    bytes
+}
+
+#[cfg(feature = "bench-allocation-metrics")]
 fn is_tracking_allocations() -> bool {
     TRACK_ALLOCATIONS.try_with(Cell::get).unwrap_or(false)
 }
 
-fn measure_write_allocations<T>(write: impl FnOnce() -> T) -> (T, u64, u64) {
+#[cfg(feature = "bench-allocation-metrics")]
+fn measure_write_allocations<T>(write: impl FnOnce() -> T) -> (T, Option<u64>, Option<u64>) {
     WRITE_ALLOCATION_BYTES.store(0, Ordering::Relaxed);
     WRITE_ALLOCATION_COUNT.store(0, Ordering::Relaxed);
     TRACK_ALLOCATIONS.with(|enabled| enabled.set(true));
@@ -192,9 +238,14 @@ fn measure_write_allocations<T>(write: impl FnOnce() -> T) -> (T, u64, u64) {
 
     (
         result,
-        WRITE_ALLOCATION_BYTES.load(Ordering::Relaxed),
-        WRITE_ALLOCATION_COUNT.load(Ordering::Relaxed),
+        Some(WRITE_ALLOCATION_BYTES.load(Ordering::Relaxed)),
+        Some(WRITE_ALLOCATION_COUNT.load(Ordering::Relaxed)),
     )
+}
+
+#[cfg(not(feature = "bench-allocation-metrics"))]
+fn measure_write_allocations<T>(write: impl FnOnce() -> T) -> (T, Option<u64>, Option<u64>) {
+    (write(), None, None)
 }
 
 fn wave_header(samples_per_channel: usize) -> Vec<u8> {

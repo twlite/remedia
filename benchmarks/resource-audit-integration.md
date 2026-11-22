@@ -158,3 +158,38 @@ The subsequent paced seek/transition/stream sweep runs sequentially after this w
 The existing paced harness ignores some failed random-seek/stage attempts; its output alone
 cannot prove that every attempted operation succeeded. Deterministic lifecycle and transition
 regression tests remain necessary, and the final comparison must account for this measurement limit.
+
+## Plugin media transfer and queue: implementation follow-up
+
+The plugin-media continuation adds an owned `Bytes` queue ingress path and passes reqwest response
+body chunks to it without converting each chunk to `Vec`. The checked-in lockfile resolves
+reqwest `0.13.5` and Hyper `1.12.0`; the response chunk is the HTTP DATA-frame `Bytes`. HTTP/1
+splits/freezes its read buffer, while HTTP/2 yields frame bytes. Because `Bytes` does not expose
+backing capacity, the queue's visible-byte cap is not a strict total-retained-memory bound. A
+fitting `Vec` chunk also retains excess vector capacity. Updated Fumadocs and Rustdoc explain both
+ownership cases and the one-current-response-chunk backpressure boundary.
+
+The 15-repetition, matched release benchmark verified the same 4,194,304 samples per channel,
+1,024 decoded frames, and checksum in both copy and `Bytes` modes. Unmetered throughput ranges
+overlapped. A separate five-repetition allocator-instrumented build recorded exactly 8 MiB fewer
+producer allocation bytes per 8 MiB fixture for the `Bytes` mode, excluding decoder/native
+allocations and retained backing capacity. A separate synthetic 72-process thread matrix measured
+queue occupancy, RSS and OS threads. The blocked `spawn_blocking` alternative starved its unrelated
+blocking sentinel; an idle async task comparison is only a resource lower bound, not a functional
+transfer implementation. All measured queue bytes drained and all transfer threads returned to
+baseline. RSS remained elevated after queue release in some cases, so RSS is not treated as an
+object-retention or native-heap measurement. The matrix covered up to 128 streams, below the
+configured maximum.
+
+Focused core tests passed repeated producer/reader cancellation cycles. Local server integration
+tests passed repeated stop/disconnect, stalled-response timeout, and truncated-response cleanup.
+The parent reports that 63 codec cases against the exact original-main baseline passed with exact
+packet and sample totals; broader whole-engine verification remains pending. That baseline is
+separate: this byte-ingress benchmark does not emit RTP packets, so its correctness check is
+decoded samples, frames, and checksum rather than packet totals.
+
+See [plugin-media-transfer.md](plugin-media-transfer.md) for full tables, limitations, and
+reproduction commands. Raw measurements:
+[queue time](data/plugin-media-queue-time.jsonl),
+[queue allocations](data/plugin-media-queue-allocations.jsonl), and
+[thread/resource matrix](data/plugin-media-threads-audit.jsonl).
