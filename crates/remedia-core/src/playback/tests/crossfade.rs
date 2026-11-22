@@ -1,6 +1,57 @@
 use super::*;
 use crate::CrossfadeCurve;
 
+struct ThreadWake(thread::Thread);
+
+impl std::task::Wake for ThreadWake {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+#[test]
+fn event_waiter_wakes_for_natural_completion_without_a_terminal_crossfade_event() {
+    use super::super::{CrossfadeConfig, CrossfadeEvent};
+
+    let source = TempWave::constant(48_000, 4_096);
+    let session = PlaybackSession::new();
+    session
+        .configure_crossfade(Some(CrossfadeConfig::new(1_000, 5_000).unwrap()))
+        .unwrap();
+    session.play(source.source(), NullOutput::new()).unwrap();
+
+    let waker = Waker::from(Arc::new(ThreadWake(thread::current())));
+    let mut context = std::task::Context::from_waker(&waker);
+    let mut revision = session.crossfade_events_revision();
+    let deadline = Instant::now() + TEST_TIMEOUT;
+
+    while !matches!(
+        session.state(),
+        PlaybackState::Completed | PlaybackState::Failed | PlaybackState::Stopped
+    ) && Instant::now() < deadline
+    {
+        let mut wait = Box::pin(session.wait_for_crossfade_events(revision));
+
+        match std::future::Future::poll(wait.as_mut(), &mut context) {
+            std::task::Poll::Pending => thread::park_timeout(Duration::from_millis(20)),
+            std::task::Poll::Ready(next_revision) => {
+                revision = next_revision;
+                session.take_crossfade_events();
+            }
+        }
+    }
+
+    assert_eq!(session.state(), PlaybackState::Completed);
+    assert!(session.take_crossfade_events().iter().all(|event| matches!(
+        event,
+        CrossfadeEvent::EventsDropped { .. } | CrossfadeEvent::PrepareRequested { .. }
+    )));
+}
+
 fn opted_in_crossfade_promotes_staged_decoder_without_restarting_output_with(
     curve: CrossfadeCurve,
 ) {

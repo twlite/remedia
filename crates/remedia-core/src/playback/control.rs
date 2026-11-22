@@ -147,6 +147,7 @@ pub(super) fn fail_session(
         (pending_seek, pending_filter, playback_id, output_sample)
     };
     shared.notify_completion_waiters();
+    shared.notify_crossfade_events();
     shared.observability.metrics().playback_failed();
     let output_cause = match &error {
         PlaybackError::Output(output_error) => output_error.to_string(),

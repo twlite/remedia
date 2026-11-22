@@ -186,9 +186,10 @@ impl PreparedStage {
                             }
                             if !ready_sent && self.buffer.buffered_samples() >= 48_000 {
                                 ready_sent = true;
-                                self.shared.publish(CrossfadeEvent::StageReady {
-                                    identity: self.identity.clone(),
-                                });
+                                self.shared
+                                    .publish_crossfade_event(CrossfadeEvent::StageReady {
+                                        identity: self.identity.clone(),
+                                    });
                             }
                         }
                     }
@@ -199,9 +200,10 @@ impl PreparedStage {
                         }
                         self.buffer.finish();
                         if !ready_sent && self.buffer.buffered_samples() > 0 {
-                            self.shared.publish(CrossfadeEvent::StageReady {
-                                identity: self.identity.clone(),
-                            });
+                            self.shared
+                                .publish_crossfade_event(CrossfadeEvent::StageReady {
+                                    identity: self.identity.clone(),
+                                });
                         }
                         return Ok(());
                     }
@@ -211,11 +213,12 @@ impl PreparedStage {
         })();
         if let Err(error) = result {
             if !self.cancellation.is_cancelled() {
-                self.shared.publish(CrossfadeEvent::StageFailed {
-                    identity: self.identity.clone(),
-                    reason: error.to_string(),
-                });
                 *lock(&self.error) = Some(error.to_string());
+                self.shared
+                    .publish_crossfade_event(CrossfadeEvent::StageFailed {
+                        identity: self.identity.clone(),
+                        reason: error.to_string(),
+                    });
             }
             self.buffer.cancel();
         }
@@ -414,9 +417,10 @@ impl PlaybackSession {
             (slot.replace(Arc::clone(&next)), next)
         };
         if let Some(old) = old {
-            self.shared.publish(CrossfadeEvent::StageInvalidated {
-                identity: old.identity.clone(),
-            });
+            self.shared
+                .publish_crossfade_event(CrossfadeEvent::StageInvalidated {
+                    identity: old.identity.clone(),
+                });
             old.cancel_and_join();
         }
         Ok(next.snapshot())
@@ -443,7 +447,7 @@ pub(super) fn clear_stage(shared: &SessionShared, slot: &Mutex<Option<Arc<Prepar
         slot.take()
     };
     if let Some(old) = old {
-        shared.publish(CrossfadeEvent::StageInvalidated {
+        shared.publish_crossfade_event(CrossfadeEvent::StageInvalidated {
             identity: old.identity.clone(),
         });
         old.cancel_and_join();

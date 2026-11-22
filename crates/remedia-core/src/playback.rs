@@ -1,9 +1,8 @@
-use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, SyncSender};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -237,7 +236,8 @@ struct SessionShared {
     changed: Condvar,
     completion_waiters: completion::CompletionWaiters,
     observability: ObservabilityHandle,
-    events: Mutex<VecDeque<CrossfadeEvent>>,
+    events: Mutex<crossfade_events::CrossfadeEventQueue>,
+    crossfade_events: OnceLock<Arc<crossfade_events::CrossfadeEventSignal>>,
 }
 
 struct SessionData {
@@ -301,6 +301,7 @@ enum WorkerAction {
 mod tests;
 
 mod completion;
+mod crossfade_events;
 mod crossfade_worker;
 mod fallback;
 mod seek;
@@ -354,6 +355,15 @@ impl CrossfadeConfig {
 /// Events only emitted for explicitly enabled staged playback.
 #[derive(Clone, Debug)]
 pub enum CrossfadeEvent {
+    /// Older events were evicted after the bounded event queue filled.
+    ///
+    /// `count` is the number of discarded events since the previous drain. Consumers should
+    /// discard inferred lifecycle history and reconcile against the session's current state,
+    /// source generation, and staged-source snapshot.
+    EventsDropped {
+        /// Number of events lost from the queue.
+        count: u64,
+    },
     /// A seek changed the source timeline. `position_ms` is where the audio continues from;
     /// for a fallback seek that is later than `requested_position_ms` by the source time that
     /// elapsed while the replacement was prepared. `replaced_source` is set then, and the
@@ -398,7 +408,24 @@ pub enum CrossfadeEvent {
 }
 impl SessionShared {
     fn publish(&self, event: CrossfadeEvent) {
-        lock(&self.events).push_back(event);
+        lock(&self.events).push(event);
+    }
+
+    /// Queue one crossfade event and notify subscribers. Callers must first release every
+    /// playback-state and stage lock because a waker can synchronously poll from this method.
+    pub(super) fn publish_crossfade_event(&self, event: CrossfadeEvent) {
+        self.publish(event);
+        self.notify_crossfade_events();
+    }
+
+    /// Publish after releasing the event queue and playback-state locks. Wakers may poll
+    /// synchronously from `wake`, so callers must not invoke this while holding playback locks.
+    /// The signal is initialized on first notification as well as first subscription so a
+    /// terminal change racing with initial subscription cannot be lost.
+    pub(super) fn notify_crossfade_events(&self) {
+        self.crossfade_events
+            .get_or_init(|| Arc::new(crossfade_events::CrossfadeEventSignal::default()))
+            .notify();
     }
 }
 

@@ -934,6 +934,7 @@ pub(super) fn worker_loop(
                         };
                         if completed {
                             shared.notify_completion_waiters();
+                            shared.notify_crossfade_events();
                         }
                         if let Some(request) = pending_seek {
                             let _ = request.response.send(Err(PlaybackError::InvalidState {

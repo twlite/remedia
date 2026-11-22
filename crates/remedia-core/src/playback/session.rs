@@ -51,7 +51,8 @@ impl PlaybackSession {
                 changed: Condvar::new(),
                 completion_waiters: completion::CompletionWaiters::default(),
                 observability,
-                events: Mutex::new(VecDeque::new()),
+                events: Mutex::new(crossfade_events::CrossfadeEventQueue::default()),
+                crossfade_events: OnceLock::new(),
             }),
             worker: Mutex::new(None),
             start_lock: Mutex::new(()),
@@ -257,6 +258,7 @@ impl PlaybackSession {
                     drop(data);
                     self.shared.notify_completion_waiters();
                     drop(start_guard);
+                    self.shared.notify_crossfade_events();
                     self.shared.observability.metrics().playback_failed();
                     with_dispatch(&self.shared.observability, || {
                         tracing::error!(
@@ -382,7 +384,7 @@ impl PlaybackSession {
 
     /// Consume the ordered crossfade events, without affecting normal playback.
     pub fn take_crossfade_events(&self) -> Vec<CrossfadeEvent> {
-        lock(&self.shared.events).drain(..).collect()
+        lock(&self.shared.events).take()
     }
 
     /// Return the current typed lifecycle state.

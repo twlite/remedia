@@ -221,7 +221,7 @@ fn worker_loop(
             let trigger = fade_samples.samples() as u64 + u64::from(config.prepare_before_ms) * 48;
             if !preparation_requested && remaining <= trigger {
                 preparation_requested = true;
-                shared.publish(CrossfadeEvent::PrepareRequested {
+                shared.publish_crossfade_event(CrossfadeEvent::PrepareRequested {
                     generation: source_generation,
                     remaining_ms: remaining / 48,
                 });
@@ -259,18 +259,18 @@ fn worker_loop(
                             data.source_serial = data.source_serial.saturating_add(1);
                             data.source_serial
                         };
-                        shared.publish(CrossfadeEvent::TransitionStarted {
-                            outgoing_generation: source_generation,
-                            incoming_generation,
-                            identity: next.identity.clone(),
-                            info: info.clone(),
-                        });
                         {
                             let mut data = lock(&shared.data);
                             data.source_generation = incoming_generation;
                             data.info = Some(info.clone());
                             data.duration = info.duration;
                         }
+                        shared.publish_crossfade_event(CrossfadeEvent::TransitionStarted {
+                            outgoing_generation: source_generation,
+                            incoming_generation,
+                            identity: next.identity.clone(),
+                            info: info.clone(),
+                        });
                         // A promoted Opus file can resume packets only if the encoder's partial
                         // frame lines up with the incoming packet grid when its staged audio runs
                         // out. Skip the few incoming samples (under 20 ms, at the very start of
@@ -544,7 +544,7 @@ fn worker_loop(
                 data.info = Some(failed.outgoing_info.clone());
                 data.duration = failed.outgoing_info.duration;
             }
-            shared.publish(CrossfadeEvent::TransitionCancelled {
+            shared.publish_crossfade_event(CrossfadeEvent::TransitionCancelled {
                 outgoing_generation: failed.previous_generation,
                 incoming_generation: failed.incoming_generation,
                 identity: failed.identity.clone(),
@@ -609,7 +609,7 @@ fn worker_loop(
             );
             outgoing_info = finished.info.clone();
             preparation_requested = false;
-            shared.publish(CrossfadeEvent::TransitionCompleted {
+            shared.publish_crossfade_event(CrossfadeEvent::TransitionCompleted {
                 outgoing_generation,
                 incoming_generation,
                 identity,
@@ -637,11 +637,22 @@ fn worker_loop(
     match finish {
         Ok(()) => {
             let played = safe_played_position(&output);
-            let mut data = lock(&shared.data);
-            if data.generation == generation && !data.stopping {
-                data.played_position = played.or(data.played_position);
-                data.state = PlaybackState::Completed;
-                shared.changed.notify_all();
+            let completed = {
+                let mut data = lock(&shared.data);
+                let completed = data.generation == generation && !data.stopping;
+
+                if completed {
+                    data.played_position = played.or(data.played_position);
+                    data.state = PlaybackState::Completed;
+                    shared.changed.notify_all();
+                }
+
+                completed
+            };
+
+            if completed {
+                shared.notify_completion_waiters();
+                shared.notify_crossfade_events();
             }
         }
         Err(error) => {

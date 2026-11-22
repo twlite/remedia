@@ -62,8 +62,10 @@ pub(super) fn finish_fallback_switch(
     done: &FallbackSeek,
     applied_sample: u64,
 ) {
-    if let Some(stage) = lock(stage_slot).take() {
-        shared.publish(CrossfadeEvent::StageInvalidated {
+    let stage = { lock(stage_slot).take() };
+
+    if let Some(stage) = stage {
+        shared.publish_crossfade_event(CrossfadeEvent::StageInvalidated {
             identity: stage.identity.clone(),
         });
         stage.cancel_and_join();
@@ -85,7 +87,7 @@ pub(super) fn finish_fallback_switch(
         (previous_generation, state.source_generation)
     };
 
-    shared.publish(CrossfadeEvent::TimelineChanged {
+    shared.publish_crossfade_event(CrossfadeEvent::TimelineChanged {
         previous_generation,
         generation,
         position_ms: duration_from_samples(applied_sample).as_millis() as u64,

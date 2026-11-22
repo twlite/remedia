@@ -441,6 +441,7 @@ impl PlaybackSession {
             self.shared.changed.notify_all();
             drop(data);
             self.shared.notify_completion_waiters();
+            self.shared.notify_crossfade_events();
             return Err(error);
         }
         if active {
@@ -450,6 +451,7 @@ impl PlaybackSession {
         self.shared.changed.notify_all();
         drop(data);
         self.shared.notify_completion_waiters();
+        self.shared.notify_crossfade_events();
         if needs_cleanup {
             with_dispatch(&self.shared.observability, || {
                 tracing::info!(
