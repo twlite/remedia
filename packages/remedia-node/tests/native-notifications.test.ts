@@ -159,13 +159,17 @@ it('closes promptly while completion and event waits are pending', async () => {
     await startHeldPlayback(native, held.url),
     await startHeldPlayback(native, held.url),
   ];
-  const pending = ids.flatMap((id) => [
-    native.wait(id, native.playbackGeneration(id)),
-    native.playbackWaitEvents(id, native.playbackEventsRevision(id)),
-  ]);
+  // A wait may be rejected as closed if close() wins the race to its first check, so its outcome
+  // is collected from the moment it exists instead of after close() settles.
+  const outcomesPending = Promise.allSettled(
+    ids.flatMap((id) => [
+      native.wait(id, native.playbackGeneration(id)),
+      native.playbackWaitEvents(id, native.playbackEventsRevision(id)),
+    ]),
+  );
 
   await settleWithin(native.close(), 5_000, 'close');
-  const outcomes = await settleWithin(Promise.allSettled(pending), 5_000, 'the pending waits');
+  const outcomes = await settleWithin(outcomesPending, 5_000, 'the pending waits');
 
   expect(outcomes).toHaveLength(4);
 });
@@ -180,9 +184,14 @@ it('disposing a playback releases its pending waits', async () => {
   const id = await startHeldPlayback(native, held.url);
   const completion = native.wait(id, native.playbackGeneration(id));
   const events = native.playbackWaitEvents(id, native.playbackEventsRevision(id));
+  // Both waits look the playback up when they first run. Give them time to register, so this
+  // exercises releasing pending waits rather than racing disposal against their start.
+  const outcomes = Promise.allSettled([completion, events]);
+  await new Promise((resolve) => setTimeout(resolve, 100));
 
   await native.disposePlaybackSession(id);
 
   await expect(settleWithin(completion, 2_000, 'the completion wait')).resolves.toBe('stopped');
   await settleWithin(events, 2_000, 'the event wait');
+  await outcomes;
 });
