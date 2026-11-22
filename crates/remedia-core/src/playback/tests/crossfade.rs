@@ -1,6 +1,115 @@
 use super::*;
 use crate::CrossfadeCurve;
 
+#[test]
+#[ignore = "continuous promotion resource audit; run alone with --ignored --nocapture"]
+fn resource_audit_continuous_promotions_preserve_timeline_and_release_stages() {
+    use super::super::{CrossfadeConfig, CrossfadeEvent, StageIdentity, StageState};
+
+    const PROMOTIONS: usize = 100;
+
+    let source = TempWave::constant(144_000, 4096);
+    let baseline = remedia_resources::collect();
+    let session = PlaybackSession::new();
+    session
+        .configure_crossfade(Some(CrossfadeConfig::new(1_000, 5_000).unwrap()))
+        .unwrap();
+    let (output, gate) = GateOutput::new();
+    session.play(source.source(), output).unwrap();
+
+    let mut next_call = 1;
+    let mut submitted = 0;
+    let mut completed = 0;
+    let mut owners = Vec::with_capacity(PROMOTIONS);
+
+    while completed < PROMOTIONS {
+        assert!(
+            gate.wait_for_calls(next_call),
+            "output stopped at call {next_call}: state={:?}, submitted={submitted}, completed={completed}, generation={}, error={:?}, queued={:?}",
+            session.state(),
+            session.source_generation(),
+            session.last_error(),
+            session.take_crossfade_events(),
+        );
+
+        for event in session.take_crossfade_events() {
+            match event {
+                CrossfadeEvent::PrepareRequested { generation, .. } if submitted < PROMOTIONS => {
+                    session
+                        .stage_next(
+                            source.source(),
+                            StageIdentity {
+                                expected_generation: generation,
+                                entry_id: format!("resource-audit-{submitted}"),
+                                queue_revision: submitted as u64,
+                                source_revision: 1,
+                            },
+                        )
+                        .unwrap();
+                    owners.push(Arc::downgrade(lock(&session.stage).as_ref().unwrap()));
+                    submitted += 1;
+
+                    let deadline = Instant::now() + TEST_TIMEOUT;
+                    while !session
+                        .staged_source()
+                        .is_some_and(|stage| stage.state == StageState::Ready)
+                    {
+                        assert!(Instant::now() < deadline, "stage did not become ready");
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                }
+                CrossfadeEvent::TransitionCompleted { .. } => completed += 1,
+                CrossfadeEvent::EventsDropped { .. }
+                | CrossfadeEvent::StageFailed { .. }
+                | CrossfadeEvent::TransitionCancelled { .. } => {
+                    panic!("continuous promotion lost events or failed: {event:?}");
+                }
+                _ => {}
+            }
+        }
+
+        gate.release(1);
+        next_call += 1;
+    }
+
+    gate.release(usize::MAX);
+    assert_eq!(session.wait(), PlaybackState::Completed);
+    assert_eq!(submitted, PROMOTIONS);
+    assert_eq!(session.source_generation(), (PROMOTIONS + 1) as u64);
+    // 101 three-second sources, with 100 overlaps of one second each.
+    assert_eq!(session.position().submitted, Duration::from_secs(203));
+    let snapshot = gate.snapshot();
+    assert_eq!(snapshot.accepted.len(), 10_150);
+    assert!(
+        snapshot
+            .accepted
+            .windows(2)
+            .all(|pair| pair[0].0 + 960 == pair[1].0)
+    );
+    assert!(snapshot.finished);
+
+    session.stop().unwrap();
+    assert!(owners.iter().all(|owner| owner.upgrade().is_none()));
+    drop(session);
+    let after = remedia_resources::collect();
+    if let (Some(before), Some(after)) = (baseline.open_handles, after.open_handles) {
+        assert!(after <= before);
+    }
+
+    println!(
+        "RESOURCE_AUDIT_PROMOTIONS {}",
+        serde_json::json!({
+            "promotions": completed,
+            "outputSampleFrames": 10_150 * 960,
+            "timelineSeconds": 203,
+            "retainedStages": owners.iter().filter(|owner| owner.upgrade().is_some()).count(),
+            "baseline": baseline,
+            "after": after,
+            "nativeHeapBytes": null,
+        })
+    );
+}
+
 struct ThreadWake(thread::Thread);
 
 impl std::task::Wake for ThreadWake {
