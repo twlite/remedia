@@ -663,7 +663,7 @@ impl HostState {
 
         if self.config.owns_media_origin(&descriptor.url) {
             let permit = self.acquire(&self.streams)?;
-            let (source, guard) = open_media(self, descriptor.url, cancel, permit).await?;
+            let (source, guard) = open_media(self, descriptor.url, &descriptor.headers, cancel, permit).await?;
 
             return Ok(ResolvedMedia {
                 source,
@@ -691,7 +691,11 @@ impl HostState {
             })?;
 
         Ok(ResolvedMedia {
-            source: InputSource::http_url(authorized),
+            source: if descriptor.headers.is_empty() {
+                InputSource::http_url(authorized)
+            } else {
+                InputSource::http_url_with_headers(authorized, descriptor.headers)
+            },
             guard: None,
         })
     }

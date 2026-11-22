@@ -449,7 +449,7 @@ export class RemoteNodeAdapter
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 0xffffffff)
       throw new RangeError('invalid probe timeoutMs');
     const remote =
-      'url' in source ? { type: 'url', url: source.url } : { type: 'file', path: source.file };
+      'url' in source ? { type: 'url', url: source.url, ...(source.headers ? { headers: source.headers } : {}) } : { type: 'file', path: source.file };
     return toStreamInfo(
       await this.#rpc!.request<Record<string, unknown>>(
         'media.probe',
@@ -2367,7 +2367,7 @@ function parsePluginOperations(input: unknown): import('./types.js').PluginOpera
 
 /** Wire representation of a source accepted by `player.play` and `player.stage.next`. */
 type RemoteWireSource =
-  | { type: 'url'; url: string }
+  | { type: 'url'; url: string; headers?: Record<string, string> }
   | { type: 'file'; path: string }
   | { type: 'operation'; hostId: string; pluginId: string; operation: string; input: unknown };
 
@@ -2422,7 +2422,7 @@ function toRemoteSource(
     };
   }
 
-  return 'url' in source ? { type: 'url', url: source.url } : { type: 'file', path: source.file };
+  return 'url' in source ? { type: 'url', url: source.url, ...(source.headers ? { headers: source.headers } : {}) } : { type: 'file', path: source.file };
 }
 
 function parseStageSnapshot(input: unknown, nodeId: string): import('./types.js').StageSnapshot {

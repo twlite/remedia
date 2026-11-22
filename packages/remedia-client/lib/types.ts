@@ -206,6 +206,8 @@ export type MediaSource =
   | {
       /** HTTP(S) media URL opened by the selected engine; remote nodes enforce server URL policy. */
       url: string;
+      /** Optional HTTP headers, including Cookie and Referer. */
+      headers?: Record<string, string>;
     }
   | OperationMediaSource
   | {
@@ -231,6 +233,8 @@ export type RemoteMediaSource =
   | {
       /** HTTP(S) media URL opened by the selected engine; remote nodes enforce server URL policy. */
       url: string;
+      /** Optional HTTP headers, including Cookie and Referer. */
+      headers?: Record<string, string>;
     }
   | OperationMediaSource;
 

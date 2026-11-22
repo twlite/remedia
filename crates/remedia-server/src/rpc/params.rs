@@ -87,6 +87,8 @@ pub(crate) enum PlaySource {
     },
     Url {
         url: String,
+        #[serde(default)]
+        headers: std::collections::HashMap<String, String>,
     },
     Operation {
         host_id: String,

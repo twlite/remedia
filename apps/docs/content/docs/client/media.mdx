@@ -23,6 +23,17 @@ node, they are rejected with `UnsupportedMediaSourceError`. Pin the guild to an 
 
 ## Filters and volume
 
+Direct URL sources can include HTTP request headers. The same source works with embedded and remote nodes:
+
+```ts
+await session.play({
+  url: 'https://example.com/audio',
+  headers: { Referer: 'https://example.com/', Cookie: 'session=...' },
+});
+```
+
+Headers also apply when probing or staging a URL. Treat Cookie and Authorization as credentials. FFmpeg handles direct URL redirects and may forward them to the redirected origin, so do not supply sensitive headers for untrusted redirect destinations.
+
 ```ts
 await voice.filters.set('bass=gain=6'); // raw FFmpeg audio filtergraph
 await voice.filters.clear();
