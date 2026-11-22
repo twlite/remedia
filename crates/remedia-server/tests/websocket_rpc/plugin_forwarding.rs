@@ -1406,6 +1406,136 @@ mod reopening {
 
     const GUILD: &str = "400000000000000001";
 
+    struct MediaOrigin {
+        url: String,
+        requests: Arc<AtomicUsize>,
+        interrupted: Arc<AtomicUsize>,
+        shutdown: tokio_util::sync::CancellationToken,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl MediaOrigin {
+        async fn start(body: Vec<u8>) -> Self {
+            let declared_length = body.len();
+            Self::start_with_declared_length(body, declared_length).await
+        }
+
+        async fn start_with_declared_length(body: Vec<u8>, declared_length: usize) -> Self {
+            Self::start_with_delay(body, declared_length, Duration::ZERO).await
+        }
+
+        async fn start_delayed(body: Vec<u8>, initial_delay: Duration) -> Self {
+            let declared_length = body.len();
+            Self::start_with_delay(body, declared_length, initial_delay).await
+        }
+
+        async fn start_with_delay(
+            body: Vec<u8>,
+            declared_length: usize,
+            initial_delay: Duration,
+        ) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/media.wav", listener.local_addr().unwrap());
+            let body = Arc::new(body);
+            let requests = Arc::new(AtomicUsize::new(0));
+            let interrupted = Arc::new(AtomicUsize::new(0));
+            let shutdown = tokio_util::sync::CancellationToken::new();
+            let accept_shutdown = shutdown.clone();
+            let accept_body = Arc::clone(&body);
+            let accept_declared_length = declared_length;
+            let accept_requests = Arc::clone(&requests);
+            let accept_interrupted = Arc::clone(&interrupted);
+            let task = tokio::spawn(async move {
+                loop {
+                    let accepted = tokio::select! {
+                        () = accept_shutdown.cancelled() => break,
+                        accepted = listener.accept() => accepted,
+                    };
+                    let Ok((stream, _)) = accepted else {
+                        break;
+                    };
+
+                    tokio::spawn(serve_media(
+                        stream,
+                        Arc::clone(&accept_body),
+                        accept_declared_length,
+                        initial_delay,
+                        Arc::clone(&accept_requests),
+                        Arc::clone(&accept_interrupted),
+                        accept_shutdown.clone(),
+                    ));
+                }
+            });
+
+            Self {
+                url,
+                requests,
+                interrupted,
+                shutdown,
+                task,
+            }
+        }
+    }
+
+    impl Drop for MediaOrigin {
+        fn drop(&mut self) {
+            self.shutdown.cancel();
+            self.task.abort();
+        }
+    }
+
+    async fn serve_media(
+        stream: TcpStream,
+        body: Arc<Vec<u8>>,
+        declared_length: usize,
+        initial_delay: Duration,
+        requests: Arc<AtomicUsize>,
+        interrupted: Arc<AtomicUsize>,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) {
+        let (read, mut write) = stream.into_split();
+        let mut reader = BufReader::new(read);
+        let mut request = String::new();
+        if reader.read_line(&mut request).await.unwrap_or(0) == 0 {
+            return;
+        }
+        loop {
+            let mut header = String::new();
+            if reader.read_line(&mut header).await.unwrap_or(0) == 0 || header == "\r\n" {
+                break;
+            }
+        }
+
+        requests.fetch_add(1, Ordering::SeqCst);
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            declared_length
+        );
+        if write.write_all(header.as_bytes()).await.is_err() {
+            return;
+        }
+
+        tokio::select! {
+            () = shutdown.cancelled() => return,
+            () = tokio::time::sleep(initial_delay) => {}
+        }
+
+        for chunk in body.chunks(8 * 1024) {
+            if shutdown.is_cancelled() {
+                return;
+            }
+            if write.write_all(chunk).await.is_err() {
+                interrupted.fetch_add(1, Ordering::SeqCst);
+                return;
+            }
+
+            tokio::select! {
+                () = shutdown.cancelled() => return,
+                () = tokio::time::sleep(Duration::from_millis(5)) => {}
+            }
+        }
+    }
+
     async fn server_for(host: &MockHost, host_limits: Value) -> RunningServer {
         let mut config = host_config(
             "meta-host",
@@ -1413,6 +1543,27 @@ mod reopening {
             ops(&[("example.metadata", "media.resolve", true)]),
             host_limits,
         );
+        config["allowExternalMedia"] = json!(true);
+
+        RunningServer::start_configured(2, 2, false, json!([config]), json!({})).await
+    }
+
+    async fn server_for_media_origin(
+        host: &MockHost,
+        host_limits: Value,
+        media_url: &str,
+    ) -> RunningServer {
+        let mut config = host_config(
+            "meta-host",
+            host,
+            ops(&[("example.metadata", "media.resolve", true)]),
+            host_limits,
+        );
+        let media_origin = url::Url::parse(media_url)
+            .unwrap()
+            .origin()
+            .ascii_serialization();
+        config["mediaOrigins"] = json!([media_origin]);
         config["allowExternalMedia"] = json!(true);
 
         RunningServer::start_configured(2, 2, false, json!([config]), json!({})).await
@@ -1456,6 +1607,217 @@ mod reopening {
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn delayed_plugin_media_is_cancelled_and_releases_stream_resources_repeatedly() {
+        let host = MockHost::start(&[("example.metadata", "media.resolve")]).await;
+        let origin = MediaOrigin::start(silent_wave(200)).await;
+        let server = server_for_media_origin(&host, json!({}), &origin.url).await;
+        let mut socket = session(&server, BOT_A).await;
+        let created = rpc(
+            &mut socket,
+            "guild",
+            "guild.create",
+            json!({"guildId": GUILD}),
+        )
+        .await;
+        assert_eq!(created["ok"], true, "{created}");
+
+        for cycle in 1..=3 {
+            let played = rpc(
+                &mut socket,
+                "play",
+                "player.play",
+                json!({"guildId": GUILD, "source": {
+                    "type": "operation",
+                    "hostId": "meta-host",
+                    "pluginId": "example.metadata",
+                    "operation": "media.resolve",
+                    "input": {"mode": "media-url", "url": origin.url}
+                }}),
+            )
+            .await;
+            assert_eq!(played["ok"], true, "cycle {cycle}: {played}");
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let state = rpc(
+                    &mut socket,
+                    "state",
+                    "player.state",
+                    json!({"guildId": GUILD}),
+                )
+                .await;
+                if state["result"]["position"]["media"]["positionMs"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    > 3_000
+                {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "cycle {cycle} never decoded audio: {state}"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+
+            let stats = plugin_stats(&mut socket, "meta-host").await;
+            assert_eq!(stats["totals"]["grantsOpened"], cycle);
+            assert!(stats["totals"]["mediaBytes"].as_u64().unwrap() > 0);
+
+            let stop_started = Instant::now();
+            let stopped = rpc(
+                &mut socket,
+                "stop",
+                "player.stop",
+                json!({"guildId": GUILD}),
+            )
+            .await;
+            assert_eq!(stopped["ok"], true, "cycle {cycle}: {stopped}");
+
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let stats = plugin_stats(&mut socket, "meta-host").await;
+                    if stats["resources"]["activeStreams"] == 0 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("cycle {cycle} left an active media transfer"));
+            assert!(
+                stop_started.elapsed() < Duration::from_secs(2),
+                "cycle {cycle} took too long to release its media transfer"
+            );
+
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while origin.interrupted.load(Ordering::SeqCst) < cycle as usize {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("cycle {cycle} did not close its delayed upstream"));
+        }
+
+        assert_eq!(origin.requests.load(Ordering::SeqCst), 3);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn truncated_plugin_media_response_fails_and_releases_its_stream_slot() {
+        let host = MockHost::start(&[("example.metadata", "media.resolve")]).await;
+        let mut body = silent_wave(200);
+        let declared_length = body.len();
+        body.truncate(44 + 1024 * 1024);
+        let origin = MediaOrigin::start_with_declared_length(body, declared_length).await;
+        let server = server_for_media_origin(&host, json!({}), &origin.url).await;
+        let mut socket = session(&server, BOT_A).await;
+        let created = rpc(
+            &mut socket,
+            "guild",
+            "guild.create",
+            json!({"guildId": GUILD}),
+        )
+        .await;
+        assert_eq!(created["ok"], true, "{created}");
+
+        let played = rpc(
+            &mut socket,
+            "play",
+            "player.play",
+            json!({"guildId": GUILD, "source": {
+                "type": "operation",
+                "hostId": "meta-host",
+                "pluginId": "example.metadata",
+                "operation": "media.resolve",
+                "input": {"mode": "media-url", "url": origin.url}
+            }}),
+        )
+        .await;
+        assert_eq!(played["ok"], true, "{played}");
+
+        let failed = tokio::time::timeout(
+            Duration::from_secs(10),
+            next_event(&mut socket, "player.failed"),
+        )
+        .await
+        .expect("the truncated response must fail playback");
+        assert_eq!(failed["data"]["generation"], played["result"]["generation"]);
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let stats = plugin_stats(&mut socket, "meta-host").await;
+                if stats["resources"]["activeStreams"] == 0 {
+                    assert_eq!(stats["totals"]["mediaFailures"], 1);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("a malformed response must release its active-stream slot");
+        assert_eq!(origin.requests.load(Ordering::SeqCst), 1);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn stalled_plugin_media_times_out_and_releases_its_upstream() {
+        let host = MockHost::start(&[("example.metadata", "media.resolve")]).await;
+        let origin = MediaOrigin::start_delayed(silent_wave(20), Duration::from_millis(500)).await;
+        let server =
+            server_for_media_origin(&host, json!({"mediaIdleTimeoutMs": 100}), &origin.url).await;
+        let mut socket = session(&server, BOT_A).await;
+        let created = rpc(
+            &mut socket,
+            "guild",
+            "guild.create",
+            json!({"guildId": GUILD}),
+        )
+        .await;
+        assert_eq!(created["ok"], true, "{created}");
+
+        let played = rpc(
+            &mut socket,
+            "play",
+            "player.play",
+            json!({"guildId": GUILD, "source": {
+                "type": "operation",
+                "hostId": "meta-host",
+                "pluginId": "example.metadata",
+                "operation": "media.resolve",
+                "input": {"mode": "media-url", "url": origin.url}
+            }}),
+        )
+        .await;
+        assert_eq!(played["ok"], false, "{played}");
+        assert_eq!(played["error"]["code"], "playback_failed", "{played}");
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let stats = plugin_stats(&mut socket, "meta-host").await;
+                if stats["resources"]["activeStreams"] == 0 {
+                    assert_eq!(stats["totals"]["mediaFailures"], 1);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("stalled media must release its active-stream slot promptly");
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while origin.interrupted.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("stalled media failure must close the upstream response");
+
+        assert_eq!(origin.requests.load(Ordering::SeqCst), 1);
+        server.shutdown().await;
     }
 
     #[tokio::test]

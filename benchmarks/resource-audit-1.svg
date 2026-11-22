@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title description" viewBox="0 0 760 390">
+<title id="title">Pending OS threads by completion waiter count</title>
+<desc id="description">The blocking strategy grows from 3 to 514 threads as waiter count rises from 1 to 512. The async strategy stays at 2 threads.</desc>
+<rect width="100%" height="100%" fill="#fff"/>
+<g font-family="system-ui, sans-serif" fill="#202124">
+<text x="86" y="27" font-size="17" font-weight="600">Pending OS threads by waiter count</text>
+<text x="86" y="43" font-size="11" fill="#5f6368">Log₂ vertical scale; includes benchmark executor and playback worker</text>
+<line x1="86" y1="320.0" x2="720" y2="320.0" stroke="#dadce0" stroke-width="1"/>
+<text x="74" y="324.0" font-size="11" text-anchor="end" fill="#5f6368">2</text>
+<line x1="86" y1="254.0" x2="720" y2="254.0" stroke="#dadce0" stroke-width="1"/>
+<text x="74" y="258.0" font-size="11" text-anchor="end" fill="#5f6368">8</text>
+<line x1="86" y1="188.0" x2="720" y2="188.0" stroke="#dadce0" stroke-width="1"/>
+<text x="74" y="192.0" font-size="11" text-anchor="end" fill="#5f6368">32</text>
+<line x1="86" y1="122.0" x2="720" y2="122.0" stroke="#dadce0" stroke-width="1"/>
+<text x="74" y="126.0" font-size="11" text-anchor="end" fill="#5f6368">128</text>
+<line x1="86" y1="56.0" x2="720" y2="56.0" stroke="#dadce0" stroke-width="1"/>
+<text x="74" y="60.0" font-size="11" text-anchor="end" fill="#5f6368">512</text>
+<line x1="86.0" y1="56" x2="86.0" y2="320" stroke="#f1f3f4" stroke-width="1"/>
+<text x="86.0" y="340" font-size="11" text-anchor="middle" fill="#5f6368">1</text>
+<line x1="191.7" y1="56" x2="191.7" y2="320" stroke="#f1f3f4" stroke-width="1"/>
+<text x="191.7" y="340" font-size="11" text-anchor="middle" fill="#5f6368">8</text>
+<line x1="297.3" y1="56" x2="297.3" y2="320" stroke="#f1f3f4" stroke-width="1"/>
+<text x="297.3" y="340" font-size="11" text-anchor="middle" fill="#5f6368">32</text>
+<line x1="403.0" y1="56" x2="403.0" y2="320" stroke="#f1f3f4" stroke-width="1"/>
+<text x="403.0" y="340" font-size="11" text-anchor="middle" fill="#5f6368">64</text>
+<line x1="508.7" y1="56" x2="508.7" y2="320" stroke="#f1f3f4" stroke-width="1"/>
+<text x="508.7" y="340" font-size="11" text-anchor="middle" fill="#5f6368">128</text>
+<line x1="614.3" y1="56" x2="614.3" y2="320" stroke="#f1f3f4" stroke-width="1"/>
+<text x="614.3" y="340" font-size="11" text-anchor="middle" fill="#5f6368">256</text>
+<line x1="720.0" y1="56" x2="720.0" y2="320" stroke="#f1f3f4" stroke-width="1"/>
+<text x="720.0" y="340" font-size="11" text-anchor="middle" fill="#5f6368">512</text>
+<line x1="86" y1="56" x2="86" y2="320" stroke="#5f6368"/>
+<line x1="86" y1="320" x2="720" y2="320" stroke="#5f6368"/>
+<polyline fill="none" stroke="#c5221f" stroke-width="3" points="86.0,300.7 191.7,243.4 297.3,185.1 403.0,153.5 508.7,121.3 614.3,88.6 720.0,55.8"/>
+<polyline fill="none" stroke="#1967d2" stroke-width="3" points="86.0,320.0 191.7,320.0 297.3,320.0 403.0,320.0 508.7,320.0 614.3,320.0 720.0,320.0"/>
+<circle cx="86.0" cy="300.7" r="4.5" fill="#c5221f"/>
+<circle cx="191.7" cy="243.4" r="4.5" fill="#c5221f"/>
+<circle cx="297.3" cy="185.1" r="4.5" fill="#c5221f"/>
+<circle cx="403.0" cy="153.5" r="4.5" fill="#c5221f"/>
+<circle cx="508.7" cy="121.3" r="4.5" fill="#c5221f"/>
+<circle cx="614.3" cy="88.6" r="4.5" fill="#c5221f"/>
+<circle cx="720.0" cy="55.8" r="4.5" fill="#c5221f"/>
+<circle cx="86.0" cy="320.0" r="4.5" fill="#1967d2"/>
+<circle cx="191.7" cy="320.0" r="4.5" fill="#1967d2"/>
+<circle cx="297.3" cy="320.0" r="4.5" fill="#1967d2"/>
+<circle cx="403.0" cy="320.0" r="4.5" fill="#1967d2"/>
+<circle cx="508.7" cy="320.0" r="4.5" fill="#1967d2"/>
+<circle cx="614.3" cy="320.0" r="4.5" fill="#1967d2"/>
+<circle cx="720.0" cy="320.0" r="4.5" fill="#1967d2"/>
+<line x1="455" y1="35" x2="477" y2="35" stroke="#c5221f" stroke-width="3"/><text x="484" y="39" font-size="11">Blocking waiters</text>
+<line x1="595" y1="35" x2="617" y2="35" stroke="#1967d2" stroke-width="3"/><text x="624" y="39" font-size="11">Async waiters</text>
+<text x="403.0" y="376" font-size="12" text-anchor="middle">Concurrent waiters</text>
+</g></svg>

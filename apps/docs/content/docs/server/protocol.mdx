@@ -53,8 +53,11 @@ The response carries an opaque `sessionId` and `resumeCredential`. The client se
 sessions (`guild.create`), and each guild session owns one player and an optional Discord voice
 transport. After an unexpected disconnect, `client.resume` reclaims the session within the configured
 resumption window. Events are not replayed while detached, and a client that falls behind receives
-`client.events_lost`. To play audio, send Gateway voice credentials to `voice.connect`, then
-`player.play`:
+`client.events_lost`. The server drops RPC handlers still attached to a closed WebSocket and cancels
+its connection-scoped probes and plugin requests. A side effect may have completed before its reply
+was lost, so resume and inspect the session before retrying a state-changing command. Cleanup already
+started for a closed session, destroyed guild, or server shutdown continues on the server. To play
+audio, send Gateway voice credentials to `voice.connect`, then `player.play`:
 
 ```json
 {

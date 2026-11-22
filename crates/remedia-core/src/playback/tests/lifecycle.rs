@@ -48,6 +48,259 @@ fn completion_waiter_remains_bound_to_its_source_after_replacement() {
 }
 
 #[test]
+fn async_completion_waiter_is_send_and_wakes_on_natural_completion() {
+    let source = TempWave::constant(48_000, 4096);
+    let session = PlaybackSession::new();
+    let (output, gate) = GateOutput::new();
+    session.play(source.source(), output).unwrap();
+    assert!(gate.wait_for_calls(1));
+
+    let waiter = session.completion();
+    let mut future = Box::pin(waiter.wait_async());
+    let signal = Arc::new(TestWaker::default());
+    let waker = Waker::from(Arc::clone(&signal));
+
+    fn assert_send<T: Send>(_: &T) {}
+    assert_send(&future);
+    assert_eq!(poll_completion(future.as_mut(), &waker), Poll::Pending);
+    assert_eq!(session.shared.completion_waiters.len(), 1);
+
+    gate.release(usize::MAX);
+
+    assert!(signal.wait_for_wakes(1));
+    assert_eq!(
+        poll_completion(future.as_mut(), &waker),
+        Poll::Ready(PlaybackState::Completed)
+    );
+    assert_eq!(session.shared.completion_waiters.len(), 0);
+    session.stop().unwrap();
+}
+
+#[test]
+fn replaced_completion_waker_is_dropped_outside_playback_locks() {
+    struct DropProbe {
+        shared: std::sync::Weak<SessionShared>,
+        unlocked: Arc<AtomicBool>,
+    }
+
+    // `wake` is intentionally a no-op, but the probe cannot be replaced by
+    // `Waker::noop()`: its `Drop` observes whether the session lock is free.
+    #[allow(clippy::manual_noop_waker)]
+    impl Wake for DropProbe {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            let shared = self.shared.upgrade().unwrap();
+            self.unlocked
+                .store(shared.data.try_lock().is_ok(), Ordering::Release);
+        }
+    }
+
+    let source = TempWave::constant(48_000, 4096);
+    let session = PlaybackSession::new();
+    let (output, gate) = GateOutput::new();
+    session.play(source.source(), output).unwrap();
+    assert!(gate.wait_for_calls(1));
+
+    let waiter = session.completion();
+    let mut future = Box::pin(waiter.wait_async());
+    let unlocked = Arc::new(AtomicBool::new(false));
+    let first = Waker::from(Arc::new(DropProbe {
+        shared: Arc::downgrade(&session.shared),
+        unlocked: Arc::clone(&unlocked),
+    }));
+    assert_eq!(poll_completion(future.as_mut(), &first), Poll::Pending);
+    drop(first);
+
+    let replacement = Waker::from(Arc::new(TestWaker::default()));
+    assert_eq!(
+        poll_completion(future.as_mut(), &replacement),
+        Poll::Pending
+    );
+    assert!(unlocked.load(Ordering::Acquire));
+
+    session.stop().unwrap();
+    assert_eq!(
+        poll_completion(future.as_mut(), &replacement),
+        Poll::Ready(PlaybackState::Stopped)
+    );
+}
+
+#[test]
+fn async_completion_waiters_support_multiple_cancellations() {
+    let source = TempWave::constant(48_000, 4096);
+    let session = PlaybackSession::new();
+    let (output, gate) = GateOutput::new();
+    session.play(source.source(), output).unwrap();
+    assert!(gate.wait_for_calls(1));
+
+    let waiter = session.completion();
+    let signals = (0..24)
+        .map(|_| Arc::new(TestWaker::default()))
+        .collect::<Vec<_>>();
+    let wakers = signals
+        .iter()
+        .map(|signal| Waker::from(Arc::clone(signal)))
+        .collect::<Vec<_>>();
+    let mut futures = (0..signals.len())
+        .map(|_| Some(Box::pin(waiter.wait_async())))
+        .collect::<Vec<_>>();
+
+    for (future, waker) in futures.iter_mut().zip(&wakers) {
+        assert_eq!(
+            poll_completion(future.as_mut().unwrap().as_mut(), waker),
+            Poll::Pending
+        );
+    }
+
+    assert_eq!(session.shared.completion_waiters.len(), signals.len());
+    for future in futures.iter_mut().step_by(2) {
+        drop(future.take());
+    }
+    assert_eq!(session.shared.completion_waiters.len(), signals.len() / 2);
+
+    session.stop().unwrap();
+
+    for (index, future) in futures.iter_mut().enumerate().skip(1).step_by(2) {
+        assert!(signals[index].wait_for_wakes(1));
+        assert_eq!(
+            poll_completion(future.as_mut().unwrap().as_mut(), &wakers[index]),
+            Poll::Ready(PlaybackState::Stopped)
+        );
+    }
+
+    assert_eq!(session.shared.completion_waiters.len(), 0);
+}
+
+#[test]
+fn async_completion_waiter_observes_failure_and_replacement() {
+    let source = TempWave::constant(48_000, 4096);
+    let failed_session = PlaybackSession::new();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    failed_session
+        .play(source.source(), FailingOutput(Arc::clone(&cancelled)))
+        .unwrap();
+    let failed_waiter = failed_session.completion();
+    let mut failed_future = Box::pin(failed_waiter.wait_async());
+    let failed_signal = Arc::new(TestWaker::default());
+    let failed_waker = Waker::from(Arc::clone(&failed_signal));
+
+    let failed_state = match poll_completion(failed_future.as_mut(), &failed_waker) {
+        Poll::Ready(state) => state,
+        Poll::Pending => {
+            assert!(failed_signal.wait_for_wakes(1));
+            match poll_completion(failed_future.as_mut(), &failed_waker) {
+                Poll::Ready(state) => state,
+                Poll::Pending => panic!("failure notification left the future pending"),
+            }
+        }
+    };
+    assert_eq!(failed_state, PlaybackState::Failed);
+    failed_session.stop().unwrap();
+
+    let session = PlaybackSession::new();
+    let (first_output, first_gate) = GateOutput::new();
+    session.play(source.source(), first_output).unwrap();
+    assert!(first_gate.wait_for_calls(1));
+    let waiter = session.completion();
+    let mut future = Box::pin(waiter.wait_async());
+    let signal = Arc::new(TestWaker::default());
+    let waker = Waker::from(Arc::clone(&signal));
+    assert_eq!(poll_completion(future.as_mut(), &waker), Poll::Pending);
+
+    session.stop().unwrap();
+    let (second_output, second_gate) = GateOutput::new();
+    session.play(source.source(), second_output).unwrap();
+    assert!(second_gate.wait_for_calls(1));
+
+    assert!(signal.wait_for_wakes(1));
+    assert_eq!(
+        poll_completion(future.as_mut(), &waker),
+        Poll::Ready(PlaybackState::Stopped)
+    );
+    assert_eq!(session.state(), PlaybackState::Playing);
+    session.stop().unwrap();
+}
+
+#[test]
+fn async_completion_waiter_is_notified_when_session_is_dropped() {
+    let source = TempWave::constant(48_000, 4096);
+    let session = PlaybackSession::new();
+    let (output, gate) = GateOutput::new();
+    session.play(source.source(), output).unwrap();
+    assert!(gate.wait_for_calls(1));
+
+    let waiter = session.completion();
+    let mut future = Box::pin(waiter.wait_async());
+    let signal = Arc::new(TestWaker::default());
+    let waker = Waker::from(Arc::clone(&signal));
+    assert_eq!(poll_completion(future.as_mut(), &waker), Poll::Pending);
+
+    drop(session);
+
+    assert!(signal.wait_for_wakes(1));
+    assert_eq!(
+        poll_completion(future.as_mut(), &waker),
+        Poll::Ready(PlaybackState::Stopped)
+    );
+}
+
+#[test]
+fn async_completion_registration_racing_stop_does_not_miss_wakeups() {
+    let source = TempWave::constant(48_000, 4096);
+    let session = Arc::new(PlaybackSession::new());
+
+    for _ in 0..32 {
+        let (output, gate) = GateOutput::new();
+        session.play(source.source(), output).unwrap();
+        assert!(gate.wait_for_calls(1));
+
+        let waiter = Arc::new(session.completion());
+        let barrier = Arc::new(Barrier::new(3));
+        let (result_tx, result_rx) = mpsc::channel();
+        let poll_barrier = Arc::clone(&barrier);
+        let poll_waiter = Arc::clone(&waiter);
+        let poll_thread = thread::spawn(move || {
+            let mut future = Box::pin(poll_waiter.wait_async());
+            let signal = Arc::new(TestWaker::default());
+            let waker = Waker::from(Arc::clone(&signal));
+            poll_barrier.wait();
+
+            let state = match poll_completion(future.as_mut(), &waker) {
+                Poll::Ready(state) => state,
+                Poll::Pending => {
+                    if !signal.wait_for_wakes(1) {
+                        return Err("completion wake was missed");
+                    }
+                    match poll_completion(future.as_mut(), &waker) {
+                        Poll::Ready(state) => state,
+                        Poll::Pending => return Err("woken completion future stayed pending"),
+                    }
+                }
+            };
+
+            result_tx.send(state).unwrap();
+            Ok(())
+        });
+
+        let stop_barrier = Arc::clone(&barrier);
+        let stop_session = Arc::clone(&session);
+        let stop_thread = thread::spawn(move || {
+            stop_barrier.wait();
+            stop_session.stop()
+        });
+
+        barrier.wait();
+
+        assert!(stop_thread.join().unwrap().is_ok());
+        poll_thread.join().unwrap().unwrap();
+        assert_eq!(result_rx.recv().unwrap(), PlaybackState::Stopped);
+    }
+}
+
+#[test]
 fn pause_resume_stop_and_repeated_operation_transitions_are_typed() {
     let source = TempWave::constant(96_000, 4096);
     let session = Arc::new(PlaybackSession::new());
@@ -317,5 +570,105 @@ fn pause_immediately_after_play_does_not_abandon_a_starting_worker() {
             result.is_ok(),
             "worker must acknowledge pause after play returns"
         );
+    }
+}
+
+#[test]
+#[ignore = "process resource audit; run alone with --ignored --nocapture --test-threads=1"]
+fn resource_audit_native_lifecycle_releases_threads_handles_and_session_owners() {
+    const CYCLES: usize = 3_000;
+
+    fn cycle(source: &TempWave, mode: usize) {
+        let session = PlaybackSession::new();
+        let owner = Arc::downgrade(&session.shared);
+
+        match mode {
+            0 => {
+                let output = NullOutput::new();
+                let stats = output.stats_handle();
+                session.play(source.source(), output).unwrap();
+                assert_eq!(session.wait(), PlaybackState::Completed);
+                assert_eq!(stats.snapshot().sample_frames_received, 960);
+                assert!(stats.snapshot().finished_successfully);
+                session.stop().unwrap();
+            }
+            1 => {
+                let (output, gate) = GateOutput::new();
+                session.play(source.source(), output).unwrap();
+                assert!(gate.wait_for_calls(1));
+
+                let waiter = session.completion();
+                let mut completion = Box::pin(waiter.wait_async());
+                let signal = Arc::new(TestWaker::default());
+                let waker = Waker::from(Arc::clone(&signal));
+                assert_eq!(poll_completion(completion.as_mut(), &waker), Poll::Pending);
+
+                session.stop().unwrap();
+
+                assert!(signal.wait_for_wakes(1));
+                assert_eq!(
+                    poll_completion(completion.as_mut(), &waker),
+                    Poll::Ready(PlaybackState::Stopped)
+                );
+                assert_eq!(session.shared.completion_waiters.len(), 0);
+            }
+            _ => {
+                assert!(
+                    session
+                        .play(
+                            InputSource::file(source.path.with_extension("missing")),
+                            NullOutput::new()
+                        )
+                        .is_err()
+                );
+                assert_eq!(session.state(), PlaybackState::Failed);
+                session.stop().unwrap();
+            }
+        }
+
+        assert!(lock(&session.worker).is_none());
+        drop(session);
+        assert!(owner.upgrade().is_none());
+    }
+
+    let source = TempWave::constant(960, 4096);
+    for index in 0..9 {
+        cycle(&source, index % 3);
+    }
+
+    let baseline = remedia_resources::collect();
+    println!(
+        "RESOURCE_AUDIT_NATIVE {}",
+        serde_json::json!({"cycles": 0, "resources": baseline, "nativeHeapBytes": null})
+    );
+
+    for index in 0..CYCLES {
+        cycle(&source, index % 3);
+
+        if (index + 1).is_multiple_of(100) {
+            let resources = remedia_resources::collect();
+            if let (Some(before), Some(after)) = (baseline.open_handles, resources.open_handles) {
+                assert!(
+                    after <= before,
+                    "file/handle count grew after cycle {}",
+                    index + 1
+                );
+            }
+            if let (Some(before), Some(after)) =
+                (baseline.cpu.thread_count, resources.cpu.thread_count)
+            {
+                // A joined thread can briefly remain visible to the kernel's sampler.
+                assert!(
+                    after <= before + 1,
+                    "thread count grew after cycle {}",
+                    index + 1
+                );
+            }
+
+            println!(
+                "RESOURCE_AUDIT_NATIVE {}",
+                serde_json::json!({"cycles": index + 1, "resources": resources, "nativeHeapBytes": null})
+            );
+        }
     }
 }

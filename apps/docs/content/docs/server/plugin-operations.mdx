@@ -184,7 +184,9 @@ Operation requests share the guild's generation and cancellation model:
 - **Shutdown** cancels pending operations and media transfers, stops players, and waits briefly for
   transfer threads to finish before the process exits.
 - **Backpressure.** Each stream has a fixed queue (`mediaBufferBytes`, default 256 KiB). A paused or
-  slow player stops pulling from the host. Nothing buffers without bound.
+  slow player stops pulling from the host. The queue may also hold one current HTTP response chunk
+  while waiting for space, and the HTTP client and decoder keep their own buffers. Its pending-byte
+  cap is not a strict total-memory limit; the host's active-stream and media-size limits also apply.
 - **Expired grants.** If the descriptor has already expired, or redemption returns 404 (expired or
   already redeemed), the node executes the operation again once per remaining attempt, but only for
   operations marked `replaySafe`. Other operations fail with `plugin_media_expired`.

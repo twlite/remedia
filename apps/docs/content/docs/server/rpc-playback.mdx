@@ -146,3 +146,11 @@ and source revisions. Incoming `player.started` includes
 `player.completed` includes `continuation: { type: 'promoted', generation, entryId }`
 after the fade. The final source completes normally. Clients must reconcile the
 promotion without sending a second `player.play`.
+
+The server monitors these core events asynchronously. If the bounded core event queue overflows,
+it emits `player.resynchronized` with a fresh `generation`, `droppedEvents`, and a full `snapshot`
+in the same shape as `player.state`. `droppedEvents` includes both events evicted by the core queue
+and retained events omitted while the server replaces partial history with that snapshot. Clients
+should discard inferred transition history and apply the snapshot; if its `staged` field is null,
+they may need to resolve and stage the next queue entry again. This notification is only emitted
+for opted-in crossfade sessions after event loss.

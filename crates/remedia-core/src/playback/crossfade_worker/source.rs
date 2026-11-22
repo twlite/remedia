@@ -205,6 +205,7 @@ impl ActiveSource {
         };
         let stage = Arc::clone(stage);
         stage.join_finished_worker();
+        stage.buffer.release_storage();
         self.stream_eligible = decoder.opus_passthrough_rejection().is_none();
         self.pre_skip = decoder.opus_pre_skip();
         self.eligible = self.stream_eligible;

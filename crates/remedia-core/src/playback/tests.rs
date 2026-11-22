@@ -1,7 +1,10 @@
 use std::fs;
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Condvar, Mutex, mpsc};
+use std::task::{Context, Poll, Wake, Waker};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -19,6 +22,39 @@ static NEXT_TEMP_ID: AtomicUsize = AtomicUsize::new(0);
 // operations. Leave enough room for loaded hosted runners while retaining
 // a finite bound so genuine deadlocks still fail deterministically.
 const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Default)]
+struct TestWaker {
+    wakes: AtomicUsize,
+}
+
+impl TestWaker {
+    fn wait_for_wakes(&self, count: usize) -> bool {
+        let deadline = Instant::now() + TEST_TIMEOUT;
+        while self.wakes.load(Ordering::Acquire) < count && Instant::now() < deadline {
+            thread::yield_now();
+        }
+
+        self.wakes.load(Ordering::Acquire) >= count
+    }
+}
+
+impl Wake for TestWaker {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.wakes.fetch_add(1, Ordering::Release);
+    }
+}
+
+fn poll_completion<F>(future: Pin<&mut F>, waker: &Waker) -> Poll<PlaybackState>
+where
+    F: Future<Output = PlaybackState> + ?Sized,
+{
+    future.poll(&mut Context::from_waker(waker))
+}
 
 struct TempWave {
     directory: PathBuf,

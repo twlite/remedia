@@ -3,6 +3,7 @@ use std::time::Duration;
 use remedia_observability::{DiagnosticEvent, DiagnosticValue, Severity};
 
 use crate::diagnostics::{diagnostic_value, to_native_event};
+use crate::playback::native_crossfade_event;
 use crate::util::{duration_from_millis, parse_snowflake};
 
 #[test]
@@ -77,4 +78,15 @@ fn diagnostic_integers_preserve_their_full_precision() {
     assert_eq!(value.kind, "integer");
     assert_eq!(value.string_value.as_deref(), Some("18446744073709551615"));
     assert_eq!(value.number_value, None);
+}
+
+#[test]
+fn the_event_overflow_marker_reports_its_count_without_a_generation() {
+    let event = native_crossfade_event(remedia_core::CrossfadeEvent::EventsDropped { count: 70 });
+
+    assert_eq!(event.kind, "events_dropped");
+    assert_eq!(event.dropped_events, Some(70.0));
+    assert_eq!(event.generation, "0");
+    assert!(event.reason.is_none());
+    assert!(event.entry_id.is_none());
 }

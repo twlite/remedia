@@ -73,14 +73,26 @@ starting, playing, pausing, paused, or stopping returns
 `play()` with the new source and a new output value. Applications own playlists. Opted-in sessions can promote a staged next source through [crossfade playback](/docs/core/crossfade).
 
 `PlaybackSession::wait()` blocks the calling thread until the current source
-reaches a terminal state. Async adapters should capture
-`PlaybackSession::completion()` before dispatching that wait to a blocking
-worker. Its `PlaybackWaiter::wait()` remains bound to that source and returns
-`Stopped` if a replacement starts first. Adapters that cross an async scheduling
-boundary can capture `completion_generation()` synchronously and later create
-the corresponding waiter with `completion_for_generation(generation)`. The
-Node wrapper does this internally so an old completion cannot attach to a new
-track.
+reaches a terminal state. For async code, capture a
+`PlaybackSession::completion()` waiter and await `PlaybackWaiter::wait_async()`:
+
+```rust
+use remedia_core::{PlaybackSession, PlaybackState};
+
+async fn wait_for_track(session: &PlaybackSession) -> PlaybackState {
+    let waiter = session.completion();
+    waiter.wait_async().await
+}
+```
+
+The future uses Rust's standard `Future` interface, does not require a particular
+async runtime, and does not block a worker thread. It returns the same
+generation-specific state as `PlaybackWaiter::wait()`, including `Stopped` if a
+replacement starts before the waiter observes completion. Dropping a pending
+future deregisters its waker. Adapters that cross an async scheduling boundary
+can capture `completion_generation()` synchronously and later create the
+corresponding waiter with `completion_for_generation(generation)`, so an old
+completion cannot attach to a new track.
 
 ## Seeking and position
 

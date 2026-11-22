@@ -275,7 +275,7 @@ async fn pump(
                     .fetch_add(bytes.len() as u64, Ordering::Relaxed);
 
                 // Blocks while the decoder is behind; this is the backpressure point.
-                if writer.write_owned(bytes.to_vec()).is_err() {
+                if writer.write_bytes(bytes).is_err() {
                     return PumpEnd::Cancelled;
                 }
             }

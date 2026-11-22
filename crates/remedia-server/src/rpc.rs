@@ -135,10 +135,8 @@ pub(crate) async fn execute(
             // Cleanup outlives an RPC timeout or socket drop once it has started.
             let cleanup_server = Arc::clone(&server);
             let cleanup_id = id.clone();
-            let cleanup = spawn_observed(
-                async move { cleanup_server.close_client(&cleanup_id).await },
-                &server.observability,
-            );
+            let cleanup =
+                server.spawn_cleanup(async move { cleanup_server.close_client(&cleanup_id).await });
             let cleanup_result = cleanup
                 .await
                 .map_err(|_| RpcError::new("transport_failed", "session cleanup task failed"))?;
@@ -240,17 +238,15 @@ pub(crate) async fn execute(
             let cleanup_server = Arc::clone(&server);
             let cleanup_session = Arc::clone(&session);
             let cleanup_guild_id = params.guild_id.clone();
-            spawn_observed(
-                async move {
+            server
+                .spawn_cleanup(async move {
                     cleanup_server
                         .destroy_guild(&cleanup_session, &cleanup_guild_id)
                         .await
-                },
-                &server.observability,
-            )
-            .await
-            .map_err(|_| RpcError::new("transport_failed", "guild cleanup task failed"))?
-            .map_err(state_error)?;
+                })
+                .await
+                .map_err(|_| RpcError::new("transport_failed", "guild cleanup task failed"))?
+                .map_err(state_error)?;
             session.emit("guild.destroyed", json!({ "guildId": params.guild_id }));
             Ok(json!({ "destroyed": true }))
         }

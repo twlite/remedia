@@ -49,26 +49,59 @@ impl ServerHandle {
     pub async fn start(config: ServerConfig) -> Result<Self, ServerError> {
         let bind_host = config.bind_host.clone();
         let port = config.port;
-        let observability =
+        let mut observability =
             remedia_observability::Observability::new(config.observability_config()?)?;
         let shutdown = CancellationToken::new();
-        let plugin_hosts = PluginHostRegistry::new(&config.plugin_hosts, &observability.handle())
-            .map_err(|_| {
-            ServerError::Configuration(ConfigError::Invalid(
-                "pluginHosts HTTP client could not be initialized",
-            ))
-        })?;
+        let plugin_hosts =
+            match PluginHostRegistry::new(&config.plugin_hosts, &observability.handle()) {
+                Ok(plugin_hosts) => plugin_hosts,
+                Err(_) => {
+                    if let Err(error) = observability.shutdown() {
+                        tracing::warn!(
+                            name: "server.start.cleanup_failed",
+                            target: "remedia_server::lifecycle",
+                            error = %error,
+                            "observability cleanup failed after plugin host initialization failed"
+                        );
+                    }
+                    return Err(ServerError::Configuration(ConfigError::Invalid(
+                        "pluginHosts HTTP client could not be initialized",
+                    )));
+                }
+            };
         let inner = new_inner(config, plugin_hosts, observability, shutdown);
         let listener = match TcpListener::bind((bind_host.as_str(), port)).await {
             Ok(listener) => listener,
             Err(error) => {
-                if let Some(mut observability) = lock(&inner.observability_owner).take() {
-                    let _ = observability.shutdown();
+                if let Some(mut observability) = lock(&inner.observability_owner).take()
+                    && let Err(cleanup_error) = observability.shutdown()
+                {
+                    tracing::warn!(
+                        name: "server.start.cleanup_failed",
+                        target: "remedia_server::lifecycle",
+                        error = %cleanup_error,
+                        "observability cleanup failed after listener binding failed"
+                    );
                 }
                 return Err(ServerError::Io(error));
             }
         };
-        let local_addr = listener.local_addr()?;
+        let local_addr = match listener.local_addr() {
+            Ok(address) => address,
+            Err(error) => {
+                if let Some(mut observability) = lock(&inner.observability_owner).take()
+                    && let Err(cleanup_error) = observability.shutdown()
+                {
+                    tracing::warn!(
+                        name: "server.start.cleanup_failed",
+                        target: "remedia_server::lifecycle",
+                        error = %cleanup_error,
+                        "observability cleanup failed after listener address lookup failed"
+                    );
+                }
+                return Err(ServerError::Io(error));
+            }
+        };
         inner.start_plugin_hosts();
         let task_inner = Arc::clone(&inner);
         let accept = async move { accept_loop(task_inner, listener).await };
@@ -99,15 +132,27 @@ impl ServerHandle {
     pub async fn shutdown(&self) -> Result<(), ServerError> {
         self.inner.shutdown.cancel();
         let task = lock(&self.task).take();
-        if let Some(task) = task {
-            task.await
-                .map_err(|error| ServerError::Task(error.to_string()))??;
-        }
+        let task_result = match task {
+            Some(task) => task
+                .await
+                .map_err(|error| ServerError::Task(error.to_string()))
+                .and_then(|result| result),
+            None => Ok(()),
+        };
+
         self.inner.shutdown().await;
-        if let Some(mut observability) = lock(&self.inner.observability_owner).take() {
-            observability.force_flush()?;
-            observability.shutdown()?;
-        }
+
+        let observability_result =
+            if let Some(mut observability) = lock(&self.inner.observability_owner).take() {
+                let flush_result = observability.force_flush();
+                let shutdown_result = observability.shutdown();
+                flush_result.and(shutdown_result).map_err(ServerError::from)
+            } else {
+                Ok(())
+            };
+
+        task_result?;
+        observability_result?;
         Ok(())
     }
 }
@@ -120,16 +165,35 @@ impl Drop for ServerHandle {
 
 async fn accept_loop(inner: Arc<ServerInner>, listener: TcpListener) -> Result<(), ServerError> {
     let mut connections = JoinSet::new();
+    let mut accept_error = None;
     loop {
         tokio::select! {
             _ = inner.shutdown.cancelled() => break,
-            Some(_) = connections.join_next(), if !connections.is_empty() => {},
+            Some(result) = connections.join_next(), if !connections.is_empty() => {
+                if let Err(error) = result {
+                    tracing::error!(
+                        name: "server.connection_task.failed",
+                        target: "remedia_server::lifecycle",
+                        error = %error,
+                        "WebSocket connection task failed"
+                    );
+                }
+            },
             accepted = listener.accept() => {
-                let (stream, _) = accepted?;
+                let (stream, _) = match accepted {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        accept_error = Some(error);
+                        break;
+                    }
+                };
                 let permit = match Arc::clone(&inner.connection_slots).try_acquire_owned() {
                     Ok(permit) => permit,
                     Err(_) => {
-                        reject_busy(stream).await;
+                        tokio::select! {
+                            _ = inner.shutdown.cancelled() => break,
+                            _ = reject_busy(stream) => {},
+                        }
                         continue;
                     }
                 };
@@ -145,9 +209,18 @@ async fn accept_loop(inner: Arc<ServerInner>, listener: TcpListener) -> Result<(
     }
 
     inner.shutdown.cancel();
-    while connections.join_next().await.is_some() {}
+    while let Some(result) = connections.join_next().await {
+        if let Err(error) = result {
+            tracing::error!(
+                name: "server.connection_task.failed",
+                target: "remedia_server::lifecycle",
+                error = %error,
+                "WebSocket connection task failed during shutdown"
+            );
+        }
+    }
     inner.shutdown().await;
-    Ok(())
+    accept_error.map_or(Ok(()), |error| Err(ServerError::Io(error)))
 }
 
 async fn reject_busy(mut stream: TcpStream) {
@@ -171,17 +244,19 @@ async fn handle_connection(
     websocket_config.max_message_size = Some(config.limits.max_message_bytes);
     websocket_config.max_frame_size = Some(config.limits.max_message_bytes);
     let request_timeout = Duration::from_millis(config.limits.request_timeout_ms);
-    let websocket = tokio::time::timeout(
-        request_timeout,
-        accept_hdr_async_with_config(
-            stream,
-            move |request: &Request, response: Response| {
-                authorize_handshake(request, response, &config, &handshake_auth)
-            },
-            Some(websocket_config),
-        ),
-    )
-    .await;
+    let websocket = tokio::select! {
+        _ = inner.shutdown.cancelled() => return,
+        result = tokio::time::timeout(
+            request_timeout,
+            accept_hdr_async_with_config(
+                stream,
+                move |request: &Request, response: Response| {
+                    authorize_handshake(request, response, &config, &handshake_auth)
+                },
+                Some(websocket_config),
+            ),
+        ) => result,
+    };
     let Ok(Ok(websocket)) = websocket else {
         return;
     };
@@ -191,6 +266,7 @@ async fn handle_connection(
     inner
         .active_connections
         .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    let _active_connection = ActiveConnectionGuard(Arc::clone(&inner));
     let connection_id = crate::state::opaque_id(16);
     let connection = Arc::new(ConnectionContext::new(
         connection_id.clone(),
@@ -215,16 +291,36 @@ async fn handle_connection(
     let connection_cancel = CancellationToken::new();
     let writer_cancel = connection_cancel.clone();
     let writer_task = tokio::spawn(async move {
+        let mut interrupted = false;
         loop {
             tokio::select! {
-                _ = writer_cancel.cancelled() => break,
+                _ = writer_cancel.cancelled() => {
+                    interrupted = true;
+                    break;
+                }
                 message = outbound_rx.recv() => match message {
-                    Some(message) => if writer.send(message).await.is_err() { break; },
+                    Some(message) => {
+                        let sent = tokio::select! {
+                            _ = writer_cancel.cancelled() => {
+                                interrupted = true;
+                                None
+                            }
+                            result = writer.send(message) => Some(result),
+                        };
+                        if sent.is_none() || sent.is_some_and(|result| result.is_err()) {
+                            break;
+                        }
+                    }
                     None => break,
                 }
             }
         }
-        let _ = writer.close().await;
+        if !interrupted {
+            tokio::select! {
+                _ = writer_cancel.cancelled() => {},
+                _ = writer.close() => {},
+            }
+        }
     });
     let event_task = tokio::spawn(forward_events(
         connection.active_session.subscribe(),
@@ -232,6 +328,7 @@ async fn handle_connection(
         connection_cancel.clone(),
     ));
     let in_flight = Arc::new(Semaphore::new(inner.config.limits.max_in_flight_requests));
+    let mut requests = JoinSet::new();
     let request_timeout = Duration::from_millis(inner.config.limits.request_timeout_ms);
     // A voice join includes WebSocket, UDP and mandatory DAVE setup. Do not apply
     // the ordinary RPC deadline to it, or the caller can leave the guild before
@@ -242,6 +339,17 @@ async fn handle_connection(
         tokio::select! {
             _ = inner.shutdown.cancelled() => break,
             _ = connection_cancel.cancelled() => break,
+            Some(result) = requests.join_next(), if !requests.is_empty() => {
+                if let Err(error) = result && !error.is_cancelled() {
+                    tracing::error!(
+                        name: "server.rpc.task.failed",
+                        target: "remedia_server::lifecycle",
+                        connection_id = connection.id.as_str(),
+                        error = %error,
+                        "RPC request task failed"
+                    );
+                }
+            },
             incoming = reader.next() => {
                 let Some(incoming) = incoming else { break };
                 match incoming {
@@ -252,13 +360,13 @@ async fn handle_connection(
                             Err(error) => {
                                 let id = extract_request_id(&payload);
                                 let response = RpcResponse::failure(id.clone(), error.code, error.message);
-                                if send_response(&outbound_tx, response).await.is_err() { break; }
+                                if send_response_cancellable(&outbound_tx, response, &connection_cancel, &inner.shutdown).await.is_err() { break; }
                                 continue;
                             }
                         };
                         if !connection.allows_request(inner.config.limits.max_requests_per_second) {
                             let response = RpcResponse::failure(Some(request.id), "resource_exhausted", "request rate limit exceeded");
-                            if send_response(&outbound_tx, response).await.is_err() { break; }
+                            if send_response_cancellable(&outbound_tx, response, &connection_cancel, &inner.shutdown).await.is_err() { break; }
                             continue;
                         }
                         // Cancellation must remain available even when all worker slots are occupied.
@@ -268,14 +376,14 @@ async fn handle_connection(
                                 Ok(result) => RpcResponse::success(id, result),
                                 Err(error) => RpcResponse::failure(id, error.code, error.message),
                             };
-                            if send_response(&outbound_tx, response).await.is_err() { break; }
+                            if send_response_cancellable(&outbound_tx, response, &connection_cancel, &inner.shutdown).await.is_err() { break; }
                             continue;
                         }
                         let permit = match Arc::clone(&in_flight).try_acquire_owned() {
                             Ok(permit) => permit,
                             Err(_) => {
                                 let response = RpcResponse::failure(Some(request.id), "resource_exhausted", "too many requests are in flight");
-                                if send_response(&outbound_tx, response).await.is_err() { break; }
+                                if send_response_cancellable(&outbound_tx, response, &connection_cancel, &inner.shutdown).await.is_err() { break; }
                                 continue;
                             }
                         };
@@ -289,7 +397,7 @@ async fn handle_connection(
                             };
                             if duplicate {
                                 let response = RpcResponse::failure(Some(request.id), "invalid_request", "probe request ID is already active");
-                                if send_response(&outbound_tx, response).await.is_err() { break; }
+                                if send_response_cancellable(&outbound_tx, response, &connection_cancel, &inner.shutdown).await.is_err() { break; }
                                 continue;
                             }
                         }
@@ -303,7 +411,7 @@ async fn handle_connection(
                             };
                             if duplicate {
                                 let response = RpcResponse::failure(Some(request.id), "invalid_request", "plugin request ID is already active");
-                                if send_response(&outbound_tx, response).await.is_err() { break; }
+                                if send_response_cancellable(&outbound_tx, response, &connection_cancel, &inner.shutdown).await.is_err() { break; }
                                 continue;
                             }
                         }
@@ -311,7 +419,7 @@ async fn handle_connection(
                         let connection = Arc::clone(&connection);
                         let outbound = outbound_tx.clone();
                         let dispatch = inner.observability.dispatch().cloned();
-                        tokio::spawn(async move {
+                        requests.spawn(async move {
                             let _permit = permit;
                             let id = Some(request.id.clone());
                             let command_name = request.command.clone();
@@ -343,12 +451,22 @@ async fn handle_connection(
                         });
                     }
                     Ok(Message::Ping(payload)) => {
-                        if outbound_tx.send(Message::Pong(payload)).await.is_err() { break; }
+                        if send_message_cancellable(
+                            &outbound_tx,
+                            Message::Pong(payload),
+                            &connection_cancel,
+                            &inner.shutdown,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            break;
+                        }
                     }
                     Ok(Message::Close(_)) => break,
                     Ok(Message::Binary(_)) => {
                         let response = RpcResponse::failure(None, "invalid_request", "only text JSON RPC messages are supported");
-                        if send_response(&outbound_tx, response).await.is_err() { break; }
+                        if send_response_cancellable(&outbound_tx, response, &connection_cancel, &inner.shutdown).await.is_err() { break; }
                     }
                     Ok(Message::Pong(_)) => {}
                     Err(_) => break,
@@ -363,21 +481,58 @@ async fn handle_connection(
     }
     connection_cancel.cancel();
     connection.closed.cancel();
+    requests.abort_all();
+    while let Some(result) = requests.join_next().await {
+        if let Err(error) = result
+            && !error.is_cancelled()
+        {
+            tracing::error!(
+                name: "server.rpc.task.failed",
+                target: "remedia_server::lifecycle",
+                connection_id = connection.id.as_str(),
+                error = %error,
+                "RPC request task failed during connection shutdown"
+            );
+        }
+    }
     if let Some(session) = connection.session() {
         inner.detach_client(session, &connection.id);
     }
     let _ = outbound_tx.send(Message::Close(None)).await;
-    let _ = event_task.await;
-    let _ = writer_task.await;
-    inner
-        .active_connections
-        .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    if let Err(error) = event_task.await {
+        tracing::error!(
+            name: "server.event_task.failed",
+            target: "remedia_server::lifecycle",
+            connection_id = connection.id.as_str(),
+            error = %error,
+            "WebSocket event forwarding task failed"
+        );
+    }
+    if let Err(error) = writer_task.await {
+        tracing::error!(
+            name: "server.writer_task.failed",
+            target: "remedia_server::lifecycle",
+            connection_id = connection.id.as_str(),
+            error = %error,
+            "WebSocket writer task failed"
+        );
+    }
     tracing::info!(
         name: "server.websocket.disconnected",
         target: "remedia_server::connection",
         connection_id = connection.id.as_str(),
         "WebSocket connection closed"
     );
+}
+
+struct ActiveConnectionGuard(Arc<ServerInner>);
+
+impl Drop for ActiveConnectionGuard {
+    fn drop(&mut self) {
+        self.0
+            .active_connections
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
 }
 
 // The protocol API requires an HTTP Response body in the `Err` variant.
@@ -497,6 +652,29 @@ async fn send_response(outbound: &mpsc::Sender<Message>, response: RpcResponse) 
         .send(Message::Text(text.into()))
         .await
         .map_err(|_| ())
+}
+
+async fn send_response_cancellable(
+    outbound: &mpsc::Sender<Message>,
+    response: RpcResponse,
+    cancellation: &CancellationToken,
+    shutdown: &CancellationToken,
+) -> Result<(), ()> {
+    let text = serde_json::to_string(&response).map_err(|_| ())?;
+    send_message_cancellable(outbound, Message::Text(text.into()), cancellation, shutdown).await
+}
+
+async fn send_message_cancellable(
+    outbound: &mpsc::Sender<Message>,
+    message: Message,
+    cancellation: &CancellationToken,
+    shutdown: &CancellationToken,
+) -> Result<(), ()> {
+    tokio::select! {
+        _ = cancellation.cancelled() => Err(()),
+        _ = shutdown.cancelled() => Err(()),
+        result = outbound.send(message) => result.map_err(|_| ()),
+    }
 }
 
 fn extract_request_id(payload: &str) -> Option<String> {

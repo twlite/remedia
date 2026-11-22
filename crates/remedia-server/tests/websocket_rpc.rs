@@ -10,7 +10,7 @@ use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_tungstenite::{WebSocketStream, connect_async, tungstenite};
 
-use remedia_server::{ServerConfig, ServerHandle};
+use remedia_server::{ServerConfig, ServerError, ServerHandle};
 
 static NEXT_CONFIG: AtomicU64 = AtomicU64::new(1);
 const BOT_A_ID: &str = "100000000000000001";

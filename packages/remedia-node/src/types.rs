@@ -103,4 +103,15 @@ pub struct NativeCrossfadeEvent {
     pub remaining_ms: Option<f64>,
     pub reason: Option<String>,
     pub info: Option<NativeStreamInfo>,
+    /// Number of older events evicted from the bounded queue; set only for `events_dropped`.
+    pub dropped_events: Option<f64>,
+}
+
+/// Identity of a staged queue occurrence, as promoted into the active source.
+#[napi(object)]
+pub struct NativeStageIdentity {
+    pub expected_generation: String,
+    pub entry_id: String,
+    pub queue_revision: String,
+    pub source_revision: String,
 }

@@ -88,17 +88,20 @@ pub(super) fn handle_commands(
                     {
                         let mut state = lock(&shared.data);
                         state.source_generation = fade.previous_generation;
+                        state.active_stage = fade.previous_active_stage.clone();
                         state.info = Some(fade.outgoing_info.clone());
                         state.duration = fade.outgoing_info.duration;
                     }
-                    shared.publish(CrossfadeEvent::TransitionCancelled {
+                    shared.publish_crossfade_event(CrossfadeEvent::TransitionCancelled {
                         outgoing_generation: fade.previous_generation,
                         incoming_generation: fade.incoming_generation,
                         identity: fade.identity.clone(),
                     });
                 }
-                if let Some(stage) = lock(stage_slot).take() {
-                    shared.publish(CrossfadeEvent::StageInvalidated {
+                let stage = { lock(stage_slot).take() };
+
+                if let Some(stage) = stage {
+                    shared.publish_crossfade_event(CrossfadeEvent::StageInvalidated {
                         identity: stage.identity.clone(),
                     });
                     stage.cancel_and_join();
@@ -128,7 +131,7 @@ pub(super) fn handle_commands(
                 state.latest_stage = None;
                 let generation = state.source_generation;
                 drop(state);
-                shared.publish(CrossfadeEvent::TimelineChanged {
+                shared.publish_crossfade_event(CrossfadeEvent::TimelineChanged {
                     previous_generation,
                     generation,
                     position_ms: request.position.as_millis() as u64,

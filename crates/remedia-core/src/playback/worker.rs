@@ -919,9 +919,10 @@ pub(super) fn worker_loop(
                 match output.finish(&cancellation) {
                     Ok(()) => {
                         let played = safe_played_position(&output);
-                        let (pending_seek, pending_filter) = {
+                        let (pending_seek, pending_filter, completed) = {
                             let mut data = lock(&shared.data);
-                            let pending = if data.generation == generation && !data.stopping {
+                            let completed = data.generation == generation && !data.stopping;
+                            let pending = if completed {
                                 data.played_position = played.or(data.played_position);
                                 data.state = PlaybackState::Completed;
                                 (data.pending_seek.take(), data.pending_filter_graph.take())
@@ -929,8 +930,12 @@ pub(super) fn worker_loop(
                                 (None, None)
                             };
                             shared.changed.notify_all();
-                            pending
+                            (pending.0, pending.1, completed)
                         };
+                        if completed {
+                            shared.notify_completion_waiters();
+                            shared.notify_crossfade_events();
+                        }
                         if let Some(request) = pending_seek {
                             let _ = request.response.send(Err(PlaybackError::InvalidState {
                                 operation: "seek",
