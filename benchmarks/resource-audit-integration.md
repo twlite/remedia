@@ -139,3 +139,22 @@ python3 benchmarks/playback.py \
   --fixtures /tmp/remedia-audit-fixtures/music60.opus,/tmp/remedia-audit-fixtures/music60.mp3,/tmp/remedia-audit-fixtures/music60.m4a \
   --workloads passthrough --pacing unpaced
 ```
+
+## Original-main controls and filter baseline
+
+The controls workload completed 42 fresh-process cases: volume and tremolo filtering at the seven
+concurrency levels, three repetitions each. Every case completed playback and all explicit
+pause/seek/resume calls succeeded. Its initial seek deliberately starts at 100 ms, and some samples
+can be emitted before the initial pause; submitted audio therefore varies slightly rather than
+being exactly 60 seconds. Raw `audio_s` and packet totals are retained, and comparisons must
+normalize CPU by the work actually delivered. These rows cannot be compared as an identical-packet
+workload without accounting for that difference.
+
+Raw rows: [resource-audit-main-controls.jsonl](data/resource-audit-main-controls.jsonl). The invocation
+used the codec command above with `--fixtures /tmp/remedia-audit-fixtures/music60.opus`,
+`--workloads volume,filter`, and `--controls`. It uses the same process sampling limitations.
+
+The subsequent paced seek/transition/stream sweep runs sequentially after this workload.
+The existing paced harness ignores some failed random-seek/stage attempts; its output alone
+cannot prove that every attempted operation succeeded. Deterministic lifecycle and transition
+regression tests remain necessary, and the final comparison must account for this measurement limit.
