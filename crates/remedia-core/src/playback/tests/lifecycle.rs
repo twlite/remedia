@@ -77,6 +77,55 @@ fn async_completion_waiter_is_send_and_wakes_on_natural_completion() {
 }
 
 #[test]
+fn replaced_completion_waker_is_dropped_outside_playback_locks() {
+    struct DropProbe {
+        shared: std::sync::Weak<SessionShared>,
+        unlocked: Arc<AtomicBool>,
+    }
+
+    impl Wake for DropProbe {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            let shared = self.shared.upgrade().unwrap();
+            self.unlocked
+                .store(shared.data.try_lock().is_ok(), Ordering::Release);
+        }
+    }
+
+    let source = TempWave::constant(48_000, 4096);
+    let session = PlaybackSession::new();
+    let (output, gate) = GateOutput::new();
+    session.play(source.source(), output).unwrap();
+    assert!(gate.wait_for_calls(1));
+
+    let waiter = session.completion();
+    let mut future = Box::pin(waiter.wait_async());
+    let unlocked = Arc::new(AtomicBool::new(false));
+    let first = Waker::from(Arc::new(DropProbe {
+        shared: Arc::downgrade(&session.shared),
+        unlocked: Arc::clone(&unlocked),
+    }));
+    assert_eq!(poll_completion(future.as_mut(), &first), Poll::Pending);
+    drop(first);
+
+    let replacement = Waker::from(Arc::new(TestWaker::default()));
+    assert_eq!(
+        poll_completion(future.as_mut(), &replacement),
+        Poll::Pending
+    );
+    assert!(unlocked.load(Ordering::Acquire));
+
+    session.stop().unwrap();
+    assert_eq!(
+        poll_completion(future.as_mut(), &replacement),
+        Poll::Ready(PlaybackState::Stopped)
+    );
+}
+
+#[test]
 fn async_completion_waiters_support_multiple_cancellations() {
     let source = TempWave::constant(48_000, 4096);
     let session = PlaybackSession::new();
@@ -518,5 +567,105 @@ fn pause_immediately_after_play_does_not_abandon_a_starting_worker() {
             result.is_ok(),
             "worker must acknowledge pause after play returns"
         );
+    }
+}
+
+#[test]
+#[ignore = "process resource audit; run alone with --ignored --nocapture --test-threads=1"]
+fn resource_audit_native_lifecycle_releases_threads_handles_and_session_owners() {
+    const CYCLES: usize = 3_000;
+
+    fn cycle(source: &TempWave, mode: usize) {
+        let session = PlaybackSession::new();
+        let owner = Arc::downgrade(&session.shared);
+
+        match mode {
+            0 => {
+                let output = NullOutput::new();
+                let stats = output.stats_handle();
+                session.play(source.source(), output).unwrap();
+                assert_eq!(session.wait(), PlaybackState::Completed);
+                assert_eq!(stats.snapshot().sample_frames_received, 960);
+                assert!(stats.snapshot().finished_successfully);
+                session.stop().unwrap();
+            }
+            1 => {
+                let (output, gate) = GateOutput::new();
+                session.play(source.source(), output).unwrap();
+                assert!(gate.wait_for_calls(1));
+
+                let waiter = session.completion();
+                let mut completion = Box::pin(waiter.wait_async());
+                let signal = Arc::new(TestWaker::default());
+                let waker = Waker::from(Arc::clone(&signal));
+                assert_eq!(poll_completion(completion.as_mut(), &waker), Poll::Pending);
+
+                session.stop().unwrap();
+
+                assert!(signal.wait_for_wakes(1));
+                assert_eq!(
+                    poll_completion(completion.as_mut(), &waker),
+                    Poll::Ready(PlaybackState::Stopped)
+                );
+                assert_eq!(session.shared.completion_waiters.len(), 0);
+            }
+            _ => {
+                assert!(
+                    session
+                        .play(
+                            InputSource::file(source.path.with_extension("missing")),
+                            NullOutput::new()
+                        )
+                        .is_err()
+                );
+                assert_eq!(session.state(), PlaybackState::Failed);
+                session.stop().unwrap();
+            }
+        }
+
+        assert!(lock(&session.worker).is_none());
+        drop(session);
+        assert!(owner.upgrade().is_none());
+    }
+
+    let source = TempWave::constant(960, 4096);
+    for index in 0..9 {
+        cycle(&source, index % 3);
+    }
+
+    let baseline = remedia_resources::collect();
+    println!(
+        "RESOURCE_AUDIT_NATIVE {}",
+        serde_json::json!({"cycles": 0, "resources": baseline, "nativeHeapBytes": null})
+    );
+
+    for index in 0..CYCLES {
+        cycle(&source, index % 3);
+
+        if (index + 1).is_multiple_of(100) {
+            let resources = remedia_resources::collect();
+            if let (Some(before), Some(after)) = (baseline.open_handles, resources.open_handles) {
+                assert!(
+                    after <= before,
+                    "file/handle count grew after cycle {}",
+                    index + 1
+                );
+            }
+            if let (Some(before), Some(after)) =
+                (baseline.cpu.thread_count, resources.cpu.thread_count)
+            {
+                // A joined thread can briefly remain visible to the kernel's sampler.
+                assert!(
+                    after <= before + 1,
+                    "thread count grew after cycle {}",
+                    index + 1
+                );
+            }
+
+            println!(
+                "RESOURCE_AUDIT_NATIVE {}",
+                serde_json::json!({"cycles": index + 1, "resources": resources, "nativeHeapBytes": null})
+            );
+        }
     }
 }

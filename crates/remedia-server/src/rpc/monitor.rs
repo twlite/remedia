@@ -181,10 +181,13 @@ fn spawn_crossfade_monitor(
     generation: u64,
     core_generation: u64,
 ) {
+    // Capture before scheduling: native workers can publish transitions while the
+    // monitor task is waiting to be polled. Its initial mapping belongs to this source.
+    let generations = RpcGenerationTracker::new(guild.playback.source_generation(), generation);
+
     tokio::spawn(async move {
         let mut revision = guild.playback.crossfade_events_revision();
-        let mut generations =
-            RpcGenerationTracker::new(guild.playback.source_generation(), generation);
+        let mut generations = generations;
 
         loop {
             if guild.closed.load(Ordering::Acquire)

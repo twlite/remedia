@@ -88,14 +88,10 @@ impl CrossfadeEventSignal {
             let mut state = self.lock();
             state.revision = state.revision.wrapping_add(1);
 
-            if state.waiters.is_empty() {
-                Vec::new()
-            } else {
-                state.waiters.drain().map(|(_, waker)| waker).collect()
-            }
+            std::mem::take(&mut state.waiters)
         };
 
-        for waiter in waiters {
+        for (_, waiter) in waiters {
             waiter.wake();
         }
     }
@@ -111,14 +107,10 @@ impl CrossfadeEventSignal {
             state.disposed = true;
             state.revision = state.revision.wrapping_add(1);
 
-            if state.waiters.is_empty() {
-                Vec::new()
-            } else {
-                state.waiters.drain().map(|(_, waker)| waker).collect()
-            }
+            std::mem::take(&mut state.waiters)
         };
 
-        for waiter in waiters {
+        for (_, waiter) in waiters {
             waiter.wake();
         }
     }
@@ -135,6 +127,9 @@ impl CrossfadeEventSignal {
             let removed_waker = waiter_id
                 .take()
                 .and_then(|waiter_id| state.waiters.remove(&waiter_id));
+            if state.waiters.is_empty() {
+                state.waiters.shrink_to_fit();
+            }
             let revision = state.revision;
             drop(state);
             drop(removed_waker);
@@ -175,7 +170,11 @@ impl CrossfadeEventSignal {
     fn remove_waiter(&self, waiter_id: u64) {
         let removed_waker = {
             let mut state = self.lock();
-            state.waiters.remove(&waiter_id)
+            let removed = state.waiters.remove(&waiter_id);
+            if state.waiters.is_empty() {
+                state.waiters.shrink_to_fit();
+            }
+            removed
         };
 
         drop(removed_waker);
@@ -376,6 +375,38 @@ mod tests {
 
         drop(wait);
         assert_eq!(signal.waiter_count(), 0);
+    }
+
+    #[test]
+    fn large_waiter_batches_release_registry_storage_after_cancellation_and_notification() {
+        let signal = Arc::new(CrossfadeEventSignal::default());
+        let wake = Arc::new(CountWake(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&wake));
+        let mut context = Context::from_waker(&waker);
+
+        for notify in [false, true] {
+            let mut waits = (0..512)
+                .map(|_| CrossfadeEventsWait {
+                    signal: Arc::clone(&signal),
+                    requested_revision: signal.revision(),
+                    waiter_id: None,
+                })
+                .collect::<Vec<_>>();
+
+            for wait in &mut waits {
+                assert!(Pin::new(wait).poll(&mut context).is_pending());
+            }
+            assert_eq!(signal.waiter_count(), 512);
+
+            if notify {
+                signal.notify();
+                assert_eq!(wake.0.load(Ordering::SeqCst), 512);
+            }
+            drop(waits);
+
+            assert_eq!(signal.waiter_count(), 0);
+            assert_eq!(signal.lock().waiters.capacity(), 0);
+        }
     }
 
     #[test]

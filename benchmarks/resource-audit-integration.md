@@ -236,3 +236,37 @@ The new `write_bytes` Rustdoc example also passed independently. On this host ru
 accept rustc's `-l c++` option directly: `RUSTDOCFLAGS` used the same native search paths with
 `-C link-arg=-lc++`, alongside the existing `RUSTFLAGS` native settings. This was a command-local
 linking correction, without changes to installed dependencies or the distributed build.
+
+## Crossfade integration review and native lifecycle stress
+
+The orchestrator reviewed event publication sites for state/stage lock release before callbacks,
+overflow reconciliation, and generation retirement after seeks, promotions and cancellations.
+The monitor now captures its initial source mapping before scheduling its task, so queued
+transitions do not replace that initial identity before its first poll. Empty revision-waiter
+registries release peak storage, and notification takes their existing map instead of allocating
+a second temporary vector. A 512-waiter cancellation/notification test checks registry release.
+Completion-waker replacement and removal now drop old wakers outside state/registry locks; a
+reentrant-drop regression checks that playback state is unlocked when the waker is destroyed.
+
+Independent core/server checks passed: 251 core unit tests, 35 decoder integration tests, one
+diagnostics test, the public byte-stream doctest, and 112 server tests. Manual audit workloads
+were ignored by the ordinary test run and invoked separately. The Node crate still requires its
+owned adapter update for the new `EventsDropped` variant; a complete workspace check must wait
+for that integration. Rust exhaustive event matches require a new arm, as documented.
+
+The release native lifecycle workload ran 3000 create/play/stop/drop cycles in one process: 1000
+natural completions, 1000 cancellations with a pending async completion waiter, and 1000 failed
+startups. Each natural completion submitted all 960 expected sample frames per channel; every
+cycle released its worker and its session owner's weak reference became unupgradeable. After
+warmup and after all 3000 cycles, the process had two threads and three open handles. Intermediate
+100-cycle snapshots stayed within the test's handle/thread bounds. RSS rose from 15,450,112 to
+15,843,328 bytes and footprint from 4,375,080 to 4,669,992 bytes; these process measurements do
+not inventory native allocations and do not prove or disprove allocator caching. Native heap
+bytes were unmeasured. Raw snapshots:
+[resource-audit-native-lifecycle.jsonl](data/resource-audit-native-lifecycle.jsonl).
+
+```sh
+cargo test --release -p remedia-core --lib --locked \
+  resource_audit_native_lifecycle_releases_threads_handles_and_session_owners \
+  -- --ignored --nocapture --test-threads=1
+```

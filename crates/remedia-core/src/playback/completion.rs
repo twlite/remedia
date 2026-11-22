@@ -24,7 +24,7 @@ impl CompletionWaiters {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn register(&self, registration: &mut Option<u64>, waker: &Waker) {
+    fn register(&self, registration: &mut Option<u64>, waker: &Waker) -> Option<Waker> {
         let mut registry = self.registry();
         let id = match registration {
             Some(id) => *id,
@@ -42,20 +42,27 @@ impl CompletionWaiters {
         };
 
         match registry.waiters.get_mut(&id) {
-            Some(previous) if !previous.will_wake(waker) => *previous = waker.clone(),
-            Some(_) => {}
+            Some(previous) if !previous.will_wake(waker) => {
+                Some(std::mem::replace(previous, waker.clone()))
+            }
+            Some(_) => None,
             None => {
                 registry.waiters.insert(id, waker.clone());
+                None
             }
         }
     }
 
     fn unregister(&self, registration: u64) {
-        let mut registry = self.registry();
-        registry.waiters.remove(&registration);
-        if registry.waiters.is_empty() {
-            registry.waiters.shrink_to_fit();
-        }
+        let removed = {
+            let mut registry = self.registry();
+            let removed = registry.waiters.remove(&registration);
+            if registry.waiters.is_empty() {
+                registry.waiters.shrink_to_fit();
+            }
+            removed
+        };
+        drop(removed);
     }
 
     fn wake_all(&self) {
@@ -126,11 +133,13 @@ impl Future for CompletionWait<'_> {
 
         // Keep the state lock while registering. A terminal publisher takes the
         // same lock before it releases the state and wakes registered futures.
-        this.waiter
+        let previous_waker = this
+            .waiter
             .shared
             .completion_waiters
             .register(&mut this.registration, context.waker());
         drop(data);
+        drop(previous_waker);
 
         Poll::Pending
     }

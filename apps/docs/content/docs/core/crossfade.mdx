@@ -194,6 +194,7 @@ Crossfade events are retained in a lazily allocated queue capped at 64 events. I
 newest retained events. The count is the number evicted since the previous drain. On this marker,
 ignore the rest of that batch and rebuild state from `PlaybackSession::state()`,
 `source_generation()` and `staged_source()`; queued transition history may no longer be complete.
+Rust consumers with an exhaustive `match` on `CrossfadeEvent` must add an `EventsDropped` arm.
 
 For event-driven async monitoring, read the revision before draining and wait with that revision:
 
