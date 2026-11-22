@@ -193,3 +193,19 @@ reproduction commands. Raw measurements:
 [queue time](data/plugin-media-queue-time.jsonl),
 [queue allocations](data/plugin-media-queue-allocations.jsonl), and
 [thread/resource matrix](data/plugin-media-threads-audit.jsonl).
+
+## Original-main paced baseline
+
+The sequential paced sweep completed all 63 cases (seven concurrency levels, three repetitions,
+three workloads): 30-second repeated seeks, 36-second crossfade transitions, and 20-second
+bounded producer streams. Every transition case observed exactly two completed transitions per
+session, including 1024 at 512 sessions. Every case submitted audio and returned successfully.
+The seek and stream cases are wall-time-limited workloads; they do not have identical sample
+totals across repetitions, and the seek/stage error-count limitation above still applies.
+These are controlled sinks and a plugin-style byte producer, not Discord RTP or HTTP source tests.
+
+Raw data: [resource-audit-main-paced.jsonl](data/resource-audit-main-paced.jsonl). The existing
+`resource_matrix.py` runner records per-process kernel CPU/peak RSS, sampled physical footprint,
+thread count, startup/command/sink latency percentiles, delivered audio, packets, and transitions.
+Its one-second snapshots can miss short-lived thread/footprint peaks; it does not measure native
+allocator live bytes.
