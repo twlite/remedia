@@ -287,3 +287,56 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct WakeCounter(AtomicUsize);
+
+    impl Wake for WakeCounter {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    #[test]
+    fn async_cancellation_wakes_without_a_polling_timer() {
+        let token = CancellationToken::new();
+        let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&counter));
+        let mut context = Context::from_waker(&waker);
+        let mut pending = Box::pin(token.cancelled_async());
+
+        assert!(matches!(
+            pending.as_mut().poll(&mut context),
+            Poll::Pending
+        ));
+        token.cancel();
+        assert_eq!(counter.0.load(Ordering::Acquire), 1);
+        assert!(matches!(
+            pending.as_mut().poll(&mut context),
+            Poll::Ready(())
+        ));
+    }
+
+    #[test]
+    fn dropped_async_cancellation_does_not_retain_a_waiter() {
+        let token = CancellationToken::new();
+        let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&counter));
+        let mut context = Context::from_waker(&waker);
+        {
+            let mut pending = Box::pin(token.cancelled_async());
+            assert!(matches!(pending.as_mut().poll(&mut context), Poll::Pending));
+        }
+        token.cancel();
+        assert_eq!(counter.0.load(Ordering::Acquire), 0);
+    }
+}
