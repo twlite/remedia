@@ -227,18 +227,13 @@ impl SourceReopener for OperationReopener {
             input: self.input.clone(),
         };
         let resolved = self.runtime.block_on(async {
-            // The playback's token is not a tokio token; poll it so a stop interrupts a plugin
-            // operation that is still running.
-            let cancelled = async {
-                while !cancellation.is_cancelled() {
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-                scope.cancel();
-            };
-
+            // The core cancellation token wakes this task directly when playback stops.
             tokio::select! {
                 biased;
-                () = cancelled => Err(ReopenError::new("cancelled")),
+                () = cancellation.cancelled_async() => {
+                    scope.cancel();
+                    Err(ReopenError::new("cancelled"))
+                },
                 resolved = resolve_source_inner(&server, source, &scope) => {
                     resolved.map_err(|error| ReopenError::new(error.message))
                 }
