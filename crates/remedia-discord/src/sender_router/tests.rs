@@ -63,6 +63,43 @@ fn detaching_for_a_new_attempt_clears_a_previous_terminal_failure() {
 }
 
 #[test]
+fn detached_failed_and_shutdown_routers_release_cached_voice_connections() {
+    let voice = TestVoiceConnection::new(49);
+    let router = DiscordOpusSenderRouter::new();
+
+    router.attach(voice.connection().opus_sender());
+    assert!(lock(&router.inner.state).connection.is_some());
+
+    router.detach();
+    {
+        let state = lock(&router.inner.state);
+        assert!(state.connection.is_none());
+        assert!(state.target.is_none());
+        assert_eq!(state.transport_state, RouterTransportState::Reconnecting);
+        assert!(state.failure.is_none());
+    }
+
+    router.attach(voice.connection().opus_sender());
+    router.fail("transport recovery exhausted");
+    {
+        let state = lock(&router.inner.state);
+        assert!(state.connection.is_none());
+        assert!(state.target.is_none());
+        assert_eq!(state.transport_state, RouterTransportState::Failed);
+        assert_eq!(state.failure.as_deref(), Some("transport recovery exhausted"));
+    }
+
+    router.detach();
+    router.attach(voice.connection().opus_sender());
+    router.shutdown("session closed");
+    let state = lock(&router.inner.state);
+    assert!(state.connection.is_none());
+    assert!(state.target.is_none());
+    assert_eq!(state.transport_state, RouterTransportState::Failed);
+    assert_eq!(state.failure.as_deref(), Some("session closed"));
+}
+
+#[test]
 fn three_completed_playbacks_get_fresh_senders_on_one_voice_connection() {
     let voice = TestVoiceConnection::new(42);
     let connection_id = voice.connection().voice_connection_id();
