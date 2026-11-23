@@ -291,6 +291,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod cancellation_tests {
     use super::*;
+    use std::future::Future;
     use std::sync::atomic::AtomicUsize;
     use std::task::{Context, Poll, Wake, Waker};
 
