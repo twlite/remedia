@@ -191,6 +191,17 @@ pub(crate) trait CancellationWake: Send + Sync {
     fn wake_for_cancellation(&self);
 }
 
+#[derive(Default)]
+struct AsyncCancellationWake(Mutex<Option<std::task::Waker>>);
+
+impl CancellationWake for AsyncCancellationWake {
+    fn wake_for_cancellation(&self) {
+        if let Some(waker) = lock(&self.0).take() {
+            waker.wake();
+        }
+    }
+}
+
 impl fmt::Debug for CancellationToken {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -230,6 +241,28 @@ impl CancellationToken {
     /// Return whether cancellation has been requested.
     pub fn is_cancelled(&self) -> bool {
         self.0.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Wait asynchronously until cancellation without scheduling periodic checks.
+    ///
+    /// The returned future is safe to drop before cancellation. Notifications are registered
+    /// through weak references so abandoned waiters cannot keep tasks alive.
+    pub async fn cancelled_async(&self) {
+        if self.is_cancelled() {
+            return;
+        }
+
+        let waiter = Arc::new(AsyncCancellationWake::default());
+        self.register_waker(waiter.clone());
+        std::future::poll_fn(|context| {
+            *lock(&waiter.0) = Some(context.waker().clone());
+            if self.is_cancelled() {
+                std::task::Poll::Ready(())
+            } else {
+                std::task::Poll::Pending
+            }
+        })
+        .await
     }
 
     pub(crate) fn as_opaque_ptr(&self) -> *mut std::ffi::c_void {
