@@ -216,6 +216,7 @@ pub(super) async fn execute(
                 Arc::downgrade(&session),
                 voice_generation,
                 request_generation,
+                voice.state(),
             );
             Ok(json!({ "guildId": guild.guild_id, "state": initial_state }))
         }
