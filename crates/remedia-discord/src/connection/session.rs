@@ -339,6 +339,15 @@ impl DiscordVoiceConnection {
         *self.inner.state.borrow()
     }
 
+    /// Subscribe to connection state transitions without polling.
+    ///
+    /// The receiver observes the latest state; intermediate states can be coalesced if the
+    /// consumer falls behind. Subscribe before reading the initial state to avoid losing an
+    /// update between the snapshot and the wait. Dropping the receiver unregisters it.
+    pub fn subscribe_state(&self) -> tokio::sync::watch::Receiver<ConnectionState> {
+        self.inner.state.subscribe()
+    }
+
     /// Return this connection's internal, process-unique diagnostic correlation ID.
     /// This is unrelated to Discord's voice session ID.
     pub fn voice_connection_id(&self) -> u64 {
