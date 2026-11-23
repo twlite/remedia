@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::fmt;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
 use bytes::Bytes;
 use thiserror::Error;
@@ -91,6 +91,7 @@ struct QueueInner {
     writer: Mutex<()>,
     state: Mutex<QueueState>,
     changed: Condvar,
+    close_waiters: Mutex<Vec<Weak<AsyncCloseWake>>>,
 }
 
 struct QueueState {
@@ -108,6 +109,17 @@ enum ProducerState {
     Finished,
     Failed(String),
     Cancelled,
+}
+
+#[derive(Default)]
+struct AsyncCloseWake(Mutex<Option<std::task::Waker>>);
+
+impl AsyncCloseWake {
+    fn wake(&self) {
+        if let Some(waker) = lock(&self.0).take() {
+            waker.wake();
+        }
+    }
 }
 
 impl ByteStreamInput {
@@ -140,6 +152,7 @@ impl ByteStreamWriter {
                 consumer_closed: false,
             }),
             changed: Condvar::new(),
+            close_waiters: Mutex::new(Vec::new()),
         });
         Ok((
             ByteStreamInput {
@@ -284,6 +297,8 @@ impl ByteStreamWriter {
             ProducerState::Cancelled => return Err(ByteStreamError::Cancelled),
         }
         self.inner.changed.notify_all();
+        drop(state);
+        self.inner.wake_close_waiters();
         Ok(())
     }
 
@@ -301,6 +316,8 @@ impl ByteStreamWriter {
             ProducerState::Cancelled => return Err(ByteStreamError::Cancelled),
         }
         self.inner.changed.notify_all();
+        drop(state);
+        self.inner.wake_close_waiters();
         Ok(())
     }
 
@@ -316,6 +333,30 @@ impl ByteStreamWriter {
         let state = lock(&self.inner.state);
 
         state.consumer_closed || !matches!(state.producer, ProducerState::Open)
+    }
+
+    /// Wait asynchronously for the consumer to close, or for the producer to finish,
+    /// fail, or be cancelled. No periodic wakeups or dedicated thread are needed.
+    /// Dropped futures do not keep registered waiters alive.
+    pub async fn closed_async(&self) {
+        if self.is_closed() {
+            return;
+        }
+        let waiter = Arc::new(AsyncCloseWake::default());
+        {
+            let mut listeners = lock(&self.inner.close_waiters);
+            listeners.retain(|listener| listener.strong_count() > 0);
+            listeners.push(Arc::downgrade(&waiter));
+        }
+        std::future::poll_fn(|context| {
+            *lock(&waiter.0) = Some(context.waker().clone());
+            if self.is_closed() {
+                std::task::Poll::Ready(())
+            } else {
+                std::task::Poll::Pending
+            }
+        })
+        .await
     }
 
     /// Bytes currently queued for the decoder. This is useful for diagnostics
@@ -353,6 +394,8 @@ impl ByteStreamReader {
                 state.front_offset = 0;
                 state.pending_bytes = 0;
                 self.inner.changed.notify_all();
+                drop(state);
+                self.inner.wake_close_waiters();
                 return Err(ByteStreamError::Cancelled);
             }
             if state.consumer_closed {
@@ -452,6 +495,8 @@ impl QueueInner {
         state.front_offset = 0;
         state.pending_bytes = 0;
         self.changed.notify_all();
+        drop(state);
+        self.wake_close_waiters();
     }
 
     fn cancel(&self) {
@@ -462,6 +507,20 @@ impl QueueInner {
         state.front_offset = 0;
         state.pending_bytes = 0;
         self.changed.notify_all();
+        drop(state);
+        self.wake_close_waiters();
+    }
+
+    fn wake_close_waiters(&self) {
+        let waiters = {
+            let mut listeners = lock(&self.close_waiters);
+            let live = listeners.iter().filter_map(Weak::upgrade).collect::<Vec<_>>();
+            listeners.retain(|listener| listener.strong_count() > 0);
+            live
+        };
+        for waiter in waiters {
+            waiter.wake();
+        }
     }
 }
 
