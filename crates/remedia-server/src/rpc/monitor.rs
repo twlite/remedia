@@ -498,34 +498,44 @@ pub(super) fn spawn_voice_monitor(
     session: std::sync::Weak<ClientSession>,
     generation: u64,
     request_generation: u64,
+    initial_state: ConnectionState,
 ) {
+    // Subscribe before spawning so a failure immediately after connect is not missed.
+    let mut state_rx = {
+        let voice = lock(&guild.voice);
+        let Some(voice) = voice.as_ref() else {
+            return;
+        };
+        voice.subscribe_state()
+    };
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    {
+        let mut current = lock(&guild.voice_monitor_cancel);
+        if let Some(previous) = current.replace(cancellation.clone()) {
+            previous.cancel();
+        }
+    }
+
     tokio::spawn(async move {
-        let mut previous = lock(&guild.voice)
-            .as_ref()
-            .map(DiscordVoiceConnection::state);
-        let mut interval = tokio::time::interval(Duration::from_millis(250));
-        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut previous = initial_state;
         loop {
-            interval.tick().await;
-            if guild.closed.load(Ordering::Acquire) {
+            if cancellation.is_cancelled()
+                || guild.closed.load(Ordering::Acquire)
+                || guild.voice_generation.load(Ordering::Acquire) != generation
+                || guild.voice_request_generation.load(Ordering::Acquire) != request_generation
+            {
                 return;
             }
-            if guild.voice_generation.load(Ordering::Acquire) != generation {
-                return;
-            }
-            if guild.voice_request_generation.load(Ordering::Acquire) != request_generation {
-                return;
-            }
-            let state = lock(&guild.voice)
-                .as_ref()
-                .map(DiscordVoiceConnection::state);
+
+            // watch coalesces rapid transitions, but never misses the latest state.
+            let state = *state_rx.borrow_and_update();
             if state != previous {
-                if let (Some(session), Some(state)) = (session.upgrade(), state) {
+                if let Some(session) = session.upgrade() {
                     session.emit(
                         "voice.state_changed",
                         json!({
                             "guildId": guild.guild_id,
-                            "previousState": previous.map(voice_state_name).unwrap_or("disconnected"),
+                            "previousState": voice_state_name(previous),
                             "state": voice_state_name(state),
                         }),
                     );
@@ -546,11 +556,19 @@ pub(super) fn spawn_voice_monitor(
                 }
                 previous = state;
             }
-            if matches!(
-                state,
-                None | Some(ConnectionState::Disconnected | ConnectionState::Failed)
-            ) {
+
+            if matches!(state, ConnectionState::Disconnected | ConnectionState::Failed) {
                 return;
+            }
+
+            tokio::select! {
+                biased;
+                () = cancellation.cancelled() => return,
+                changed = state_rx.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                }
             }
         }
     });
