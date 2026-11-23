@@ -124,6 +124,13 @@ producer.join().expect("producer thread panicked")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+An async producer can await `writer.closed_async()` to learn when its decoder has
+closed, the writer has been cancelled, or the producer has finished or failed.
+The future uses a wake notification rather than polling and can be dropped safely.
+For example, use `tokio::select!` to race an upstream HTTP read against
+`writer.closed_async()`, then release the upstream connection immediately when
+the decoder stops.
+
 When a producer already owns a `bytes::Bytes` chunk, `writer.write_bytes(chunk)` avoids an
 additional queue-ingress copy when the chunk fits the queue. Larger chunks are copied into bounded
 pieces. The decoder still copies queued bytes into FFmpeg's input buffer.
