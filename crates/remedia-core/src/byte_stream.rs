@@ -551,9 +551,53 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
     use std::thread;
 
     use super::*;
+
+    struct TestWake(AtomicUsize);
+
+    impl Wake for TestWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    #[test]
+    fn async_close_notification_wakes_on_reader_drop() {
+        let (input, writer) = ByteStreamWriter::new_pair(4).unwrap();
+        let counter = Arc::new(TestWake(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&counter));
+        let mut context = Context::from_waker(&waker);
+        let mut pending = Box::pin(writer.closed_async());
+
+        assert!(matches!(pending.as_mut().poll(&mut context), Poll::Pending));
+        drop(input);
+        assert_eq!(counter.0.load(Ordering::Acquire), 1);
+        assert!(matches!(pending.as_mut().poll(&mut context), Poll::Ready(())));
+    }
+
+    #[test]
+    fn async_close_notification_wakes_on_producer_finish() {
+        let (_input, writer) = ByteStreamWriter::new_pair(4).unwrap();
+        let counter = Arc::new(TestWake(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&counter));
+        let mut context = Context::from_waker(&waker);
+        let mut pending = Box::pin(writer.closed_async());
+
+        assert!(matches!(pending.as_mut().poll(&mut context), Poll::Pending));
+        writer.finish().unwrap();
+        assert_eq!(counter.0.load(Ordering::Acquire), 1);
+        assert!(matches!(pending.as_mut().poll(&mut context), Poll::Ready(())));
+    }
+
 
     fn wait_for_state(inner: &QueueInner, predicate: impl Fn(&QueueState) -> bool) {
         let mut state = lock(&inner.state);
