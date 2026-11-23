@@ -108,7 +108,16 @@ Finishing or cancelling an output does not disconnect the voice connection.
 Call `disconnect().await` to close the connection and release its worker, socket,
 and DAVE state. The Node and remote server adapters place a stable
 `DiscordOpusSenderRouter` between playback and the current connection, so they
-can replace a transport without replacing the playback output.
+can replace a transport without replacing the playback output. Detaching the router,
+reporting terminal failure, or shutting it down drops its cached transport reference;
+the owning connection manager is still responsible for awaiting `disconnect()`.
+
+Rust consumers can use `connection.subscribe_state()` to obtain a Tokio watch
+receiver for voice state transitions. Call `changed().await`, then read the latest
+state with `borrow_and_update()`. Fast successive transitions may be coalesced;
+the receiver delivers the latest state, not an exhaustive event history.
+The remote server uses this signal to monitor connections without periodic
+voice-state checks.
 
 ## Voice server and region migration
 
