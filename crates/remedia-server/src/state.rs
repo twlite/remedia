@@ -65,6 +65,8 @@ pub(crate) struct GuildSession {
     pub(crate) voice: Mutex<Option<DiscordVoiceConnection>>,
     pub(crate) voice_sender_router: DiscordOpusSenderRouter,
     pub(crate) voice_generation: AtomicU64,
+    /// Cancels the state subscriber immediately when a transport is superseded.
+    pub(crate) voice_monitor_cancel: Mutex<Option<TokioCancellationToken>>,
     pub(crate) voice_request_generation: AtomicU64,
     pub(crate) voice_connected_generation: AtomicU64,
     pub(crate) voice_terminal_generation: AtomicU64,
@@ -129,6 +131,15 @@ pub(crate) struct ConnectionContext {
 }
 
 impl GuildSession {
+    /// Increment the voice generation and stop the previous state subscriber.
+    pub(crate) fn next_voice_generation(&self) -> u64 {
+        let generation = self.voice_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        if let Some(cancel) = lock(&self.voice_monitor_cancel).take() {
+            cancel.cancel();
+        }
+        generation
+    }
+
     /// Cancel an unfinished staged-source preparation, including any plugin operation.
     pub(crate) fn cancel_pending_stage(&self) {
         if let Some(scope) = lock(&self.stage_scope).take() {
@@ -530,6 +541,7 @@ impl ServerInner {
             voice: Mutex::new(None),
             voice_sender_router: DiscordOpusSenderRouter::new(),
             voice_generation: AtomicU64::new(0),
+            voice_monitor_cancel: Mutex::new(None),
             voice_request_generation: AtomicU64::new(0),
             voice_connected_generation: AtomicU64::new(0),
             voice_terminal_generation: AtomicU64::new(0),
@@ -586,7 +598,7 @@ impl ServerInner {
         })
         .await;
         let connection = { lock(&guild.voice).take() };
-        guild.voice_generation.fetch_add(1, Ordering::AcqRel);
+        guild.next_voice_generation();
         guild.voice_reconnecting.store(false, Ordering::Release);
         guild
             .voice_sender_router
