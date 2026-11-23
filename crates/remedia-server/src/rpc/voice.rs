@@ -189,7 +189,8 @@ pub(super) async fn execute(
                     },
                 ));
             }
-            let initial_state = voice_state_name(voice.state());
+            let initial_voice_state = voice.state();
+            let initial_state = voice_state_name(initial_voice_state);
             guild.voice_sender_router.attach(voice.opus_sender());
             *lock(&guild.voice) = Some(voice);
             guild
@@ -216,7 +217,7 @@ pub(super) async fn execute(
                 Arc::downgrade(&session),
                 voice_generation,
                 request_generation,
-                voice.state(),
+                initial_voice_state,
             );
             Ok(json!({ "guildId": guild.guild_id, "state": initial_state }))
         }
