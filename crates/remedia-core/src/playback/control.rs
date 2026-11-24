@@ -57,7 +57,7 @@ pub(super) fn next_worker_action(
     }
     #[cfg(feature = "experimental-scheduler")]
     if shared.executor.load(std::sync::atomic::Ordering::Acquire) == 1
-        && (data.pending_seek.is_some() || data.filter_graph.is_some())
+        && (data.pending_seek.is_some() || data.pending_filter_graph.is_some())
     {
         return WorkerAction::DedicatedFallback;
     }

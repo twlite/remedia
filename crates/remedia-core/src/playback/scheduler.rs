@@ -38,6 +38,8 @@ struct Pool {
     turns: AtomicUsize,
     admitted: AtomicUsize,
     migrated: AtomicUsize,
+    isolated: AtomicUsize,
+    controls: blocking::BlockingExecutor,
     unsupported: AtomicUsize,
     reasons: [AtomicUsize; 5],
     rejected: AtomicUsize,
@@ -54,6 +56,10 @@ struct Pool {
 pub struct SchedulerDiagnostics {
     /// Fixed OS worker count.
     pub workers: usize,
+    /// Fixed isolated control workers; these never execute ordinary codec turns.
+    pub control_workers: usize,
+    /// Pending exclusive control handoffs, bounded by admitted sessions.
+    pub queued_controls: usize,
     /// Admitted tasks, including suspended sessions.
     pub sessions: usize,
     /// Currently admitted sessions still executing on CPU workers, excluding control fallbacks.
@@ -68,7 +74,11 @@ pub struct SchedulerDiagnostics {
     pub turns: usize,
     /// Cumulative scheduled admissions, including already completed sessions.
     pub admitted: usize,
-    /// Cumulative permanent control migrations to dedicated execution.
+    /// Cumulative temporary handoffs to the bounded control executor; never a dedicated fallback.
+    pub control_handoffs: usize,
+    /// Admitted sessions currently awaiting or executing an isolated control.
+    pub isolated_controls: usize,
+    /// Legacy permanent control fallback counter (zero with reversible handoff).
     pub control_fallbacks: usize,
     /// Cumulative unsupported-workload dedicated fallbacks.
     pub unsupported_fallbacks: usize,
@@ -132,6 +142,8 @@ impl PlaybackScheduler {
             turns: AtomicUsize::new(0),
             admitted: AtomicUsize::new(0),
             migrated: AtomicUsize::new(0),
+            isolated: AtomicUsize::new(0),
+            controls: blocking::BlockingExecutor::new(2, capacity, "control")?,
             unsupported: AtomicUsize::new(0),
             reasons: std::array::from_fn(|_| AtomicUsize::new(0)),
             rejected: AtomicUsize::new(0),
@@ -173,14 +185,22 @@ impl PlaybackScheduler {
         };
         SchedulerDiagnostics {
             workers: self.threads.len(),
+            control_workers: self.inner.controls.workers(),
+            queued_controls: self.inner.controls.queued(),
             sessions: self.inner.live.load(Ordering::Relaxed),
-            scheduled_sessions: self.inner.scheduled_live.load(Ordering::Relaxed),
+            scheduled_sessions: self
+                .inner
+                .scheduled_live
+                .load(Ordering::Relaxed)
+                .saturating_sub(self.inner.isolated.load(Ordering::Relaxed)),
             queued,
             actions: self.inner.polls.load(Ordering::Relaxed),
             processing_budget: self.inner.budget,
             turns: self.inner.turns.load(Ordering::Relaxed),
             admitted: self.inner.admitted.load(Ordering::Relaxed),
-            control_fallbacks: self.inner.migrated.load(Ordering::Relaxed),
+            control_fallbacks: 0,
+            control_handoffs: self.inner.migrated.load(Ordering::Relaxed),
+            isolated_controls: self.inner.isolated.load(Ordering::Relaxed),
             unsupported_fallbacks: self.inner.unsupported.load(Ordering::Relaxed),
             input_fallbacks: self.inner.reasons[0].load(Ordering::Relaxed),
             output_fallbacks: self.inner.reasons[1].load(Ordering::Relaxed),
@@ -229,7 +249,7 @@ impl PlaybackScheduler {
         self.inner.scheduled_live.fetch_add(1, Ordering::Relaxed);
         let job = Arc::new(Job {
             on_error: Box::new(on_error),
-            migrated: std::sync::atomic::AtomicBool::new(false),
+
             cancel_wake: Mutex::new(None),
             pool: Arc::downgrade(&self.inner),
             state: AtomicUsize::new(IDLE),
@@ -258,7 +278,6 @@ impl Drop for PlaybackScheduler {
 type Machine = Box<dyn FnMut() -> worker::WorkerStep + Send>;
 
 pub(super) struct Job {
-    migrated: std::sync::atomic::AtomicBool,
     on_error: Box<dyn Fn(std::io::Error) + Send + Sync>,
     pub(super) cancel_wake: Mutex<Option<Arc<CancelWake>>>,
     pool: std::sync::Weak<Pool>,
@@ -416,24 +435,38 @@ fn run(pool: Arc<Pool>) {
             }
         } else if outcome == worker::WorkerStep::DedicatedFallback {
             pool.migrated.fetch_add(1, Ordering::Relaxed);
-            pool.scheduled_live.fetch_sub(1, Ordering::Relaxed);
-            job.migrated.store(true, Ordering::Release);
-            let mut dedicated = machine.take().expect("migrating machine");
+            pool.isolated.fetch_add(1, Ordering::Relaxed);
+            // Keep the job admitted. Exclusive ownership moves out of the CPU queue until
+            // one potentially blocking operation finishes; all wakes are coalesced meanwhile.
+            let mut isolated = machine.take().expect("handoff machine");
             drop(machine);
-            let fallback_job = job.clone();
-            let fallback_pool = pool.clone();
-            if let Err(error) = thread::Builder::new()
-                .name("remedia-control-fallback".into())
-                .spawn(move || {
-                    if catch_unwind(AssertUnwindSafe(&mut dedicated)).is_err() {
-                        (fallback_job.on_error)(std::io::Error::other(
-                            "dedicated fallback panicked",
-                        ));
+            let control_job = job.clone();
+            let control_pool = pool.clone();
+            if let Err(error) = pool.controls.submit(move || {
+                let outcome = catch_unwind(AssertUnwindSafe(&mut isolated));
+                control_pool.isolated.fetch_sub(1, Ordering::Relaxed);
+                match outcome {
+                    Ok(
+                        worker::WorkerStep::Completed
+                        | worker::WorkerStep::Cancelled
+                        | worker::WorkerStep::Failed,
+                    ) => {
+                        drop(isolated);
+                        complete(&control_job, &control_pool);
                     }
-                    drop(dedicated);
-                    complete(&fallback_job, &fallback_pool);
-                })
-            {
+                    Ok(_) => {
+                        *lock(&control_job.machine) = Some(isolated);
+                        control_job.state.store(IDLE, Ordering::Release);
+                        control_job.wake();
+                    }
+                    Err(_) => {
+                        (control_job.on_error)(std::io::Error::other("isolated control panicked"));
+                        drop(isolated);
+                        complete(&control_job, &control_pool);
+                    }
+                }
+            }) {
+                pool.isolated.fetch_sub(1, Ordering::Relaxed);
                 (job.on_error)(error);
                 complete(&job, &pool);
             }
@@ -458,9 +491,7 @@ fn run(pool: Arc<Pool>) {
 }
 
 fn complete(job: &Job, pool: &Pool) {
-    if !job.migrated.load(Ordering::Acquire) {
-        pool.scheduled_live.fetch_sub(1, Ordering::Relaxed);
-    }
+    pool.scheduled_live.fetch_sub(1, Ordering::Relaxed);
     job.state.store(DONE, Ordering::Release);
     pool.live.fetch_sub(1, Ordering::AcqRel);
     *lock(&job.finished) = true;

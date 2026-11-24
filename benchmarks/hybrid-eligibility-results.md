@@ -41,3 +41,21 @@ Docker Desktop is available on this macOS arm64 host. Pulling
 `rust:1.99.1-slim-trixie` failed at Docker Hub DNS resolution (`lookup registry-1.docker.io:
 no such host`). The cached published Remedia runtime image contains neither a Rust compiler nor
 native development headers. No Linux benchmark results are claimed from that image.
+
+## Reversible control handoff
+
+Seek and filter replacement now transfer exclusive machine ownership to a two-worker isolated
+executor shared by the scheduler. Its queue is bounded by live admission capacity. A machine
+cannot enter either CPU or control execution twice; wakes during the handoff are coalesced,
+and returning always requeues it to observe pending cancellation or later controls. The same
+seek ticket, generation checks, decoder/encoder state and acknowledgements are retained. A seek
+can invalidate full output without waiting for its consumer. Filter replacement first preserves
+already accepted PCM. Native filters may now start on scheduled owned-memory sessions.
+
+Diagnostics report control workers, queued/current handoffs and cumulative handoffs separately
+from permanent fallback counters. A temporary handoff is not reported as dedicated playback.
+The production dedicated path remains unchanged. Crossfade continues on dedicated execution.
+Deterministic regression coverage performs eight seeks and eight graph replacements while
+paused, returns to scheduled playback, completes, and compares every Opus payload and sample
+position to the dedicated backend. Existing stalled-consumer cancellation and lifecycle stress
+also run through the bounded control executor.

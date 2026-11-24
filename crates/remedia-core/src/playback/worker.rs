@@ -133,19 +133,15 @@ pub(super) fn worker_loop(
             cancellation.clone(),
         );
         let safe_machine = move || {
-            if panic_context
+            let isolated = panic_context
                 .0
                 .executor
                 .load(std::sync::atomic::Ordering::Acquire)
-                == 4
-            {
-                // The CPU action consumed the readiness control wake before handing off.
-                // Reissue it so a full output cannot hide the still-pending control.
+                == 4;
+            if isolated {
                 panic_context.1.wake();
-                drive_machine(&mut machine, &panic_context.0, generation);
-                return terminal_outcome(&panic_context.0);
             }
-            with_dispatch(&observability, || {
+            let result = with_dispatch(&observability, || {
                 match catch_unwind(AssertUnwindSafe(&mut machine)) {
                     Ok(step) => step,
                     Err(_) => {
@@ -159,7 +155,14 @@ pub(super) fn worker_loop(
                         WorkerStep::Failed
                     }
                 }
-            })
+            });
+            if isolated {
+                panic_context
+                    .0
+                    .executor
+                    .store(1, std::sync::atomic::Ordering::Release);
+            }
+            result
         };
         let failure_output = failure_context.1.clone();
         match pool.submit(safe_machine, move |error| {
@@ -265,8 +268,7 @@ fn prepare_machine(
     } = startup::prepare(&shared, generation, source, &output, &cancellation, ready)?;
 
     #[cfg(feature = "experimental-scheduler")]
-    let scheduler_safe =
-        decoder.scheduler_memory_demuxer() && lock(&shared.data).filter_graph.is_none();
+    let scheduler_safe = decoder.scheduler_memory_demuxer();
     #[cfg(not(feature = "experimental-scheduler"))]
     let scheduler_safe = false;
     let mut pending_frame = None;
@@ -291,6 +293,18 @@ fn prepare_machine(
         move || {
             let _active = &_active_playback;
             let _log_capture = crate::ffmpeg_logging::capture();
+            #[cfg(feature = "experimental-scheduler")]
+            if shared.executor.load(std::sync::atomic::Ordering::Acquire) == 1 {
+                let data = lock(&shared.data);
+                if data.pending_seek.is_some() || data.pending_filter_graph.is_some() {
+                    shared
+                        .executor
+                        .store(4, std::sync::atomic::Ordering::Release);
+                    return WorkerStep::DedicatedFallback;
+                }
+            }
+            #[cfg(feature = "experimental-scheduler")]
+            let seeking = lock(&shared.data).pending_seek.is_some();
             let output_opus = output.encoded_opus_output();
             #[cfg(feature = "experimental-scheduler")]
             let scheduled_waker = (shared.executor.load(std::sync::atomic::Ordering::Acquire) == 1)
@@ -312,7 +326,11 @@ fn prepare_machine(
                     std::task::Poll::Ready(result) => result.map(|_| ()),
                 }
             } else {
-                output.wait_ready(&cancellation)
+                if seeking {
+                    Ok(())
+                } else {
+                    output.wait_ready(&cancellation)
+                }
             };
             #[cfg(not(feature = "experimental-scheduler"))]
             let readiness = output.wait_ready(&cancellation);

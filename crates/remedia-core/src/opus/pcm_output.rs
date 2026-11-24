@@ -30,6 +30,37 @@ impl MediaOutput for OpusEncoderOutput {
         self.poll_barrier(control, cx, cancellation)
     }
 
+    #[cfg(feature = "experimental-scheduler")]
+    fn wait_ready(&self, cancellation: &CancellationToken) -> Result<(), OutputError> {
+        if !self.sink.active() {
+            return Ok(());
+        }
+        struct ThreadWake(std::thread::Thread);
+        impl std::task::Wake for ThreadWake {
+            fn wake(self: std::sync::Arc<Self>) {
+                self.0.unpark();
+            }
+            fn wake_by_ref(self: &std::sync::Arc<Self>) {
+                self.0.unpark();
+            }
+        }
+        impl crate::source::CancellationWake for ThreadWake {
+            fn wake_for_cancellation(&self) {
+                self.0.unpark();
+            }
+        }
+        let wake = std::sync::Arc::new(ThreadWake(std::thread::current()));
+        cancellation.register_waker(wake.clone());
+        let waker = std::task::Waker::from(wake);
+        let mut cx = std::task::Context::from_waker(&waker);
+        loop {
+            match self.poll_production(&mut cx, cancellation) {
+                std::task::Poll::Ready(result) => return result,
+                std::task::Poll::Pending => std::thread::park(),
+            }
+        }
+    }
+
     fn write_frame(
         &self,
         frame: PcmFrame,

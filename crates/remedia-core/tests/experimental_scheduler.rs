@@ -57,7 +57,7 @@ fn scheduled_streams_match_dedicated_payloads_and_sample_positions() {
             assert_eq!(session.wait(), PlaybackState::Completed);
             session.stop().unwrap();
             if scheduled {
-                assert_eq!(session.executor_diagnostic(), "scheduled");
+                assert!(session.executor_diagnostic().starts_with("scheduled"));
             }
         }
         assert!(!outputs[0].is_empty());
@@ -92,7 +92,7 @@ fn stalled_consumers_cancel_without_starving_unrelated_sessions() {
         session.pause().unwrap();
         session.seek(Duration::from_millis(20)).unwrap();
         session.resume().unwrap();
-        assert_eq!(session.executor_diagnostic(), "dedicated: blocking control");
+        assert!(session.executor_diagnostic().starts_with("scheduled"));
         session.set_filter_graph(Some("volume=0.75")).unwrap();
         session.stop().unwrap();
         drop(reader);
@@ -169,7 +169,7 @@ fn repeated_generations_and_external_cancellation_release_pool_slots() {
 }
 
 #[test]
-fn live_filter_migrates_before_building_a_graph_on_a_cpu_worker() {
+fn live_filter_returns_to_cpu_workers_after_isolated_replacement() {
     let pool = PlaybackScheduler::new(1, 8).unwrap();
     let session = PlaybackSession::with_scheduler(pool.clone());
     let (output, reader) = StreamOutput::new(
@@ -181,7 +181,7 @@ fn live_filter_migrates_before_building_a_graph_on_a_cpu_worker() {
     session.play(source(), output).unwrap();
     session.pause().unwrap();
     session.set_filter_graph(Some("volume=0.75")).unwrap();
-    assert_eq!(session.executor_diagnostic(), "dedicated: blocking control");
+    assert!(session.executor_diagnostic().starts_with("scheduled"));
     session.stop().unwrap();
     drop(reader);
     assert_eq!(pool.diagnostics().sessions, 0);
@@ -253,7 +253,7 @@ fn paced_streams_use_bounded_deadlines_and_preserve_payloads() {
         assert!(d.deadline_wakes > 0);
         assert_eq!(d.pending_deadlines, 0);
         assert!(d.deadline_peak <= 1);
-        assert_eq!(session.executor_diagnostic(), "scheduled");
+        assert!(session.executor_diagnostic().starts_with("scheduled"));
     }
 }
 
@@ -289,4 +289,50 @@ fn cancelling_and_pausing_timed_sessions_reclaims_all_deadlines() {
     assert_eq!(d.sessions, 0);
     assert_eq!(d.queued, 0);
     assert!(d.deadline_peak <= 32);
+}
+
+#[test]
+fn repeated_paused_controls_return_to_scheduler_and_match_dedicated_audio() {
+    let pool = PlaybackScheduler::with_processing_budget(1, 16, 8).unwrap();
+    let mut results = Vec::new();
+    for scheduled in [false, true] {
+        let session = if scheduled {
+            PlaybackSession::with_scheduler(pool.clone())
+        } else {
+            PlaybackSession::new()
+        };
+        let (output, mut reader) = StreamOutput::new(
+            StreamFormat::Opus,
+            StreamPacing::Unpaced,
+            OpusEncoderConfig::default(),
+        )
+        .unwrap();
+        session.play(source(), output).unwrap();
+        session.pause().unwrap();
+        for index in 0..8 {
+            session.seek(Duration::from_millis(20 + index * 5)).unwrap();
+            session
+                .set_filter_graph(Some(if index % 2 == 0 {
+                    "volume=0.75"
+                } else {
+                    "volume=0.5"
+                }))
+                .unwrap();
+            if scheduled {
+                assert!(session.executor_diagnostic().starts_with("scheduled"));
+            }
+        }
+        session.resume().unwrap();
+        results.push(drain(&mut reader));
+        assert_eq!(session.wait(), PlaybackState::Completed);
+        session.stop().unwrap();
+    }
+    assert!(!results[0].is_empty());
+    assert_eq!(results[0], results[1]);
+    let diagnostics = pool.diagnostics();
+    assert_eq!(diagnostics.admitted, 1);
+    assert_eq!(diagnostics.control_handoffs, 16);
+    assert_eq!(diagnostics.control_fallbacks, 0);
+    assert_eq!(diagnostics.isolated_controls, 0);
+    assert_eq!(diagnostics.sessions, 0);
 }

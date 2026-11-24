@@ -348,13 +348,16 @@ session.stop()?;
 
 This initial experiment schedules owned-byte Ogg, MP3, ADTS AAC, WAV and FLAC inputs with
 `NullOutput`, `StreamOutput` with unpaced or realtime pacing, or `OpusEncoderOutput` attached
-to `DiscordOpusSender` / `RoutedOpusSender`, without a native filtergraph.
+to `DiscordOpusSender` / `RoutedOpusSender`, including native filtergraphs.
 Full streaming queues suspend production using the existing readiness waker; consumption through
 `StreamReader::poll_next` wakes production. Buffer limits, encoding settings and EOF are unchanged.
 Files, network sources, other containers (including MP4/M4A), producer byte streams,
-synchronous custom outputs, native filtergraphs and crossfade retain dedicated execution. Opening and probing run on a temporary dedicated startup
-thread. A seek or live filter update transfers the same machine to a dedicated fallback thread
-before the control is applied; subsequent work stays dedicated for that generation. Codec
+synchronous custom outputs and crossfade retain dedicated execution. Opening and probing run on a temporary dedicated startup
+thread. A seek or live filter update transfers exclusive ownership of the same machine to a shared,
+bounded two-thread control executor for one operation. It then returns to CPU scheduling.
+No permanent control thread is added per session. A stalled control can delay other controls,
+but cannot occupy a codec worker; cancellation continues to interrupt its existing source and
+output waits. Codec
 actions still do not have a hard CPU-time budget. The pool is therefore experimental and is not a replacement for production scheduling.
 
 `executor_diagnostic()` identifies scheduled execution or dedicated fallback for an unsupported
@@ -370,7 +373,9 @@ Every action checks controls and readiness; the budget does not bound native cod
 Larger bursts reduce queue dispatches but can increase the time before another session runs.
 
 Diagnostics distinguish cumulative `admitted` from currently `scheduled_sessions`; `sessions`
-also includes admitted jobs which migrated to dedicated controls. Dedicated fallbacks are counted
+also includes admitted jobs temporarily awaiting isolated controls. `control_workers`,
+`queued_controls`, `isolated_controls` and cumulative `control_handoffs` identify this work;
+`control_fallbacks` remains zero because handoffs return to scheduling. Dedicated fallbacks are counted
 separately by capacity, control migration, input, output, demuxer, initial filtergraph and crossfade.
 `turns`, `actions`, `queue_peak`, `queue_contentions` and `queue_wait_ns` expose dispatch frequency
 and queue mutex waiting. Contention counts failed immediate mutex acquisitions; wait time includes

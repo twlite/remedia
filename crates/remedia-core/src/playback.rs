@@ -312,6 +312,9 @@ enum WorkerAction {
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "experimental-scheduler")]
+mod blocking;
+
 mod completion;
 mod crossfade_events;
 mod crossfade_worker;

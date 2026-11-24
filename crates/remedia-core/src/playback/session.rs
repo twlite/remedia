@@ -92,7 +92,7 @@ impl PlaybackSession {
             1 => "scheduled",
             2 => "dedicated: unsupported workload",
             3 => "dedicated: pool capacity",
-            4 => "dedicated: blocking control",
+            4 => "scheduled: isolated control",
             _ => "dedicated",
         }
     }
