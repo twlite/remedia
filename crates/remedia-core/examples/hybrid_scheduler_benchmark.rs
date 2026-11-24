@@ -323,6 +323,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|value| value.parse::<usize>())
         .transpose()?
         .unwrap_or(0);
+    if control_rounds != 0 {
+        gate.release();
+    }
     let mut control_latencies: std::collections::BTreeMap<&str, Vec<f64>> =
         std::collections::BTreeMap::new();
     for session in &sessions {
