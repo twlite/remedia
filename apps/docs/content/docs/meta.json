@@ -19,6 +19,7 @@
     "client/nodes",
     "---Embedded Node.js---",
     "node/inputs",
+    "node/stream-output",
     "node/voice",
     "node/filters",
     "node/diagnostics",
