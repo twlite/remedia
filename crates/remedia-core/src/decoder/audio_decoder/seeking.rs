@@ -29,7 +29,20 @@ impl AudioDecoder {
             });
         }
 
-        let timestamp = i64::try_from(position.as_micros()).map_err(|_| {
+        // MP3 reservoirs and AAC overlap depend on earlier packets. Decode a bounded preroll
+        // and trim at the requested sample, independent of demux read-ahead/index history.
+        let landing = if matches!(
+            self.reader.codec_parameters.id(),
+            ffmpeg::codec::Id::MP3
+                | ffmpeg::codec::Id::MP2
+                | ffmpeg::codec::Id::AAC
+                | ffmpeg::codec::Id::AAC_LATM
+        ) {
+            position.saturating_sub(Duration::from_secs(1))
+        } else {
+            position
+        };
+        let timestamp = i64::try_from(landing.as_micros()).map_err(|_| {
             DecoderError::UnsupportedSeeking(
                 "the target exceeds FFmpeg's timestamp range".to_owned(),
             )
@@ -62,7 +75,8 @@ impl AudioDecoder {
         self.reader.demux_finished = false;
         self.reader.first_packet_pending = false;
         self.reader.pending_packets.clear();
-        self.reader.next_source_sample = Some(target_sample);
+        self.reader.next_source_sample =
+            Some(duration_to_sample_position(landing).unwrap_or(target_sample));
         self.reader.clear_packet_history();
         self.finished = false;
         *pending_frame = None;

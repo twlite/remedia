@@ -65,7 +65,12 @@ impl MediaOutput for OpusEncoderOutput {
         cx: &mut std::task::Context<'_>,
         cancellation: &CancellationToken,
     ) -> std::task::Poll<Result<(), OutputError>> {
-        self.poll_barrier(control, cx, cancellation)
+        match control {
+            crate::OutputControl::Flush(sample) => {
+                self.scheduler_poll_flush_samples(sample, cx, cancellation)
+            }
+            _ => self.poll_barrier(control, cx, cancellation),
+        }
     }
 
     #[cfg(feature = "experimental-scheduler")]

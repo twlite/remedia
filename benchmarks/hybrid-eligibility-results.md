@@ -134,3 +134,22 @@ a tracked dedicated worker and preserves the original readiness handshake and er
 Diagnostics expose probe_retries; qualified benchmark rows require zero retries. A regression
 opens owned WebM through this fallback, drains valid audio, joins both workers, and verifies
 zero scheduled admissions and the explicit demuxer fallback reason.
+
+## Seek correctness discovered during qualification
+
+A four-seek PCM qualification run exposed read-history-dependent MP3 output in the
+scheduled backend, including owned-memory sources. The experiment is rejected whenever
+its within-source checksums differ; both partial series and the diagnostic reproducer
+are retained under `data/hybrid/eligibility`, excluded from performance conclusions.
+
+Native MP3 seek now decodes up to one second of preroll to reconstruct the bit reservoir
+and synthesis state, then trims at the requested sample. MP2/AAC use the same bounded
+preroll for inter-packet state. FFmpeg seeks at or before the landing timestamp. Resampler
+trimming accounts for stream start, buffered delay and cumulative output samples even
+while discarding preroll. A feature-independent decoder regression compares every float
+bit and the remaining sample count against continuous decoding after different prior
+read counts, at 20, 70, 130, 1500 and 2700 ms. This correction is shared by both backends.
+The control benchmark therefore compares corrected dedicated and scheduled execution;
+original main remains in every ordinary playback comparison. Original seek output is
+not treated as a golden reference. Preroll adds bounded seek work and is included in
+reported control latency and CPU cost.

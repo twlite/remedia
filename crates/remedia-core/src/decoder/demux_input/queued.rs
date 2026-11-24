@@ -206,7 +206,7 @@ impl QueuedInput {
             .input
             .as_mut()
             .ok_or(ffmpeg::Error::InvalidData)?
-            .seek(timestamp, ..)?;
+            .seek(timestamp, ..timestamp)?;
         state.packets.clear();
         state.bytes = 0;
         state.eof = false;

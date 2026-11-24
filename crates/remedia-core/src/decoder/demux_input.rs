@@ -68,7 +68,7 @@ impl DemuxInput {
         self.direct
             .as_mut()
             .expect("direct input")
-            .seek(timestamp, ..)
+            .seek(timestamp, ..timestamp)
     }
 
     pub(super) fn poll_packet(

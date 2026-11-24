@@ -476,3 +476,9 @@ so containers outside the supported set cannot open nested inputs on a shared st
 A rejected/failed restricted probe retries the original source on a tracked dedicated worker;
 `probe_retries` reports these attempts. Unsupported containers keep their original playback
 functionality, and these retries/fallbacks are excluded from scheduler benchmark evidence.
+
+MP3, MP2 and AAC native seeks decode up to one second before the requested position to
+restore codec history, then discard preroll samples. This work runs on the isolated
+control executor for scheduled sessions. The seek acknowledgement still waits for
+output invalidation; preroll can increase seek latency without changing the requested
+media position or encoder quality.

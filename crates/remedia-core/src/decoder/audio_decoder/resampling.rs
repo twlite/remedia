@@ -79,7 +79,7 @@ impl AudioDecoder {
             resampler.context.run(decoded, &mut output)
         }
         .map_err(|error| DecoderError::Resample(error.to_string()))?;
-        let result = self.enqueue_output(&output, decoded.timestamp());
+        let result = self.enqueue_output(&output, decoded.timestamp(), delay);
         self.resampler
             .as_mut()
             .expect("resampler initialized")
@@ -110,7 +110,7 @@ impl AudioDecoder {
         }
 
         for output in output_frames {
-            self.enqueue_output(&output, None)?;
+            self.enqueue_output(&output, None, 0)?;
         }
         Ok(())
     }
@@ -119,6 +119,7 @@ impl AudioDecoder {
         &mut self,
         output: &ffmpeg::frame::Audio,
         source_timestamp: Option<i64>,
+        source_delay: usize,
     ) -> Result<(), DecoderError> {
         let samples_per_channel = output.samples();
         if samples_per_channel == 0 {
@@ -138,13 +139,21 @@ impl AudioDecoder {
             source_timestamp,
             self.reader.stream_time_base,
             OUTPUT_SAMPLE_RATE_HZ,
-        );
+        )
+        .map(|sample| {
+            sample
+                .saturating_sub(self.reader.stream_start_sample.unwrap_or(0))
+                .saturating_sub(source_delay as u64)
+        });
         let previous_next_sample = self.next_sample_position;
         let seek_target_sample = self.seek_target_sample;
         let (start_sample, trim_samples) = if let Some(target_sample) = seek_target_sample {
-            let source_start = source_start.unwrap_or(target_sample);
+            let source_start = previous_next_sample
+                .or(source_start)
+                .unwrap_or(target_sample);
             let source_end = source_start.saturating_add(samples_per_channel as u64);
             if source_end <= target_sample {
+                self.next_sample_position = Some(source_end);
                 return Ok(());
             }
             let trim_samples = target_sample.saturating_sub(source_start) as usize;
