@@ -221,6 +221,15 @@ impl PlaybackSession {
             let worker_cancellation = cancellation.clone();
             let worker_observability = self.shared.observability.clone();
             let worker_crossfade = *lock(&self.crossfade);
+            #[cfg(feature = "experimental-scheduler")]
+            self.shared.executor.store(
+                if self.shared.scheduler.is_some() {
+                    2
+                } else {
+                    0
+                },
+                std::sync::atomic::Ordering::Release,
+            );
             let worker_stage = Arc::clone(&self.stage);
             let worker_reopen = fallback::Reopen::new(&source, reopener);
             let thread_result = thread::Builder::new()

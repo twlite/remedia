@@ -93,15 +93,20 @@ impl PlaybackScheduler {
         machine: impl FnMut() -> worker::WorkerStep + Send + 'static,
     ) -> Result<Arc<Job>, Machine> {
         let machine: Machine = Box::new(machine);
-        if self
-            .inner
-            .live
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < self.inner.capacity).then_some(n + 1)
-            })
-            .is_err()
-        {
-            return Err(machine);
+        let mut live = self.inner.live.load(Ordering::Acquire);
+        loop {
+            if live >= self.inner.capacity {
+                return Err(machine);
+            }
+            match self.inner.live.compare_exchange_weak(
+                live,
+                live + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(current) => live = current,
+            }
         }
         let job = Arc::new(Job {
             cancel_wake: Mutex::new(None),
@@ -195,19 +200,22 @@ fn run(pool: Arc<Pool>) {
         let mut machine = lock(&job.machine);
         let outcome = machine.as_mut().expect("live task")();
         pool.polls.fetch_add(1, Ordering::Relaxed);
-        if outcome == worker::WorkerStep::Terminal {
+        if matches!(
+            outcome,
+            worker::WorkerStep::Completed
+                | worker::WorkerStep::Cancelled
+                | worker::WorkerStep::Failed
+        ) {
             job.state.store(DONE, Ordering::Release);
             machine.take();
             pool.live.fetch_sub(1, Ordering::AcqRel);
             *lock(&job.finished) = true;
             job.changed.notify_all();
-        } else if outcome == worker::WorkerStep::Runnable {
-            job.state.store(IDLE, Ordering::Release);
-            job.wake();
-        } else if job
-            .state
-            .compare_exchange(RUNNING, IDLE, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
+        } else if outcome == worker::WorkerStep::Runnable
+            || job
+                .state
+                .compare_exchange(RUNNING, IDLE, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
         {
             job.state.store(IDLE, Ordering::Release);
             job.wake();

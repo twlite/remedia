@@ -46,7 +46,9 @@ pub(super) enum WorkerStep {
     Paused(u64),
     #[cfg(feature = "experimental-scheduler")]
     WaitingOutput,
-    Terminal,
+    Completed,
+    Cancelled,
+    Failed,
 }
 
 pub(super) fn worker_loop(
@@ -78,25 +80,30 @@ pub(super) fn worker_loop(
     if eligible && let Some(pool) = &shared.scheduler {
         let mut machine = machine;
         let cancellation = panic_context.2.clone();
-        let safe_machine = move || match catch_unwind(AssertUnwindSafe(&mut machine)) {
-            Ok(step) => step,
-            Err(_) => {
-                fail_session(
-                    &panic_context.0,
-                    generation,
-                    PlaybackError::WorkerPanicked,
-                    &panic_context.2,
-                    &panic_context.1,
-                );
-                WorkerStep::Terminal
-            }
+        let observability = shared.observability.clone();
+        let safe_machine = move || {
+            with_dispatch(&observability, || {
+                match catch_unwind(AssertUnwindSafe(&mut machine)) {
+                    Ok(step) => step,
+                    Err(_) => {
+                        fail_session(
+                            &panic_context.0,
+                            generation,
+                            PlaybackError::WorkerPanicked,
+                            &panic_context.2,
+                            &panic_context.1,
+                        );
+                        WorkerStep::Failed
+                    }
+                }
+            })
         };
         match pool.submit(safe_machine) {
             Ok(job) => {
                 let wake = Arc::new(scheduler::CancelWake(Arc::downgrade(&job)));
-                cancellation.register_waker(wake.clone());
-                *lock(&job.cancel_wake) = Some(wake);
+                *lock(&job.cancel_wake) = Some(wake.clone());
                 *lock(&shared.scheduled) = Some(job.clone());
+                cancellation.register_waker(wake);
                 shared
                     .executor
                     .store(1, std::sync::atomic::Ordering::Release);
@@ -119,11 +126,19 @@ pub(super) fn worker_loop(
     drive_machine(machine, &shared, generation);
 }
 
+fn terminal_outcome(shared: &SessionShared) -> WorkerStep {
+    match lock(&shared.data).state {
+        PlaybackState::Completed => WorkerStep::Completed,
+        PlaybackState::Failed => WorkerStep::Failed,
+        _ => WorkerStep::Cancelled,
+    }
+}
+
 fn drive_machine(mut machine: impl FnMut() -> WorkerStep, shared: &SessionShared, generation: u64) {
     loop {
         match machine() {
             WorkerStep::Runnable => {}
-            WorkerStep::Terminal => return,
+            WorkerStep::Completed | WorkerStep::Cancelled | WorkerStep::Failed => return,
             #[cfg(feature = "experimental-scheduler")]
             WorkerStep::WaitingOutput => unreachable!("dedicated output uses blocking readiness"),
             WorkerStep::Paused(revision) => {
@@ -153,17 +168,14 @@ fn prepare_machine(
     reopen: fallback::Reopen,
 ) -> Option<impl FnMut() -> WorkerStep + Send> {
     let _log_capture = crate::ffmpeg_logging::capture();
-    let Some(startup::PreparedWorker {
+    let startup::PreparedWorker {
         mut decoder,
         mut processor,
         mut can_passthrough,
         mut passthrough_mode,
         playback_id,
         _active_playback,
-    }) = startup::prepare(&shared, generation, source, &output, &cancellation, ready)
-    else {
-        return None;
-    };
+    } = startup::prepare(&shared, generation, source, &output, &cancellation, ready)?;
 
     let mut pending_frame = None;
     let mut deferred_filter_update: Option<FilterUpdate> = None;
@@ -204,11 +216,11 @@ fn prepare_machine(
         #[cfg(not(feature = "experimental-scheduler"))]
         let readiness = output.wait_ready(&cancellation);
         if cancellation.is_cancelled() {
-            return WorkerStep::Terminal;
+            return terminal_outcome(&shared);
         }
         if let Err(error) = readiness {
             fail_session(&shared, generation, error.into(), &cancellation, &output);
-            return WorkerStep::Terminal;
+            return terminal_outcome(&shared);
         }
         if let Some(waiting) = fallback.as_ref() {
             waiting.set_playhead(fallback_playhead(&pending_frame, &processor));
@@ -264,7 +276,9 @@ fn prepare_machine(
                     Some(frame) => Some(frame),
                     None => match decoder.next_timed_frame() {
                         Ok(frame) => frame,
-                        Err(_) if is_stopped(&shared, generation) => return WorkerStep::Terminal,
+                        Err(_) if is_stopped(&shared, generation) => {
+                            return terminal_outcome(&shared);
+                        }
                         Err(_) => None,
                     },
                 };
@@ -371,7 +385,7 @@ fn prepare_machine(
                         // The old source's next audio goes back where it was.
                         pending_frame = old;
                         if is_stopped(&shared, generation) {
-                            return WorkerStep::Terminal;
+                            return terminal_outcome(&shared);
                         }
                         tracing::warn!(
                             name: "core.playback.fallback_seek_failed",
@@ -413,10 +427,10 @@ fn prepare_machine(
                 Ok(None) => {}
                 Err(error) => {
                     if is_stopped(&shared, generation) {
-                        return WorkerStep::Terminal;
+                        return terminal_outcome(&shared);
                     }
                     fail_session(&shared, generation, error.into(), &cancellation, &output);
-                    return WorkerStep::Terminal;
+                    return terminal_outcome(&shared);
                 }
             }
         }
@@ -428,7 +442,7 @@ fn prepare_machine(
             can_passthrough && !force_pcm,
             passthrough_mode,
         ) {
-            WorkerAction::Exit => return WorkerStep::Terminal,
+            WorkerAction::Exit => return terminal_outcome(&shared),
             WorkerAction::Wait(revision) => return WorkerStep::Paused(revision),
             // The replacement finished preparing; the check at the top of the loop acts on it.
             WorkerAction::PollFallback => {}
@@ -452,7 +466,7 @@ fn prepare_machine(
                 .apply()
                 .is_break()
                 {
-                    return WorkerStep::Terminal;
+                    return terminal_outcome(&shared);
                 }
                 if was_passthrough && !passthrough_mode && seek_recovery.can_resume() {
                     // Entering PCM from forwarded packets. A stream whose pre-skip equals the
@@ -514,7 +528,7 @@ fn prepare_machine(
                                             &cancellation,
                                             &output,
                                         );
-                                        return WorkerStep::Terminal;
+                                        return terminal_outcome(&shared);
                                     }
                                 };
                                 let packet_info = EncodedOpusPacket {
@@ -534,7 +548,7 @@ fn prepare_machine(
                                         encoded.write_encoded_packet(packet_info, &cancellation)
                                 {
                                     if is_stopped(&shared, generation) {
-                                        return WorkerStep::Terminal;
+                                        return terminal_outcome(&shared);
                                     }
                                     fail_session(
                                         &shared,
@@ -543,7 +557,7 @@ fn prepare_machine(
                                         &cancellation,
                                         &output,
                                     );
-                                    return WorkerStep::Terminal;
+                                    return terminal_outcome(&shared);
                                 } else {
                                     record_encoded_packet_submitted(
                                         &shared,
@@ -575,10 +589,10 @@ fn prepare_machine(
                         Ok(None) => input_finished = true,
                         Err(error) => {
                             if is_stopped(&shared, generation) {
-                                return WorkerStep::Terminal;
+                                return terminal_outcome(&shared);
                             }
                             fail_session(&shared, generation, error.into(), &cancellation, &output);
-                            return WorkerStep::Terminal;
+                            return terminal_outcome(&shared);
                         }
                     }
                 } else {
@@ -587,10 +601,10 @@ fn prepare_machine(
                         Ok(None) => input_finished = true,
                         Err(error) => {
                             if is_stopped(&shared, generation) {
-                                return WorkerStep::Terminal;
+                                return terminal_outcome(&shared);
                             }
                             fail_session(&shared, generation, error.into(), &cancellation, &output);
-                            return WorkerStep::Terminal;
+                            return terminal_outcome(&shared);
                         }
                     }
                 }
@@ -647,12 +661,12 @@ fn prepare_machine(
                             .apply()
                             .is_break()
                             {
-                                return WorkerStep::Terminal;
+                                return terminal_outcome(&shared);
                             }
                         }
                     }
                     Err(ProcessError::Output(_)) if is_stopped(&shared, generation) => {
-                        return WorkerStep::Terminal;
+                        return terminal_outcome(&shared);
                     }
                     Err(ProcessError::Output(error)) => {
                         fail_session(
@@ -662,7 +676,7 @@ fn prepare_machine(
                             &cancellation,
                             &output,
                         );
-                        return WorkerStep::Terminal;
+                        return terminal_outcome(&shared);
                     }
                     Err(ProcessError::Filter(error)) => {
                         fail_session(
@@ -672,7 +686,7 @@ fn prepare_machine(
                             &cancellation,
                             &output,
                         );
-                        return WorkerStep::Terminal;
+                        return terminal_outcome(&shared);
                     }
                 }
             }
@@ -709,7 +723,7 @@ fn prepare_machine(
                     }
                     Err(_) if is_stopped(&shared, generation) => {
                         let _ = update.response.send(Err(PlaybackError::Cancelled));
-                        return WorkerStep::Terminal;
+                        return terminal_outcome(&shared);
                     }
                     Err(error) => {
                         let playback_error = PlaybackError::Output(error);
@@ -723,7 +737,7 @@ fn prepare_machine(
                         );
                         let _ = update.response.send(Err(playback_error.clone()));
                         fail_session(&shared, generation, playback_error, &cancellation, &output);
-                        return WorkerStep::Terminal;
+                        return terminal_outcome(&shared);
                     }
                 }
             }
@@ -747,7 +761,7 @@ fn prepare_machine(
                         );
                     }
                 }
-                Err(_) if is_stopped(&shared, generation) => return WorkerStep::Terminal,
+                Err(_) if is_stopped(&shared, generation) => return terminal_outcome(&shared),
                 Err(error) => {
                     fail_session(
                         &shared,
@@ -756,7 +770,7 @@ fn prepare_machine(
                         &cancellation,
                         &output,
                     );
-                    return WorkerStep::Terminal;
+                    return terminal_outcome(&shared);
                 }
             },
             WorkerAction::Resume => match output.resume(&cancellation) {
@@ -779,7 +793,7 @@ fn prepare_machine(
                         );
                     }
                 }
-                Err(_) if is_stopped(&shared, generation) => return WorkerStep::Terminal,
+                Err(_) if is_stopped(&shared, generation) => return terminal_outcome(&shared),
                 Err(error) => {
                     fail_session(
                         &shared,
@@ -788,7 +802,7 @@ fn prepare_machine(
                         &cancellation,
                         &output,
                     );
-                    return WorkerStep::Terminal;
+                    return terminal_outcome(&shared);
                 }
             },
             WorkerAction::Seek(request) => {
@@ -853,7 +867,7 @@ fn prepare_machine(
                                     &cancellation,
                                     &output,
                                 );
-                                return WorkerStep::Terminal;
+                                return terminal_outcome(&shared);
                             }
                             passthrough_mode = false;
                         }
@@ -886,7 +900,7 @@ fn prepare_machine(
                                 &cancellation,
                                 &output,
                             );
-                            return WorkerStep::Terminal;
+                            return terminal_outcome(&shared);
                         }
                         let flushed =
                             output
@@ -926,7 +940,7 @@ fn prepare_machine(
                             }
                             Err(_) if is_stopped(&shared, generation) => {
                                 let _ = request.response.send(Err(PlaybackError::Cancelled));
-                                return WorkerStep::Terminal;
+                                return terminal_outcome(&shared);
                             }
                             Err(error) => {
                                 let playback_error = PlaybackError::Output(error);
@@ -945,14 +959,14 @@ fn prepare_machine(
                                     &cancellation,
                                     &output,
                                 );
-                                return WorkerStep::Terminal;
+                                return terminal_outcome(&shared);
                             }
                         }
                     }
                     Err(error) => {
                         if is_stopped(&shared, generation) {
                             let _ = request.response.send(Err(PlaybackError::Cancelled));
-                            return WorkerStep::Terminal;
+                            return terminal_outcome(&shared);
                         }
                         let playback_error: PlaybackError = error.into();
                         if matches!(playback_error, PlaybackError::UnsupportedSeeking(_))
@@ -1000,10 +1014,10 @@ fn prepare_machine(
                                 &cancellation,
                                 &output,
                             );
-                            return WorkerStep::Terminal;
+                            return terminal_outcome(&shared);
                         }
                         if is_stopped(&shared, generation) {
-                            return WorkerStep::Terminal;
+                            return terminal_outcome(&shared);
                         }
                     }
                 }
@@ -1027,7 +1041,7 @@ fn prepare_machine(
                 }) {
                     Ok(()) => {}
                     Err(ProcessError::Output(_)) if is_stopped(&shared, generation) => {
-                        return WorkerStep::Terminal;
+                        return terminal_outcome(&shared);
                     }
                     Err(ProcessError::Output(error)) => {
                         fail_session(
@@ -1037,7 +1051,7 @@ fn prepare_machine(
                             &cancellation,
                             &output,
                         );
-                        return WorkerStep::Terminal;
+                        return terminal_outcome(&shared);
                     }
                     Err(ProcessError::Filter(error)) => {
                         fail_session(
@@ -1047,7 +1061,7 @@ fn prepare_machine(
                             &cancellation,
                             &output,
                         );
-                        return WorkerStep::Terminal;
+                        return terminal_outcome(&shared);
                     }
                 }
                 match output.finish(&cancellation) {
@@ -1097,9 +1111,9 @@ fn prepare_machine(
                             playback_id,
                             "playback reached end of stream"
                         );
-                        return WorkerStep::Terminal;
+                        return terminal_outcome(&shared);
                     }
-                    Err(_) if is_stopped(&shared, generation) => return WorkerStep::Terminal,
+                    Err(_) if is_stopped(&shared, generation) => return terminal_outcome(&shared),
                     Err(error) => {
                         fail_session(
                             &shared,
@@ -1108,7 +1122,7 @@ fn prepare_machine(
                             &cancellation,
                             &output,
                         );
-                        return WorkerStep::Terminal;
+                        return terminal_outcome(&shared);
                     }
                 }
             }

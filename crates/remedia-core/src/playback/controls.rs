@@ -441,6 +441,14 @@ impl PlaybackSession {
 
         let worker = lock(&self.worker).take();
         let worker_panicked = worker.is_some_and(|worker| worker.join().is_err());
+        #[cfg(feature = "experimental-scheduler")]
+        {
+            let job = lock(&self.shared.scheduled).take();
+            if let Some(job) = job {
+                job.wake();
+                job.join();
+            }
+        }
         let played_position = output.as_ref().and_then(safe_played_position);
 
         let mut data = lock(&self.shared.data);

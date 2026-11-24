@@ -52,60 +52,55 @@ pub(super) fn next_worker_action(
     passthrough_mode: bool,
 ) -> WorkerAction {
     let mut data = lock(&shared.data);
-    loop {
-        if data.generation != generation || data.stopping || data.state == PlaybackState::Stopped {
-            return WorkerAction::Exit;
-        }
-        let wants_passthrough =
-            can_passthrough && data.filter_graph.is_none() && data.volume == 1.0;
-        if !passthrough_mode
-            && wants_passthrough
-            && pending_frame.is_some()
-            && data.state == PlaybackState::Playing
-        {
-            return WorkerAction::Deliver(pending_frame.take().expect("pending frame checked"));
-        }
-        if let Some(update) = data.pending_filter_graph.take() {
-            return WorkerAction::ReplaceFilter(update);
-        }
-        if let Some(request) = data.pending_seek.take() {
-            return WorkerAction::Seek(request);
-        }
-        if std::mem::take(&mut data.fallback_signal) {
-            return WorkerAction::PollFallback;
-        }
-        if data.state == PlaybackState::Pausing {
-            return WorkerAction::Pause;
-        }
-        if matches!(data.state, PlaybackState::Playing | PlaybackState::Paused)
-            && passthrough_mode != wants_passthrough
-            && !(wants_passthrough && pending_frame.is_some())
-        {
-            return WorkerAction::ConfigureProcessing;
-        }
-        match data.state {
-            PlaybackState::Playing => {
-                if let Some(frame) = pending_frame.take() {
-                    return WorkerAction::Deliver(frame);
-                }
-                if input_finished {
-                    return WorkerAction::Finish;
-                }
-                return WorkerAction::Decode;
+    if data.generation != generation || data.stopping || data.state == PlaybackState::Stopped {
+        return WorkerAction::Exit;
+    }
+    let wants_passthrough = can_passthrough && data.filter_graph.is_none() && data.volume == 1.0;
+    if !passthrough_mode
+        && wants_passthrough
+        && pending_frame.is_some()
+        && data.state == PlaybackState::Playing
+    {
+        return WorkerAction::Deliver(pending_frame.take().expect("pending frame checked"));
+    }
+    if let Some(update) = data.pending_filter_graph.take() {
+        return WorkerAction::ReplaceFilter(update);
+    }
+    if let Some(request) = data.pending_seek.take() {
+        return WorkerAction::Seek(request);
+    }
+    if std::mem::take(&mut data.fallback_signal) {
+        return WorkerAction::PollFallback;
+    }
+    if data.state == PlaybackState::Pausing {
+        return WorkerAction::Pause;
+    }
+    if matches!(data.state, PlaybackState::Playing | PlaybackState::Paused)
+        && passthrough_mode != wants_passthrough
+        && !(wants_passthrough && pending_frame.is_some())
+    {
+        return WorkerAction::ConfigureProcessing;
+    }
+    match data.state {
+        PlaybackState::Playing => {
+            if let Some(frame) = pending_frame.take() {
+                return WorkerAction::Deliver(frame);
             }
-            PlaybackState::Paused | PlaybackState::Starting => {
-                return WorkerAction::Wait(
-                    shared.revision.load(std::sync::atomic::Ordering::Acquire),
-                );
+            if input_finished {
+                return WorkerAction::Finish;
             }
-            PlaybackState::Resuming => return WorkerAction::Resume,
-            PlaybackState::Stopping => return WorkerAction::Exit,
-            PlaybackState::Idle
-            | PlaybackState::Pausing
-            | PlaybackState::Stopped
-            | PlaybackState::Completed
-            | PlaybackState::Failed => return WorkerAction::Exit,
+            WorkerAction::Decode
         }
+        PlaybackState::Paused | PlaybackState::Starting => {
+            WorkerAction::Wait(shared.revision.load(std::sync::atomic::Ordering::Acquire))
+        }
+        PlaybackState::Resuming => WorkerAction::Resume,
+        PlaybackState::Stopping => WorkerAction::Exit,
+        PlaybackState::Idle
+        | PlaybackState::Pausing
+        | PlaybackState::Stopped
+        | PlaybackState::Completed
+        | PlaybackState::Failed => WorkerAction::Exit,
     }
 }
 

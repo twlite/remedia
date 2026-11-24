@@ -140,3 +140,28 @@ fn unsupported_inputs_and_capacity_exhaustion_report_fallback() {
         "dedicated: unsupported workload"
     );
 }
+
+#[test]
+fn repeated_generations_and_external_cancellation_release_pool_slots() {
+    let pool = PlaybackScheduler::new(2, 8).unwrap();
+    let session = PlaybackSession::with_scheduler(pool.clone());
+    for generation in 0..128 {
+        let token = CancellationToken::new();
+        let (output, reader) = StreamOutput::new(
+            StreamFormat::F32le,
+            StreamPacing::Unpaced,
+            OpusEncoderConfig::default(),
+        )
+        .unwrap();
+        session
+            .play_with_cancellation(source(), output, token.clone())
+            .unwrap();
+        if generation % 2 == 0 {
+            token.cancel();
+        }
+        drop(reader);
+        session.stop().unwrap();
+        assert_eq!(pool.diagnostics().sessions, 0);
+        assert_eq!(pool.diagnostics().queued, 0);
+    }
+}
