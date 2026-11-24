@@ -9,6 +9,8 @@ pub struct DiscordOpusSender {
     pub(super) finished: AtomicBool,
     /// End sample of the last successfully dispatched audio packet; MAX means unknown.
     pub(super) played_end_sample: Arc<AtomicU64>,
+    #[cfg(feature = "experimental-scheduler")]
+    pub(super) pending_control: Mutex<Option<readiness::PendingControl>>,
 }
 
 impl DiscordOpusSender {
@@ -72,7 +74,7 @@ impl DiscordOpusSender {
 
     pub(super) fn wait_for_control(
         &self,
-        receiver: mpsc::Receiver<Result<(), VoiceError>>,
+        receiver: flume::Receiver<Result<(), VoiceError>>,
         cancellation: &CoreCancellationToken,
     ) -> Result<(), VoiceError> {
         loop {
@@ -81,11 +83,11 @@ impl DiscordOpusSender {
             }
             match receiver.recv_timeout(Duration::from_millis(25)) {
                 Ok(result) => return result,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
+                Err(flume::RecvTimeoutError::Timeout) => {
                     // The actor owns the transport state. This short wait is
                     // bounded and interruptible rather than a polling loop.
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(flume::RecvTimeoutError::Disconnected) => {
                     return Err(VoiceError::Disconnected);
                 }
             }
@@ -94,10 +96,10 @@ impl DiscordOpusSender {
 
     pub(super) fn request_barrier(
         &self,
-        make_control: impl FnOnce(mpsc::SyncSender<Result<(), VoiceError>>) -> Control,
+        make_control: impl FnOnce(flume::Sender<Result<(), VoiceError>>) -> Control,
         cancellation: &CoreCancellationToken,
     ) -> Result<(), VoiceError> {
-        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        let (ack_tx, ack_rx) = flume::bounded(1);
         let control = make_control(ack_tx);
         self.inner
             .control_tx
@@ -174,6 +176,31 @@ impl DiscordOpusSender {
 }
 
 impl OpusPacketSink for DiscordOpusSender {
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_nonblocking(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_packet(
+        &self,
+        packet: &mut Option<EncodedOpusPacket>,
+        cx: &mut std::task::Context<'_>,
+        cancellation: &CoreCancellationToken,
+    ) -> std::task::Poll<Result<(), OutputError>> {
+        self.poll_packet(packet, cx, cancellation)
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_control(
+        &self,
+        control: remedia_core::OutputControl,
+        cx: &mut std::task::Context<'_>,
+        cancellation: &CoreCancellationToken,
+    ) -> std::task::Poll<Result<(), OutputError>> {
+        self.poll_control(control, cx, cancellation)
+    }
+
     fn send_packet(
         &self,
         packet: EncodedOpusPacket,
@@ -273,6 +300,8 @@ impl OpusPacketSink for DiscordOpusSender {
 
     fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
+        #[cfg(feature = "experimental-scheduler")]
+        self.inner.readiness.wake();
         let _generation_update = lock(&self.inner.generation_update);
         let old_generation = self.generation.load(Ordering::Acquire);
         if let Ok(current) = self.inner.generation.compare_exchange(
@@ -306,3 +335,6 @@ impl Drop for DiscordOpusSender {
         self.cancel();
     }
 }
+
+#[cfg(feature = "experimental-scheduler")]
+mod readiness;

@@ -184,6 +184,10 @@ impl DiscordVoiceConnection {
         let rtp = RtpSender::new(ready.ssrc, random(), random(), random(), mode, &secret_key)?;
 
         let (packet_tx, packet_rx) = flume::bounded(QUEUE_CAPACITY);
+        #[cfg(feature = "experimental-scheduler")]
+        let readiness = Arc::new(futures_util::task::AtomicWaker::new());
+        #[cfg(feature = "experimental-scheduler")]
+        let actor_readiness = readiness.clone();
         let (control_tx, control_rx) = flume::bounded(16);
         let (generation_tx, generation_rx) = watch::channel(0);
         let cancelled_generation = Arc::new(AtomicU64::new(u64::MAX));
@@ -223,6 +227,8 @@ impl DiscordVoiceConnection {
                 dave,
                 rtp,
                 packet_rx,
+                #[cfg(feature = "experimental-scheduler")]
+                readiness: actor_readiness.clone(),
                 control_rx,
                 generation_rx,
                 cancelled_generation: actor_cancelled_generation,
@@ -258,6 +264,8 @@ impl DiscordVoiceConnection {
                     );
                 }
             }
+            #[cfg(feature = "experimental-scheduler")]
+            actor_readiness.wake();
         }
         .instrument(actor_span);
         let actor_dispatch = observability.dispatch().cloned();
@@ -274,6 +282,8 @@ impl DiscordVoiceConnection {
                 state,
                 failure,
                 packet_tx,
+                #[cfg(feature = "experimental-scheduler")]
+                readiness: readiness.clone(),
                 control_tx,
                 generation: AtomicU64::new(0),
                 generation_update: Mutex::new(()),
@@ -373,6 +383,8 @@ impl DiscordVoiceConnection {
         let _generation_update = lock(&self.inner.generation_update);
         let generation = self.inner.generation.fetch_add(1, Ordering::AcqRel) + 1;
         self.inner.generation_tx.send_replace(generation);
+        #[cfg(feature = "experimental-scheduler")]
+        self.inner.readiness.wake();
         with_dispatch(&self.inner.observability, || {
             tracing::info!(
                 name: "discord.rtp_sender.started",
@@ -388,6 +400,8 @@ impl DiscordVoiceConnection {
             cancelled: AtomicBool::new(false),
             finished: AtomicBool::new(false),
             played_end_sample: Arc::new(AtomicU64::new(u64::MAX)),
+            #[cfg(feature = "experimental-scheduler")]
+            pending_control: Mutex::new(None),
         }
     }
 

@@ -40,6 +40,18 @@ impl OutputError {
     }
 }
 
+/// A playback boundary whose acknowledgement must follow accepted output.
+#[cfg(feature = "experimental-scheduler")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutputControl {
+    /// Drain accepted output before pausing.
+    Pause,
+    /// Resume downstream delivery.
+    Resume,
+    /// Drain final audio and finish the playback generation.
+    Finish,
+}
+
 /// A consumer for normalized PCM frames.
 ///
 /// One output value is created for each playback. `write_frame` is synchronous:
@@ -54,6 +66,27 @@ pub trait MediaOutput: Send + Sync + 'static {
     #[cfg(feature = "experimental-scheduler")]
     fn scheduler_nonblocking(&self) -> bool {
         false
+    }
+
+    /// Enable nonblocking production after successful scheduler admission.
+    /// This is called once, before the first scheduled action.
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_activate(&self) {}
+
+    /// Execute a resumable output barrier. Pending must retain the operation and register a wake.
+    /// Called repeatedly with the same control until acknowledged or playback is cancelled.
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_control(
+        &self,
+        control: OutputControl,
+        _cx: &mut std::task::Context<'_>,
+        cancellation: &CancellationToken,
+    ) -> std::task::Poll<Result<(), OutputError>> {
+        std::task::Poll::Ready(match control {
+            OutputControl::Pause => self.pause(cancellation),
+            OutputControl::Resume => self.resume(cancellation),
+            OutputControl::Finish => self.finish(cancellation),
+        })
     }
 
     /// Poll output demand without blocking. Used only after `scheduler_nonblocking` opts in.

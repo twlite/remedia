@@ -82,6 +82,41 @@ pub struct EncodedOpusPacket {
 /// worker calls these methods; they must not block an async runtime worker.
 /// `cancel` may run concurrently and must unblock an in-progress method.
 pub trait OpusPacketSink: Send + Sync + 'static {
+    /// Opt in to readiness-driven packet admission and resumable transport barriers.
+    /// All poll methods must be nonblocking; legacy sinks retain dedicated execution.
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_nonblocking(&self) -> bool {
+        false
+    }
+
+    /// Accept the packet only on success. Pending and errors retain the original allocation
+    /// in `packet`; a pending poll must register the waker before checking capacity.
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_packet(
+        &self,
+        _packet: &mut Option<EncodedOpusPacket>,
+        _cx: &mut std::task::Context<'_>,
+        _cancellation: &CancellationToken,
+    ) -> std::task::Poll<Result<(), OutputError>> {
+        std::task::Poll::Ready(Err(OutputError::new(
+            "sink has no packet readiness capability",
+        )))
+    }
+
+    /// Poll a transport barrier after all earlier packets have been admitted. The operation
+    /// must be started once and acknowledged before returning success.
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_control(
+        &self,
+        _control: crate::OutputControl,
+        _cx: &mut std::task::Context<'_>,
+        _cancellation: &CancellationToken,
+    ) -> std::task::Poll<Result<(), OutputError>> {
+        std::task::Poll::Ready(Err(OutputError::new(
+            "sink has no barrier readiness capability",
+        )))
+    }
+
     /// Accept an owned encoded packet.
     fn send_packet(
         &self,
@@ -144,7 +179,9 @@ pub trait OpusPacketSink: Send + Sync + 'static {
 pub struct OpusEncoderOutput {
     config: OpusEncoderConfig,
     state: Mutex<EncoderState>,
-    sink: Box<dyn OpusPacketSink>,
+    sink: packet_buffer::PacketBuffer,
+    #[cfg(feature = "experimental-scheduler")]
+    pending_pcm: Mutex<Option<(PcmFrame, usize)>>,
     cancelled: AtomicBool,
     observability: ObservabilityHandle,
 }
@@ -226,7 +263,9 @@ impl OpusEncoderOutput {
                 next_input_sample: None,
                 finished: false,
             }),
-            sink: Box::new(sink),
+            sink: packet_buffer::PacketBuffer::new(Box::new(sink)),
+            #[cfg(feature = "experimental-scheduler")]
+            pending_pcm: Mutex::new(None),
             cancelled: AtomicBool::new(false),
             observability,
         })
@@ -336,18 +375,14 @@ impl OpusEncoderOutput {
 
     fn write_pcm(
         state: &mut EncoderState,
-        frame: PcmFrame,
+        samples: &[f32],
+        start_sample: u64,
         sink: &dyn OpusPacketSink,
         cancellation: &CancellationToken,
     ) -> Result<(), OutputError> {
-        let scalar_count = frame
-            .samples_per_channel
-            .checked_mul(2)
-            .ok_or_else(|| OutputError::new("PCM frame sample count overflowed"))?;
-        if scalar_count != frame.samples.len() {
-            return Err(OutputError::new(
-                "PCM frame does not contain two interleaved samples per channel frame",
-            ));
+        let scalar_count = samples.len();
+        if !scalar_count.is_multiple_of(2) {
+            return Err(OutputError::new("PCM frame must contain stereo samples"));
         }
         if state.finished {
             return Err(OutputError::new("PCM frame written after output finished"));
@@ -356,21 +391,21 @@ impl OpusEncoderOutput {
             state.partial_is_alignment_only = false;
         }
         if state.primed_unflushed {
-            state.primed_live_samples += frame.samples_per_channel;
+            state.primed_live_samples += scalar_count / 2;
         }
         if let Some(expected) = state.next_input_sample
-            && expected != frame.start_sample
+            && expected != start_sample
         {
             tracing::error!(
                 name: "core.opus.pcm_discontinuity",
                 target: "remedia_core::opus",
                 expected_sample = expected,
-                received_sample = frame.start_sample,
+                received_sample = start_sample,
                 "Opus output rejected a discontinuous PCM timeline"
             );
             return Err(OutputError::new(format!(
                 "PCM timeline is discontinuous: expected sample {expected}, received {}",
-                frame.start_sample
+                start_sample
             )));
         }
 
@@ -378,14 +413,11 @@ impl OpusEncoderOutput {
         while source_offset < scalar_count {
             if state.partial_scalars == 0 {
                 state.partial_start_sample =
-                    Some(frame.start_sample + u64::try_from(source_offset / 2).unwrap_or(u64::MAX));
+                    Some(start_sample + u64::try_from(source_offset / 2).unwrap_or(u64::MAX));
             }
 
             if state.partial_scalars == 0 && scalar_count - source_offset >= OPUS_FRAME_SCALARS {
-                let start_sample = state
-                    .partial_start_sample
-                    .take()
-                    .unwrap_or(frame.start_sample);
+                let start_sample = state.partial_start_sample.take().unwrap_or(start_sample);
                 let suppress = state.suppressed_frames > 0;
                 let start_sample = start_sample.saturating_sub(state.start_bias);
                 Self::encode_and_send(
@@ -393,7 +425,7 @@ impl OpusEncoderOutput {
                         .encoder
                         .as_mut()
                         .ok_or_else(|| OutputError::new("Opus encoder is not initialized"))?,
-                    &frame.samples[source_offset..source_offset + OPUS_FRAME_SCALARS],
+                    &samples[source_offset..source_offset + OPUS_FRAME_SCALARS],
                     OPUS_FRAME_SAMPLES,
                     OPUS_FRAME_SAMPLES,
                     start_sample,
@@ -410,15 +442,12 @@ impl OpusEncoderOutput {
             let count =
                 (OPUS_FRAME_SCALARS - state.partial_scalars).min(scalar_count - source_offset);
             state.partial[state.partial_scalars..state.partial_scalars + count]
-                .copy_from_slice(&frame.samples[source_offset..source_offset + count]);
+                .copy_from_slice(&samples[source_offset..source_offset + count]);
             state.partial_scalars += count;
             source_offset += count;
 
             if state.partial_scalars == OPUS_FRAME_SCALARS {
-                let start_sample = state
-                    .partial_start_sample
-                    .take()
-                    .unwrap_or(frame.start_sample);
+                let start_sample = state.partial_start_sample.take().unwrap_or(start_sample);
                 let suppress = state.suppressed_frames > 0;
                 let start_sample = start_sample.saturating_sub(state.start_bias);
                 Self::encode_and_send(
@@ -441,11 +470,8 @@ impl OpusEncoderOutput {
             }
         }
 
-        state.next_input_sample = Some(
-            frame
-                .start_sample
-                .saturating_add(u64::try_from(frame.samples_per_channel).unwrap_or(u64::MAX)),
-        );
+        state.next_input_sample =
+            Some(start_sample.saturating_add(u64::try_from(scalar_count / 2).unwrap_or(u64::MAX)));
         Ok(())
     }
 }
@@ -487,3 +513,11 @@ mod tests;
 mod pcm_output;
 
 mod encoded_output;
+
+mod packet_buffer;
+
+#[cfg(feature = "experimental-scheduler")]
+mod readiness;
+
+#[cfg(all(test, feature = "experimental-scheduler"))]
+mod tests_readiness;

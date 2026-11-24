@@ -416,3 +416,81 @@ fn routed_delivery_cost() {
     );
     voice.wait_for_packets(PACKETS as usize);
 }
+
+#[cfg(feature = "experimental-scheduler")]
+#[test]
+fn scheduled_owned_pcm_drains_transport_and_acknowledges_finish() {
+    let voice = TestVoiceConnection::new(901);
+    let router = DiscordOpusSenderRouter::new();
+    router.attach(voice.connection().opus_sender());
+    let pool = remedia_core::PlaybackScheduler::with_processing_budget(1, 8, 8).unwrap();
+    let session = PlaybackSession::with_scheduler(pool.clone());
+    let output = OpusEncoderOutput::new(router.sink()).unwrap();
+    let source = pcm_wave(&vec![500; 48_000]);
+    session.play(InputSource::bytes(source), output).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while session.state() != PlaybackState::Completed && std::time::Instant::now() < deadline {
+        assert_ne!(session.state(), PlaybackState::Failed);
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(session.state(), PlaybackState::Completed);
+    let packets = voice.packets();
+    assert_eq!(
+        packets
+            .iter()
+            .map(|(_, p)| u64::from(p.media_samples_per_channel))
+            .sum::<u64>(),
+        48_000
+    );
+    assert!(packets.windows(2).all(|p| p[0].1.start_sample
+        + u64::from(p[0].1.media_samples_per_channel)
+        == p[1].1.start_sample));
+    assert_eq!(pool.diagnostics().admitted, 1);
+    assert_eq!(pool.diagnostics().unsupported_fallbacks, 0);
+    assert_eq!(pool.diagnostics().control_fallbacks, 0);
+    assert!(
+        lock(&router.inner.state)
+            .active_playback_generation
+            .is_none()
+    );
+}
+
+#[cfg(feature = "experimental-scheduler")]
+#[test]
+fn pending_scheduled_router_packet_survives_transport_attachment() {
+    use std::task::{Context, Poll, Wake, Waker};
+    struct WakeCount(std::sync::atomic::AtomicUsize);
+    impl Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    let wake = Arc::new(WakeCount(std::sync::atomic::AtomicUsize::new(0)));
+    let waker = Waker::from(wake.clone());
+    let mut cx = Context::from_waker(&waker);
+    let router = DiscordOpusSenderRouter::new();
+    let sink = router.sink();
+    let token = CancellationToken::new();
+    let mut packet = Some(EncodedOpusPacket {
+        bytes: vec![0xF8, 0xFF, 0xFE],
+        samples_per_channel: 960,
+        media_samples_per_channel: 960,
+        start_sample: 0,
+    });
+    let allocation = packet.as_ref().unwrap().bytes.as_ptr();
+    assert!(
+        sink.scheduler_poll_packet(&mut packet, &mut cx, &token)
+            .is_pending()
+    );
+    assert_eq!(packet.as_ref().unwrap().bytes.as_ptr(), allocation);
+    let voice = TestVoiceConnection::new(902);
+    router.attach(voice.connection().opus_sender());
+    assert!(wake.0.load(Ordering::Relaxed) > 0);
+    assert!(matches!(
+        sink.scheduler_poll_packet(&mut packet, &mut cx, &token),
+        Poll::Ready(Ok(()))
+    ));
+    assert!(packet.is_none());
+    voice.wait_for_packets(1);
+    assert_eq!(voice.packets()[0].1.bytes, vec![0xF8, 0xFF, 0xFE]);
+}

@@ -1,6 +1,40 @@
 use super::*;
 use crate::decoder::{OPUS_ENCODER_LOOKAHEAD, OPUS_RECOVERY_WARM_FRAMES};
 
+// The default path calls the original synchronous operation. Only an admitted machine polls.
+macro_rules! output_barrier {
+    ($shared:expr, $output:expr, $cancellation:expr, $control:ident, $method:ident) => {{
+        #[cfg(feature = "experimental-scheduler")]
+        {
+            let wake = ($shared.executor.load(std::sync::atomic::Ordering::Acquire) == 1)
+                .then(|| {
+                    lock(&$shared.scheduled)
+                        .as_ref()
+                        .and_then(|job| lock(&job.cancel_wake).clone())
+                })
+                .flatten();
+            if let Some(wake) = wake {
+                let waker = std::task::Waker::from(wake);
+                let mut cx = std::task::Context::from_waker(&waker);
+                match $output.scheduler_poll_control(
+                    crate::OutputControl::$control,
+                    &mut cx,
+                    $cancellation,
+                ) {
+                    std::task::Poll::Pending => return WorkerStep::WaitingOutput,
+                    std::task::Poll::Ready(result) => result,
+                }
+            } else {
+                $output.$method($cancellation)
+            }
+        }
+        #[cfg(not(feature = "experimental-scheduler"))]
+        {
+            $output.$method($cancellation)
+        }
+    }};
+}
+
 pub(super) fn worker_entry(
     shared: Arc<SessionShared>,
     generation: u64,
@@ -127,6 +161,7 @@ pub(super) fn worker_loop(
                 }
             })
         };
+        let failure_output = failure_context.1.clone();
         match pool.submit(safe_machine, move |error| {
             fail_session(
                 &failure_context.0,
@@ -141,6 +176,7 @@ pub(super) fn worker_loop(
                 *lock(&job.cancel_wake) = Some(wake.clone());
                 *lock(&shared.scheduled) = Some(job.clone());
                 cancellation.register_waker(wake);
+                failure_output.scheduler_activate();
                 shared
                     .executor
                     .store(1, std::sync::atomic::Ordering::Release);
@@ -236,6 +272,7 @@ fn prepare_machine(
     let mut pending_frame = None;
     let mut deferred_filter_update: Option<FilterUpdate> = None;
     let mut input_finished = false;
+    let mut processor_finished = false;
     // A seek moves the demuxer to an arbitrary sample, so the first packet must be decoded and
     // trimmed. `passthrough_eligible` records whether the stream could otherwise forward packets,
     // and `seek_recovery` tracks the return to whole source packets after that first frame.
@@ -420,6 +457,7 @@ fn prepare_machine(
                             decoder = *replacement.decoder;
                             pending_frame = Some(head);
                             input_finished = false;
+                            processor_finished = false;
                             // The replacement is decoded. If its packets can follow the re-encoded
                             // audio, the usual recovery returns to them once the encoder and the
                             // client's decoder have settled on the new audio.
@@ -830,70 +868,78 @@ fn prepare_machine(
                         }
                     }
                 }
-                WorkerAction::Pause => match output.pause(&cancellation) {
-                    Ok(()) => {
-                        let mut data = lock(&shared.data);
-                        let paused = data.generation == generation
-                            && !data.stopping
-                            && data.state == PlaybackState::Pausing;
-                        if paused {
-                            data.state = PlaybackState::Paused;
+                WorkerAction::Pause => {
+                    match output_barrier!(shared, output, &cancellation, Pause, pause) {
+                        Ok(()) => {
+                            let mut data = lock(&shared.data);
+                            let paused = data.generation == generation
+                                && !data.stopping
+                                && data.state == PlaybackState::Pausing;
+                            if paused {
+                                data.state = PlaybackState::Paused;
+                            }
+                            shared.signal_change();
+                            drop(data);
+                            if paused {
+                                tracing::info!(
+                                    name: "core.playback.paused",
+                                    target: "remedia_core::playback",
+                                    playback_id,
+                                    "playback paused at frame boundary"
+                                );
+                            }
                         }
-                        shared.signal_change();
-                        drop(data);
-                        if paused {
-                            tracing::info!(
-                                name: "core.playback.paused",
-                                target: "remedia_core::playback",
-                                playback_id,
-                                "playback paused at frame boundary"
+                        Err(_) if is_stopped(&shared, generation) => {
+                            return terminal_outcome(&shared);
+                        }
+                        Err(error) => {
+                            fail_session(
+                                &shared,
+                                generation,
+                                PlaybackError::Output(error),
+                                &cancellation,
+                                &output,
                             );
+                            return terminal_outcome(&shared);
                         }
                     }
-                    Err(_) if is_stopped(&shared, generation) => return terminal_outcome(&shared),
-                    Err(error) => {
-                        fail_session(
-                            &shared,
-                            generation,
-                            PlaybackError::Output(error),
-                            &cancellation,
-                            &output,
-                        );
-                        return terminal_outcome(&shared);
-                    }
-                },
-                WorkerAction::Resume => match output.resume(&cancellation) {
-                    Ok(()) => {
-                        let mut data = lock(&shared.data);
-                        let resumed = data.generation == generation
-                            && !data.stopping
-                            && data.state == PlaybackState::Resuming;
-                        if resumed {
-                            data.state = PlaybackState::Playing;
+                }
+                WorkerAction::Resume => {
+                    match output_barrier!(shared, output, &cancellation, Resume, resume) {
+                        Ok(()) => {
+                            let mut data = lock(&shared.data);
+                            let resumed = data.generation == generation
+                                && !data.stopping
+                                && data.state == PlaybackState::Resuming;
+                            if resumed {
+                                data.state = PlaybackState::Playing;
+                            }
+                            shared.signal_change();
+                            drop(data);
+                            if resumed {
+                                tracing::info!(
+                                    name: "core.playback.resumed",
+                                    target: "remedia_core::playback",
+                                    playback_id,
+                                    "playback resumed"
+                                );
+                            }
                         }
-                        shared.signal_change();
-                        drop(data);
-                        if resumed {
-                            tracing::info!(
-                                name: "core.playback.resumed",
-                                target: "remedia_core::playback",
-                                playback_id,
-                                "playback resumed"
+                        Err(_) if is_stopped(&shared, generation) => {
+                            return terminal_outcome(&shared);
+                        }
+                        Err(error) => {
+                            fail_session(
+                                &shared,
+                                generation,
+                                PlaybackError::Output(error),
+                                &cancellation,
+                                &output,
                             );
+                            return terminal_outcome(&shared);
                         }
                     }
-                    Err(_) if is_stopped(&shared, generation) => return terminal_outcome(&shared),
-                    Err(error) => {
-                        fail_session(
-                            &shared,
-                            generation,
-                            PlaybackError::Output(error),
-                            &cancellation,
-                            &output,
-                        );
-                        return terminal_outcome(&shared);
-                    }
-                },
+                }
                 WorkerAction::Seek(request) => {
                     // Only the latest seek may replace the active source.
                     if let Some(previous) = fallback.take() {
@@ -979,6 +1025,7 @@ fn prepare_machine(
                                 shared.signal_change();
                             }
                             input_finished = false;
+                            processor_finished = false;
                             let target_sample = samples_from_duration(request.position);
                             if let Err(error) = processor.reset(target_sample) {
                                 let playback_error = PlaybackError::FilterGraph(Arc::new(error));
@@ -1118,42 +1165,45 @@ fn prepare_machine(
                 }
                 WorkerAction::Finish => {
                     let gain = lock(&shared.data).volume;
-                    match processor.finish(gain, |frame, source_position| {
-                        deliver_processed_frame(
-                            &shared,
-                            generation,
-                            &output,
-                            &cancellation,
-                            frame,
-                            source_position,
-                        )
-                    }) {
-                        Ok(()) => {}
-                        Err(ProcessError::Output(_)) if is_stopped(&shared, generation) => {
-                            return terminal_outcome(&shared);
-                        }
-                        Err(ProcessError::Output(error)) => {
-                            fail_session(
+                    if !processor_finished {
+                        match processor.finish(gain, |frame, source_position| {
+                            deliver_processed_frame(
                                 &shared,
                                 generation,
-                                PlaybackError::Output(error),
-                                &cancellation,
                                 &output,
-                            );
-                            return terminal_outcome(&shared);
-                        }
-                        Err(ProcessError::Filter(error)) => {
-                            fail_session(
-                                &shared,
-                                generation,
-                                PlaybackError::FilterGraph(Arc::new(error)),
                                 &cancellation,
-                                &output,
-                            );
-                            return terminal_outcome(&shared);
+                                frame,
+                                source_position,
+                            )
+                        }) {
+                            Ok(()) => {}
+                            Err(ProcessError::Output(_)) if is_stopped(&shared, generation) => {
+                                return terminal_outcome(&shared);
+                            }
+                            Err(ProcessError::Output(error)) => {
+                                fail_session(
+                                    &shared,
+                                    generation,
+                                    PlaybackError::Output(error),
+                                    &cancellation,
+                                    &output,
+                                );
+                                return terminal_outcome(&shared);
+                            }
+                            Err(ProcessError::Filter(error)) => {
+                                fail_session(
+                                    &shared,
+                                    generation,
+                                    PlaybackError::FilterGraph(Arc::new(error)),
+                                    &cancellation,
+                                    &output,
+                                );
+                                return terminal_outcome(&shared);
+                            }
                         }
+                        processor_finished = true;
                     }
-                    match output.finish(&cancellation) {
+                    match output_barrier!(shared, output, &cancellation, Finish, finish) {
                         Ok(()) => {
                             let played = safe_played_position(&output);
                             let (pending_seek, pending_filter, completed) = {

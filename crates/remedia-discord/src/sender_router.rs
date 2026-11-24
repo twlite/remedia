@@ -16,6 +16,8 @@ pub struct DiscordOpusSenderRouter {
 struct RouterInner {
     state: Mutex<RouterState>,
     changed: Condvar,
+    #[cfg(feature = "experimental-scheduler")]
+    readiness: futures_util::task::AtomicWaker,
 }
 
 #[derive(Default)]
@@ -76,6 +78,8 @@ impl DiscordOpusSenderRouter {
             "created a fresh sender generation for playback"
         );
         self.inner.changed.notify_all();
+        #[cfg(feature = "experimental-scheduler")]
+        self.inner.readiness.wake();
         RoutedOpusSender {
             router: self.clone(),
             playback_generation,
@@ -115,6 +119,8 @@ impl DiscordOpusSenderRouter {
             "attached a ready Discord transport"
         );
         self.inner.changed.notify_all();
+        #[cfg(feature = "experimental-scheduler")]
+        self.inner.readiness.wake();
     }
 
     /// Stop routing to the old transport during migration. Accepted packets in
@@ -146,6 +152,8 @@ impl DiscordOpusSenderRouter {
         // for a replacement. The connection manager still owns its shutdown.
         let previous_connection = state.connection.take();
         self.inner.changed.notify_all();
+        #[cfg(feature = "experimental-scheduler")]
+        self.inner.readiness.wake();
         drop(state);
         drop(previous_connection);
     }
@@ -176,6 +184,8 @@ impl DiscordOpusSenderRouter {
         // Drop the cached transport as soon as routing terminates.
         let previous_connection = state.connection.take();
         self.inner.changed.notify_all();
+        #[cfg(feature = "experimental-scheduler")]
+        self.inner.readiness.wake();
         drop(state);
         drop(previous_connection);
     }
@@ -202,6 +212,8 @@ impl DiscordOpusSenderRouter {
         // Drop the cached transport as soon as routing terminates.
         let previous_connection = state.connection.take();
         self.inner.changed.notify_all();
+        #[cfg(feature = "experimental-scheduler")]
+        self.inner.readiness.wake();
         drop(state);
         drop(previous_connection);
     }
@@ -236,6 +248,29 @@ impl DiscordOpusSenderRouter {
 }
 
 impl RoutedOpusSender {
+    fn finish_routing(&self) {
+        let mut state = lock(&self.router.inner.state);
+        if state.active_playback_generation == Some(self.playback_generation) {
+            let sender_generation = state.target.as_ref().map(|sender| sender.generation());
+            tracing::debug!(
+                event = "voice_output_playback_finished",
+                guild_id = state
+                    .connection
+                    .as_ref()
+                    .map(DiscordVoiceConnection::guild_id),
+                playback_generation = self.playback_generation,
+                sender_generation,
+                transport_generation = state.transport_generation,
+                "finished playback sender while retaining the voice transport"
+            );
+            state.active_playback_generation = None;
+            state.target = None;
+            self.router.inner.changed.notify_all();
+            #[cfg(feature = "experimental-scheduler")]
+            self.router.inner.readiness.wake();
+        }
+    }
+
     fn with_target<T>(
         &self,
         cancellation: &CancellationToken,
@@ -280,6 +315,8 @@ impl RoutedOpusSender {
                             "Discord packet delivery is parked while transport recovers"
                         );
                         self.router.inner.changed.notify_all();
+                        #[cfg(feature = "experimental-scheduler")]
+                        self.router.inner.readiness.wake();
                     }
                     drop(state);
                     if replaced || failed_transport {
@@ -293,6 +330,41 @@ impl RoutedOpusSender {
 }
 
 impl OpusPacketSink for RoutedOpusSender {
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_nonblocking(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_packet(
+        &self,
+        packet: &mut Option<EncodedOpusPacket>,
+        cx: &mut std::task::Context<'_>,
+        cancellation: &CancellationToken,
+    ) -> std::task::Poll<Result<(), OutputError>> {
+        self.poll_target(cx, cancellation, |target, cx| {
+            target.scheduler_poll_packet(packet, cx, cancellation)
+        })
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_control(
+        &self,
+        control: remedia_core::OutputControl,
+        cx: &mut std::task::Context<'_>,
+        cancellation: &CancellationToken,
+    ) -> std::task::Poll<Result<(), OutputError>> {
+        let result = self.poll_target(cx, cancellation, |target, cx| {
+            target.scheduler_poll_control(control, cx, cancellation)
+        });
+        if control == remedia_core::OutputControl::Finish
+            && matches!(result, std::task::Poll::Ready(Ok(())))
+        {
+            self.finish_routing();
+        }
+        result
+    }
+
     fn send_packet(
         &self,
         packet: EncodedOpusPacket,
@@ -350,24 +422,7 @@ impl OpusPacketSink for RoutedOpusSender {
 
     fn finish(&self, cancellation: &CancellationToken) -> Result<(), OutputError> {
         self.with_target(cancellation, |target| target.finish(cancellation))?;
-        let mut state = lock(&self.router.inner.state);
-        if state.active_playback_generation == Some(self.playback_generation) {
-            let sender_generation = state.target.as_ref().map(|sender| sender.generation());
-            tracing::debug!(
-                event = "voice_output_playback_finished",
-                guild_id = state
-                    .connection
-                    .as_ref()
-                    .map(DiscordVoiceConnection::guild_id),
-                playback_generation = self.playback_generation,
-                sender_generation,
-                transport_generation = state.transport_generation,
-                "finished playback sender while retaining the voice transport"
-            );
-            state.active_playback_generation = None;
-            state.target = None;
-            self.router.inner.changed.notify_all();
-        }
+        self.finish_routing();
         Ok(())
     }
 
@@ -391,6 +446,8 @@ impl OpusPacketSink for RoutedOpusSender {
             state.target = None;
         }
         self.router.inner.changed.notify_all();
+        #[cfg(feature = "experimental-scheduler")]
+        self.router.inner.readiness.wake();
     }
 
     fn played_position(&self) -> Option<std::time::Duration> {
@@ -409,3 +466,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "experimental-scheduler")]
+mod readiness;

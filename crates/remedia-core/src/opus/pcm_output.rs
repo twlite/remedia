@@ -1,15 +1,64 @@
 use super::*;
 
 impl MediaOutput for OpusEncoderOutput {
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_nonblocking(&self) -> bool {
+        self.sink.inner.scheduler_nonblocking()
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_activate(&self) {
+        self.sink.activate();
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_ready(
+        &self,
+        cx: &mut std::task::Context<'_>,
+        cancellation: &CancellationToken,
+    ) -> std::task::Poll<Result<(), OutputError>> {
+        self.poll_production(cx, cancellation)
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_control(
+        &self,
+        control: crate::OutputControl,
+        cx: &mut std::task::Context<'_>,
+        cancellation: &CancellationToken,
+    ) -> std::task::Poll<Result<(), OutputError>> {
+        self.poll_barrier(control, cx, cancellation)
+    }
+
     fn write_frame(
         &self,
         frame: PcmFrame,
         cancellation: &CancellationToken,
     ) -> Result<(), OutputError> {
         self.ensure_active(cancellation)?;
+        if frame.samples_per_channel.checked_mul(2) != Some(frame.samples.len()) {
+            return Err(OutputError::new(
+                "PCM frame does not contain stereo samples",
+            ));
+        }
+        #[cfg(feature = "experimental-scheduler")]
+        if self.sink.active() {
+            let mut pending = lock(&self.pending_pcm);
+            if pending.is_some() {
+                return Err(OutputError::new("PCM written before output became ready"));
+            }
+            *pending = Some((frame, 0));
+            return Ok(());
+        }
         let mut state = lock(&self.state);
         self.initialize_encoder(&mut state)?;
-        Self::write_pcm(&mut state, frame, &*self.sink, cancellation)
+        Self::write_pcm(
+            &mut state,
+            &frame.samples,
+            frame.start_sample,
+            &self.sink,
+            cancellation,
+        )
     }
 
     fn encoded_opus_output(&self) -> Option<&dyn EncodedOpusOutput> {
@@ -30,6 +79,10 @@ impl MediaOutput for OpusEncoderOutput {
         cancellation: &CancellationToken,
     ) -> Result<(), OutputError> {
         self.ensure_active(cancellation)?;
+        #[cfg(feature = "experimental-scheduler")]
+        {
+            lock(&self.pending_pcm).take();
+        }
         self.sink.flush_samples(sample_position, cancellation)?;
         let mut state = lock(&self.state);
         if let Some(encoder) = state.encoder.as_mut() {
@@ -122,7 +175,7 @@ impl MediaOutput for OpusEncoderOutput {
                     0,
                     start_sample,
                     true,
-                    &*self.sink,
+                    &self.sink,
                     cancellation,
                 )?;
             }
@@ -134,7 +187,7 @@ impl MediaOutput for OpusEncoderOutput {
                     live,
                     start_sample,
                     false,
-                    &*self.sink,
+                    &self.sink,
                     cancellation,
                 )?;
             }
@@ -171,11 +224,16 @@ impl MediaOutput for OpusEncoderOutput {
                 media_samples,
                 start_sample,
                 false,
-                &*self.sink,
+                &self.sink,
                 cancellation,
             )?;
             state.partial_scalars = 0;
             state.partial_lead_samples = 0;
+        }
+        #[cfg(feature = "experimental-scheduler")]
+        if self.sink.active() {
+            state.finished = true;
+            return Ok(());
         }
         self.sink.finish(cancellation)?;
         state.finished = true;

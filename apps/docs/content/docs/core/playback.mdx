@@ -347,7 +347,8 @@ session.stop()?;
 ```
 
 This initial experiment schedules owned-byte Ogg, MP3, ADTS AAC, WAV and FLAC inputs with
-`NullOutput` or `StreamOutput` with unpaced or realtime pacing, without a native filtergraph.
+`NullOutput`, `StreamOutput` with unpaced or realtime pacing, or `OpusEncoderOutput` attached
+to `DiscordOpusSender` / `RoutedOpusSender`, without a native filtergraph.
 Full streaming queues suspend production using the existing readiness waker; consumption through
 `StreamReader::poll_next` wakes production. Buffer limits, encoding settings and EOF are unchanged.
 Files, network sources, other containers (including MP4/M4A), producer byte streams,
@@ -404,3 +405,19 @@ Sizing also needs to account for initialization: each source still opens and pro
 startup thread before pool admission. Concurrent stalled probes can therefore create many startup
 threads, even when a small CPU worker count is configured. The CPU admission cap does not bound
 that opening phase; unsupported inputs subsequently remain dedicated.
+
+The experimental Discord output uses the same bounded transport queues and RTP actor as dedicated
+playback. A full packet queue suspends codec production; draining it wakes the session. Packet
+ownership stays with the output until admission succeeds, including while a router is detached.
+PCM is retained as one owned input frame and encoded in 20 ms slices, with at most two pending
+encoded packets (EOF can flush two). Pause, resume and finish use resumable acknowledgements;
+completion is published only after the actor acknowledges the finish barrier. RTP deadlines,
+sequence numbers, timestamps, DAVE and transport encryption remain owned by the transport actor.
+No codec worker waits for a socket, transport replacement or acknowledgement. This capability is
+opt-in on `OpusPacketSink`; existing custom sinks keep their synchronous contract and dedicated
+execution. Compile both core and Discord with `experimental-scheduler` when using it.
+
+Custom readiness-aware outputs can override `scheduler_activate` (called once after admission)
+and `scheduler_poll_control(control, cx, cancellation)`. A pending control must retain its
+operation, register the waker and acknowledge it exactly once before returning success. Legacy
+outputs use the existing synchronous pause/resume/finish defaults.

@@ -5,7 +5,7 @@ use remedia_core::CancellationToken;
 fn mock_packet_barriers_wait_for_target_without_blocking_other_channels() {
     for finish in [false, true] {
         let voice = TestVoiceConnection::new(42);
-        let (ack, result) = mpsc::sync_channel(1);
+        let (ack, result) = flume::bounded(1);
         let control = if finish {
             Control::Finish { target_id: 2, ack }
         } else {
@@ -15,7 +15,7 @@ fn mock_packet_barriers_wait_for_target_without_blocking_other_channels() {
 
         // A later control acknowledgement proves the actor observed the
         // barrier before any packets, and remained able to receive controls.
-        let (ack, resumed) = mpsc::sync_channel(1);
+        let (ack, resumed) = flume::bounded(1);
         voice
             .connection
             .inner
@@ -26,7 +26,7 @@ fn mock_packet_barriers_wait_for_target_without_blocking_other_channels() {
             .recv_timeout(Duration::from_secs(1))
             .unwrap()
             .unwrap();
-        assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        assert!(matches!(result.try_recv(), Err(flume::TryRecvError::Empty)));
 
         for id in 1..=2 {
             voice
@@ -47,7 +47,7 @@ fn mock_packet_barriers_wait_for_target_without_blocking_other_channels() {
                 .unwrap();
             voice.wait_for_packets(id as usize);
             if id == 1 {
-                assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+                assert!(matches!(result.try_recv(), Err(flume::TryRecvError::Empty)));
             }
         }
         result
@@ -452,6 +452,8 @@ fn concurrent_sender_replacement_and_drop_publish_the_latest_generation() {
             state,
             failure: Arc::new(Mutex::new(None)),
             packet_tx,
+            #[cfg(feature = "experimental-scheduler")]
+            readiness: Arc::new(futures_util::task::AtomicWaker::new()),
             control_tx,
             generation: AtomicU64::new(0),
             generation_update: Mutex::new(()),
@@ -528,7 +530,7 @@ fn heartbeat_ack_must_match_and_timeout_uses_elapsed_monotonic_time() {
 #[test]
 fn opus_sender_backpressures_at_its_bounded_queue_and_cancellation_unblocks() {
     let (packet_tx, packet_rx) = flume::bounded(QUEUE_CAPACITY);
-    let (control_tx, _control_rx) = flume::bounded(16);
+    let (control_tx, control_rx) = flume::bounded(16);
     let (generation_tx, _generation_rx) = watch::channel(0);
     let (state, _) = watch::channel(ConnectionState::Connected);
     let inner = Arc::new(ConnectionInner {
@@ -538,6 +540,8 @@ fn opus_sender_backpressures_at_its_bounded_queue_and_cancellation_unblocks() {
         state,
         failure: Arc::new(Mutex::new(None)),
         packet_tx,
+        #[cfg(feature = "experimental-scheduler")]
+        readiness: Arc::new(futures_util::task::AtomicWaker::new()),
         control_tx,
         generation: AtomicU64::new(0),
         generation_update: Mutex::new(()),
@@ -554,6 +558,8 @@ fn opus_sender_backpressures_at_its_bounded_queue_and_cancellation_unblocks() {
         cancelled: AtomicBool::new(false),
         finished: AtomicBool::new(false),
         played_end_sample: Arc::new(AtomicU64::new(u64::MAX)),
+        #[cfg(feature = "experimental-scheduler")]
+        pending_control: Mutex::new(None),
     });
     sender
         .inner
@@ -570,12 +576,59 @@ fn opus_sender_backpressures_at_its_bounded_queue_and_cancellation_unblocks() {
     for _ in 0..QUEUE_CAPACITY {
         sender.send_packet(packet(), &token).unwrap();
     }
+    #[cfg(feature = "experimental-scheduler")]
+    {
+        use std::task::{Context, Poll, Waker};
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut pending = Some(packet());
+        let allocation = pending.as_ref().unwrap().bytes.as_ptr();
+        assert!(
+            sender
+                .scheduler_poll_packet(&mut pending, &mut cx, &token)
+                .is_pending()
+        );
+        assert_eq!(pending.as_ref().unwrap().bytes.as_ptr(), allocation);
+        packet_rx.try_recv().unwrap();
+        sender.inner.readiness.wake();
+        assert!(matches!(
+            sender.scheduler_poll_packet(&mut pending, &mut cx, &token),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(pending.is_none());
+        assert_eq!(packet_rx.len(), QUEUE_CAPACITY);
+        let kind = remedia_core::OutputControl::Pause;
+        assert!(
+            sender
+                .scheduler_poll_control(kind, &mut cx, &token)
+                .is_pending()
+        );
+        let Control::Pause { target_id, ack } = control_rx.try_recv().unwrap() else {
+            panic!("pause barrier");
+        };
+        assert_eq!(
+            target_id,
+            sender.inner.accepted_packet_id.load(Ordering::Acquire)
+        );
+        assert!(
+            sender
+                .scheduler_poll_control(kind, &mut cx, &token)
+                .is_pending()
+        );
+        assert!(control_rx.is_empty(), "barrier must only be submitted once");
+        ack.send(Ok(())).unwrap();
+        assert!(matches!(
+            sender.scheduler_poll_control(kind, &mut cx, &token),
+            Poll::Ready(Ok(()))
+        ));
+    }
+    #[cfg(not(feature = "experimental-scheduler"))]
+    let _control_rx = control_rx;
     // The bounded queue has accepted packets, but the RTP actor has not dispatched them.
     assert_eq!(sender.played_position(), None);
     sender.played_end_sample.store(960, Ordering::Release);
     assert_eq!(sender.played_position(), Some(Duration::from_millis(20)));
 
-    let (result_tx, result_rx) = mpsc::sync_channel(1);
+    let (result_tx, result_rx) = flume::bounded(1);
     let blocked_sender = Arc::clone(&sender);
     let blocked_token = token.clone();
     let worker = std::thread::spawn(move || {
@@ -584,7 +637,7 @@ fn opus_sender_backpressures_at_its_bounded_queue_and_cancellation_unblocks() {
     });
     assert!(matches!(
         result_rx.recv_timeout(Duration::from_millis(60)),
-        Err(mpsc::RecvTimeoutError::Timeout)
+        Err(flume::RecvTimeoutError::Timeout)
     ));
     token.cancel();
     assert!(matches!(

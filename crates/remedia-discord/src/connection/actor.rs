@@ -15,6 +15,8 @@ pub(super) struct VoiceActorSetup {
     pub(super) dave: Arc<Mutex<DaveProtocol>>,
     pub(super) rtp: RtpSender,
     pub(super) packet_rx: Receiver<QueuedPacket>,
+    #[cfg(feature = "experimental-scheduler")]
+    pub(super) readiness: Arc<futures_util::task::AtomicWaker>,
     pub(super) control_rx: Receiver<Control>,
     pub(super) generation_rx: watch::Receiver<u64>,
     pub(super) cancelled_generation: Arc<AtomicU64>,
@@ -38,6 +40,8 @@ pub(super) async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError
         dave,
         mut rtp,
         packet_rx,
+        #[cfg(feature = "experimental-scheduler")]
+        readiness,
         control_rx,
         mut generation_rx,
         cancelled_generation,
@@ -269,6 +273,8 @@ pub(super) async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError
                 }
             }
             Event::Packet(Ok(packet)) => {
+                #[cfg(feature = "experimental-scheduler")]
+                readiness.wake();
                 let published_generation = *generation_rx.borrow();
                 if synchronize_output_generation(
                     published_generation,

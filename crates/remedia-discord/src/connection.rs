@@ -4,7 +4,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 #[cfg(test)]
 use std::sync::Condvar;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use flume::{Receiver, Sender};
@@ -114,6 +114,8 @@ struct ConnectionInner {
     state: watch::Sender<ConnectionState>,
     failure: Arc<Mutex<Option<Arc<VoiceError>>>>,
     packet_tx: Sender<QueuedPacket>,
+    #[cfg(feature = "experimental-scheduler")]
+    readiness: Arc<futures_util::task::AtomicWaker>,
     control_tx: Sender<Control>,
     generation: AtomicU64,
     generation_update: Mutex<()>,
@@ -150,18 +152,18 @@ struct QueuedPacket {
 enum Control {
     Flush {
         generation: u64,
-        ack: mpsc::SyncSender<Result<(), VoiceError>>,
+        ack: flume::Sender<Result<(), VoiceError>>,
     },
     Pause {
         target_id: u64,
-        ack: mpsc::SyncSender<Result<(), VoiceError>>,
+        ack: flume::Sender<Result<(), VoiceError>>,
     },
     Resume {
-        ack: mpsc::SyncSender<Result<(), VoiceError>>,
+        ack: flume::Sender<Result<(), VoiceError>>,
     },
     Finish {
         target_id: u64,
-        ack: mpsc::SyncSender<Result<(), VoiceError>>,
+        ack: flume::Sender<Result<(), VoiceError>>,
     },
     Cancel {
         generation: u64,
@@ -178,7 +180,7 @@ struct PendingBarrier {
     target_id: u64,
     silence_packets: u8,
     kind: BarrierKind,
-    ack: Option<mpsc::SyncSender<Result<(), VoiceError>>>,
+    ack: Option<flume::Sender<Result<(), VoiceError>>>,
 }
 
 struct RtpSendObservability {
@@ -267,6 +269,8 @@ impl TestVoiceConnection {
             state,
             failure: Arc::new(Mutex::new(None)),
             packet_tx,
+            #[cfg(feature = "experimental-scheduler")]
+            readiness: Arc::new(futures_util::task::AtomicWaker::new()),
             control_tx,
             generation: AtomicU64::new(0),
             generation_update: Mutex::new(()),
@@ -284,12 +288,16 @@ impl TestVoiceConnection {
         let actor_packets_changed = Arc::clone(&packets_changed);
         let actor_controls = Arc::clone(&controls);
         let actor_cancellation = cancellation.clone();
+        #[cfg(feature = "experimental-scheduler")]
+        let actor_readiness = inner.readiness.clone();
         let actor = std::thread::spawn(move || {
             let mut processed_id = 0;
             let mut pending_barriers = Vec::new();
             while !actor_cancellation.is_cancelled() {
                 match packet_rx.recv_timeout(Duration::from_millis(2)) {
                     Ok(packet) => {
+                        #[cfg(feature = "experimental-scheduler")]
+                        actor_readiness.wake();
                         processed_id = processed_id.max(packet.id);
                         lock(&actor_packets).push((packet.generation, packet.packet));
                         actor_packets_changed.notify_all();
