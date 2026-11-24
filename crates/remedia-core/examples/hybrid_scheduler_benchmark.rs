@@ -1,5 +1,135 @@
 //! Release-only controlled comparison: FILE SESSIONS WORKERS FORMAT.
 //! WORKERS=0 selects dedicated execution; FORMAT is null, s16le, f32le or opus.
+// Shared benchmark-only start gate: all opened sessions stay live until startup ends.
+use remedia_core::{CancellationToken, EncodedOpusOutput, MediaOutput, OutputError, PcmFrame};
+use std::sync::{Arc, Condvar, Mutex};
+use std::task::Waker;
+#[cfg(feature = "experimental-scheduler")]
+use std::task::{Context, Poll};
+use std::time::Duration;
+
+#[derive(Default)]
+struct StartGate {
+    state: Mutex<(bool, Vec<Waker>)>,
+    changed: Condvar,
+}
+
+impl StartGate {
+    fn release(&self) {
+        let wakers = {
+            let mut state = self.state.lock().unwrap();
+            state.0 = true;
+            std::mem::take(&mut state.1)
+        };
+        self.changed.notify_all();
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+}
+
+struct GatedOutput<O> {
+    gate: Arc<StartGate>,
+    output: O,
+}
+
+impl<O: MediaOutput> MediaOutput for GatedOutput<O> {
+    fn wait_ready(&self, cancellation: &CancellationToken) -> Result<(), OutputError> {
+        let mut state = self.gate.state.lock().unwrap();
+        while !state.0 && !cancellation.is_cancelled() {
+            state = self.gate.changed.wait(state).unwrap();
+        }
+        drop(state);
+        if cancellation.is_cancelled() {
+            return Err(OutputError::Cancelled);
+        }
+        self.output.wait_ready(cancellation)
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_nonblocking(&self) -> bool {
+        self.output.scheduler_nonblocking()
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_ready(
+        &self,
+        cx: &mut Context<'_>,
+        cancellation: &CancellationToken,
+    ) -> Poll<Result<(), OutputError>> {
+        if cancellation.is_cancelled() {
+            return Poll::Ready(Err(OutputError::Cancelled));
+        }
+        let mut state = self.gate.state.lock().unwrap();
+        if !state.0 {
+            if !state.1.iter().any(|w| w.will_wake(cx.waker())) {
+                state.1.push(cx.waker().clone());
+            }
+            return Poll::Pending;
+        }
+        drop(state);
+        self.output.scheduler_poll_ready(cx, cancellation)
+    }
+
+    fn write_frame(
+        &self,
+        frame: PcmFrame,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OutputError> {
+        self.output.write_frame(frame, cancellation)
+    }
+    fn encoded_opus_output(&self) -> Option<&dyn EncodedOpusOutput> {
+        self.output.encoded_opus_output()
+    }
+    fn wake(&self) {
+        self.output.wake();
+    }
+    fn flush(
+        &self,
+        position: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OutputError> {
+        self.output.flush(position, cancellation)
+    }
+    fn flush_samples(
+        &self,
+        position: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OutputError> {
+        self.output.flush_samples(position, cancellation)
+    }
+    fn filter_transition(
+        &self,
+        position: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OutputError> {
+        self.output.filter_transition(position, cancellation)
+    }
+    fn pause(&self, cancellation: &CancellationToken) -> Result<(), OutputError> {
+        self.output.pause(cancellation)
+    }
+    fn resume(&self, cancellation: &CancellationToken) -> Result<(), OutputError> {
+        self.output.resume(cancellation)
+    }
+    fn finish(&self, cancellation: &CancellationToken) -> Result<(), OutputError> {
+        self.output.finish(cancellation)
+    }
+    fn played_position(&self) -> Option<Duration> {
+        self.output.played_position()
+    }
+    fn fail(&self, message: String) {
+        self.output.fail(message);
+    }
+    fn cancel(&self) {
+        self.output.cancel();
+        let wakers = std::mem::take(&mut self.gate.state.lock().unwrap().1);
+        self.gate.changed.notify_all();
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use remedia_core::*;
     use std::sync::Arc;
@@ -52,6 +182,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             budget,
         )?)
     };
+    let gate = Arc::new(StartGate::default());
     let mut sessions = Vec::new();
     let mut readers = Vec::new();
     let mut null_stats = Vec::new();
@@ -71,14 +202,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(format) = format {
             let (output, reader) =
                 StreamOutput::new(format, StreamPacing::Unpaced, OpusEncoderConfig::default())?;
-            session.play(source, output)?;
+            session.play(
+                source,
+                GatedOutput {
+                    gate: gate.clone(),
+                    output,
+                },
+            )?;
             readers.push(Some(reader));
         } else {
             let output = NullOutput::new();
             null_stats.push(output.stats_handle());
-            session.play(source, output)?;
+            session.play(
+                source,
+                GatedOutput {
+                    gate: gate.clone(),
+                    output,
+                },
+            )?;
         }
         sessions.push(session);
+    }
+    #[cfg(feature = "experimental-scheduler")]
+    if let Some(pool) = &pool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while {
+            let d = pool.diagnostics();
+            d.admitted + d.unsupported_fallbacks + d.capacity_fallbacks < count
+        } {
+            if Instant::now() >= deadline {
+                return Err("scheduler admission did not finish".into());
+            }
+            std::thread::yield_now();
+        }
     }
     let startup_seconds = start.elapsed().as_secs_f64();
     let active = remedia_resources::collect();
@@ -88,6 +244,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_scheduled: Option<usize> = None;
     let waker = Waker::from(Arc::new(ThreadWake(std::thread::current())));
     let mut cx = Context::from_waker(&waker);
+    gate.release();
+    let processing_start = Instant::now();
     let mut samples = vec![0_u64; count];
     let mut chunks = vec![0_u64; count];
     let mut checksums = vec![0_u64; count];
@@ -152,7 +310,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let diagnostics: Option<serde_json::Value> = None;
     println!(
         "{}",
-        serde_json::json!({"sessions":count,"workers":workers,"format":args[4],"audioSeconds":audio_seconds,"wallSeconds":start.elapsed().as_secs_f64(),"startupSeconds":startup_seconds,"cpuMsPerAudioSecond":(cpu(&after)-cpu(&before))/audio_seconds,"samples":samples,"chunks":chunks,"checksums":checksums,"backends":backends,"diagnostics":diagnostics,"budget":budget,"samplingEpochUnixMs":sampling_epoch_unix_ms,"before":before,"active":active,"activeScheduled":active_scheduled,"after":after})
+        serde_json::json!({"sessions":count,"workers":workers,"format":args[4],"audioSeconds":audio_seconds,"wallSeconds":start.elapsed().as_secs_f64(),"startupSeconds":startup_seconds,"processingSeconds":processing_start.elapsed().as_secs_f64(),"startGate":true,"cpuMsPerAudioSecond":(cpu(&after)-cpu(&before))/audio_seconds,"samples":samples,"chunks":chunks,"checksums":checksums,"backends":backends,"diagnostics":diagnostics,"budget":budget,"samplingEpochUnixMs":sampling_epoch_unix_ms,"before":before,"active":active,"activeScheduled":active_scheduled,"after":after})
     );
     Ok(())
 }

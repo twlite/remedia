@@ -107,7 +107,7 @@ with Path(args.output).open('w') as output:
                             raise RuntimeError('delivered audio differs across implementations')
                         if backend == 'scheduled':
                             d = row['diagnostics']
-                            if d['admitted'] != count or sum(d[k] for k in ['controlFallbacks', 'unsupportedFallbacks', 'capacityFallbacks']) or row['backends'] != {'scheduled': count}:
+                            if not row['startGate'] or row['activeScheduled'] != count or d['admitted'] != count or sum(d[k] for k in ['controlFallbacks', 'unsupportedFallbacks', 'capacityFallbacks']) or row['backends'] != {'scheduled': count}:
                                 raise RuntimeError(f'fallback is not scheduler performance evidence: {row["backends"]}, {d}')
                         row.update(implementation=backend, fixture=fixture, repetition=repeat, deliveredAudioMatched=True)
                         output.write(json.dumps(row) + '\n')
