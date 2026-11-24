@@ -232,3 +232,9 @@ original main release binaries separately, compares the extracted dedicated driv
 `hybrid.py` for interleaved dedicated/pool comparisons with delivered-audio checks. Build with
 `hybrid-build.sh`; raw rows, binary/fixture manifests and check summaries are under `data/hybrid`.
 The feature remains opt-in and the report lists unqualified workloads and measurements.
+
+The continuation's three-way comparison, processing budgets, pacing deadlines and source/transport
+investigation are in [hybrid-ab-results.md](hybrid-ab-results.md). Use `hybrid-ab-build.sh` and
+`hybrid_ab.py`; matched rows and separate diagnostic/fallback records are under `data/hybrid/ab`.
+`hybrid-profile-build.sh` instruments an archived copy without changing normal performance builds.
+Startup diagnostics are explicitly excluded from scheduler performance evidence.

@@ -393,3 +393,14 @@ Capacity and pacing use separate producer wake registrations. Draining a chunk w
 waiting for queue space; it does not wake a producer whose only wait is a future pacing deadline.
 Closing, failing, flushing or explicitly waking the output still interrupts a pacing wait. This
 keeps downstream backpressure responsive without repeatedly removing and rearming the same timer.
+
+Pool sizing must cover short codec-work bursts as well as average CPU. High-concurrency local
+measurements found worse tail-delivery gaps with small pools during the Opus transition needed
+for container trimming. The experimental pool does not bound concurrent startup threads, and
+`for_available_parallelism` still caps its convenience policy at four workers. These limitations
+remain under evaluation; existing dedicated playback stays the production default.
+
+Sizing also needs to account for initialization: each source still opens and probes on its own
+startup thread before pool admission. Concurrent stalled probes can therefore create many startup
+threads, even when a small CPU worker count is configured. The CPU admission cap does not bound
+that opening phase; unsupported inputs subsequently remain dedicated.

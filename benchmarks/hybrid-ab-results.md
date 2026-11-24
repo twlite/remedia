@@ -4,6 +4,9 @@ This continuation measures the original `55b71e5` playback implementation, the r
 feature-disabled dedicated backend, and the current experimental pool. Production selection stays
 unchanged. Source milestone: `ea8691e` (budget/counter implementation: `ba1c68d`).
 
+[Comparison charts](hybrid-ab-visual.html) summarize selected measured tradeoffs; the complete
+matrices and resource medians remain the evidence. Regenerate with `python3 benchmarks/hybrid-ab-visual.py`.
+
 ## Method and reproducibility
 
 Hardware remains Apple M5, 10 logical CPUs, 24 GiB RAM, macOS 27.0.1 arm64, Rust 1.99.1 and
@@ -88,43 +91,43 @@ The following are three-run medians at 512 genuinely live sessions. CPU uses the
 user+system delta divided by the exact delivered audio duration, including process startup,
 gating, consumption/checksum work and cleanup. Smaller is better; these are not isolated codec costs.
 
-| Backend | Workers | Budget | Opus passthrough CPU ms/audio s | MP3→Opus | AAC→Opus | MP3→f32le |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| original | 0 | 1 | 0.447 | 6.899 | 7.254 | 1.410 |
-| dedicated | 0 | 1 | 0.457 | 6.934 | 7.261 | 1.378 |
-| scheduled | 1 | 1 | 0.159 | 4.977 | 5.294 | 1.079 |
-| scheduled | 1 | 8 | 0.146 | 5.002 | 5.297 | 1.069 |
-| scheduled | 1 | 32 | 0.144 | 5.149 | 5.452 | 1.061 |
-| scheduled | 2 | 1 | 0.224 | 5.048 | 5.347 | 1.296 |
-| scheduled | 2 | 8 | 0.180 | 5.042 | 5.322 | 1.253 |
-| scheduled | 2 | 32 | 0.179 | 5.277 | 5.580 | 1.262 |
-| scheduled | 4 | 1 | 0.288 | 5.284 | 5.394 | 1.528 |
-| scheduled | 4 | 8 | 0.262 | 4.995 | 5.368 | 1.303 |
-| scheduled | 4 | 32 | 0.265 | 5.294 | 5.607 | 1.306 |
+| Backend   | Workers | Budget | Opus passthrough CPU ms/audio s | MP3→Opus | AAC→Opus | MP3→f32le |
+| --------- | ------: | -----: | ------------------------------: | -------: | -------: | --------: |
+| original  |       0 |      1 |                           0.447 |    6.899 |    7.254 |     1.410 |
+| dedicated |       0 |      1 |                           0.457 |    6.934 |    7.261 |     1.378 |
+| scheduled |       1 |      1 |                           0.159 |    4.977 |    5.294 |     1.079 |
+| scheduled |       1 |      8 |                           0.146 |    5.002 |    5.297 |     1.069 |
+| scheduled |       1 |     32 |                           0.144 |    5.149 |    5.452 |     1.061 |
+| scheduled |       2 |      1 |                           0.224 |    5.048 |    5.347 |     1.296 |
+| scheduled |       2 |      8 |                           0.180 |    5.042 |    5.322 |     1.253 |
+| scheduled |       2 |     32 |                           0.179 |    5.277 |    5.580 |     1.262 |
+| scheduled |       4 |      1 |                           0.288 |    5.284 |    5.394 |     1.528 |
+| scheduled |       4 |      8 |                           0.262 |    4.995 |    5.368 |     1.303 |
+| scheduled |       4 |     32 |                           0.265 |    5.294 |    5.607 |     1.306 |
 
 Resource and timing examples at the same concurrency follow. Thread peaks are sampled total OS
 threads; the live snapshot is separate. Startup peaks exclude the post-gate interval but may miss
 sub-2ms transients. Context switches are raw kernel voluntary+involuntary counters; near-zero
 voluntary counts on this Darwin collector do not mean no thread ever blocked.
 
-| Workload | Backend/workers/budget | Wall s | Live/peak/startup-peak threads | Peak RSS MiB | Active footprint MiB | Context switches | Queue wait ms |
-| --- | --- | ---: | --- | ---: | ---: | ---: | ---: |
-| music15.opus→opus | original/0/1 | 0.949 | 513/513/505 | 391.1 | 252.5 | 323789 | 0.00 |
-| music15.opus→opus | dedicated/0/1 | 0.960 | 513/513/509 | 386.8 | 252.5 | 325955 | 0.00 |
-| music15.opus→opus | scheduled/4/1 | 0.579 | 6/6/6 | 518.5 | 244.8 | 52908 | 264.45 |
-| music15.opus→opus | scheduled/4/8 | 0.554 | 6/6/6 | 403.5 | 244.8 | 72322 | 74.88 |
-| music3.mp3→opus | original/0/1 | 1.180 | 513/513/506 | 266.3 | 139.2 | 9131 | 0.00 |
-| music3.mp3→opus | dedicated/0/1 | 1.202 | 513/513/505 | 265.4 | 139.2 | 10085 | 0.00 |
-| music3.mp3→opus | scheduled/4/1 | 1.890 | 6/7/7 | 234.9 | 131.5 | 40650 | 9.05 |
-| music3.mp3→opus | scheduled/4/8 | 1.845 | 6/7/7 | 226.1 | 131.5 | 29637 | 0.46 |
-| music3.aac→opus | original/0/1 | 1.304 | 513/513/509 | 584.1 | 458.4 | 10448 | 0.00 |
-| music3.aac→opus | dedicated/0/1 | 1.328 | 513/513/507 | 592.2 | 458.4 | 12099 | 0.00 |
-| music3.aac→opus | scheduled/4/1 | 2.057 | 6/7/7 | 553.6 | 450.7 | 34508 | 13.15 |
-| music3.aac→opus | scheduled/4/8 | 2.029 | 6/7/7 | 549.7 | 450.7 | 35872 | 0.41 |
-| music3.mp3→f32le | original/0/1 | 0.955 | 513/513/499 | 254.1 | 139.1 | 68273 | 0.00 |
-| music3.mp3→f32le | dedicated/0/1 | 0.938 | 513/513/513 | 254.2 | 139.2 | 65956 | 0.00 |
-| music3.mp3→f32le | scheduled/4/1 | 0.909 | 6/6/6 | 253.5 | 131.6 | 189453 | 15.02 |
-| music3.mp3→f32le | scheduled/4/8 | 0.940 | 6/7/7 | 245.6 | 131.6 | 62754 | 0.29 |
+| Workload          | Backend/workers/budget | Wall s | Live/peak/startup-peak threads | Peak RSS MiB | Active footprint MiB | Context switches | Queue wait ms |
+| ----------------- | ---------------------- | -----: | ------------------------------ | -----------: | -------------------: | ---------------: | ------------: |
+| music15.opus→opus | original/0/1           |  0.949 | 513/513/505                    |        391.1 |                252.5 |           323789 |          0.00 |
+| music15.opus→opus | dedicated/0/1          |  0.960 | 513/513/509                    |        386.8 |                252.5 |           325955 |          0.00 |
+| music15.opus→opus | scheduled/4/1          |  0.579 | 6/6/6                          |        518.5 |                244.8 |            52908 |        264.45 |
+| music15.opus→opus | scheduled/4/8          |  0.554 | 6/6/6                          |        403.5 |                244.8 |            72322 |         74.88 |
+| music3.mp3→opus   | original/0/1           |  1.180 | 513/513/506                    |        266.3 |                139.2 |             9131 |          0.00 |
+| music3.mp3→opus   | dedicated/0/1          |  1.202 | 513/513/505                    |        265.4 |                139.2 |            10085 |          0.00 |
+| music3.mp3→opus   | scheduled/4/1          |  1.890 | 6/7/7                          |        234.9 |                131.5 |            40650 |          9.05 |
+| music3.mp3→opus   | scheduled/4/8          |  1.845 | 6/7/7                          |        226.1 |                131.5 |            29637 |          0.46 |
+| music3.aac→opus   | original/0/1           |  1.304 | 513/513/509                    |        584.1 |                458.4 |            10448 |          0.00 |
+| music3.aac→opus   | dedicated/0/1          |  1.328 | 513/513/507                    |        592.2 |                458.4 |            12099 |          0.00 |
+| music3.aac→opus   | scheduled/4/1          |  2.057 | 6/7/7                          |        553.6 |                450.7 |            34508 |         13.15 |
+| music3.aac→opus   | scheduled/4/8          |  2.029 | 6/7/7                          |        549.7 |                450.7 |            35872 |          0.41 |
+| music3.mp3→f32le  | original/0/1           |  0.955 | 513/513/499                    |        254.1 |                139.1 |            68273 |          0.00 |
+| music3.mp3→f32le  | dedicated/0/1          |  0.938 | 513/513/513                    |        254.2 |                139.2 |            65956 |          0.00 |
+| music3.mp3→f32le  | scheduled/4/1          |  0.909 | 6/6/6                          |        253.5 |                131.6 |           189453 |         15.02 |
+| music3.mp3→f32le  | scheduled/4/8          |  0.940 | 6/7/7                          |        245.6 |                131.6 |            62754 |          0.29 |
 
 At 512 MP3→f32le sessions, four workers with one action per turn regressed CPU by 10.9% versus
 the refactored dedicated driver. Budget eight improved it by 5.4%; budget 32 was similar. The
@@ -241,20 +244,20 @@ p99 alone hid an end-of-stream tail affecting fewer than one percent of packets.
 All final scheduled rows have 512 admitted/live scheduled sessions at gate release, zero fallback
 counts, zero retained timers after stop and a timer peak no larger than the admitted count.
 
-| Workload | Backend/workers | CPU ms/audio s | First chunk p99 ms | Relative jitter p99 ms | Worst excess gap ms | Last chunk s |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| music3.mp3→f32le | dedicated/0 | 2.526 | 5.1 | 10.7 | 13.1 | 2.988 |
-| music3.mp3→f32le | original/0 | 2.515 | 5.2 | 8.5 | 13.1 | 2.989 |
-| music3.mp3→f32le | scheduled/1 | 1.448 | 8.4 | 5.7 | 7.5 | 2.991 |
-| music3.mp3→f32le | scheduled/4 | 1.692 | 2.9 | 13.8 | 23.4 | 2.983 |
-| music3.mp3→opus | dedicated/0 | 7.546 | 11.6 | 9.8 | 35.2 | 2.978 |
-| music3.mp3→opus | original/0 | 7.579 | 10.5 | 13.7 | 29.5 | 2.978 |
-| music3.mp3→opus | scheduled/1 | 4.926 | 58.1 | 3729.8 | 232.6 | 6.776 |
-| music3.mp3→opus | scheduled/4 | 5.064 | 15.7 | 8.4 | 24.2 | 2.988 |
-| music3.opus→opus | dedicated/0 | 2.836 | 3.8 | 6.2 | 94.5 | 3.091 |
-| music3.opus→opus | original/0 | 2.685 | 3.7 | 6.5 | 90.5 | 3.088 |
-| music3.opus→opus | scheduled/1 | 0.917 | 13.3 | 1.6 | 428.0 | 3.435 |
-| music3.opus→opus | scheduled/4 | 1.248 | 3.2 | 4.7 | 146.5 | 3.144 |
+| Workload         | Backend/workers | CPU ms/audio s | First chunk p99 ms | Relative jitter p99 ms | Worst excess gap ms | Last chunk s |
+| ---------------- | --------------- | -------------: | -----------------: | ---------------------: | ------------------: | -----------: |
+| music3.mp3→f32le | dedicated/0     |          2.526 |                5.1 |                   10.7 |                13.1 |        2.988 |
+| music3.mp3→f32le | original/0      |          2.515 |                5.2 |                    8.5 |                13.1 |        2.989 |
+| music3.mp3→f32le | scheduled/1     |          1.448 |                8.4 |                    5.7 |                 7.5 |        2.991 |
+| music3.mp3→f32le | scheduled/4     |          1.692 |                2.9 |                   13.8 |                23.4 |        2.983 |
+| music3.mp3→opus  | dedicated/0     |          7.546 |               11.6 |                    9.8 |                35.2 |        2.978 |
+| music3.mp3→opus  | original/0      |          7.579 |               10.5 |                   13.7 |                29.5 |        2.978 |
+| music3.mp3→opus  | scheduled/1     |          4.926 |               58.1 |                 3729.8 |               232.6 |        6.776 |
+| music3.mp3→opus  | scheduled/4     |          5.064 |               15.7 |                    8.4 |                24.2 |        2.988 |
+| music3.opus→opus | dedicated/0     |          2.836 |                3.8 |                    6.2 |                94.5 |        3.091 |
+| music3.opus→opus | original/0      |          2.685 |                3.7 |                    6.5 |                90.5 |        3.088 |
+| music3.opus→opus | scheduled/1     |          0.917 |               13.3 |                    1.6 |               428.0 |        3.435 |
+| music3.opus→opus | scheduled/4     |          1.248 |                3.2 |                    4.7 |               146.5 |        3.144 |
 
 The final deadline queue rearmed exactly once per expiration in these steady runs: for example,
 512 three-second Opus streams had 76,800 registrations and 76,800 expirations. This replaces the
@@ -276,3 +279,146 @@ No delayed audio is dropped, no samples are skipped, and no quality or buffering
 changed to finish earlier. Lower CPU and fewer threads do not establish acceptable continuity.
 Pacing is retained only behind the existing experimental feature and explicit Rust selection.
 The production backend remains dedicated.
+
+## Diagnostic profile and burst headroom
+
+A separate instrumented archive built by `hybrid-profile-build.sh` times machine actions and
+machine destruction. Its CPU/latency rows are marked `profilingOnly` and excluded from acceptance
+comparisons. Destruction was initially suspected but the nine `cleanup-profile.jsonl` runs rule
+it out as the dominant source: dropping all 512 Opus machines took about 3.1 ms with one worker,
+and about 5.3 ms with four. The follow-up archive additionally times `ProcessingTransition::apply`.
+
+`transition-profile.jsonl` records exactly 512 processing transitions for the 512 Opus sources,
+with about 341 ms cumulative transition wall time in the one-worker run, versus about 3 ms in
+destruction. MP3, already transcoding, has zero such transitions. The Opus edge packet has container
+trimming metadata; the common playback implementation must activate/condition PCM processing to
+preserve the tail instead of forwarding that packet unchanged. The coincident edge transitions
+create a short CPU-work burst despite relatively low average passthrough CPU. The profiling clocks
+include descheduling and are not CPU counters, but identify the responsible operation; the data
+does not justify introducing a speculative destruction/reaper pool.
+
+A full-host headroom check then compares a fixed ten-worker pool against the same original and
+refactored backends, at 128/512 sessions, budgets one/eight, three repetitions: 24 additional matched
+runs, with zero fallback. This avoids comparing a four-thread CPU ceiling with dedicated playback
+which can use all ten host CPUs during the synchronized burst.
+
+| 512 paced Opus streams          | CPU ms/audio s | Relative jitter p99 ms | Worst excess gap ms | Context switches | Aggregate queue wait ms |
+| ------------------------------- | -------------: | ---------------------: | ------------------: | ---------------: | ----------------------: |
+| dedicated, workers 0, budget 1  |          2.892 |                    6.6 |                89.5 |           161373 |                     0.0 |
+| original, workers 0, budget 1   |          2.757 |                    5.8 |                89.6 |           162736 |                     0.0 |
+| scheduled, workers 10, budget 1 |          1.926 |                    4.5 |                92.3 |            52313 |                  2109.8 |
+| scheduled, workers 10, budget 8 |          1.495 |                    4.2 |                87.4 |            35735 |                  1090.9 |
+
+Ten workers/budget eight restore the worst gap to approximately the matched dedicated result
+while retaining CPU savings. One-action turns spend more CPU and have more queue waiting even
+with the extra workers. This supports fixed worker/budget configuration based on both steady
+load and codec-transition bursts. It does not prove a ten-worker policy is appropriate on a
+2–4-vCPU server or justify automatic resizing. The current convenience constructor still caps
+available parallelism at four; its policy was not silently changed based on one host.
+
+## Startup thread accounting and explicit fallback audits
+
+The normal harness opens sessions sequentially before releasing the audio gate. Its low startup
+OS-thread peaks do not bound a simultaneous startup burst. A separate Darwin thread-name scanner
+uses the installed SDK's `proc_pidinfo` task/thread layouts. `startup-thread-roles.jsonl` observes
+CPU roles exactly at the configured 1/4/10 counts and only 1–2 named transient startup workers in
+that sequential scenario. Samples can miss shorter threads or catch them before names are assigned.
+The scanner has its own syscall overhead and is excluded from CPU/latency acceptance evidence.
+
+The stronger `hybrid_startup_diagnostic` starts concurrent blocking API callers and deliberately
+withholds bounded byte-stream input while FFmpeg probes. After every engine startup thread is
+observed, stdin releases the fixture and every session must finish with identical positive sample
+counts. Caller driver threads are named and counted separately. This unsupported-source stress
+case is explicitly **not scheduler performance evidence**. Three repetitions at 128 and 512 sources
+show the same counts:
+
+| Sessions | Context              | Engine startup threads | CPU workers | Diagnostic caller threads | Main | Total OS threads at barrier |
+| -------: | -------------------- | ---------------------: | ----------: | ------------------------: | ---: | --------------------------: |
+|      128 | original dedicated   |                    128 |           0 |                       128 |    1 |                         257 |
+|      128 | experimental context |                    128 |           4 |                       128 |    1 |                         261 |
+|      512 | original dedicated   |                    512 |           0 |                       512 |    1 |                        1025 |
+|      512 | experimental context |                    512 |           4 |                       512 |    1 |                        1029 |
+
+All experimental-context burst rows have zero scheduled admissions and exactly N input fallbacks
+once probing completes. This demonstrates that startup creation is not bounded by CPU-pool
+admission. The scheduler reduces eligible steady-state playback threads, not this startup burst;
+caller threads are benchmark scaffolding, not hidden engine savings or engine-only memory costs.
+Future source work needs bounded startup admission as well as readiness-driven demuxing.
+
+`fallback-audit.jsonl` separately checks 16 local-file sessions and 16 unsupported MP4/M4A owned
+inputs. Both have zero scheduled admissions. Their reasons are respectively input and demuxer,
+16 each. Their successful playback validates fallback/counting only and is excluded from every
+scheduler comparison table. Capacity and control fallbacks remain covered by deterministic tests.
+
+## Decision and remaining work
+
+The shared scheduler is worth further experiments for qualified workloads; it is not justified
+as the production default. The experiment now has real CPU savings, explicit budgets/counters,
+bounded readiness-driven realtime deadlines, a measured wake-up optimization and reproducible
+continuity regressions/overload cases. It also shows why a smaller pool and lower average CPU can
+still fail a burst deadline. Disabling encoder conditioning, discarding trimmed tails, lowering
+complexity or shrinking the delivered sample count was not used to make results pass.
+
+Local files, HTTP/plugin sources, Discord transport, crossfade and permanent control migration
+remain unchanged and explicitly dedicated. They were investigated above but not enabled: the
+current blocking input/control contracts cannot safely run on shared CPU workers, startup remains
+unbounded, and pacing/resource qualification is incomplete. Merely flipping eligibility would
+create misleading scheduler counts and could stall unrelated sessions. Reversible control
+handoff, bounded startup/I/O execution, packet-generation ownership and nonblocking transport
+acknowledgements require concrete follow-up implementations with their own comparisons.
+
+No Linux CPU-constrained host, staggered long-duration source mix, live Discord/DAVE traffic,
+subjective listening evaluation, native heap inventory or long-duration retention qualification
+was available in this run. Synchronized starts and equal-duration fixtures intentionally expose
+burst behavior; they are not a representative distribution of track end times. Payload/sample
+identity is necessary but does not alone establish audible continuity. No production default,
+quality setting, queue limit or cancellation contract was weakened. No push or merge was performed by this agent.
+
+## Verification
+
+Final workspace tests passed with feature enabled (524 tests) and disabled (516 tests), preserving
+seven existing ignored manual audits. Workspace/all-target Clippy with `-D warnings` passed both
+ways. The addon was regenerated in each configuration and all 108 Node binding tests passed in
+each. Docs production build, 60,988 local link checks and API-export validation passed. As before,
+local Homebrew linking emits the existing missing-arm64 QTKit warning and is not a static
+shipping-artifact audit. New diagnostic examples are compiled in all-target checks and were run
+manually; normal tests do not depend on stdin, network services or these resource stresses.
+
+### Supplemental reproduction commands
+
+Use the matching source milestone for historical phases; the current builder runs current code.
+The original archive only receives the common benchmark examples and unused cfg declaration.
+Binary and fixture identities for every matched sweep are in adjacent `.manifest.json` files.
+
+```sh
+python3 benchmarks/hybrid_ab.py \
+  --original /tmp/remedia-hybrid-tail/original-target/release/examples/hybrid_scheduler_benchmark \
+  --dedicated /tmp/remedia-hybrid-tail/dedicated-target/release/examples/hybrid_scheduler_benchmark \
+  --scheduled /tmp/remedia-hybrid-tail/scheduled-target/release/examples/hybrid_scheduler_benchmark \
+  --fixtures /tmp/remedia-hybrid-tail/fixtures/music3.opus,/tmp/remedia-hybrid-tail/fixtures/music3.mp3 \
+  --pacing realtime --workers 1,4 --budgets 8 --counts 1,128,512 \
+  --output /tmp/paced-comparison.jsonl
+python3 benchmarks/hybrid-ab-summary.py /tmp/paced-comparison.jsonl --output /tmp/paced-summary.json
+benchmarks/hybrid-profile-build.sh /tmp/remedia-hybrid-profile 2be796c
+/tmp/remedia-hybrid-profile/target/release/examples/hybrid_scheduler_benchmark \
+  /tmp/remedia-hybrid-tail/fixtures/music3.opus 512 1 opus 8 bytes realtime
+python3 benchmarks/hybrid-thread-roles.py \
+  --original /tmp/remedia-hybrid-tail/original-target/release/examples/hybrid_scheduler_benchmark \
+  --scheduled /tmp/remedia-hybrid-tail/scheduled-target/release/examples/hybrid_scheduler_benchmark \
+  --fixture /tmp/remedia-hybrid-tail/fixtures/music3.opus --output /tmp/thread-roles.jsonl
+python3 benchmarks/hybrid-startup-burst.py \
+  --original /tmp/remedia-hybrid-tail/original-target/release/examples/hybrid_startup_diagnostic \
+  --scheduled /tmp/remedia-hybrid-tail/scheduled-target/release/examples/hybrid_startup_diagnostic \
+  --fixture crates/remedia-core/tests/fixtures/generated-tone.mp3 --output /tmp/startup-burst.jsonl
+```
+
+The role scanners use Darwin SDK layouts and are diagnostic-only; the main matched runner also
+supports Linux process-status sampling. Linux behavior itself remains untested here.
+
+## Branch history note
+
+During the run, an external `git pull origin main` added merge `d857e94` with the empty release
+commit `8ea1bb2`. The merge tree is exactly identical to its first parent `f60e405`
+(`2c41c05942e70384e40f7f0a667b28b72c72e86c`), so it changed no tested code. It was preserved rather
+than rewriting concurrent work. Local `main` remains `55b71e55b38722401dbd6d0011ccf31b0337000c`.
+The agent did not run that pull/merge and did not push any commits.

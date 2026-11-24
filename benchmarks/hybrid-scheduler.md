@@ -1,5 +1,8 @@
 # Hybrid playback scheduler experiment
 
+This is the first-milestone report. See [the continuation](hybrid-ab-results.md) for the matched
+three-way comparison, processing budgets, realtime deadlines and startup/continuity findings.
+
 Branch: `experiment/hybrid-playback-scheduler`. Original main: `55b71e55b38722401dbd6d0011ccf31b0337000c`.
 
 The original optimized executables are preserved in `/tmp/remedia-hybrid-baseline/release/examples`;
