@@ -18,6 +18,8 @@ for path in args.paths:
             raise ValueError('unqualified comparison row')
         if row['implementation'] == 'scheduled':
             d = row['diagnostics']
+            if d.get('pendingDeadlines', 0) != 0 or d.get('deadlinePeak', 0) > row['sessions']:
+                raise ValueError('deadline storage was not reclaimed or exceeded admitted sessions')
             if row['activeScheduled'] != row['sessions'] or d['admitted'] != row['sessions'] or sum(d[k] for k in ['controlFallbacks', 'unsupportedFallbacks', 'capacityFallbacks']):
                 raise ValueError('fallback or incomplete scheduled admission')
         key = (row['fixture'], row['format'], row['sessions'], row['implementation'], row['workers'], row['budget'])
@@ -30,7 +32,10 @@ for (fixture, mode, count, implementation, workers, budget), rows in sorted(grou
     def med(get):
         values = [get(r) for r in rows if get(r) is not None]
         return statistics.median(values) if values else None
-    summary = dict(fixture=fixture, format=mode, sessions=count, implementation=implementation, workers=workers, budget=budget, repetitions=len(rows),
+    def percentile(values, fraction):
+        values = sorted(v for v in values if v is not None)
+        return values[int((len(values)-1)*fraction)] if values else None
+    summary = dict(pacing=rows[0].get('pacing', 'Unpaced'), fixture=fixture, format=mode, sessions=count, implementation=implementation, workers=workers, budget=budget, repetitions=len(rows),
                    cpuMsPerAudioSecond=med(lambda r:r['childCpuSeconds'] * 1000 / r['audioSeconds']),
                    cpuRange=[min(r['childCpuSeconds']*1000/r['audioSeconds'] for r in rows), max(r['childCpuSeconds']*1000/r['audioSeconds'] for r in rows)],
                    wallSeconds=med(lambda r:r['wallSeconds']), processingSeconds=med(lambda r:r['processingSeconds']), startupSeconds=med(lambda r:r['startupSeconds']),
@@ -41,6 +46,15 @@ for (fixture, mode, count, implementation, workers, budget), rows in sorted(grou
                    voluntaryContextSwitches=med(lambda r:r['voluntaryContextSwitches']), involuntaryContextSwitches=med(lambda r:r['involuntaryContextSwitches']),
                    turns=med(lambda r:(r['diagnostics'] or {}).get('turns')), actions=med(lambda r:(r['diagnostics'] or {}).get('actions')),
                    queueContentions=med(lambda r:(r['diagnostics'] or {}).get('queueContentions')), queueWaitNs=med(lambda r:(r['diagnostics'] or {}).get('queueWaitNs')),
+                   firstChunkP99Ms=med(lambda r:percentile(r.get('firstChunkLatencyMs', []), 0.99)),
+                   deliveryP99MsFromFirstChunk=med(lambda r:r.get('deliveryP99MsFromFirstChunk')),
+                   deliveryMaxMsFromFirstChunk=med(lambda r:r.get('deliveryMaxMsFromFirstChunk')),
+                   worstInterChunkGapExcessMs=med(lambda r:max(r.get('worstGapExcessPerSessionMs', []), default=None)),
+                   lastChunkMaxMs=med(lambda r:max((v for v in r.get('lastChunkMs', []) if v is not None), default=None)),
+                   drainSeconds=med(lambda r:r.get('drainSeconds')), cleanupAfterEofSeconds=med(lambda r:r.get('cleanupAfterEofSeconds')),
+                   deadlineSuspensions=med(lambda r:(r['diagnostics'] or {}).get('deadlineSuspensions')),
+                   deadlineWakes=med(lambda r:(r['diagnostics'] or {}).get('deadlineWakes')),
+                   deadlinePeak=med(lambda r:(r['diagnostics'] or {}).get('deadlinePeak')),
                    fallbackCount=med(lambda r:sum((r['diagnostics'] or {}).get(k,0) for k in ['controlFallbacks','unsupportedFallbacks','capacityFallbacks'])))
     baseline = groups[(fixture, mode, count, 'dedicated', 0, 1)]
     baseline_cpu = statistics.median(r['childCpuSeconds']*1000/r['audioSeconds'] for r in baseline)

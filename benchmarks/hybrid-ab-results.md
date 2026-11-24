@@ -160,8 +160,9 @@ the production backend or silently selecting a larger default budget.
 
 ## Eligibility investigation
 
-The measurement gate precedes any expansion of eligibility. Existing eligibility is owned bytes
-in the five whitelisted demuxers, without native filtergraphs, into NullOutput or unpaced streams.
+The initial measurement gate preceded expansion of eligibility. It justified adding realtime
+stream deadlines for owned bytes in the five whitelisted demuxers, without native filtergraphs.
+Local files, network/plugin input, native filtergraphs and Discord/crossfade remain dedicated.
 The following blocking boundaries remain explicit:
 
 - Local files: FFmpeg demux reads and seeks remain synchronous. Loading an entire file into owned
@@ -170,11 +171,12 @@ The following blocking boundaries remain explicit:
   filesystem stalls must not monopolize CPU workers or create a permanent thread per session.
   `AudioDecoder` currently owns its packet reader, codec, resampler and pending frames together;
   this separation requires an explicit ownership/seek-generation protocol, not a thread-pool wrapper.
-- Realtime streams: `StreamOutput::poll_ready` already returns an absolute pacing deadline, but
-  the experimental MediaOutput bridge currently discards that value and only opts in unpaced
-  streams. Enabling realtime without a deadline queue would silently run unpaced. A valid timer
-  design needs one outstanding deadline per generation, cancellation/control invalidation and a
-  single bounded timer service rather than per-session sleeps or periodic polling.
+- Realtime streams: the initial bridge discarded the absolute deadline, so merely enabling
+  realtime there would have run unpaced. The continuation now adds an optional
+  `scheduler_poll_deadline` capability and an ordered, capacity-bounded deadline queue shared by
+  CPU workers. It has no additional timer thread and no per-session sleep/poll task. A control or
+  cancellation wake removes the job's sole timer before making it runnable. Expiration appends
+  due jobs to the FIFO; it does not guarantee CPU service at that instant under overload.
 - Discord: `connection/sender.rs` packet submission uses a bounded channel with retrying 25 ms
   sends; control barriers wait for actor acknowledgements. `sender_router.rs` can wait for a new
   transport. Those methods must expose readiness and retained-packet ownership before opting in.
@@ -199,3 +201,78 @@ The following blocking boundaries remain explicit:
   preserve the audible tail rather than cutting it off to satisfy a scheduling budget.
 
 These are source-audited design constraints, not implemented support or performance evidence.
+
+## Pacing implementation and qualification
+
+After the initial gate, `702ff29` added generation-specific deadlines to the existing resumable
+machine and FIFO. The readiness mutex also owns the ordered timer map. A job is either runnable,
+running, suspended, timed, or done. Wake-up atomics remove a timed entry before enqueueing;
+notification during execution forces another turn instead of losing a wake. Timer insertion holds
+the queue lock while transitioning the job state, and expiry only enqueues a job if it still owns
+the timed state. There is at most one strong timer reference per admitted job. Paused jobs stop
+registering timers. Stop joins machine reclamation and tests check timer storage returns to zero.
+
+The first 144 paced runs (`paced-opus-matrix.jsonl`, `paced-pcm-matrix.jsonl`) compare original,
+refactored and scheduled playback at budgets one/eight and workers one/four. All audio matched,
+all clocks took at least the audio duration (within a 50 ms edge tolerance), every scheduled session
+was admitted, and no fallback qualified as performance evidence. They exposed repeated early
+wakes: consumer drains woke producers waiting only for a future clock deadline. Some cases
+registered nearly two deadlines per actual expiration.
+
+`2be796c` separates capacity and pacing waker registrations without changing queue sizes or audio.
+Data consumption wakes a capacity wait; closure, failure, flush, cancellation and explicit controls
+wake pacing waits. A deterministic test uses a synthetic future clock and verifies that draining
+does not wake a timed producer while consumer closure does. The final 96-run sweep selects budget
+eight, workers one/four, 1/128/512 Opus and MP3-to-Opus sessions and 128/512 MP3-to-PCM sessions,
+with three repetitions and full original/refactored comparisons. It also records per-session
+worst inter-chunk gap excess, maximum lateness, final-chunk time and post-EOF cleanup time.
+These extra measurements add common harness work, so do not attribute cross-phase CPU differences
+solely to the waker change. Timer registration counts directly verify its intended effect.
+
+Relative delivery jitter uses each session's first observed chunk as its clock origin. It omits
+that initial offset; first-chunk latency from gate release is reported separately. It is a host
+consumer measurement, not native RTP lateness or audible underruns. The worst gap subtracts the
+preceding chunk's media duration from the observed gap. P99 is across delivered chunks within a
+process; a three-run median follows. Maximum and per-session worst values are retained because
+p99 alone hid an end-of-stream tail affecting fewer than one percent of packets.
+
+### Final paced results at 512 live sessions
+
+All final scheduled rows have 512 admitted/live scheduled sessions at gate release, zero fallback
+counts, zero retained timers after stop and a timer peak no larger than the admitted count.
+
+| Workload | Backend/workers | CPU ms/audio s | First chunk p99 ms | Relative jitter p99 ms | Worst excess gap ms | Last chunk s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| music3.mp3→f32le | dedicated/0 | 2.526 | 5.1 | 10.7 | 13.1 | 2.988 |
+| music3.mp3→f32le | original/0 | 2.515 | 5.2 | 8.5 | 13.1 | 2.989 |
+| music3.mp3→f32le | scheduled/1 | 1.448 | 8.4 | 5.7 | 7.5 | 2.991 |
+| music3.mp3→f32le | scheduled/4 | 1.692 | 2.9 | 13.8 | 23.4 | 2.983 |
+| music3.mp3→opus | dedicated/0 | 7.546 | 11.6 | 9.8 | 35.2 | 2.978 |
+| music3.mp3→opus | original/0 | 7.579 | 10.5 | 13.7 | 29.5 | 2.978 |
+| music3.mp3→opus | scheduled/1 | 4.926 | 58.1 | 3729.8 | 232.6 | 6.776 |
+| music3.mp3→opus | scheduled/4 | 5.064 | 15.7 | 8.4 | 24.2 | 2.988 |
+| music3.opus→opus | dedicated/0 | 2.836 | 3.8 | 6.2 | 94.5 | 3.091 |
+| music3.opus→opus | original/0 | 2.685 | 3.7 | 6.5 | 90.5 | 3.088 |
+| music3.opus→opus | scheduled/1 | 0.917 | 13.3 | 1.6 | 428.0 | 3.435 |
+| music3.opus→opus | scheduled/4 | 1.248 | 3.2 | 4.7 | 146.5 | 3.144 |
+
+The final deadline queue rearmed exactly once per expiration in these steady runs: for example,
+512 three-second Opus streams had 76,800 registrations and 76,800 expirations. This replaces the
+repeated drain-triggered rearming seen in the initial prototype. The raw records also retain
+queue contention, OS/startup thread peaks, context switches, RSS and physical footprint for each
+case; the complete resource medians are in `paced-final-summary.json`.
+
+The tail metrics fail the continuity target in some configurations despite matching samples and
+payloads. At 512 passthrough sessions, one worker has a median worst excess gap of about 428 ms,
+versus 94.5 ms for refactored dedicated. Four workers reduce that to about 146.5 ms, still worse.
+For 512 MP3-to-Opus sessions one worker is overloaded: relative jitter reaches seconds and the
+last chunk arrives around 6.8 seconds for three seconds of audio. Those runs demonstrate overload,
+not sustainable concurrency. Four workers improve that workload's CPU while delivering its final
+chunk around the correct media time, but other cases still regress in initial or tail latency.
+MP3-to-PCM with four workers has a worse maximum excess gap than dedicated despite lower CPU;
+with one worker this particular PCM workload fares better. There is no universal winning pool size.
+
+No delayed audio is dropped, no samples are skipped, and no quality or buffering setting was
+changed to finish earlier. Lower CPU and fewer threads do not establish acceptable continuity.
+Pacing is retained only behind the existing experimental feature and explicit Rust selection.
+The production backend remains dedicated.

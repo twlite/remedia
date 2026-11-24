@@ -1,0 +1,44 @@
+{
+  "tests-on": {
+    "passed": true,
+    "rustTestsPassed": 524,
+    "rustTestsIgnored": 7,
+    "lastNonemptyLine": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+  },
+  "tests-off": {
+    "passed": true,
+    "rustTestsPassed": 516,
+    "rustTestsIgnored": 7,
+    "lastNonemptyLine": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+  },
+  "clippy-on": {
+    "passed": true,
+    "rustTestsPassed": 0,
+    "rustTestsIgnored": 0,
+    "lastNonemptyLine": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.20s"
+  },
+  "clippy-off": {
+    "passed": true,
+    "rustTestsPassed": 0,
+    "rustTestsIgnored": 0,
+    "lastNonemptyLine": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.67s"
+  },
+  "node-on": {
+    "passed": true,
+    "rustTestsPassed": 0,
+    "rustTestsIgnored": 0,
+    "lastNonemptyLine": "   Duration  30.54s (tests 94%, import 5%)"
+  },
+  "node-off": {
+    "passed": true,
+    "rustTestsPassed": 0,
+    "rustTestsIgnored": 0,
+    "lastNonemptyLine": "   Duration  28.06s (tests 94%, import 5%)"
+  },
+  "docs": {
+    "passed": true,
+    "rustTestsPassed": 0,
+    "rustTestsIgnored": 0,
+    "lastNonemptyLine": "Verified the static export of the generated API reference."
+  }
+}
