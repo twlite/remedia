@@ -8,10 +8,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.1200666666683883,
-    "cpuRange": [
-      1.0983333333347407,
-      2.8046666666666664
-    ],
+    "cpuRange": [1.0983333333347407, 2.8046666666666664],
     "wallSeconds": 0.002387083,
     "processingSeconds": 0.001917083,
     "startupSeconds": 0.000462541,
@@ -40,10 +37,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.1668666666665217,
-    "cpuRange": [
-      1.1076666666662998,
-      2.8306666666666667
-    ],
+    "cpuRange": [1.1076666666662998, 2.8306666666666667],
     "wallSeconds": 0.002341375,
     "processingSeconds": 0.001868791,
     "startupSeconds": 0.000485959,
@@ -72,10 +66,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.1545333333245367,
-    "cpuRange": [
-      1.1011999999993805,
-      2.7579333333333325
-    ],
+    "cpuRange": [1.1011999999993805, 2.7579333333333325],
     "wallSeconds": 0.002338583,
     "processingSeconds": 0.001839333,
     "startupSeconds": 0.000490125,
@@ -104,10 +95,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.1154666666631858,
-    "cpuRange": [
-      1.1113333333364988,
-      1.4944000000000008
-    ],
+    "cpuRange": [1.1113333333364988, 1.4944000000000008],
     "wallSeconds": 0.002298,
     "processingSeconds": 0.00185725,
     "startupSeconds": 0.000449916,
@@ -136,10 +124,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.125066666668791,
-    "cpuRange": [
-      1.0966666666727558,
-      1.1995333333333345
-    ],
+    "cpuRange": [1.0966666666727558, 1.1995333333333345],
     "wallSeconds": 0.002285042,
     "processingSeconds": 0.001851333,
     "startupSeconds": 0.000449834,
@@ -168,10 +153,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.1674000000027718,
-    "cpuRange": [
-      1.1584666666666659,
-      1.1751333333319753
-    ],
+    "cpuRange": [1.1584666666666659, 1.1751333333319753],
     "wallSeconds": 0.002591,
     "processingSeconds": 0.002144917,
     "startupSeconds": 0.000432125,
@@ -200,10 +182,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.110666666662515,
-    "cpuRange": [
-      1.0836000000000003,
-      1.1314666666670803
-    ],
+    "cpuRange": [1.0836000000000003, 1.1314666666670803],
     "wallSeconds": 0.00238975,
     "processingSeconds": 0.001895125,
     "startupSeconds": 0.000431375,
@@ -232,10 +211,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.1161999999994048,
-    "cpuRange": [
-      1.0957999999999992,
-      1.136733333331345
-    ],
+    "cpuRange": [1.0957999999999992, 1.136733333331345],
     "wallSeconds": 0.002379333,
     "processingSeconds": 0.001924209,
     "startupSeconds": 0.00046125,
@@ -264,10 +240,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.3107999999983615,
-    "cpuRange": [
-      1.3040666666666676,
-      1.4167333333318766
-    ],
+    "cpuRange": [1.3040666666666676, 1.4167333333318766],
     "wallSeconds": 0.003466708,
     "processingSeconds": 0.003020042,
     "startupSeconds": 0.00043925,
@@ -296,10 +269,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.1329333333359652,
-    "cpuRange": [
-      1.1219333333333332,
-      1.1415999999985142
-    ],
+    "cpuRange": [1.1219333333333332, 1.1415999999985142],
     "wallSeconds": 0.002402542,
     "processingSeconds": 0.001936375,
     "startupSeconds": 0.000458375,
@@ -328,10 +298,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.132533333333334,
-    "cpuRange": [
-      1.107999999996423,
-      1.153133333336361
-    ],
+    "cpuRange": [1.107999999996423, 1.153133333336361],
     "wallSeconds": 0.002462917,
     "processingSeconds": 0.001978542,
     "startupSeconds": 0.000474,
@@ -360,10 +327,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.5141249999998246,
-    "cpuRange": [
-      0.5044500000000001,
-      0.5412749999999633
-    ],
+    "cpuRange": [0.5044500000000001, 0.5412749999999633],
     "wallSeconds": 0.013228417,
     "processingSeconds": 0.011312125,
     "startupSeconds": 0.00190475,
@@ -392,10 +356,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.524583333333517,
-    "cpuRange": [
-      0.5036416666666669,
-      0.5375500000000718
-    ],
+    "cpuRange": [0.5036416666666669, 0.5375500000000718],
     "wallSeconds": 0.013084042,
     "processingSeconds": 0.011151292,
     "startupSeconds": 0.001921125,
@@ -424,10 +385,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.26319166666652904,
-    "cpuRange": [
-      0.2629333333333338,
-      0.2633583333335447
-    ],
+    "cpuRange": [0.2629333333333338, 0.2633583333335447],
     "wallSeconds": 0.013640542,
     "processingSeconds": 0.011798375,
     "startupSeconds": 0.0018945,
@@ -456,10 +414,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.26167499999993166,
-    "cpuRange": [
-      0.25351666666666633,
-      0.26656666666617923
-    ],
+    "cpuRange": [0.25351666666666633, 0.26656666666617923],
     "wallSeconds": 0.013393416,
     "processingSeconds": 0.011496458,
     "startupSeconds": 0.001887208,
@@ -488,10 +443,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.2578416666661217,
-    "cpuRange": [
-      0.25648333333333345,
-      0.25976666666620574
-    ],
+    "cpuRange": [0.25648333333333345, 0.25976666666620574],
     "wallSeconds": 0.013384542,
     "processingSeconds": 0.011498916,
     "startupSeconds": 0.001811416,
@@ -520,10 +472,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.3489000000001852,
-    "cpuRange": [
-      0.34598333333333336,
-      0.35372500000011203
-    ],
+    "cpuRange": [0.34598333333333336, 0.35372500000011203],
     "wallSeconds": 0.012492,
     "processingSeconds": 0.010650792,
     "startupSeconds": 0.001875458,
@@ -552,10 +501,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.3133916666666661,
-    "cpuRange": [
-      0.30510833333305953,
-      0.3209666666670922
-    ],
+    "cpuRange": [0.30510833333305953, 0.3209666666670922],
     "wallSeconds": 0.010880667,
     "processingSeconds": 0.008996083,
     "startupSeconds": 0.001874875,
@@ -584,10 +530,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.30583333333306467,
-    "cpuRange": [
-      0.3002250000003315,
-      0.30902499999999944
-    ],
+    "cpuRange": [0.3002250000003315, 0.30902499999999944],
     "wallSeconds": 0.01030275,
     "processingSeconds": 0.008394333,
     "startupSeconds": 0.001853917,
@@ -616,10 +559,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.4076750000002664,
-    "cpuRange": [
-      0.3989333333333332,
-      0.4136666666665789
-    ],
+    "cpuRange": [0.3989333333333332, 0.4136666666665789],
     "wallSeconds": 0.0097295,
     "processingSeconds": 0.007837333,
     "startupSeconds": 0.001846333,
@@ -648,10 +588,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.420508333333706,
-    "cpuRange": [
-      0.4056583333334511,
-      0.4224083333333327
-    ],
+    "cpuRange": [0.4056583333334511, 0.4224083333333327],
     "wallSeconds": 0.010683625,
     "processingSeconds": 0.0087945,
     "startupSeconds": 0.001878875,
@@ -680,10 +617,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.4234166666662394,
-    "cpuRange": [
-      0.41869166666666696,
-      0.4267999999992611
-    ],
+    "cpuRange": [0.41869166666666696, 0.4267999999992611],
     "wallSeconds": 0.010965708,
     "processingSeconds": 0.009035666,
     "startupSeconds": 0.001933375,
@@ -712,10 +646,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.42736875000023805,
-    "cpuRange": [
-      0.42589791666666665,
-      0.43147916666662994
-    ],
+    "cpuRange": [0.42589791666666665, 0.43147916666662994],
     "wallSeconds": 0.05150025,
     "processingSeconds": 0.044702667,
     "startupSeconds": 0.006748083,
@@ -744,10 +675,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.41314791666642314,
-    "cpuRange": [
-      0.41165833333335716,
-      0.4271020833333333
-    ],
+    "cpuRange": [0.41165833333335716, 0.4271020833333333],
     "wallSeconds": 0.050959792,
     "processingSeconds": 0.0439905,
     "startupSeconds": 0.006773875,
@@ -776,10 +704,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.17853124999989886,
-    "cpuRange": [
-      0.17544583333324315,
-      0.17946041666666626
-    ],
+    "cpuRange": [0.17544583333324315, 0.17946041666666626],
     "wallSeconds": 0.053270792,
     "processingSeconds": 0.046635292,
     "startupSeconds": 0.006811333,
@@ -808,10 +733,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.1678604166666986,
-    "cpuRange": [
-      0.16654583333333348,
-      0.168666666666617
-    ],
+    "cpuRange": [0.16654583333333348, 0.168666666666617],
     "wallSeconds": 0.050478334,
     "processingSeconds": 0.043652625,
     "startupSeconds": 0.006704375,
@@ -840,10 +762,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.16838333333333347,
-    "cpuRange": [
-      0.16827291666664893,
-      0.17020625000007486
-    ],
+    "cpuRange": [0.16827291666664893, 0.17020625000007486],
     "wallSeconds": 0.050824542,
     "processingSeconds": 0.044255458,
     "startupSeconds": 0.006718375,
@@ -872,10 +791,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.2569395833333336,
-    "cpuRange": [
-      0.25489166666662716,
-      0.2622583333334057
-    ],
+    "cpuRange": [0.25489166666662716, 0.2622583333334057],
     "wallSeconds": 0.047074667,
     "processingSeconds": 0.040490875,
     "startupSeconds": 0.0067555,
@@ -904,10 +820,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.2120166666667552,
-    "cpuRange": [
-      0.21035624999999994,
-      0.22174999999990952
-    ],
+    "cpuRange": [0.21035624999999994, 0.22174999999990952],
     "wallSeconds": 0.038878,
     "processingSeconds": 0.032068458,
     "startupSeconds": 0.00679625,
@@ -936,10 +849,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.20756250000002474,
-    "cpuRange": [
-      0.20545624999999992,
-      0.20881666666654475
-    ],
+    "cpuRange": [0.20545624999999992, 0.20881666666654475],
     "wallSeconds": 0.038118625,
     "processingSeconds": 0.031298667,
     "startupSeconds": 0.00669975,
@@ -968,10 +878,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.3093020833332923,
-    "cpuRange": [
-      0.30660000000009013,
-      0.3324791666666663
-    ],
+    "cpuRange": [0.30660000000009013, 0.3324791666666663],
     "wallSeconds": 0.03686625,
     "processingSeconds": 0.029766542,
     "startupSeconds": 0.006835333,
@@ -1000,10 +907,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.31149791666670684,
-    "cpuRange": [
-      0.3074916666667408,
-      0.3124770833333332
-    ],
+    "cpuRange": [0.3074916666667408, 0.3124770833333332],
     "wallSeconds": 0.038618875,
     "processingSeconds": 0.031794334,
     "startupSeconds": 0.00681325,
@@ -1032,10 +936,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.30387083333331955,
-    "cpuRange": [
-      0.2857541666666741,
-      0.30534166666666684
-    ],
+    "cpuRange": [0.2857541666666741, 0.30534166666666684],
     "wallSeconds": 0.038157458,
     "processingSeconds": 0.031371125,
     "startupSeconds": 0.006771458,
@@ -1064,10 +965,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.3983281249999997,
-    "cpuRange": [
-      0.3963666666666736,
-      0.4022593750000543
-    ],
+    "cpuRange": [0.3963666666666736, 0.4022593750000543],
     "wallSeconds": 0.101191666,
     "processingSeconds": 0.088233083,
     "startupSeconds": 0.012814208,
@@ -1096,10 +994,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.4046968750000398,
-    "cpuRange": [
-      0.39810416666666665,
-      0.4150072916666729
-    ],
+    "cpuRange": [0.39810416666666665, 0.4150072916666729],
     "wallSeconds": 0.099803666,
     "processingSeconds": 0.0867795,
     "startupSeconds": 0.013114,
@@ -1128,10 +1023,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.15992395833330417,
-    "cpuRange": [
-      0.15991875000000005,
-      0.16147395833331726
-    ],
+    "cpuRange": [0.15991875000000005, 0.16147395833331726],
     "wallSeconds": 0.103519166,
     "processingSeconds": 0.090258166,
     "startupSeconds": 0.013169833,
@@ -1160,10 +1052,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.153446875000011,
-    "cpuRange": [
-      0.15332395833333362,
-      0.153622916666644
-    ],
+    "cpuRange": [0.15332395833333362, 0.153622916666644],
     "wallSeconds": 0.100508834,
     "processingSeconds": 0.087301167,
     "startupSeconds": 0.013195167,
@@ -1192,10 +1081,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.152758333333299,
-    "cpuRange": [
-      0.15193541666666627,
-      0.15575520833332282
-    ],
+    "cpuRange": [0.15193541666666627, 0.15575520833332282],
     "wallSeconds": 0.09986575,
     "processingSeconds": 0.086700916,
     "startupSeconds": 0.013017667,
@@ -1224,10 +1110,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.23805312500000028,
-    "cpuRange": [
-      0.23646770833333347,
-      0.2435333333333567
-    ],
+    "cpuRange": [0.23646770833333347, 0.2435333333333567],
     "wallSeconds": 0.091649625,
     "processingSeconds": 0.078395125,
     "startupSeconds": 0.013153833,
@@ -1256,10 +1139,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.19455624999988874,
-    "cpuRange": [
-      0.19206562499999996,
-      0.19666041666668668
-    ],
+    "cpuRange": [0.19206562499999996, 0.19666041666668668],
     "wallSeconds": 0.076352792,
     "processingSeconds": 0.06317775,
     "startupSeconds": 0.013161,
@@ -1288,10 +1168,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.18760833333333707,
-    "cpuRange": [
-      0.18730833333333344,
-      0.1905843750000432
-    ],
+    "cpuRange": [0.18730833333333344, 0.1905843750000432],
     "wallSeconds": 0.073701209,
     "processingSeconds": 0.06056,
     "startupSeconds": 0.013130542,
@@ -1320,10 +1197,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.2948156249999995,
-    "cpuRange": [
-      0.29324791666663536,
-      0.2978593749999832
-    ],
+    "cpuRange": [0.29324791666663536, 0.2978593749999832],
     "wallSeconds": 0.071977291,
     "processingSeconds": 0.058672958,
     "startupSeconds": 0.01328625,
@@ -1352,10 +1226,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.26187916666665273,
-    "cpuRange": [
-      0.25583229166668,
-      0.29310000000000047
-    ],
+    "cpuRange": [0.25583229166668, 0.29310000000000047],
     "wallSeconds": 0.063421625,
     "processingSeconds": 0.050102625,
     "startupSeconds": 0.013301417,
@@ -1384,10 +1255,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.276975,
-    "cpuRange": [
-      0.261622916666715,
-      0.2777406249999707
-    ],
+    "cpuRange": [0.261622916666715, 0.2777406249999707],
     "wallSeconds": 0.069985417,
     "processingSeconds": 0.056589791,
     "startupSeconds": 0.013263666,
@@ -1416,10 +1284,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.4016182291666411,
-    "cpuRange": [
-      0.3948697916666558,
-      0.4078630208333333
-    ],
+    "cpuRange": [0.3948697916666558, 0.4078630208333333],
     "wallSeconds": 0.209866333,
     "processingSeconds": 0.183989167,
     "startupSeconds": 0.025287292,
@@ -1448,10 +1313,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.39516666666664274,
-    "cpuRange": [
-      0.3874630208333332,
-      0.4112484375000188
-    ],
+    "cpuRange": [0.3874630208333332, 0.4112484375000188],
     "wallSeconds": 0.205171542,
     "processingSeconds": 0.179964833,
     "startupSeconds": 0.025255709,
@@ -1480,10 +1342,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.15299479166666652,
-    "cpuRange": [
-      0.1527864583333057,
-      0.15485781249999034
-    ],
+    "cpuRange": [0.1527864583333057, 0.15485781249999034],
     "wallSeconds": 0.207960209,
     "processingSeconds": 0.1819935,
     "startupSeconds": 0.025950959,
@@ -1512,10 +1371,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.14694947916670068,
-    "cpuRange": [
-      0.1456369791666665,
-      0.14753020833331668
-    ],
+    "cpuRange": [0.1456369791666665, 0.14753020833331668],
     "wallSeconds": 0.201207417,
     "processingSeconds": 0.175142875,
     "startupSeconds": 0.0257605,
@@ -1544,10 +1400,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.1467755208333791,
-    "cpuRange": [
-      0.1465531249999726,
-      0.14697395833333365
-    ],
+    "cpuRange": [0.1465531249999726, 0.14697395833333365],
     "wallSeconds": 0.19989875,
     "processingSeconds": 0.17421225,
     "startupSeconds": 0.025850708,
@@ -1576,10 +1429,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.23251093750001525,
-    "cpuRange": [
-      0.2275812499999997,
-      0.2330302083333069
-    ],
+    "cpuRange": [0.2275812499999997, 0.2330302083333069],
     "wallSeconds": 0.184116625,
     "processingSeconds": 0.157877416,
     "startupSeconds": 0.026081292,
@@ -1608,10 +1458,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.18623749999997127,
-    "cpuRange": [
-      0.1837541666666664,
-      0.19023125000000018
-    ],
+    "cpuRange": [0.1837541666666664, 0.19023125000000018],
     "wallSeconds": 0.151403334,
     "processingSeconds": 0.125181208,
     "startupSeconds": 0.025897792,
@@ -1640,10 +1487,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.17910052083333267,
-    "cpuRange": [
-      0.17904687499999775,
-      0.18288906249999867
-    ],
+    "cpuRange": [0.17904687499999775, 0.18288906249999867],
     "wallSeconds": 0.145311666,
     "processingSeconds": 0.119327166,
     "startupSeconds": 0.026134166,
@@ -1672,10 +1516,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.2861729166666456,
-    "cpuRange": [
-      0.2819526041666242,
-      0.28784166666666683
-    ],
+    "cpuRange": [0.2819526041666242, 0.28784166666666683],
     "wallSeconds": 0.142063625,
     "processingSeconds": 0.116273333,
     "startupSeconds": 0.025766375,
@@ -1704,10 +1545,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.27347187500001796,
-    "cpuRange": [
-      0.2631348958333335,
-      0.30399114583331927
-    ],
+    "cpuRange": [0.2631348958333335, 0.30399114583331927],
     "wallSeconds": 0.142597459,
     "processingSeconds": 0.116933292,
     "startupSeconds": 0.025712,
@@ -1736,10 +1574,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.2739781249999999,
-    "cpuRange": [
-      0.2574281249999995,
-      0.2814010416666549
-    ],
+    "cpuRange": [0.2574281249999995, 0.2814010416666549],
     "wallSeconds": 0.143149625,
     "processingSeconds": 0.117218791,
     "startupSeconds": 0.025903333,
@@ -1768,10 +1603,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.4180078124999996,
-    "cpuRange": [
-      0.40113645833333433,
-      0.4507257812499832
-    ],
+    "cpuRange": [0.40113645833333433, 0.4507257812499832],
     "wallSeconds": 0.419126209,
     "processingSeconds": 0.368682125,
     "startupSeconds": 0.050301084,
@@ -1800,10 +1632,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.41771692708334474,
-    "cpuRange": [
-      0.39912630208333355,
-      0.43201015624999933
-    ],
+    "cpuRange": [0.39912630208333355, 0.43201015624999933],
     "wallSeconds": 0.411301166,
     "processingSeconds": 0.361762083,
     "startupSeconds": 0.050075833,
@@ -1832,10 +1661,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.1505289062499989,
-    "cpuRange": [
-      0.1501739583333335,
-      0.16719427083332075
-    ],
+    "cpuRange": [0.1501739583333335, 0.16719427083332075],
     "wallSeconds": 0.420115917,
     "processingSeconds": 0.369273209,
     "startupSeconds": 0.051754083,
@@ -1864,10 +1690,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.14536979166665334,
-    "cpuRange": [
-      0.14512786458334054,
-      0.14658723958333336
-    ],
+    "cpuRange": [0.14512786458334054, 0.14658723958333336],
     "wallSeconds": 0.406131958,
     "processingSeconds": 0.354641,
     "startupSeconds": 0.051440875,
@@ -1896,10 +1719,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.14598567708334156,
-    "cpuRange": [
-      0.14448359375000033,
-      0.14936848958334767
-    ],
+    "cpuRange": [0.14448359375000033, 0.14936848958334767],
     "wallSeconds": 0.405745708,
     "processingSeconds": 0.35252925,
     "startupSeconds": 0.053195792,
@@ -1928,10 +1748,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.22533072916664512,
-    "cpuRange": [
-      0.21941041666666666,
-      0.2278669270833265
-    ],
+    "cpuRange": [0.21941041666666666, 0.2278669270833265],
     "wallSeconds": 0.366727333,
     "processingSeconds": 0.31385725,
     "startupSeconds": 0.050947292,
@@ -1960,10 +1777,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.18776197916666656,
-    "cpuRange": [
-      0.185914583333352,
-      0.1912057291666593
-    ],
+    "cpuRange": [0.185914583333352, 0.1912057291666593],
     "wallSeconds": 0.308623208,
     "processingSeconds": 0.257860167,
     "startupSeconds": 0.05167975,
@@ -1992,10 +1806,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.17802161458333465,
-    "cpuRange": [
-      0.17713645833333305,
-      0.17833281249999647
-    ],
+    "cpuRange": [0.17713645833333305, 0.17833281249999647],
     "wallSeconds": 0.293996084,
     "processingSeconds": 0.241675417,
     "startupSeconds": 0.051538709,
@@ -2024,10 +1835,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.2843341145833419,
-    "cpuRange": [
-      0.27721380208333335,
-      0.29520104166667704
-    ],
+    "cpuRange": [0.27721380208333335, 0.29520104166667704],
     "wallSeconds": 0.287082459,
     "processingSeconds": 0.23447075,
     "startupSeconds": 0.052104125,
@@ -2056,10 +1864,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.2700195312500116,
-    "cpuRange": [
-      0.26379322916666725,
-      0.28688567708334
-    ],
+    "cpuRange": [0.26379322916666725, 0.28688567708334],
     "wallSeconds": 0.288245458,
     "processingSeconds": 0.236954417,
     "startupSeconds": 0.051451542,
@@ -2088,10 +1893,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.2611473958333337,
-    "cpuRange": [
-      0.24686406250000179,
-      0.2693643229166533
-    ],
+    "cpuRange": [0.24686406250000179, 0.2693643229166533],
     "wallSeconds": 0.273997583,
     "processingSeconds": 0.22195175,
     "startupSeconds": 0.051766709,
@@ -2120,10 +1922,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.45687499999999087,
-    "cpuRange": [
-      0.45062851562499057,
-      0.46901210937500004
-    ],
+    "cpuRange": [0.45062851562499057, 0.46901210937500004],
     "wallSeconds": 0.960239833,
     "processingSeconds": 0.861918833,
     "startupSeconds": 0.098973834,
@@ -2152,10 +1951,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.4467190104166668,
-    "cpuRange": [
-      0.44441249999999566,
-      0.4478097656249967
-    ],
+    "cpuRange": [0.44441249999999566, 0.4478097656249967],
     "wallSeconds": 0.948725625,
     "processingSeconds": 0.850509833,
     "startupSeconds": 0.097946042,
@@ -2184,10 +1980,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.15889544270833306,
-    "cpuRange": [
-      0.1579863281250002,
-      0.16572018229166485
-    ],
+    "cpuRange": [0.1579863281250002, 0.16572018229166485],
     "wallSeconds": 0.884858666,
     "processingSeconds": 0.784490084,
     "startupSeconds": 0.102434125,
@@ -2216,10 +2009,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.14563867187499988,
-    "cpuRange": [
-      0.1445467447916668,
-      0.1482552083333357
-    ],
+    "cpuRange": [0.1445467447916668, 0.1482552083333357],
     "wallSeconds": 0.821139083,
     "processingSeconds": 0.721077917,
     "startupSeconds": 0.101347375,
@@ -2248,10 +2038,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.14396536458332657,
-    "cpuRange": [
-      0.14350442708333302,
-      0.14835924479166632
-    ],
+    "cpuRange": [0.14350442708333302, 0.14835924479166632],
     "wallSeconds": 0.806332292,
     "processingSeconds": 0.707704334,
     "startupSeconds": 0.100908958,
@@ -2280,10 +2067,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.22364986979166168,
-    "cpuRange": [
-      0.2185820312500003,
-      0.23951822916666957
-    ],
+    "cpuRange": [0.2185820312500003, 0.23951822916666957],
     "wallSeconds": 0.721463625,
     "processingSeconds": 0.619451584,
     "startupSeconds": 0.102329417,
@@ -2312,10 +2096,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.17966028645832743,
-    "cpuRange": [
-      0.17963619791666735,
-      0.18509947916666067
-    ],
+    "cpuRange": [0.17963619791666735, 0.18509947916666067],
     "wallSeconds": 0.5966965,
     "processingSeconds": 0.494433917,
     "startupSeconds": 0.101150208,
@@ -2344,10 +2125,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.17898945312499967,
-    "cpuRange": [
-      0.17650794270833392,
-      0.18157330729167512
-    ],
+    "cpuRange": [0.17650794270833392, 0.18157330729167512],
     "wallSeconds": 0.591327292,
     "processingSeconds": 0.488716583,
     "startupSeconds": 0.102589,
@@ -2376,10 +2154,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.287829427083329,
-    "cpuRange": [
-      0.28274804687500005,
-      0.3141071614583287
-    ],
+    "cpuRange": [0.28274804687500005, 0.3141071614583287],
     "wallSeconds": 0.579405084,
     "processingSeconds": 0.478835708,
     "startupSeconds": 0.10049125,
@@ -2408,10 +2183,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.26235325520833386,
-    "cpuRange": [
-      0.2591369791666585,
-      0.26267174479167
-    ],
+    "cpuRange": [0.2591369791666585, 0.26267174479167],
     "wallSeconds": 0.554234542,
     "processingSeconds": 0.452977208,
     "startupSeconds": 0.101227417,
@@ -2440,10 +2212,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 0.2645808593750067,
-    "cpuRange": [
-      0.26351119791666877,
-      0.2703664062500002
-    ],
+    "cpuRange": [0.26351119791666877, 0.2703664062500002],
     "wallSeconds": 0.575003084,
     "processingSeconds": 0.471940833,
     "startupSeconds": 0.103033959,
@@ -2472,10 +2241,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.484485035229863,
-    "cpuRange": [
-      10.314480633807324,
-      10.508912852080151
-    ],
+    "cpuRange": [10.314480633807324, 10.508912852080151],
     "wallSeconds": 0.017313625,
     "processingSeconds": 0.016620875,
     "startupSeconds": 0.000694166,
@@ -2504,10 +2270,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.581866197149337,
-    "cpuRange": [
-      10.498349471830995,
-      10.585167253554088
-    ],
+    "cpuRange": [10.498349471830995, 10.585167253554088],
     "wallSeconds": 0.017141083,
     "processingSeconds": 0.016369292,
     "startupSeconds": 0.000760542,
@@ -2536,10 +2299,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.388754401373204,
-    "cpuRange": [
-      10.350462147885425,
-      10.532680457721968
-    ],
+    "cpuRange": [10.350462147885425, 10.532680457721968],
     "wallSeconds": 0.017191,
     "processingSeconds": 0.016436792,
     "startupSeconds": 0.000728292,
@@ -2568,10 +2328,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.291373239472493,
-    "cpuRange": [
-      10.29137323943555,
-      10.643265845099776
-    ],
+    "cpuRange": [10.29137323943555, 10.643265845099776],
     "wallSeconds": 0.017022583,
     "processingSeconds": 0.016356375,
     "startupSeconds": 0.000661833,
@@ -2600,10 +2357,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.307218309861474,
-    "cpuRange": [
-      10.264634683068278,
-      10.544894366177017
-    ],
+    "cpuRange": [10.264634683068278, 10.544894366177017],
     "wallSeconds": 0.017056167,
     "processingSeconds": 0.016326375,
     "startupSeconds": 0.000716542,
@@ -2632,10 +2386,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.821522887314885,
-    "cpuRange": [
-      10.733054577462715,
-      10.959176936585628
-    ],
+    "cpuRange": [10.733054577462715, 10.959176936585628],
     "wallSeconds": 0.017711958,
     "processingSeconds": 0.017040333,
     "startupSeconds": 0.000705875,
@@ -2664,10 +2415,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.347491197182837,
-    "cpuRange": [
-      10.331316021139191,
-      10.602662852070972
-    ],
+    "cpuRange": [10.331316021139191, 10.602662852070972],
     "wallSeconds": 0.017263,
     "processingSeconds": 0.016569875,
     "startupSeconds": 0.000677291,
@@ -2696,10 +2444,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.389084507037838,
-    "cpuRange": [
-      10.309529049293433,
-      10.516835387344129
-    ],
+    "cpuRange": [10.309529049293433, 10.516835387344129],
     "wallSeconds": 0.017130583,
     "processingSeconds": 0.016383416,
     "startupSeconds": 0.000712458,
@@ -2728,10 +2473,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.624449823939015,
-    "cpuRange": [
-      10.553147007045817,
-      11.172755281698512
-    ],
+    "cpuRange": [10.553147007045817, 11.172755281698512],
     "wallSeconds": 0.017698833,
     "processingSeconds": 0.017023167,
     "startupSeconds": 0.000703291,
@@ -2760,10 +2502,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.412852112664408,
-    "cpuRange": [
-      10.392385563372223,
-      10.540933098555584
-    ],
+    "cpuRange": [10.392385563372223, 10.540933098555584],
     "wallSeconds": 0.017148041,
     "processingSeconds": 0.016452791,
     "startupSeconds": 0.000700458,
@@ -2792,10 +2531,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.364326584512359,
-    "cpuRange": [
-      10.225352112677488,
-      10.516835387276107
-    ],
+    "cpuRange": [10.225352112677488, 10.516835387276107],
     "wallSeconds": 0.017108125,
     "processingSeconds": 0.016381334,
     "startupSeconds": 0.000677708,
@@ -2824,10 +2560,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 7.522942341546663,
-    "cpuRange": [
-      7.495708626761307,
-      7.601920114440995
-    ],
+    "cpuRange": [7.495708626761307, 7.601920114440995],
     "wallSeconds": 0.026925417,
     "processingSeconds": 0.024019459,
     "startupSeconds": 0.002894083,
@@ -2856,10 +2589,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 7.581866197182178,
-    "cpuRange": [
-      7.4979368397903015,
-      7.651435959508371
-    ],
+    "cpuRange": [7.4979368397903015, 7.651435959508371],
     "wallSeconds": 0.027719542,
     "processingSeconds": 0.024641791,
     "startupSeconds": 0.003024625,
@@ -2888,10 +2618,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.544330435739761,
-    "cpuRange": [
-      5.538429797536726,
-      5.634325484158561
-    ],
+    "cpuRange": [5.538429797536726, 5.634325484158561],
     "wallSeconds": 0.116907791,
     "processingSeconds": 0.114064083,
     "startupSeconds": 0.002908833,
@@ -2920,10 +2647,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.672163842428493,
-    "cpuRange": [
-      5.672040052816788,
-      5.815264634679073
-    ],
+    "cpuRange": [5.672040052816788, 5.815264634679073],
     "wallSeconds": 0.120316167,
     "processingSeconds": 0.117464834,
     "startupSeconds": 0.002946875,
@@ -2952,10 +2676,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.928036971831912,
-    "cpuRange": [
-      5.91578180017494,
-      6.088633362678174
-    ],
+    "cpuRange": [5.91578180017494, 6.088633362678174],
     "wallSeconds": 0.126419084,
     "processingSeconds": 0.123451042,
     "startupSeconds": 0.0029615,
@@ -2984,10 +2705,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.960139744716907,
-    "cpuRange": [
-      5.9223426496474305,
-      6.074356294010029
-    ],
+    "cpuRange": [5.9223426496474305, 6.074356294010029],
     "wallSeconds": 0.065102125,
     "processingSeconds": 0.062142417,
     "startupSeconds": 0.002950167,
@@ -3016,10 +2734,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 6.000165052816549,
-    "cpuRange": [
-      5.855042363559779,
-      6.1355083626844324
-    ],
+    "cpuRange": [5.855042363559779, 6.1355083626844324],
     "wallSeconds": 0.065618834,
     "processingSeconds": 0.062741125,
     "startupSeconds": 0.003011958,
@@ -3048,10 +2763,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 6.218736245598701,
-    "cpuRange": [
-      6.050506161973897,
-      6.264084507040016
-    ],
+    "cpuRange": [6.050506161973897, 6.264084507040016],
     "wallSeconds": 0.068542625,
     "processingSeconds": 0.065561333,
     "startupSeconds": 0.002997625,
@@ -3080,10 +2792,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 6.0592952244713505,
-    "cpuRange": [
-      6.021952024653878,
-      6.112731073944384
-    ],
+    "cpuRange": [6.021952024653878, 6.112731073944384],
     "wallSeconds": 0.034143208,
     "processingSeconds": 0.031246167,
     "startupSeconds": 0.002892666,
@@ -3112,10 +2821,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 6.094987896128667,
-    "cpuRange": [
-      6.076955875879045,
-      6.149744168133358
-    ],
+    "cpuRange": [6.076955875879045, 6.149744168133358],
     "wallSeconds": 0.034733417,
     "processingSeconds": 0.031733875,
     "startupSeconds": 0.002930583,
@@ -3144,10 +2850,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 6.160307548413739,
-    "cpuRange": [
-      6.155603543132638,
-      6.167363556337957
-    ],
+    "cpuRange": [6.155603543132638, 6.167363556337957],
     "wallSeconds": 0.035534708,
     "processingSeconds": 0.032589834,
     "startupSeconds": 0.002963292,
@@ -3176,10 +2879,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 7.4164110640398,
-    "cpuRange": [
-      7.3167707416371535,
-      7.424405809859242
-    ],
+    "cpuRange": [7.3167707416371535, 7.424405809859242],
     "wallSeconds": 0.082972792,
     "processingSeconds": 0.072904541,
     "startupSeconds": 0.010014125,
@@ -3208,10 +2908,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 7.338299818442935,
-    "cpuRange": [
-      7.316585057217545,
-      7.342972876320432
-    ],
+    "cpuRange": [7.316585057217545, 7.342972876320432],
     "wallSeconds": 0.082079083,
     "processingSeconds": 0.072024958,
     "startupSeconds": 0.010000583,
@@ -3240,10 +2937,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.9599609374994165,
-    "cpuRange": [
-      4.952595455545738,
-      5.0853391835378075
-    ],
+    "cpuRange": [4.952595455545738, 5.0853391835378075],
     "wallSeconds": 0.451747875,
     "processingSeconds": 0.441767541,
     "startupSeconds": 0.01013425,
@@ -3272,10 +2966,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.157972738776593,
-    "cpuRange": [
-      5.105589101013048,
-      5.3369106238992075
-    ],
+    "cpuRange": [5.105589101013048, 5.3369106238992075],
     "wallSeconds": 0.470924917,
     "processingSeconds": 0.460693667,
     "startupSeconds": 0.010220709,
@@ -3304,10 +2995,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.4070064920789696,
-    "cpuRange": [
-      5.356820119938946,
-      5.445721693441773
-    ],
+    "cpuRange": [5.356820119938946, 5.445721693441773],
     "wallSeconds": 0.49490875,
     "processingSeconds": 0.484478166,
     "startupSeconds": 0.010160708,
@@ -3336,10 +3024,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.204610475352156,
-    "cpuRange": [
-      5.192778251539806,
-      5.252217897227717
-    ],
+    "cpuRange": [5.192778251539806, 5.252217897227717],
     "wallSeconds": 0.243398708,
     "processingSeconds": 0.233013791,
     "startupSeconds": 0.010435917,
@@ -3368,10 +3053,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.340696522888687,
-    "cpuRange": [
-      5.3125653334065115,
-      5.356665382922612
-    ],
+    "cpuRange": [5.3125653334065115, 5.356665382922612],
     "wallSeconds": 0.249995417,
     "processingSeconds": 0.239759625,
     "startupSeconds": 0.010224,
@@ -3400,10 +3082,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.564539090009047,
-    "cpuRange": [
-      5.549312967648679,
-      5.5790121588901345
-    ],
+    "cpuRange": [5.549312967648679, 5.5790121588901345],
     "wallSeconds": 0.261013625,
     "processingSeconds": 0.250767792,
     "startupSeconds": 0.010386458,
@@ -3432,10 +3111,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.32403650418159,
-    "cpuRange": [
-      5.241303779709447,
-      5.340335469850281
-    ],
+    "cpuRange": [5.241303779709447, 5.340335469850281],
     "wallSeconds": 0.128139625,
     "processingSeconds": 0.117903333,
     "startupSeconds": 0.010226667,
@@ -3464,10 +3140,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.320487868617989,
-    "cpuRange": [
-      5.279492875219026,
-      5.422583351671618
-    ],
+    "cpuRange": [5.279492875219026, 5.422583351671618],
     "wallSeconds": 0.12995875,
     "processingSeconds": 0.119680875,
     "startupSeconds": 0.010228291,
@@ -3496,10 +3169,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.501664282570316,
-    "cpuRange": [
-      5.477071412852564,
-      5.644734127421692
-    ],
+    "cpuRange": [5.477071412852564, 5.644734127421692],
     "wallSeconds": 0.133906417,
     "processingSeconds": 0.123541083,
     "startupSeconds": 0.01034975,
@@ -3528,10 +3198,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 7.300059143926079,
-    "cpuRange": [
-      7.2737022722268865,
-      7.4808641890406005
-    ],
+    "cpuRange": [7.2737022722268865, 7.4808641890406005],
     "wallSeconds": 0.16457575,
     "processingSeconds": 0.145684584,
     "startupSeconds": 0.019200167,
@@ -3560,10 +3227,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 7.280845964458534,
-    "cpuRange": [
-      7.266568895796755,
-      7.337087711817918
-    ],
+    "cpuRange": [7.266568895796755, 7.337087711817918],
     "wallSeconds": 0.16552375,
     "processingSeconds": 0.146229875,
     "startupSeconds": 0.019207208,
@@ -3592,10 +3256,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.901465187609553,
-    "cpuRange": [
-      4.858236823283794,
-      4.908784248459531
-    ],
+    "cpuRange": [4.858236823283794, 4.908784248459531],
     "wallSeconds": 0.902161292,
     "processingSeconds": 0.88148,
     "startupSeconds": 0.020066583,
@@ -3624,10 +3285,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.037607972050652,
-    "cpuRange": [
-      5.0204837422976505,
-      5.0462371396347745
-    ],
+    "cpuRange": [5.0204837422976505, 5.0462371396347745],
     "wallSeconds": 0.927944583,
     "processingSeconds": 0.907854,
     "startupSeconds": 0.019948875,
@@ -3656,10 +3314,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.2836656167472595,
-    "cpuRange": [
-      5.2669746506382555,
-      5.327915245379279
-    ],
+    "cpuRange": [5.2669746506382555, 5.327915245379279],
     "wallSeconds": 0.976232333,
     "processingSeconds": 0.955959375,
     "startupSeconds": 0.020258541,
@@ -3688,10 +3343,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.151623363226652,
-    "cpuRange": [
-      5.07834507042252,
-      5.1520153636662425
-    ],
+    "cpuRange": [5.07834507042252, 5.1520153636662425],
     "wallSeconds": 0.486208334,
     "processingSeconds": 0.466235667,
     "startupSeconds": 0.019836583,
@@ -3720,10 +3372,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.233334823393608,
-    "cpuRange": [
-      5.232375453894676,
-      5.23779640735037
-    ],
+    "cpuRange": [5.232375453894676, 5.23779640735037],
     "wallSeconds": 0.494754708,
     "processingSeconds": 0.47486525,
     "startupSeconds": 0.01993725,
@@ -3752,10 +3401,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.4706807740979695,
-    "cpuRange": [
-      5.438944212147902,
-      5.486587739326061
-    ],
+    "cpuRange": [5.438944212147902, 5.486587739326061],
     "wallSeconds": 0.51810975,
     "processingSeconds": 0.49840175,
     "startupSeconds": 0.020057667,
@@ -3784,10 +3430,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.095154668243768,
-    "cpuRange": [
-      5.07025748239465,
-      5.200870997469163
-    ],
+    "cpuRange": [5.07025748239465, 5.200870997469163],
     "wallSeconds": 0.250754292,
     "processingSeconds": 0.230561125,
     "startupSeconds": 0.01987425,
@@ -3816,10 +3459,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.246667996258887,
-    "cpuRange": [
-      5.169748225682166,
-      5.611790616746828
-    ],
+    "cpuRange": [5.169748225682166, 5.611790616746828],
     "wallSeconds": 0.255964042,
     "processingSeconds": 0.236084833,
     "startupSeconds": 0.020127792,
@@ -3848,10 +3488,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.434627049405821,
-    "cpuRange": [
-      5.359316543794141,
-      5.487923635563351
-    ],
+    "cpuRange": [5.359316543794141, 5.487923635563351],
     "wallSeconds": 0.265562417,
     "processingSeconds": 0.245833375,
     "startupSeconds": 0.020019833,
@@ -3880,10 +3517,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 7.250832141285087,
-    "cpuRange": [
-      7.2061131437055845,
-      7.366673429247365
-    ],
+    "cpuRange": [7.2061131437055845, 7.366673429247365],
     "wallSeconds": 0.326095417,
     "processingSeconds": 0.28779775,
     "startupSeconds": 0.038141917,
@@ -3912,10 +3546,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 7.298421510508387,
-    "cpuRange": [
-      7.175423635563829,
-      7.316022846060863
-    ],
+    "cpuRange": [7.175423635563829, 7.316022846060863],
     "wallSeconds": 0.330314833,
     "processingSeconds": 0.291755708,
     "startupSeconds": 0.037723042,
@@ -3944,10 +3575,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.997997874944944,
-    "cpuRange": [
-      4.9898432342098875,
-      5.238105881381938
-    ],
+    "cpuRange": [4.9898432342098875, 5.238105881381938],
     "wallSeconds": 1.842549209,
     "processingSeconds": 1.803504208,
     "startupSeconds": 0.039629917,
@@ -3976,10 +3604,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.030136753135968,
-    "cpuRange": [
-      5.00774372799296,
-      5.0381547095072365
-    ],
+    "cpuRange": [5.00774372799296, 5.0381547095072365],
     "wallSeconds": 1.851612,
     "processingSeconds": 1.812024208,
     "startupSeconds": 0.039249,
@@ -4008,10 +3633,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.228927397392219,
-    "cpuRange": [
-      5.218513596225847,
-      5.258575009628119
-    ],
+    "cpuRange": [5.218513596225847, 5.258575009628119],
     "wallSeconds": 1.929763458,
     "processingSeconds": 1.890034958,
     "startupSeconds": 0.039547916,
@@ -4040,10 +3662,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.100410568882116,
-    "cpuRange": [
-      5.068312953895222,
-      5.240463041923389
-    ],
+    "cpuRange": [5.068312953895222, 5.240463041923389],
     "wallSeconds": 0.963275708,
     "processingSeconds": 0.92404675,
     "startupSeconds": 0.03916225,
@@ -4072,10 +3691,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.201967051331362,
-    "cpuRange": [
-      5.188752510178234,
-      5.219266649702923
-    ],
+    "cpuRange": [5.188752510178234, 5.219266649702923],
     "wallSeconds": 0.983764166,
     "processingSeconds": 0.944708584,
     "startupSeconds": 0.039341625,
@@ -4104,10 +3720,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.370942451584535,
-    "cpuRange": [
-      5.367656868948289,
-      5.415674343914666
-    ],
+    "cpuRange": [5.367656868948289, 5.415674343914666],
     "wallSeconds": 1.016680292,
     "processingSeconds": 0.977184708,
     "startupSeconds": 0.039517625,
@@ -4136,10 +3749,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.220148650693111,
-    "cpuRange": [
-      5.099041146291789,
-      5.382993886168567
-    ],
+    "cpuRange": [5.099041146291789, 5.382993886168567],
     "wallSeconds": 0.506828708,
     "processingSeconds": 0.467774792,
     "startupSeconds": 0.039035417,
@@ -4168,10 +3778,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.121276855469153,
-    "cpuRange": [
-      5.113736004896484,
-      5.224225971060734
-    ],
+    "cpuRange": [5.113736004896484, 5.224225971060734],
     "wallSeconds": 0.505153,
     "processingSeconds": 0.465855375,
     "startupSeconds": 0.039107666,
@@ -4200,10 +3807,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.351700903664285,
-    "cpuRange": [
-      5.310981857944587,
-      5.446459273217244
-    ],
+    "cpuRange": [5.310981857944587, 5.446459273217244],
     "wallSeconds": 0.527679666,
     "processingSeconds": 0.488436125,
     "startupSeconds": 0.039219125,
@@ -4232,10 +3836,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 7.270797084754748,
-    "cpuRange": [
-      7.261986101177705,
-      7.333181891642825
-    ],
+    "cpuRange": [7.261986101177705, 7.333181891642825],
     "wallSeconds": 0.647525042,
     "processingSeconds": 0.569478208,
     "startupSeconds": 0.074486667,
@@ -4264,10 +3865,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 7.28482270576595,
-    "cpuRange": [
-      7.177271453427311,
-      7.312296262929084
-    ],
+    "cpuRange": [7.177271453427311, 7.312296262929084],
     "wallSeconds": 0.649569375,
     "processingSeconds": 0.575575666,
     "startupSeconds": 0.074786625,
@@ -4296,10 +3894,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.030707990619496,
-    "cpuRange": [
-      5.006814016422784,
-      5.095366142165503
-    ],
+    "cpuRange": [5.006814016422784, 5.095366142165503],
     "wallSeconds": 3.658216458,
     "processingSeconds": 3.581390791,
     "startupSeconds": 0.077942709,
@@ -4328,10 +3923,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.071251667721113,
-    "cpuRange": [
-      5.059340785926598,
-      5.079829256299455
-    ],
+    "cpuRange": [5.059340785926598, 5.079829256299455],
     "wallSeconds": 3.687637959,
     "processingSeconds": 3.609252333,
     "startupSeconds": 0.077983042,
@@ -4360,10 +3952,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.2398466728103035,
-    "cpuRange": [
-      5.239074277206186,
-      5.337359361245455
-    ],
+    "cpuRange": [5.239074277206186, 5.337359361245455],
     "wallSeconds": 3.826629125,
     "processingSeconds": 3.750344292,
     "startupSeconds": 0.077975917,
@@ -4392,10 +3981,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.175718495543676,
-    "cpuRange": [
-      5.147929016972941,
-      5.194604148327638
-    ],
+    "cpuRange": [5.147929016972941, 5.194604148327638],
     "wallSeconds": 1.933432125,
     "processingSeconds": 1.856898833,
     "startupSeconds": 0.077072125,
@@ -4424,10 +4010,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.207345452107023,
-    "cpuRange": [
-      5.185016900720734,
-      5.258055351149724
-    ],
+    "cpuRange": [5.185016900720734, 5.258055351149724],
     "wallSeconds": 1.946312708,
     "processingSeconds": 1.869658083,
     "startupSeconds": 0.077387041,
@@ -4456,10 +4039,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.398943404076735,
-    "cpuRange": [
-      5.377602590641495,
-      5.407782756106967
-    ],
+    "cpuRange": [5.377602590641495, 5.407782756106967],
     "wallSeconds": 2.022568542,
     "processingSeconds": 1.9444808340000002,
     "startupSeconds": 0.077692667,
@@ -4488,10 +4068,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.213533643265882,
-    "cpuRange": [
-      5.178276814205712,
-      5.350711876237826
-    ],
+    "cpuRange": [5.178276814205712, 5.350711876237826],
     "wallSeconds": 1.015430958,
     "processingSeconds": 0.937388958,
     "startupSeconds": 0.077860666,
@@ -4520,10 +4097,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.19044043312614,
-    "cpuRange": [
-      5.099866410376301,
-      5.307643406827697
-    ],
+    "cpuRange": [5.099866410376301, 5.307643406827697],
     "wallSeconds": 1.01976425,
     "processingSeconds": 0.941843917,
     "startupSeconds": 0.07756225,
@@ -4552,10 +4126,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.434184759435456,
-    "cpuRange": [
-      5.30597998390748,
-      5.535623899647907
-    ],
+    "cpuRange": [5.30597998390748, 5.535623899647907],
     "wallSeconds": 1.062043666,
     "processingSeconds": 0.984591625,
     "startupSeconds": 0.077807,
@@ -4584,10 +4155,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 7.261171797631536,
-    "cpuRange": [
-      7.2595141773492236,
-      7.329212242448842
-    ],
+    "cpuRange": [7.2595141773492236, 7.329212242448842],
     "wallSeconds": 1.327581,
     "processingSeconds": 1.178244584,
     "startupSeconds": 0.148951083,
@@ -4616,10 +4184,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 7.253627078633917,
-    "cpuRange": [
-      7.244796108192101,
-      7.30972118109045
-    ],
+    "cpuRange": [7.244796108192101, 7.30972118109045],
     "wallSeconds": 1.304480209,
     "processingSeconds": 1.15670725,
     "startupSeconds": 0.147599834,
@@ -4648,10 +4213,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.293982707278776,
-    "cpuRange": [
-      5.214515578578875,
-      5.400733840297644
-    ],
+    "cpuRange": [5.214515578578875, 5.400733840297644],
     "wallSeconds": 7.462146708,
     "processingSeconds": 7.307092084,
     "startupSeconds": 0.154171916,
@@ -4680,10 +4242,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.2968356710084725,
-    "cpuRange": [
-      5.180909922425199,
-      5.320201605138684
-    ],
+    "cpuRange": [5.180909922425199, 5.320201605138684],
     "wallSeconds": 7.466022959,
     "processingSeconds": 7.311190792,
     "startupSeconds": 0.15478125,
@@ -4712,10 +4271,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.452069134779557,
-    "cpuRange": [
-      5.34459009304854,
-      5.750640654228132
-    ],
+    "cpuRange": [5.34459009304854, 5.750640654228132],
     "wallSeconds": 7.724584625,
     "processingSeconds": 7.572591875,
     "startupSeconds": 0.153898291,
@@ -4744,10 +4300,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.34678026656021,
-    "cpuRange": [
-      5.270718641684089,
-      5.682365524936696
-    ],
+    "cpuRange": [5.270718641684089, 5.682365524936696],
     "wallSeconds": 3.8894487079999998,
     "processingSeconds": 3.73274075,
     "startupSeconds": 0.156679083,
@@ -4776,10 +4329,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.321510422397682,
-    "cpuRange": [
-      5.302737598687848,
-      5.353863353460623
-    ],
+    "cpuRange": [5.302737598687848, 5.353863353460623],
     "wallSeconds": 3.884678667,
     "processingSeconds": 3.728152541,
     "startupSeconds": 0.156495542,
@@ -4808,10 +4358,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.580063081123348,
-    "cpuRange": [
-      5.457815035967763,
-      5.79297734650085
-    ],
+    "cpuRange": [5.457815035967763, 5.79297734650085],
     "wallSeconds": 4.102368958,
     "processingSeconds": 3.947072417,
     "startupSeconds": 0.1552675,
@@ -4840,10 +4387,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.394403162136858,
-    "cpuRange": [
-      5.2840563277123405,
-      5.747044952822429
-    ],
+    "cpuRange": [5.2840563277123405, 5.747044952822429],
     "wallSeconds": 2.056602917,
     "processingSeconds": 1.902918917,
     "startupSeconds": 0.153651584,
@@ -4872,10 +4416,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.367663316323746,
-    "cpuRange": [
-      5.130818971445873,
-      5.446557918065049
-    ],
+    "cpuRange": [5.130818971445873, 5.446557918065049],
     "wallSeconds": 2.029079625,
     "processingSeconds": 1.8754507089999999,
     "startupSeconds": 0.153592917,
@@ -4904,10 +4445,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.607428967113234,
-    "cpuRange": [
-      5.427785094355154,
-      5.610046601631294
-    ],
+    "cpuRange": [5.427785094355154, 5.610046601631294],
     "wallSeconds": 2.097984792,
     "processingSeconds": 1.944536541,
     "startupSeconds": 0.153865375,
@@ -4936,10 +4474,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.4696666666666516,
-    "cpuRange": [
-      1.4520729166666666,
-      1.4859270833333198
-    ],
+    "cpuRange": [1.4520729166666666, 1.4859270833333198],
     "wallSeconds": 0.059105042,
     "processingSeconds": 0.053268667,
     "startupSeconds": 0.005763709,
@@ -4968,10 +4503,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.4789062500000136,
-    "cpuRange": [
-      1.4594479166666663,
-      1.5177083333333858
-    ],
+    "cpuRange": [1.4594479166666663, 1.5177083333333858],
     "wallSeconds": 0.059339417,
     "processingSeconds": 0.053462583,
     "startupSeconds": 0.005823625,
@@ -5000,10 +4532,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.2291979166666838,
-    "cpuRange": [
-      1.1854270833333331,
-      1.5588333333333981
-    ],
+    "cpuRange": [1.1854270833333331, 1.5588333333333981],
     "wallSeconds": 0.056241834,
     "processingSeconds": 0.049478208,
     "startupSeconds": 0.006749792,
@@ -5032,10 +4561,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.2390624999999664,
-    "cpuRange": [
-      1.179625,
-      1.521604166666653
-    ],
+    "cpuRange": [1.179625, 1.521604166666653],
     "wallSeconds": 0.055265208,
     "processingSeconds": 0.049141834,
     "startupSeconds": 0.006107791,
@@ -5064,10 +4590,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.2565312500000074,
-    "cpuRange": [
-      1.1837708333333337,
-      1.267593750000055
-    ],
+    "cpuRange": [1.1837708333333337, 1.267593750000055],
     "wallSeconds": 0.056471125,
     "processingSeconds": 0.050029416,
     "startupSeconds": 0.006345083,
@@ -5096,10 +4619,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.4581458333333315,
-    "cpuRange": [
-      1.4293958333333328,
-      1.5316874999999435
-    ],
+    "cpuRange": [1.4293958333333328, 1.5316874999999435],
     "wallSeconds": 0.059255166,
     "processingSeconds": 0.053270292,
     "startupSeconds": 0.006191916,
@@ -5128,10 +4648,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.4214895833333658,
-    "cpuRange": [
-      1.403135416666666,
-      1.4261875000000277
-    ],
+    "cpuRange": [1.403135416666666, 1.4261875000000277],
     "wallSeconds": 0.058489042,
     "processingSeconds": 0.052488542,
     "startupSeconds": 0.006044333,
@@ -5160,10 +4677,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.4177916666666588,
-    "cpuRange": [
-      1.4019479166666662,
-      1.4742499999999872
-    ],
+    "cpuRange": [1.4019479166666662, 1.4742499999999872],
     "wallSeconds": 0.058526292,
     "processingSeconds": 0.052417333,
     "startupSeconds": 0.006093542,
@@ -5192,10 +4706,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.6549270833333407,
-    "cpuRange": [
-      1.6367083333333332,
-      1.8306145833333343
-    ],
+    "cpuRange": [1.6367083333333332, 1.8306145833333343],
     "wallSeconds": 0.0573185,
     "processingSeconds": 0.051379083,
     "startupSeconds": 0.005953917,
@@ -5224,10 +4735,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.4462083333333098,
-    "cpuRange": [
-      1.4349583333333322,
-      1.586697916666685
-    ],
+    "cpuRange": [1.4349583333333322, 1.586697916666685],
     "wallSeconds": 0.060367583,
     "processingSeconds": 0.054104708,
     "startupSeconds": 0.006203208,
@@ -5256,10 +4764,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.4318437499999854,
-    "cpuRange": [
-      1.4313437500000017,
-      1.4368854166666536
-    ],
+    "cpuRange": [1.4313437500000017, 1.4368854166666536],
     "wallSeconds": 0.059726042,
     "processingSeconds": 0.053564708,
     "startupSeconds": 0.006114459,
@@ -5288,10 +4793,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.3514791666666552,
-    "cpuRange": [
-      1.3341302083333335,
-      1.413328125000002
-    ],
+    "cpuRange": [1.3341302083333335, 1.413328125000002],
     "wallSeconds": 0.234837625,
     "processingSeconds": 0.213711333,
     "startupSeconds": 0.021348291,
@@ -5320,10 +4822,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.3489375000000126,
-    "cpuRange": [
-      1.3409843749999997,
-      1.3811588541666662
-    ],
+    "cpuRange": [1.3409843749999997, 1.3811588541666662],
     "wallSeconds": 0.23535925,
     "processingSeconds": 0.214135083,
     "startupSeconds": 0.020836708,
@@ -5352,10 +4851,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.0738385416666612,
-    "cpuRange": [
-      1.0676302083333336,
-      1.1077786458333339
-    ],
+    "cpuRange": [1.0676302083333336, 1.1077786458333339],
     "wallSeconds": 0.212765958,
     "processingSeconds": 0.189871542,
     "startupSeconds": 0.022876208,
@@ -5384,10 +4880,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.0696640624999894,
-    "cpuRange": [
-      1.0674973958333331,
-      1.112885416666664
-    ],
+    "cpuRange": [1.0674973958333331, 1.112885416666664],
     "wallSeconds": 0.209654792,
     "processingSeconds": 0.187374958,
     "startupSeconds": 0.0224185,
@@ -5416,10 +4909,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.0795390625000119,
-    "cpuRange": [
-      1.0731744791666664,
-      1.1112812499999893
-    ],
+    "cpuRange": [1.0731744791666664, 1.1112812499999893],
     "wallSeconds": 0.211268708,
     "processingSeconds": 0.188725083,
     "startupSeconds": 0.02252275,
@@ -5448,10 +4938,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.3359244791666554,
-    "cpuRange": [
-      1.3337682291666673,
-      1.339598958333343
-    ],
+    "cpuRange": [1.3337682291666673, 1.339598958333343],
     "wallSeconds": 0.237991875,
     "processingSeconds": 0.215607125,
     "startupSeconds": 0.022855541,
@@ -5480,10 +4967,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.2968880208333473,
-    "cpuRange": [
-      1.2952708333333345,
-      1.3183750000000058
-    ],
+    "cpuRange": [1.2952708333333345, 1.3183750000000058],
     "wallSeconds": 0.23409025,
     "processingSeconds": 0.21154425,
     "startupSeconds": 0.02266875,
@@ -5512,10 +4996,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.2972005208333262,
-    "cpuRange": [
-      1.2905755208333325,
-      1.3222526041666698
-    ],
+    "cpuRange": [1.2905755208333325, 1.3222526041666698],
     "wallSeconds": 0.233587166,
     "processingSeconds": 0.210900875,
     "startupSeconds": 0.022971417,
@@ -5544,10 +5025,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.542695312500004,
-    "cpuRange": [
-      1.5308281250000026,
-      1.606817708333334
-    ],
+    "cpuRange": [1.5308281250000026, 1.606817708333334],
     "wallSeconds": 0.229434708,
     "processingSeconds": 0.206603,
     "startupSeconds": 0.022810708,
@@ -5576,10 +5054,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.3249895833333247,
-    "cpuRange": [
-      1.3245703124999986,
-      1.3669635416666652
-    ],
+    "cpuRange": [1.3245703124999986, 1.3669635416666652],
     "wallSeconds": 0.238150959,
     "processingSeconds": 0.214632916,
     "startupSeconds": 0.022622042,
@@ -5608,10 +5083,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.334526041666667,
-    "cpuRange": [
-      1.3228333333333333,
-      1.3621822916666735
-    ],
+    "cpuRange": [1.3228333333333333, 1.3621822916666735],
     "wallSeconds": 0.238740042,
     "processingSeconds": 0.216046125,
     "startupSeconds": 0.022631375,
@@ -5640,10 +5112,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.378294921874998,
-    "cpuRange": [
-      1.3394075520833353,
-      1.3945416666666668
-    ],
+    "cpuRange": [1.3394075520833353, 1.3945416666666668],
     "wallSeconds": 0.93823375,
     "processingSeconds": 0.8546685,
     "startupSeconds": 0.083268334,
@@ -5672,10 +5141,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.4101946614583298,
-    "cpuRange": [
-      1.4013750000000005,
-      1.4152167968749911
-    ],
+    "cpuRange": [1.4013750000000005, 1.4152167968749911],
     "wallSeconds": 0.954626542,
     "processingSeconds": 0.869895042,
     "startupSeconds": 0.08449575,
@@ -5704,10 +5170,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.0793756510416668,
-    "cpuRange": [
-      1.0652278645833329,
-      1.0835332031249965
-    ],
+    "cpuRange": [1.0652278645833329, 1.0835332031249965],
     "wallSeconds": 0.901720834,
     "processingSeconds": 0.813842041,
     "startupSeconds": 0.0878465,
@@ -5736,10 +5199,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.069347005208335,
-    "cpuRange": [
-      1.0613678385416685,
-      1.0720273437499992
-    ],
+    "cpuRange": [1.0613678385416685, 1.0720273437499992],
     "wallSeconds": 0.856870541,
     "processingSeconds": 0.769217292,
     "startupSeconds": 0.088584375,
@@ -5768,10 +5228,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.060997395833326,
-    "cpuRange": [
-      1.0536634114583345,
-      1.0698359375
-    ],
+    "cpuRange": [1.0536634114583345, 1.0698359375],
     "wallSeconds": 0.852430334,
     "processingSeconds": 0.763330667,
     "startupSeconds": 0.089971791,
@@ -5800,10 +5257,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.296428385416665,
-    "cpuRange": [
-      1.2822760416666654,
-      1.3013463541666648
-    ],
+    "cpuRange": [1.2822760416666654, 1.3013463541666648],
     "wallSeconds": 0.933926583,
     "processingSeconds": 0.844400084,
     "startupSeconds": 0.088494834,
@@ -5832,10 +5286,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.2527617187500049,
-    "cpuRange": [
-      1.2513079427083345,
-      1.272782552083338
-    ],
+    "cpuRange": [1.2513079427083345, 1.272782552083338],
     "wallSeconds": 0.907926375,
     "processingSeconds": 0.819553792,
     "startupSeconds": 0.088394,
@@ -5864,10 +5315,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.2615950520833332,
-    "cpuRange": [
-      1.2541354166666692,
-      1.2651289062499964
-    ],
+    "cpuRange": [1.2541354166666692, 1.2651289062499964],
     "wallSeconds": 0.915579667,
     "processingSeconds": 0.824020292,
     "startupSeconds": 0.09076975,
@@ -5896,10 +5344,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.528089192708335,
-    "cpuRange": [
-      1.5266425781249904,
-      1.5556302083333362
-    ],
+    "cpuRange": [1.5266425781249904, 1.5556302083333362],
     "wallSeconds": 0.908690125,
     "processingSeconds": 0.819814417,
     "startupSeconds": 0.088838542,
@@ -5928,10 +5373,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.303372395833332,
-    "cpuRange": [
-      1.2897285156250013,
-      1.3295000000000041
-    ],
+    "cpuRange": [1.2897285156250013, 1.3295000000000041],
     "wallSeconds": 0.940102125,
     "processingSeconds": 0.85002325,
     "startupSeconds": 0.090042791,
@@ -5960,10 +5402,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 1.3059277343750089,
-    "cpuRange": [
-      1.2948391927083331,
-      1.3063665364583323
-    ],
+    "cpuRange": [1.2948391927083331, 1.3063665364583323],
     "wallSeconds": 0.92618225,
     "processingSeconds": 0.837922667,
     "startupSeconds": 0.088360333,
@@ -5992,10 +5431,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.058666666666957,
-    "cpuRange": [
-      10.034999999998462,
-      10.14033333336073
-    ],
+    "cpuRange": [10.034999999998462, 10.14033333336073],
     "wallSeconds": 0.016207417,
     "processingSeconds": 0.015715792,
     "startupSeconds": 0.000484875,
@@ -6024,10 +5460,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.078666666674488,
-    "cpuRange": [
-      10.076999999998412,
-      10.14633333332545
-    ],
+    "cpuRange": [10.076999999998412, 10.14633333332545],
     "wallSeconds": 0.015949708,
     "processingSeconds": 0.015379833,
     "startupSeconds": 0.000521417,
@@ -6056,10 +5489,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.069333333330968,
-    "cpuRange": [
-      9.926999999990471,
-      10.272000000017082
-    ],
+    "cpuRange": [9.926999999990471, 10.272000000017082],
     "wallSeconds": 0.016134417,
     "processingSeconds": 0.015535542,
     "startupSeconds": 0.000490125,
@@ -6088,10 +5518,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.176333333326681,
-    "cpuRange": [
-      9.89700000000108,
-      10.192333333341944
-    ],
+    "cpuRange": [9.89700000000108, 10.192333333341944],
     "wallSeconds": 0.015979083,
     "processingSeconds": 0.015457125,
     "startupSeconds": 0.000479375,
@@ -6120,10 +5547,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.104000000000704,
-    "cpuRange": [
-      10.06133333332689,
-      10.108333333333164
-    ],
+    "cpuRange": [10.06133333332689, 10.108333333333164],
     "wallSeconds": 0.016063708,
     "processingSeconds": 0.015586167,
     "startupSeconds": 0.000479667,
@@ -6152,10 +5576,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.662000000001134,
-    "cpuRange": [
-      10.508999999999583,
-      10.743333333332808
-    ],
+    "cpuRange": [10.508999999999583, 10.743333333332808],
     "wallSeconds": 0.0170615,
     "processingSeconds": 0.01657925,
     "startupSeconds": 0.000512583,
@@ -6184,10 +5605,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.12100000002055,
-    "cpuRange": [
-      10.110333333334628,
-      10.233666666671581
-    ],
+    "cpuRange": [10.110333333334628, 10.233666666671581],
     "wallSeconds": 0.016350083,
     "processingSeconds": 0.015870041,
     "startupSeconds": 0.000481584,
@@ -6216,10 +5634,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.078333333317127,
-    "cpuRange": [
-      10.034333333334663,
-      10.185333333299221
-    ],
+    "cpuRange": [10.034333333334663, 10.185333333299221],
     "wallSeconds": 0.015968833,
     "processingSeconds": 0.015478959,
     "startupSeconds": 0.000492709,
@@ -6248,10 +5663,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.646666666678092,
-    "cpuRange": [
-      10.532333333333218,
-      10.66433333333805
-    ],
+    "cpuRange": [10.532333333333218, 10.66433333333805],
     "wallSeconds": 0.017050458,
     "processingSeconds": 0.016533791,
     "startupSeconds": 0.000478416,
@@ -6280,10 +5692,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.139333333332464,
-    "cpuRange": [
-      10.12699999999119,
-      10.1760000000084
-    ],
+    "cpuRange": [10.12699999999119, 10.1760000000084],
     "wallSeconds": 0.016143208,
     "processingSeconds": 0.015626417,
     "startupSeconds": 0.000508042,
@@ -6312,10 +5721,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 10.14633333334558,
-    "cpuRange": [
-      9.96766666666519,
-      10.20066666664595
-    ],
+    "cpuRange": [9.96766666666519, 10.20066666664595],
     "wallSeconds": 0.016055667,
     "processingSeconds": 0.015578959,
     "startupSeconds": 0.000529709,
@@ -6344,10 +5750,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 7.3726666666681,
-    "cpuRange": [
-      7.320750000000172,
-      7.39945833333137
-    ],
+    "cpuRange": [7.320750000000172, 7.39945833333137],
     "wallSeconds": 0.024311,
     "processingSeconds": 0.022560875,
     "startupSeconds": 0.001740459,
@@ -6376,10 +5779,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 7.258458333333496,
-    "cpuRange": [
-      7.175458333336178,
-      7.3224999999998985
-    ],
+    "cpuRange": [7.175458333336178, 7.3224999999998985],
     "wallSeconds": 0.024916792,
     "processingSeconds": 0.023194333,
     "startupSeconds": 0.001711167,
@@ -6408,10 +5808,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.339291666666431,
-    "cpuRange": [
-      5.332083333333533,
-      5.360166666666573
-    ],
+    "cpuRange": [5.332083333333533, 5.360166666666573],
     "wallSeconds": 0.110924458,
     "processingSeconds": 0.109078542,
     "startupSeconds": 0.0018385,
@@ -6440,10 +5837,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.476958333333319,
-    "cpuRange": [
-      5.459208333333058,
-      5.531916666665933
-    ],
+    "cpuRange": [5.459208333333058, 5.531916666665933],
     "wallSeconds": 0.114096833,
     "processingSeconds": 0.112294084,
     "startupSeconds": 0.001794833,
@@ -6472,10 +5866,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.740666666666616,
-    "cpuRange": [
-      5.714958333333205,
-      5.774916666666518
-    ],
+    "cpuRange": [5.714958333333205, 5.774916666666518],
     "wallSeconds": 0.120317167,
     "processingSeconds": 0.118440917,
     "startupSeconds": 0.001843167,
@@ -6504,10 +5895,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.721916666668954,
-    "cpuRange": [
-      5.694208333333414,
-      6.029708333332569
-    ],
+    "cpuRange": [5.694208333333414, 6.029708333332569],
     "wallSeconds": 0.060989459,
     "processingSeconds": 0.059227833,
     "startupSeconds": 0.001810042,
@@ -6536,10 +5924,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.824000000001384,
-    "cpuRange": [
-      5.763333333333638,
-      5.839749999999737
-    ],
+    "cpuRange": [5.763333333333638, 5.839749999999737],
     "wallSeconds": 0.062238167,
     "processingSeconds": 0.060382666,
     "startupSeconds": 0.001845334,
@@ -6568,10 +5953,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.977999999999817,
-    "cpuRange": [
-      5.956166666666836,
-      5.985041666662916
-    ],
+    "cpuRange": [5.956166666666836, 5.985041666662916],
     "wallSeconds": 0.0642035,
     "processingSeconds": 0.062336167,
     "startupSeconds": 0.001807792,
@@ -6600,10 +5982,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.864208333332972,
-    "cpuRange": [
-      5.8637916666680985,
-      5.878666666666587
-    ],
+    "cpuRange": [5.8637916666680985, 5.878666666666587],
     "wallSeconds": 0.032335917,
     "processingSeconds": 0.030540542,
     "startupSeconds": 0.001828125,
@@ -6632,10 +6011,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.8848750000007515,
-    "cpuRange": [
-      5.819041666666802,
-      6.064041666665669
-    ],
+    "cpuRange": [5.819041666666802, 6.064041666665669],
     "wallSeconds": 0.032494625,
     "processingSeconds": 0.0306605,
     "startupSeconds": 0.00183,
@@ -6664,10 +6040,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.965375000000606,
-    "cpuRange": [
-      5.916083333333229,
-      5.967833333334838
-    ],
+    "cpuRange": [5.916083333333229, 5.967833333334838],
     "wallSeconds": 0.033417666,
     "processingSeconds": 0.031533208,
     "startupSeconds": 0.001849167,
@@ -6696,10 +6069,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 7.044406250000246,
-    "cpuRange": [
-      7.012010416666695,
-      7.092708333333346
-    ],
+    "cpuRange": [7.012010416666695, 7.092708333333346],
     "wallSeconds": 0.076928416,
     "processingSeconds": 0.071024792,
     "startupSeconds": 0.005846541,
@@ -6728,10 +6098,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 7.013218750000864,
-    "cpuRange": [
-      6.9794479166667145,
-      7.051822916666654
-    ],
+    "cpuRange": [6.9794479166667145, 7.051822916666654],
     "wallSeconds": 0.076844625,
     "processingSeconds": 0.071115458,
     "startupSeconds": 0.005677541,
@@ -6760,10 +6127,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.790979166666579,
-    "cpuRange": [
-      4.747697916666627,
-      4.805677083334459
-    ],
+    "cpuRange": [4.747697916666627, 4.805677083334459],
     "wallSeconds": 0.430825333,
     "processingSeconds": 0.424741042,
     "startupSeconds": 0.005835083,
@@ -6792,10 +6156,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.9181979166667,
-    "cpuRange": [
-      4.888770833333537,
-      4.940916666667332
-    ],
+    "cpuRange": [4.888770833333537, 4.940916666667332],
     "wallSeconds": 0.44316575,
     "processingSeconds": 0.437097042,
     "startupSeconds": 0.006058167,
@@ -6824,10 +6185,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.19554166666647,
-    "cpuRange": [
-      5.179729166666665,
-      5.206177083332116
-    ],
+    "cpuRange": [5.179729166666665, 5.206177083332116],
     "wallSeconds": 0.469740334,
     "processingSeconds": 0.463535291,
     "startupSeconds": 0.0061945,
@@ -6856,10 +6214,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.013135416666333,
-    "cpuRange": [
-      4.984458333333349,
-      5.013385416666886
-    ],
+    "cpuRange": [4.984458333333349, 5.013385416666886],
     "wallSeconds": 0.229462542,
     "processingSeconds": 0.22340725,
     "startupSeconds": 0.006111916,
@@ -6888,10 +6243,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.136249999999694,
-    "cpuRange": [
-      5.091906249999981,
-      5.139520833332541
-    ],
+    "cpuRange": [5.091906249999981, 5.139520833332541],
     "wallSeconds": 0.235571667,
     "processingSeconds": 0.2294165,
     "startupSeconds": 0.006144167,
@@ -6920,10 +6272,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.368020833334579,
-    "cpuRange": [
-      5.364447916666699,
-      5.390645833333338
-    ],
+    "cpuRange": [5.364447916666699, 5.390645833333338],
     "wallSeconds": 0.246674791,
     "processingSeconds": 0.240691416,
     "startupSeconds": 0.006016042,
@@ -6952,10 +6301,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.096104166666319,
-    "cpuRange": [
-      5.021739583333296,
-      5.161322916667303
-    ],
+    "cpuRange": [5.021739583333296, 5.161322916667303],
     "wallSeconds": 0.11918525,
     "processingSeconds": 0.112952125,
     "startupSeconds": 0.006115667,
@@ -6984,10 +6330,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.149218750000036,
-    "cpuRange": [
-      5.060989583333323,
-      5.207531249999804
-    ],
+    "cpuRange": [5.060989583333323, 5.207531249999804],
     "wallSeconds": 0.121412042,
     "processingSeconds": 0.115261666,
     "startupSeconds": 0.006134,
@@ -7016,10 +6359,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.334531249999718,
-    "cpuRange": [
-      5.2673958333334285,
-      5.449062499999768
-    ],
+    "cpuRange": [5.2673958333334285, 5.449062499999768],
     "wallSeconds": 0.125964041,
     "processingSeconds": 0.11977175,
     "startupSeconds": 0.006177625,
@@ -7048,10 +6388,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 6.983776041666482,
-    "cpuRange": [
-      6.948187500000017,
-      7.232354166666714
-    ],
+    "cpuRange": [6.948187500000017, 7.232354166666714],
     "wallSeconds": 0.149282708,
     "processingSeconds": 0.138064459,
     "startupSeconds": 0.011104583,
@@ -7080,10 +6417,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 7.046932291666696,
-    "cpuRange": [
-      7.024765625000003,
-      7.078947916667151
-    ],
+    "cpuRange": [7.024765625000003, 7.078947916667151],
     "wallSeconds": 0.151746,
     "processingSeconds": 0.14090625,
     "startupSeconds": 0.010870459,
@@ -7112,10 +6446,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.709687499999985,
-    "cpuRange": [
-      4.644468750000149,
-      4.718911458333512
-    ],
+    "cpuRange": [4.644468750000149, 4.718911458333512],
     "wallSeconds": 0.855433834,
     "processingSeconds": 0.843323833,
     "startupSeconds": 0.011752708,
@@ -7144,10 +6475,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.808786458333334,
-    "cpuRange": [
-      4.796703124999968,
-      4.8303593749998335
-    ],
+    "cpuRange": [4.796703124999968, 4.8303593749998335],
     "wallSeconds": 0.875258667,
     "processingSeconds": 0.863410083,
     "startupSeconds": 0.011756709,
@@ -7176,10 +6504,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.084770833333317,
-    "cpuRange": [
-      5.0790104166664,
-      5.141213541666412
-    ],
+    "cpuRange": [5.0790104166664, 5.141213541666412],
     "wallSeconds": 0.931391167,
     "processingSeconds": 0.919584542,
     "startupSeconds": 0.011477708,
@@ -7208,10 +6533,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.909218750000129,
-    "cpuRange": [
-      4.872630208333358,
-      4.935145833333617
-    ],
+    "cpuRange": [4.872630208333358, 4.935145833333617],
     "wallSeconds": 0.454928792,
     "processingSeconds": 0.443285792,
     "startupSeconds": 0.011663167,
@@ -7240,10 +6562,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.992520833333328,
-    "cpuRange": [
-      4.96151562500008,
-      5.0520208333329295
-    ],
+    "cpuRange": [4.96151562500008, 5.0520208333329295],
     "wallSeconds": 0.462707084,
     "processingSeconds": 0.4508665,
     "startupSeconds": 0.011732042,
@@ -7272,10 +6591,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.213671875000048,
-    "cpuRange": [
-      5.213510416666696,
-      5.4122187499995675
-    ],
+    "cpuRange": [5.213510416666696, 5.4122187499995675],
     "wallSeconds": 0.484519167,
     "processingSeconds": 0.472770875,
     "startupSeconds": 0.011714958,
@@ -7304,10 +6620,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.039489583333667,
-    "cpuRange": [
-      4.922187499999999,
-      5.089255208333106
-    ],
+    "cpuRange": [4.922187499999999, 5.089255208333106],
     "wallSeconds": 0.238660541,
     "processingSeconds": 0.226848042,
     "startupSeconds": 0.011794125,
@@ -7336,10 +6649,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.10122395833329,
-    "cpuRange": [
-      4.902744791666691,
-      6.612354166666464
-    ],
+    "cpuRange": [4.902744791666691, 6.612354166666464],
     "wallSeconds": 0.242511542,
     "processingSeconds": 0.230815334,
     "startupSeconds": 0.011676208,
@@ -7368,10 +6678,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.290218750000316,
-    "cpuRange": [
-      5.105239583333328,
-      6.037078125000021
-    ],
+    "cpuRange": [5.105239583333328, 6.037078125000021],
     "wallSeconds": 0.251084958,
     "processingSeconds": 0.23973125,
     "startupSeconds": 0.011732792,
@@ -7400,10 +6707,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 6.945429687499847,
-    "cpuRange": [
-      6.928729166666652,
-      6.975744791666609
-    ],
+    "cpuRange": [6.928729166666652, 6.975744791666609],
     "wallSeconds": 0.293906166,
     "processingSeconds": 0.272669292,
     "startupSeconds": 0.021177667,
@@ -7432,10 +6736,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 6.958611979166548,
-    "cpuRange": [
-      6.869869791666669,
-      6.979000000000013
-    ],
+    "cpuRange": [6.869869791666669, 6.979000000000013],
     "wallSeconds": 0.293098375,
     "processingSeconds": 0.267505292,
     "startupSeconds": 0.021040958,
@@ -7464,10 +6765,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.716658854166842,
-    "cpuRange": [
-      4.699989583333342,
-      5.00387500000001
-    ],
+    "cpuRange": [4.699989583333342, 5.00387500000001],
     "wallSeconds": 1.7114239169999999,
     "processingSeconds": 1.6891277919999999,
     "startupSeconds": 0.022942125,
@@ -7496,10 +6794,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.8036015625,
-    "cpuRange": [
-      4.764624999999921,
-      4.825895833333501
-    ],
+    "cpuRange": [4.764624999999921, 4.825895833333501],
     "wallSeconds": 1.74836975,
     "processingSeconds": 1.7256241669999999,
     "startupSeconds": 0.0227305,
@@ -7528,10 +6823,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.012757812499995,
-    "cpuRange": [
-      5.01271354166663,
-      5.02647395833337
-    ],
+    "cpuRange": [5.01271354166663, 5.02647395833337],
     "wallSeconds": 1.831234083,
     "processingSeconds": 1.809019792,
     "startupSeconds": 0.022966291,
@@ -7560,10 +6852,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.824888020833325,
-    "cpuRange": [
-      4.820906250000117,
-      4.918609374999828
-    ],
+    "cpuRange": [4.820906250000117, 4.918609374999828],
     "wallSeconds": 0.895470542,
     "processingSeconds": 0.872414084,
     "startupSeconds": 0.022846833,
@@ -7592,10 +6881,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.939109374999996,
-    "cpuRange": [
-      4.9216276041667095,
-      4.941179687499982
-    ],
+    "cpuRange": [4.9216276041667095, 4.941179687499982],
     "wallSeconds": 0.914740709,
     "processingSeconds": 0.891742,
     "startupSeconds": 0.022982084,
@@ -7624,10 +6910,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.148119791666609,
-    "cpuRange": [
-      5.141036458333327,
-      5.149026041666745
-    ],
+    "cpuRange": [5.141036458333327, 5.149026041666745],
     "wallSeconds": 0.955311166,
     "processingSeconds": 0.932282875,
     "startupSeconds": 0.022994208,
@@ -7656,10 +6939,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.839778645833366,
-    "cpuRange": [
-      4.786065104166658,
-      5.017270833333375
-    ],
+    "cpuRange": [4.786065104166658, 5.017270833333375],
     "wallSeconds": 0.456336041,
     "processingSeconds": 0.43372125,
     "startupSeconds": 0.022791625,
@@ -7688,10 +6968,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.889200520833452,
-    "cpuRange": [
-      4.786770833333333,
-      5.018729166666513
-    ],
+    "cpuRange": [4.786770833333333, 5.018729166666513],
     "wallSeconds": 0.464471,
     "processingSeconds": 0.44129525,
     "startupSeconds": 0.022845459,
@@ -7720,10 +6997,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.227390624999884,
-    "cpuRange": [
-      5.07641927083334,
-      5.300283854166791
-    ],
+    "cpuRange": [5.07641927083334, 5.300283854166791],
     "wallSeconds": 0.492712875,
     "processingSeconds": 0.470725916,
     "startupSeconds": 0.022640541,
@@ -7752,10 +7026,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 6.917256510416678,
-    "cpuRange": [
-      6.85142317708332,
-      6.962687499999926
-    ],
+    "cpuRange": [6.85142317708332, 6.962687499999926],
     "wallSeconds": 0.582084584,
     "processingSeconds": 0.53935525,
     "startupSeconds": 0.041273208,
@@ -7784,10 +7055,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 6.910843750000072,
-    "cpuRange": [
-      6.868662760416668,
-      6.947380208333335
-    ],
+    "cpuRange": [6.868662760416668, 6.947380208333335],
     "wallSeconds": 0.584189208,
     "processingSeconds": 0.532013125,
     "startupSeconds": 0.0416465,
@@ -7816,10 +7084,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.78340625000002,
-    "cpuRange": [
-      4.747930989583346,
-      4.835225260416724
-    ],
+    "cpuRange": [4.747930989583346, 4.835225260416724],
     "wallSeconds": 3.431006875,
     "processingSeconds": 3.3852254999999998,
     "startupSeconds": 0.045343417,
@@ -7848,10 +7113,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.834727864583333,
-    "cpuRange": [
-      4.789266927083271,
-      4.900841145833381
-    ],
+    "cpuRange": [4.789266927083271, 4.900841145833381],
     "wallSeconds": 3.470427,
     "processingSeconds": 3.425421167,
     "startupSeconds": 0.04501925,
@@ -7880,10 +7142,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.028970052083276,
-    "cpuRange": [
-      5.026295572916696,
-      5.074809895833337
-    ],
+    "cpuRange": [5.026295572916696, 5.074809895833337],
     "wallSeconds": 3.622354625,
     "processingSeconds": 3.577168708,
     "startupSeconds": 0.045165959,
@@ -7912,10 +7171,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.931696614583296,
-    "cpuRange": [
-      4.885368489583331,
-      4.940640625000057
-    ],
+    "cpuRange": [4.885368489583331, 4.940640625000057],
     "wallSeconds": 1.807888083,
     "processingSeconds": 1.7618347079999999,
     "startupSeconds": 0.045157,
@@ -7944,10 +7200,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.949595052083385,
-    "cpuRange": [
-      4.930839843749983,
-      4.980046874999922
-    ],
+    "cpuRange": [4.930839843749983, 4.980046874999922],
     "wallSeconds": 1.815985958,
     "processingSeconds": 1.771348709,
     "startupSeconds": 0.044873125,
@@ -7976,10 +7229,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.165937499999958,
-    "cpuRange": [
-      5.161053385416679,
-      5.170684895833342
-    ],
+    "cpuRange": [5.161053385416679, 5.170684895833342],
     "wallSeconds": 1.899442959,
     "processingSeconds": 1.8545105,
     "startupSeconds": 0.044910417,
@@ -8008,10 +7258,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.914997395833399,
-    "cpuRange": [
-      4.835882812500004,
-      5.100708333333333
-    ],
+    "cpuRange": [4.835882812500004, 5.100708333333333],
     "wallSeconds": 0.919245042,
     "processingSeconds": 0.874326458,
     "startupSeconds": 0.045380375,
@@ -8040,10 +7287,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.888759114583409,
-    "cpuRange": [
-      4.827259114583313,
-      5.180458333333285
-    ],
+    "cpuRange": [4.827259114583313, 5.180458333333285],
     "wallSeconds": 0.930503959,
     "processingSeconds": 0.885665875,
     "startupSeconds": 0.045623291,
@@ -8072,10 +7316,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.248648437499966,
-    "cpuRange": [
-      5.103401041666668,
-      5.438665364583386
-    ],
+    "cpuRange": [5.103401041666668, 5.438665364583386],
     "wallSeconds": 1.014946625,
     "processingSeconds": 0.970347208,
     "startupSeconds": 0.045183041,
@@ -8104,10 +7345,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 6.933702473958391,
-    "cpuRange": [
-      6.90855143229168,
-      6.999516927083314
-    ],
+    "cpuRange": [6.90855143229168, 6.999516927083314],
     "wallSeconds": 1.202403583,
     "processingSeconds": 1.119951417,
     "startupSeconds": 0.082280791,
@@ -8136,10 +7374,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 6.898885416666656,
-    "cpuRange": [
-      6.8917955729166875,
-      6.960037109374976
-    ],
+    "cpuRange": [6.8917955729166875, 6.960037109374976],
     "wallSeconds": 1.17997875,
     "processingSeconds": 1.096705458,
     "startupSeconds": 0.083000167,
@@ -8168,10 +7403,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.977028645833331,
-    "cpuRange": [
-      4.939855468749944,
-      4.983924479166647
-    ],
+    "cpuRange": [4.939855468749944, 4.983924479166647],
     "wallSeconds": 6.899415333,
     "processingSeconds": 6.810374,
     "startupSeconds": 0.089020166,
@@ -8200,10 +7432,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.001715494791666,
-    "cpuRange": [
-      4.951958984375035,
-      5.010772135416647
-    ],
+    "cpuRange": [4.951958984375035, 5.010772135416647],
     "wallSeconds": 6.933860875,
     "processingSeconds": 6.843559042,
     "startupSeconds": 0.088498583,
@@ -8232,10 +7461,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.148635416666709,
-    "cpuRange": [
-      5.13029752604166,
-      5.221508463541705
-    ],
+    "cpuRange": [5.13029752604166, 5.221508463541705],
     "wallSeconds": 7.193371875,
     "processingSeconds": 7.10280075,
     "startupSeconds": 0.090546125,
@@ -8264,10 +7490,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.048005208333332,
-    "cpuRange": [
-      5.037791015624987,
-      5.079800130208328
-    ],
+    "cpuRange": [5.037791015624987, 5.079800130208328],
     "wallSeconds": 3.580238834,
     "processingSeconds": 3.491114875,
     "startupSeconds": 0.089095792,
@@ -8296,10 +7519,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.042444010416667,
-    "cpuRange": [
-      5.015724609374996,
-      5.097084635416666
-    ],
+    "cpuRange": [5.015724609374996, 5.097084635416666],
     "wallSeconds": 3.580525625,
     "processingSeconds": 3.494666834,
     "startupSeconds": 0.089531583,
@@ -8328,10 +7548,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.2771861979166745,
-    "cpuRange": [
-      5.2317363281250255,
-      5.279417968749996
-    ],
+    "cpuRange": [5.2317363281250255, 5.279417968749996],
     "wallSeconds": 3.77335575,
     "processingSeconds": 3.684853917,
     "startupSeconds": 0.088464958,
@@ -8360,10 +7577,7 @@
     "budget": 1,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.2838925781249815,
-    "cpuRange": [
-      5.03280338541667,
-      5.32228971354166
-    ],
+    "cpuRange": [5.03280338541667, 5.32228971354166],
     "wallSeconds": 1.890485,
     "processingSeconds": 1.803599291,
     "startupSeconds": 0.088626541,
@@ -8392,10 +7606,7 @@
     "budget": 8,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 4.995204427083325,
-    "cpuRange": [
-      4.961495442708338,
-      5.086402343750032
-    ],
+    "cpuRange": [4.961495442708338, 5.086402343750032],
     "wallSeconds": 1.8452270419999999,
     "processingSeconds": 1.750786542,
     "startupSeconds": 0.089443708,
@@ -8424,10 +7635,7 @@
     "budget": 32,
     "repetitions": 3,
     "cpuMsPerAudioSecond": 5.294390625000001,
-    "cpuRange": [
-      5.268541666666686,
-      5.370348958333357
-    ],
+    "cpuRange": [5.268541666666686, 5.370348958333357],
     "wallSeconds": 1.949122625,
     "processingSeconds": 1.858563417,
     "startupSeconds": 0.090509375,

@@ -32,6 +32,8 @@ for (fixture, mode, count, implementation, workers, budget), rows in sorted(grou
     def med(get):
         values = [get(r) for r in rows if get(r) is not None]
         return statistics.median(values) if values else None
+    def mib(value):
+        return value/1048576 if value is not None else None
     def percentile(values, fraction):
         values = sorted(v for v in values if v is not None)
         return values[int((len(values)-1)*fraction)] if values else None
@@ -40,9 +42,9 @@ for (fixture, mode, count, implementation, workers, budget), rows in sorted(grou
                    cpuRange=[min(r['childCpuSeconds']*1000/r['audioSeconds'] for r in rows), max(r['childCpuSeconds']*1000/r['audioSeconds'] for r in rows)],
                    wallSeconds=med(lambda r:r['wallSeconds']), processingSeconds=med(lambda r:r['processingSeconds']), startupSeconds=med(lambda r:r['startupSeconds']),
                    activeScheduled=med(lambda r:r['activeScheduled']), sampledPeakThreads=med(lambda r:r['sampledPeakThreads']), sampledStartupPeakThreads=med(lambda r:r['sampledStartupPeakThreads']),
-                   activeThreads=med(lambda r:r['active']['cpu']['threadCount']), peakRssMiB=med(lambda r:r['sampledPeakRssBytes']/1048576),
+                   activeThreads=med(lambda r:r['active']['cpu']['threadCount']), peakRssMiB=med(lambda r:mib(r['sampledPeakRssBytes'])),
                    incrementalActiveRssMiB=med(lambda r:(r['active']['memory']['residentBytes']-r['before']['memory']['residentBytes'])/1048576),
-                   activeFootprintMiB=med(lambda r:r['active']['memory']['footprintBytes']/1048576),
+                   activeFootprintMiB=med(lambda r:mib(r['active']['memory']['footprintBytes'])),
                    voluntaryContextSwitches=med(lambda r:r['voluntaryContextSwitches']), involuntaryContextSwitches=med(lambda r:r['involuntaryContextSwitches']),
                    turns=med(lambda r:(r['diagnostics'] or {}).get('turns')), actions=med(lambda r:(r['diagnostics'] or {}).get('actions')),
                    queueContentions=med(lambda r:(r['diagnostics'] or {}).get('queueContentions')), queueWaitNs=med(lambda r:(r['diagnostics'] or {}).get('queueWaitNs')),

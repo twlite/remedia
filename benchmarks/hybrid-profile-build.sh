@@ -11,8 +11,8 @@ import sys
 from pathlib import Path
 p = Path(sys.argv[1])
 s = p.read_text()
-fields = ['ACTION_NS', 'ACTION_MAX_NS', 'ACTION_COUNT', 'CLEANUP_NS', 'CLEANUP_MAX_NS', 'CLEANUP_COUNT']
-s = '\n'.join(f'static PROFILE_{f}: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);' for f in fields) + '\n' + s.replace('//! Fixed-size FIFO executor. Admission bounds both live tasks and readiness storage.', '// Diagnostic scheduler copy with action/drop wall-time instrumentation.', 1)
+fields = ['ACTION_NS', 'ACTION_MAX_NS', 'ACTION_COUNT', 'CLEANUP_NS', 'CLEANUP_MAX_NS', 'CLEANUP_COUNT', 'TRANSITION_NS', 'TRANSITION_MAX_NS', 'TRANSITION_COUNT']
+s = '\n'.join(f'pub(crate) static PROFILE_{f}: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);' for f in fields) + '\n' + s.replace('//! Fixed-size FIFO executor. Admission bounds both live tasks and readiness storage.', '// Diagnostic scheduler copy with action/drop wall-time instrumentation.', 1)
 needle = '            let outcome = machine.as_mut().expect("live task")();'
 assert s.count(needle) == 1
 s = s.replace(needle, '''            let profile_started = Instant::now();
@@ -34,9 +34,27 @@ b = s.index('type Machine', a)
 block = s[a:b]
 index = block.rfind('\n    }')
 assert index >= 0
-report = '\n        eprintln!("HYBRID_TIMING action_ns={} action_max_ns={} actions={} cleanup_ns={} cleanup_max_ns={} cleanups={}", '+', '.join(f'PROFILE_{f}.load(Ordering::Relaxed)' for f in ['ACTION_NS','ACTION_MAX_NS','ACTION_COUNT','CLEANUP_NS','CLEANUP_MAX_NS','CLEANUP_COUNT'])+');'
+report = '\n        eprintln!("HYBRID_TIMING action_ns={} action_max_ns={} actions={} cleanup_ns={} cleanup_max_ns={} cleanups={} transition_ns={} transition_max_ns={} transitions={}", '+', '.join(f'PROFILE_{f}.load(Ordering::Relaxed)' for f in ['ACTION_NS','ACTION_MAX_NS','ACTION_COUNT','CLEANUP_NS','CLEANUP_MAX_NS','CLEANUP_COUNT','TRANSITION_NS','TRANSITION_MAX_NS','TRANSITION_COUNT'])+');'
 block = block[:index] + report + block[index:]
 s = s[:a] + block + s[b:]
+p.write_text(s)
+p = p.parent / 'worker' / 'processing.rs'
+s = p.read_text()
+needle = '    pub(super) fn apply(self) -> ControlFlow<()> {'
+assert s.count(needle) == 1
+s = s.replace(needle, needle + """
+        struct ProfileTransition(Instant);
+        impl Drop for ProfileTransition {
+            fn drop(&mut self) {
+                let ns = self.0.elapsed().as_nanos() as u64;
+                use crate::playback::scheduler::{PROFILE_TRANSITION_NS, PROFILE_TRANSITION_MAX_NS, PROFILE_TRANSITION_COUNT};
+                PROFILE_TRANSITION_NS.fetch_add(ns, std::sync::atomic::Ordering::Relaxed);
+                PROFILE_TRANSITION_MAX_NS.fetch_max(ns, std::sync::atomic::Ordering::Relaxed);
+                PROFILE_TRANSITION_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let _profile_transition = ProfileTransition(Instant::now());
+""")
 p.write_text(s)
 PY
 CARGO_TARGET_DIR="$hybrid_profile_output/target" cargo build --release --locked \
