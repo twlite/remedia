@@ -493,3 +493,43 @@ fn unsupported_container_probes_retry_on_a_tracked_dedicated_worker() {
         "dedicated: unsupported workload"
     );
 }
+
+#[test]
+fn buffered_filter_fallbacks_preserve_audio_without_occupying_cpu_workers() {
+    for graph in [
+        "atempo=0.5",
+        "asetrate=44100,aresample=48000",
+        "lowpass=f=1200:blocksize=128",
+    ] {
+        for format in [StreamFormat::F32le, StreamFormat::Opus] {
+            let pool = PlaybackScheduler::new(1, 8).unwrap();
+            let mut results = Vec::new();
+            for scheduled in [false, true] {
+                let session = if scheduled {
+                    PlaybackSession::with_scheduler(pool.clone())
+                } else {
+                    PlaybackSession::new()
+                };
+                session.set_filter_graph(Some(graph)).unwrap();
+                let (output, mut reader) =
+                    StreamOutput::new(format, StreamPacing::Unpaced, OpusEncoderConfig::default())
+                        .unwrap();
+                session.play(source(), output).unwrap();
+                if scheduled {
+                    let other = PlaybackSession::with_scheduler(pool.clone());
+                    other.play(source(), NullOutput::new()).unwrap();
+                    assert_eq!(other.wait(), PlaybackState::Completed);
+                    other.stop().unwrap();
+                }
+                results.push(drain(&mut reader));
+                assert_eq!(session.wait(), PlaybackState::Completed);
+                session.stop().unwrap();
+            }
+            assert_eq!(results[0], results[1], "{graph} {format:?}");
+            let d = pool.diagnostics();
+            assert_eq!(d.filter_fallbacks, 1);
+            assert_eq!(d.admitted, 1, "only the unrelated session is scheduled");
+            assert_eq!(d.sessions, 0);
+        }
+    }
+}

@@ -253,7 +253,6 @@ fn validate_single_input_output(graph: &ffmpeg::filter::Graph) -> Result<bool, F
                     | b"aformat"
                     | b"aresample"
                     | b"volume"
-                    | b"atempo"
                     | b"bass"
                     | b"treble"
                     | b"equalizer"
@@ -262,9 +261,55 @@ fn validate_single_input_output(graph: &ffmpeg::filter::Graph) -> Result<bool, F
                     | b"bandpass"
                     | b"bandreject"
                     | b"pan"
-                    | b"asetrate"
                     | b"asetpts"
             );
+            #[cfg(feature = "experimental-scheduler")]
+            {
+                // The current processor drains a graph synchronously. Rate-changing or
+                // buffered filters can emit several frames, exceeding one-frame admission.
+                // Read configured links/options only; the graph remains immutably borrowed.
+                for (count, links) in [
+                    ((*context).nb_inputs, (*context).inputs),
+                    ((*context).nb_outputs, (*context).outputs),
+                ] {
+                    if count > 0 && links.is_null() {
+                        return Err(FilterGraphError::Invalid(
+                            "FFmpeg returned null filter links".into(),
+                        ));
+                    }
+                    for index in 0..count as usize {
+                        let link = *links.add(index);
+                        scheduler_cpu_safe &=
+                            !link.is_null() && (*link).sample_rate == OUTPUT_SAMPLE_RATE_HZ as i32;
+                    }
+                }
+                if name == b"aresample" {
+                    let instance = (*context).name;
+                    scheduler_cpu_safe &= !instance.is_null()
+                        && CStr::from_ptr(instance)
+                            .to_bytes()
+                            .starts_with(b"auto_aresample_");
+                }
+                if matches!(
+                    name,
+                    b"bass"
+                        | b"treble"
+                        | b"equalizer"
+                        | b"highpass"
+                        | b"lowpass"
+                        | b"bandpass"
+                        | b"bandreject"
+                ) {
+                    let mut blocksize = -1;
+                    scheduler_cpu_safe &= ffmpeg::ffi::av_opt_get_int(
+                        context.cast(),
+                        c"blocksize".as_ptr(),
+                        ffmpeg::ffi::AV_OPT_SEARCH_CHILDREN,
+                        &mut blocksize,
+                    ) == 0
+                        && blocksize == 0;
+                }
+            }
             if (*context).nb_inputs == 0 {
                 input_count += 1;
                 if name != b"abuffer" {

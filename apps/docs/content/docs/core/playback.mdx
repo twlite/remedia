@@ -348,7 +348,7 @@ session.stop()?;
 
 This experiment schedules owned-byte and local-file Ogg, MP3, ADTS AAC, WAV and FLAC inputs with
 `NullOutput`, `StreamOutput` with unpaced or realtime pacing, or `OpusEncoderOutput` attached
-to `DiscordOpusSender` / `RoutedOpusSender`, including CPU-only native filtergraphs.
+to `DiscordOpusSender` / `RoutedOpusSender`, including admitted rate-preserving native filtergraphs.
 Full streaming queues suspend production using the existing readiness waker; consumption through
 `StreamReader::poll_next` wakes production. Buffer limits, encoding settings and EOF are unchanged.
 Network sources, other containers (including MP4/M4A), producer byte streams,
@@ -376,8 +376,8 @@ Larger bursts reduce queue dispatches but can increase the time before another s
 Diagnostics distinguish cumulative `admitted` from currently `scheduled_sessions`; `sessions`
 also includes admitted jobs temporarily awaiting isolated controls. `control_workers`,
 `queued_controls`, `isolated_controls` and cumulative `control_handoffs` identify this work;
-`control_fallbacks` counts only dedicated migrations for native graphs outside the CPU-only
-whitelist; ordinary seek/filter handoffs return to scheduling. Dedicated fallbacks are counted
+`control_fallbacks` counts only dedicated migrations for native graphs outside the scheduling
+contract; ordinary seek/filter handoffs return to scheduling. Dedicated fallbacks are counted
 separately by capacity, control migration, input, output, demuxer, initial filtergraph and crossfade.
 `turns`, `actions`, `queue_peak`, `queue_contentions` and `queue_wait_ns` expose dispatch frequency
 and queue mutex waiting. Contention counts failed immediate mutex acquisitions; wait time includes
@@ -402,16 +402,10 @@ waiting for queue space; it does not wake a producer whose only wait is a future
 Closing, failing, flushing or explicitly waking the output still interrupts a pacing wait. This
 keeps downstream backpressure responsive without repeatedly removing and rearming the same timer.
 
-Pool sizing must cover short codec-work bursts as well as average CPU. High-concurrency local
-measurements found worse tail-delivery gaps with small pools during the Opus transition needed
-for container trimming. The experimental pool does not bound concurrent startup threads, and
-`for_available_parallelism` still caps its convenience policy at four workers. These limitations
-remain under evaluation; existing dedicated playback stays the production default.
-
-Sizing also needs to account for initialization: each source still opens and probes on its own
-startup thread before pool admission. Concurrent stalled probes can therefore create many startup
-threads, even when a small CPU worker count is configured. The CPU admission cap does not bound
-that opening phase; unsupported inputs subsequently remain dedicated.
+Pool sizing must cover short codec-work bursts as well as average CPU. High-concurrency
+measurements found worse tail-delivery gaps with small pools during the Opus transition
+needed for container trimming. Worker count and processing budget remain explicit tuning
+choices; lower CPU consumption alone does not establish acceptable delivery latency.
 
 The experimental Discord output uses the same bounded transport queues and RTP actor as dedicated
 playback. A full packet queue suspends codec production; draining it wakes the session. Packet
@@ -451,14 +445,20 @@ while finish acknowledgement is pending invalidates the old barrier and resumes 
 playback machine; the old acknowledgement cannot complete the new timeline. Local read-ahead
 completion wakes a session only when it is waiting for input, preserving output pacing deadlines.
 
-The current CPU-only filter whitelist is `anull`, `aformat`, `aresample`, `volume`, `atempo`,
-`bass`, `treble`, `equalizer`, `highpass`, `lowpass`, `bandpass`, `bandreject`, `pan`, `asetrate`
-and `asetpts`, plus the engine's `abuffer`/`abuffersink` endpoints. Classification inspects the
-configured native graph, including automatically inserted adapters. Other filters can perform
-I/O or invoke external plugins despite having one audio input/output; they retain dedicated
-execution. A live replacement with such a graph drains retained production on a tracked dedicated
-fallback, then continues there for that generation. Its fallback is explicit in diagnostics and
-is excluded from scheduler performance claims. Normal CPU-only replacements remain reversible.
+The current native filter whitelist is `anull`, `aformat`, `volume`, `bass`, `treble`,
+`equalizer`, `highpass`, `lowpass`, `bandpass`, `bandreject`, `pan` and `asetpts`, plus
+engine endpoints and automatic format adapters. All configured links must remain at
+48 kHz; EQ/biquad filters require `blocksize=0`. Only automatically inserted `aresample`
+adapters are admitted. Explicit resampling, rate changes, `atempo`, buffered EQ and
+other filters retain dedicated execution. The processor currently drains all native
+frames from one input synchronously, so a CPU-only filter that can emit multiple frames
+is not yet safe under the scheduled output's one-frame admission contract.
+
+Classification inspects the configured native graph and options. I/O and external-plugin
+filters also retain dedicated execution. A live replacement outside this contract drains
+retained production on a tracked dedicated fallback and continues there for that generation;
+its fallback is excluded from scheduler performance claims. Eligible volume/EQ replacements
+remain reversible. A resumable native filter drain is required to expand this contract.
 Pause can supersede a pending EOF acknowledgement; resume requests a fresh finish barrier without
 encoding or replaying the tail again.
 
@@ -477,9 +477,9 @@ A rejected/failed restricted probe retries the original source on a tracked dedi
 `probe_retries` reports these attempts. Unsupported containers keep their original playback
 functionality, and these retries/fallbacks are excluded from scheduler benchmark evidence.
 
-MP3, MP2 and AAC native seeks decode up to one second before the requested position to
-restore codec history, then discard preroll samples. Scheduled sessions reposition
-the demuxer on the isolated control executor and decode preroll in bounded codec
+MP3, MP2 and AAC native seeks request a landing one second before the requested
+position to restore codec history, then discard preroll samples. The demuxer may land
+earlier according to its index. Scheduled sessions reposition the demuxer on the isolated control executor and decode preroll in bounded codec
 turns. The seek acknowledgement still waits for output invalidation; recovery before
 the first post-seek audio can take longer without changing the requested media
 position or encoder quality.
