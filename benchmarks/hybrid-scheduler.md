@@ -45,3 +45,164 @@ Initial baseline codec and stream runs overlap some compilation and each other. 
 release-mode harness operation and delivered-work counters, not precise small CPU differences.
 An interleaved, isolated comparison is required for an adoption decision. No Linux constrained-CPU,
 live Discord, native heap inventory or long-duration stability claim is made by these runs.
+
+## Implemented executor
+
+The feature is non-default in core and propagated through Discord, Node and server Cargo manifests.
+Existing constructors remain dedicated even in a feature-enabled build. Rust embedders attach
+sessions to an application-owned `Arc<PlaybackScheduler>` using `with_scheduler`; no global
+executor is installed and no JavaScript/RPC selection contract is added.
+
+The initial policy is a centralized FIFO readiness queue and one existing worker action per turn.
+This is intentionally the simplest measurable scheduling policy. There is no affinity, stealing,
+sharding, dynamic resizing, priority class or per-session timer. Worker counts are fixed;
+`for_available_parallelism` caps the available-parallelism estimate at four. Admission capacity is
+independent of worker count and defaults to 1024 in that convenience constructor. Excess tasks use
+an explicitly diagnosed dedicated fallback rather than entering an unbounded admission queue.
+Consequently this capacity is not a whole-engine concurrency or memory limit.
+
+Each job transitions between idle, queued, running, notified and done. An atomic transition from
+idle to queued admits exactly one readiness entry. A wake during execution marks notified; a
+suspending action must atomically transition running to idle, otherwise it requeues at the FIFO
+tail. Runnable actions requeue at the tail. Machine state is exclusively locked while executing,
+and native decoder, filter and resampler objects rely on their existing Rust ownership wrappers;
+no new unsafe `Send` or `Sync` implementation was added. There is no simultaneous use of one
+session's native state. One queue entry per admitted job bounds readiness storage by admission.
+
+The resumable single-source machine owns decoder, processor, pending decoded frame, deferred
+filter acknowledgement, seek-recovery history, fallback-seek state and the active-playback guard.
+The output owns its existing encoder. Both dedicated and scheduled drivers invoke that machine;
+there is no second streaming pipeline. Outcomes distinguish runnable, paused, waiting for output,
+completed, cancelled and failed. Waiting for source I/O, transport acknowledgements and pacing
+remain in dedicated fallbacks, so the prototype does not claim to model every blocking state.
+The separate crossfade machine remains unchanged apart from publishing control wake signals.
+
+Startup opens/probes and constructs native state on a temporary thread. It completes the existing
+startup handshake before pool admission and then exits. Pool admission occurs after `play` has
+published the active state, so `executor_diagnostic` may briefly show the conservative dedicated
+value during startup. `stop` joins startup and scheduled processing, including disposal of native
+state; completion notifications can precede final resource disposal, as with the original worker.
+External cancellation is registered with a weak job adapter retained by the job itself. Output and
+control wakers cannot retain the native machine after completion. Dropping the last pool owner
+signals shutdown and joins workers; an owner retiring on a pool worker does not join itself.
+
+### Blocking isolation and eligibility
+
+| Operation             | Scheduled handling                         | Dedicated fallback                                               |
+| --------------------- | ------------------------------------------ | ---------------------------------------------------------------- |
+| Open/probe/init       | Temporary startup thread                   | Same existing startup path                                       |
+| Demux/decode          | Owned byte input only                      | Files, HTTP and bounded producer streams                         |
+| Codec/filter work     | One existing action per turn               | Crossfade-specific processing                                    |
+| Output demand         | Existing `StreamOutput::poll_ready` waker  | Realtime or unknown synchronous output                           |
+| Stream consumption    | Existing `StreamReader::poll_next`         | No separate consumer pipeline                                    |
+| Seek/filter/control   | Pause/resume and gain use the same machine | Seek or native graph change permanently migrates this generation |
+| Pacing deadlines      | Not scheduled in this prototype            | Realtime streams and Discord                                     |
+| Fallback seek/staging | Existing dedicated paths retained          | Unsupported sources and crossfade                                |
+
+Only owned bytes in Ogg, MP3, ADTS AAC, WAV or FLAC containers with `NullOutput` or
+unpaced `StreamOutput` qualify, initially without a native filtergraph. The demuxer whitelist
+excludes nested network containers and external media references such as playlists and MP4. Stream writes do not wait:
+they retain the existing soft readiness thresholds and hard 8 MiB/4096-chunk burst rejection.
+`MediaOutput` has feature-gated opt-in readiness methods with conservative defaults, preserving
+existing custom-output implementations. Realtime output is deliberately excluded because polling
+readiness returns a future deadline and this initial executor has no deadline queue.
+
+Seeks and native filter updates transfer the entire machine to a dedicated fallback thread
+before taking the pending control under the session lock. This prevents control publication
+racing past an eligibility check. Migration reissues the output control wake consumed by the
+CPU action, so a full output cannot conceal the pending seek/filter update. The job retains its
+admission slot and completion handle until fallback processing is disposed. Spawn failures
+reach playback callers as worker initialization errors. Native decoder calls remain without a
+hard CPU-time bound.
+A slow codec computation can delay other sessions on the same worker. Opening a maliciously
+expensive owned input also consumes a temporary startup thread. This is a substantial limitation,
+not equivalent isolation to a production real-time scheduler. No evidence yet justifies adding
+work stealing or affinity: first isolate/quantify these action costs and queue contention.
+
+### Correctness verification
+
+The scheduled integration tests compare dedicated and scheduled s16le/f32le/Opus payloads byte for
+byte, along with chunk sample positions. They exercise 32 deliberately undrained streams with one
+CPU worker, verify unrelated completion, pause/seek/resume while backpressured, capacity fallback,
+file fallback live-filter migration under backpressure, and 128 repeated cancellation/replacement generations. Tests verify pool task and
+queue counts return to zero after `stop`.
+
+Two concrete races were found and fixed during implementation: paused-volume changes could be
+lost between yielding and sleeping, and `stop` initially joined only startup rather than CPU
+processing. The dedicated driver now checks a control revision under the playback lock before
+sleeping, and stop/replacement join scheduled processing explicitly outside session locks.
+Cancellation registration publishes the job handle before allowing an already-cancelled token to
+wake it. The existing dedicated lifecycle/seek/passthrough/filter/crossfade/stream regression suite
+is retained rather than weakened.
+
+## Reproducible comparison commands
+
+`hybrid-build.sh` extracts the exact original commit with `git archive` and builds it in a separate
+target directory; it never checks out or modifies main. Supply the same native environment shown
+above. It also builds the current feature-enabled harness and native fixture generator.
+
+```sh
+benchmarks/hybrid-build.sh /tmp/remedia-hybrid-reproduction
+/tmp/remedia-hybrid-reproduction/experiment-target/release/examples/resource_audit_fixtures /tmp/remedia-hybrid-fixtures
+python3 benchmarks/hybrid.py \
+  --binary /tmp/remedia-hybrid-reproduction/experiment-target/release/examples/hybrid_scheduler_benchmark \
+  --fixtures /tmp/remedia-hybrid-fixtures/music15.opus \
+  --formats opus --workers 0,1,2,4 --counts 1,8,32,64,128,256,512 --repeats 3 \
+  --output /tmp/remedia-hybrid-comparison.jsonl
+python3 benchmarks/hybrid-summary.py /tmp/remedia-hybrid-comparison.jsonl
+```
+
+The harness uses independent encoded input allocations for each session, unchanged default Opus
+encoder configuration, and one main-thread readiness-driven reader loop for all streams. It
+asserts sample-position continuity, positive delivered samples, equal per-session sample counts,
+terminal completion and successful stop. The runner compares sample arrays, chunk counts and
+payload checksums across executors for every paired case and fails on mismatch. It alternates
+worker-count order on successive repetitions. It records child CPU and context switches separately
+from in-process CPU/RSS/footprint snapshots. A snapshot immediately after startup captures live
+stream worker occupancy; snapshots are not sampled thread peaks. Process lifetime peak RSS is
+provided by the resource collector. Checksums are equality guards, not cryptographic audio hashes
+or subjective quality evaluation. Existing tests provide byte-for-byte comparisons.
+
+The initial original-main baseline has 63 codec concurrency rows and 12 allocation-instrumented
+streaming rows. Original/extracted streaming comparison has 24 interleaved rows (three repetitions
+of four outputs for each revision). For the MP3 input, median CPU ms per audio second was:
+
+| Output | Original | Extracted dedicated |
+| ------ | -------: | ------------------: |
+| Null   |    0.454 |               0.449 |
+| s16le  |    0.687 |               0.684 |
+| f32le  |    0.658 |               0.658 |
+| Opus   |    4.945 |               4.935 |
+
+These small differences do not establish an improvement. This is an independently built release
+comparison with identical input and output settings; the single-session extraction check does not
+establish extraction overhead at 512 sessions.
+
+## Measurement limitations and adoption decision
+
+Host: Apple M5, 10 logical CPUs, 24 GiB RAM, macOS 27.0.1 arm64; Rust 1.99.1. Locally linked
+Homebrew native dependencies and fat LTO are identical between comparisons. Original and current
+binary identities and fixture SHA-256 hashes are preserved in the JSON manifests.
+
+`data/hybrid/scheduler-exploratory.jsonl` is a deliberately incomplete, build-overlapped exploratory
+sweep made before the stop/join correction. It remains available for audit and is not acceptance
+evidence. It illustrates that a small pool can reduce CPU in some cases while materially reducing
+unpaced throughput. For example, its single 512-session s16le case took 2.93 seconds with dedicated
+workers versus 40.90 seconds with one CPU worker; CPU was also worse in that one-worker case.
+These observations motivate evaluation of sustainable realtime load rather than promotion based
+on thread count alone. No selection or hiding of failed measurements is used for acceptance.
+
+The current prototype does **not** justify adopting a scheduled production default. Live Discord
+RTP/DAVE deadlines, underruns, network stalls, paced streaming, crossfade overlap, sustained seek
+latency, native allocator live bytes, worker utilization/queue contention, long-duration churn and
+2–4 vCPU Linux behavior are not qualified by this branch. Native heap and private resident memory
+are not inferred from RSS. The controlled checksum workload adds reader/checksum CPU to all modes;
+its result is not an isolated codec benchmark. Short fixtures can make startup dominate and are
+labelled accordingly in the raw rows. Pool fallback retains functionality but does not demonstrate
+scheduler support for those workloads.
+
+The broader requested evaluation remains unfinished: deadline-aware control completion,
+readiness-driven source demuxing, a deadline scheduler and corresponding latency/overload tests
+must precede a complete production comparison. Retain dedicated execution and the experimental
+feature boundary while evaluating those items. Dynamic pool resizing and more complex queues are
+deferred until measurements of this fixed FIFO prototype identify a concrete bottleneck.

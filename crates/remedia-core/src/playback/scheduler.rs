@@ -91,6 +91,7 @@ impl PlaybackScheduler {
     pub(super) fn submit(
         &self,
         machine: impl FnMut() -> worker::WorkerStep + Send + 'static,
+        on_error: impl Fn(std::io::Error) + Send + Sync + 'static,
     ) -> Result<Arc<Job>, Machine> {
         let machine: Machine = Box::new(machine);
         let mut live = self.inner.live.load(Ordering::Acquire);
@@ -109,6 +110,7 @@ impl PlaybackScheduler {
             }
         }
         let job = Arc::new(Job {
+            on_error: Box::new(on_error),
             cancel_wake: Mutex::new(None),
             pool: Arc::downgrade(&self.inner),
             state: AtomicUsize::new(IDLE),
@@ -136,6 +138,7 @@ impl Drop for PlaybackScheduler {
 type Machine = Box<dyn FnMut() -> worker::WorkerStep + Send>;
 
 pub(super) struct Job {
+    on_error: Box<dyn Fn(std::io::Error) + Send + Sync>,
     pub(super) cancel_wake: Mutex<Option<Arc<CancelWake>>>,
     pool: std::sync::Weak<Pool>,
     state: AtomicUsize,
@@ -200,17 +203,34 @@ fn run(pool: Arc<Pool>) {
         let mut machine = lock(&job.machine);
         let outcome = machine.as_mut().expect("live task")();
         pool.polls.fetch_add(1, Ordering::Relaxed);
-        if matches!(
+        if outcome == worker::WorkerStep::DedicatedFallback {
+            let mut dedicated = machine.take().expect("migrating machine");
+            drop(machine);
+            let fallback_job = job.clone();
+            let fallback_pool = pool.clone();
+            if let Err(error) = thread::Builder::new()
+                .name("remedia-control-fallback".into())
+                .spawn(move || {
+                    if catch_unwind(AssertUnwindSafe(&mut dedicated)).is_err() {
+                        (fallback_job.on_error)(std::io::Error::other(
+                            "dedicated fallback panicked",
+                        ));
+                    }
+                    drop(dedicated);
+                    complete(&fallback_job, &fallback_pool);
+                })
+            {
+                (job.on_error)(error);
+                complete(&job, &pool);
+            }
+        } else if matches!(
             outcome,
             worker::WorkerStep::Completed
                 | worker::WorkerStep::Cancelled
                 | worker::WorkerStep::Failed
         ) {
-            job.state.store(DONE, Ordering::Release);
             machine.take();
-            pool.live.fetch_sub(1, Ordering::AcqRel);
-            *lock(&job.finished) = true;
-            job.changed.notify_all();
+            complete(&job, &pool);
         } else if outcome == worker::WorkerStep::Runnable
             || job
                 .state
@@ -221,6 +241,13 @@ fn run(pool: Arc<Pool>) {
             job.wake();
         }
     }
+}
+
+fn complete(job: &Job, pool: &Pool) {
+    job.state.store(DONE, Ordering::Release);
+    pool.live.fetch_sub(1, Ordering::AcqRel);
+    *lock(&job.finished) = true;
+    job.changed.notify_all();
 }
 
 pub(super) struct CancelWake(pub std::sync::Weak<Job>);

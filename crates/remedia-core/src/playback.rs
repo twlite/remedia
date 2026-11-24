@@ -294,6 +294,8 @@ struct FilterUpdate {
 }
 
 enum WorkerAction {
+    #[cfg(feature = "experimental-scheduler")]
+    DedicatedFallback,
     Wait(u64),
     ConfigureProcessing,
     PollFallback,

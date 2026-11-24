@@ -57,6 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sessions.push(session);
     }
     let startup_seconds = start.elapsed().as_secs_f64();
+    let active = remedia_resources::collect();
     let waker = Waker::from(Arc::new(ThreadWake(std::thread::current())));
     let mut cx = Context::from_waker(&waker);
     let mut samples = vec![0_u64; count];
@@ -108,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let audio_seconds = samples.iter().sum::<u64>() as f64 / 48000.0;
     println!(
         "{}",
-        serde_json::json!({"sessions":count,"workers":workers,"format":args[4],"audioSeconds":audio_seconds,"wallSeconds":start.elapsed().as_secs_f64(),"startupSeconds":startup_seconds,"cpuMsPerAudioSecond":(cpu(&after)-cpu(&before))/audio_seconds,"samples":samples,"chunks":chunks,"checksums":checksums,"backend":sessions.first().map(PlaybackSession::executor_diagnostic),"schedulerActions":pool.as_ref().map(|p|p.diagnostics().actions),"before":before,"after":after})
+        serde_json::json!({"sessions":count,"workers":workers,"format":args[4],"audioSeconds":audio_seconds,"wallSeconds":start.elapsed().as_secs_f64(),"startupSeconds":startup_seconds,"cpuMsPerAudioSecond":(cpu(&after)-cpu(&before))/audio_seconds,"samples":samples,"chunks":chunks,"checksums":checksums,"backend":sessions.first().map(PlaybackSession::executor_diagnostic),"schedulerActions":pool.as_ref().map(|p|p.diagnostics().actions),"before":before,"active":active,"after":after})
     );
     Ok(())
 }

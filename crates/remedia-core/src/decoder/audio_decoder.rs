@@ -27,6 +27,17 @@ struct ResamplerState {
 }
 
 impl AudioDecoder {
+    #[cfg(feature = "experimental-scheduler")]
+    pub(crate) fn scheduler_memory_demuxer(&self) -> bool {
+        // Conservative containers without nested network inputs or external media references.
+        self.reader
+            .input
+            .format()
+            .name()
+            .split(',')
+            .all(|name| matches!(name, "ogg" | "mp3" | "aac" | "wav" | "flac"))
+    }
+
     /// Open a local file or an explicitly tagged HTTP(S) source with default
     /// network timeout and cancellation settings.
     pub fn open(source: InputSource) -> Result<Self, DecoderError> {

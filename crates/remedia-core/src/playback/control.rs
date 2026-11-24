@@ -55,6 +55,12 @@ pub(super) fn next_worker_action(
     if data.generation != generation || data.stopping || data.state == PlaybackState::Stopped {
         return WorkerAction::Exit;
     }
+    #[cfg(feature = "experimental-scheduler")]
+    if shared.executor.load(std::sync::atomic::Ordering::Acquire) == 1
+        && (data.pending_seek.is_some() || data.filter_graph.is_some())
+    {
+        return WorkerAction::DedicatedFallback;
+    }
     let wants_passthrough = can_passthrough && data.filter_graph.is_none() && data.volume == 1.0;
     if !passthrough_mode
         && wants_passthrough

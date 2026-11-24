@@ -346,16 +346,18 @@ session.play(InputSource::bytes(encoded_media), NullOutput::new())?;
 session.stop()?;
 ```
 
-This initial experiment schedules owned-byte inputs with `NullOutput` or unpaced `StreamOutput`.
+This initial experiment schedules owned-byte Ogg, MP3, ADTS AAC, WAV and FLAC inputs with
+`NullOutput` or unpaced `StreamOutput`, without a native filtergraph.
 Full streaming queues suspend production using the existing readiness waker; consumption through
 `StreamReader::poll_next` wakes production. Buffer limits, encoding settings and EOF are unchanged.
-Files, network sources, producer byte streams, realtime outputs, synchronous custom outputs and
-crossfade retain dedicated execution. Opening and probing run on a temporary dedicated startup
-thread. Seeks and filter processing still execute as one action and do not have a hard CPU-time
-budget. The pool is therefore experimental and is not a replacement for production scheduling.
+Files, network sources, other containers (including MP4/M4A), producer byte streams, realtime
+outputs, synchronous custom outputs, native filtergraphs and crossfade retain dedicated execution. Opening and probing run on a temporary dedicated startup
+thread. A seek or live filter update transfers the same machine to a dedicated fallback thread
+before the control is applied; subsequent work stays dedicated for that generation. Codec
+actions still do not have a hard CPU-time budget. The pool is therefore experimental and is not a replacement for production scheduling.
 
 `executor_diagnostic()` identifies scheduled execution or dedicated fallback for an unsupported
-workload or full pool. `scheduler.diagnostics()` reports worker count, admitted sessions, queue
+workload, full pool, or a control requiring dedicated execution. `scheduler.diagnostics()` reports worker count, admitted sessions, queue
 depth and action count. Capacity bounds admitted scheduled sessions; excess sessions fall back to
 dedicated execution, so it does not cap total engine concurrency. Pool creation rejects zero counts
 and returns thread creation failures. Existing Node and RPC playback APIs remain dedicated; this

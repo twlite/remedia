@@ -92,6 +92,8 @@ fn stalled_consumers_cancel_without_starving_unrelated_sessions() {
         session.pause().unwrap();
         session.seek(Duration::from_millis(20)).unwrap();
         session.resume().unwrap();
+        assert_eq!(session.executor_diagnostic(), "dedicated: blocking control");
+        session.set_filter_graph(Some("volume=0.75")).unwrap();
         session.stop().unwrap();
         drop(reader);
     }
@@ -164,4 +166,23 @@ fn repeated_generations_and_external_cancellation_release_pool_slots() {
         assert_eq!(pool.diagnostics().sessions, 0);
         assert_eq!(pool.diagnostics().queued, 0);
     }
+}
+
+#[test]
+fn live_filter_migrates_before_building_a_graph_on_a_cpu_worker() {
+    let pool = PlaybackScheduler::new(1, 8).unwrap();
+    let session = PlaybackSession::with_scheduler(pool.clone());
+    let (output, reader) = StreamOutput::new(
+        StreamFormat::F32le,
+        StreamPacing::Unpaced,
+        OpusEncoderConfig::default(),
+    )
+    .unwrap();
+    session.play(source(), output).unwrap();
+    session.pause().unwrap();
+    session.set_filter_graph(Some("volume=0.75")).unwrap();
+    assert_eq!(session.executor_diagnostic(), "dedicated: blocking control");
+    session.stop().unwrap();
+    drop(reader);
+    assert_eq!(pool.diagnostics().sessions, 0);
 }
