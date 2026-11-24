@@ -1,5 +1,8 @@
 # Hybrid scheduler: isolated comparison and processing budgets
 
+For the subsequent Discord, local-file and control eligibility milestone, see
+[the eligibility report](hybrid-eligibility-results.md). Its raw results are separate.
+
 This continuation measures the original `55b71e5` playback implementation, the refactored
 feature-disabled dedicated backend, and the current experimental pool. Production selection stays
 unchanged. Source milestone: `ea8691e` (budget/counter implementation: `ba1c68d`).

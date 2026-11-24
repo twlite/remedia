@@ -1,0 +1,38 @@
+{
+  "binaries": {
+    "original": {
+      "path": "/experiment/releases-qualified/original-target/release/examples/hybrid_scheduler_benchmark",
+      "sha256": "7c085e0ba305cc826796d76369b34afb021e8f07048db7f896d235d470389d56"
+    },
+    "dedicated": {
+      "path": "/experiment/releases-qualified/dedicated-target/release/examples/hybrid_scheduler_benchmark",
+      "sha256": "7ff70841d2ff485f48e28041aa63e327739c35f9f3b8a2ab12003990f19be488"
+    },
+    "scheduled": {
+      "path": "/experiment/releases-qualified/scheduled-target/release/examples/hybrid_scheduler_benchmark",
+      "sha256": "961aa7762386bcbe6ca27d15e15ffcb5f8c19c69f9a0aee926996bce2d44f589"
+    }
+  },
+  "arguments": {
+    "original": "/experiment/releases-qualified/original-target/release/examples/hybrid_scheduler_benchmark",
+    "dedicated": "/experiment/releases-qualified/dedicated-target/release/examples/hybrid_scheduler_benchmark",
+    "scheduled": "/experiment/releases-qualified/scheduled-target/release/examples/hybrid_scheduler_benchmark",
+    "fixtures": "/experiment/fixtures/music3.mp3,/experiment/fixtures/music3.opus",
+    "output": "/experiment/final-linux-4cpu.jsonl",
+    "counts": "8,64,256,512",
+    "workers": "2,4",
+    "budgets": "8",
+    "formats": "opus",
+    "repeats": 3,
+    "skip_original": false,
+    "source": "file",
+    "startup_stagger_ms": 0,
+    "controls": 0,
+    "mixed": false,
+    "pacing": "realtime"
+  },
+  "fixtures": {
+    "/experiment/fixtures/music3.mp3": "1b24623c65f9aa388a7bb5e2f8ef938917109c914ee629d5c2b17f364e58846d",
+    "/experiment/fixtures/music3.opus": "0c81e1d9c4fa5e56f4915e0ad7630c7964b30ef901b8aa74ab4187c0f4c8794b"
+  }
+}

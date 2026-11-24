@@ -1,0 +1,12 @@
+{
+  "qualifiedRows": 948,
+  "exactSamplesVerified": true,
+  "crossRepetitionChecksumsMatched": true,
+  "expectedSampleFrames": {
+    "music3.mp3": 144000,
+    "music3.opus": 144000,
+    "music3.aac": 145408,
+    "music15.opus": 720000
+  },
+  "source": "Native synthetic fixtures, normalized 48 kHz stereo; control rows subtract final seek target"
+}

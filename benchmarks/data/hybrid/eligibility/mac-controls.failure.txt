@@ -1,0 +1,1 @@
+Incomplete pilot, excluded from performance evidence. Original baseline timed out at 256 sessions while controls were held behind the common benchmark start gate. Replaced by post-gate PCM control workload in mac-controls-v2. Original raw rows and manifests retained.

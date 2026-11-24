@@ -1,0 +1,1 @@
+Excluded partial qualification: scheduled 10-worker, budget-8, 64-session repeated MP3 seeks produced different PCM checksums across identical sources. Independent reproduction also failed with owned bytes. This exposed seek-history nondeterminism; corrected via native preroll and resampler accounting. See report. Never include these partial rows as performance evidence.
