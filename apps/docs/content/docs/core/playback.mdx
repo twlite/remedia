@@ -388,3 +388,8 @@ Custom outputs keep their existing defaults. The new optional method delegates t
 blocking and retain no more queued audio than its existing buffering contract permits. Returning
 a pacing deadline must not consume the next frame. Scheduling deadlines is not a hard realtime
 or Discord RTP delivery guarantee; overloaded codec work can still deliver audio late.
+
+Capacity and pacing use separate producer wake registrations. Draining a chunk wakes a producer
+waiting for queue space; it does not wake a producer whose only wait is a future pacing deadline.
+Closing, failing, flushing or explicitly waking the output still interrupts a pacing wait. This
+keeps downstream backpressure responsive without repeatedly removing and rearming the same timer.

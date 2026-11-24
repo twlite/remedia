@@ -276,6 +276,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut first_chunk_latency_ms = vec![None; count];
     let mut origins: Vec<Option<Instant>> = vec![None; count];
     let mut lateness_ms = Vec::new();
+    let mut previous: Vec<Option<(Instant, u32)>> = vec![None; count];
+    let mut worst_gap_excess_ms = vec![0.0_f64; count];
+    let mut worst_lateness_ms = vec![0.0_f64; count];
+    let mut last_chunk_ms = vec![None; count];
     while readers.iter().any(Option::is_some) {
         let mut progress = false;
         for (index, reader) in readers.iter_mut().enumerate() {
@@ -284,6 +288,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Poll::Ready(Ok(Some(chunk))) => {
                         let now = Instant::now();
                         let origin = *origins[index].get_or_insert(now);
+                        if let Some((previous_time, media_samples)) = previous[index] {
+                            let excess = now.duration_since(previous_time).as_secs_f64() * 1000.0
+                                - f64::from(media_samples) / 48.0;
+                            worst_gap_excess_ms[index] = worst_gap_excess_ms[index].max(excess);
+                        }
+                        previous[index] = Some((now, chunk.media_samples_per_channel));
+                        last_chunk_ms[index] =
+                            Some(now.duration_since(processing_start).as_secs_f64() * 1000.0);
                         if first_chunk_latency_ms[index].is_none() {
                             first_chunk_latency_ms[index] =
                                 Some(now.duration_since(processing_start).as_secs_f64() * 1000.0);
@@ -291,9 +303,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if pacing == StreamPacing::Realtime {
                             let expected = origin
                                 + Duration::from_secs_f64(chunk.start_sample as f64 / 48000.0);
-                            lateness_ms.push(
-                                now.saturating_duration_since(expected).as_secs_f64() * 1000.0,
-                            );
+                            let late =
+                                now.saturating_duration_since(expected).as_secs_f64() * 1000.0;
+                            lateness_ms.push(late);
+                            worst_lateness_ms[index] = worst_lateness_ms[index].max(late);
                         }
                         assert_eq!(chunk.start_sample, samples[index], "packet continuity");
                         samples[index] += u64::from(chunk.media_samples_per_channel);
@@ -318,6 +331,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::thread::park_timeout(Duration::from_secs(10));
         }
     }
+    let drain_seconds = processing_start.elapsed().as_secs_f64();
     for (index, session) in sessions.iter().enumerate() {
         assert_eq!(session.wait(), PlaybackState::Completed);
         session.stop()?;
@@ -354,7 +368,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .copied();
     println!(
         "{}",
-        serde_json::json!({"sessions":count,"workers":workers,"format":args[4],"audioSeconds":audio_seconds,"wallSeconds":start.elapsed().as_secs_f64(),"startupSeconds":startup_seconds,"processingSeconds":processing_start.elapsed().as_secs_f64(),"startGate":true,"cpuMsPerAudioSecond":(cpu(&after)-cpu(&before))/audio_seconds,"samples":samples,"chunks":chunks,"checksums":checksums,"backends":backends,"diagnostics":diagnostics,"budget":budget,"pacing":format!("{pacing:?}"),"firstChunkLatencyMs":first_chunk_latency_ms,"deliveryP99MsFromFirstChunk":delivery_p99_ms,"samplingEpochUnixMs":sampling_epoch_unix_ms,"before":before,"active":active,"activeScheduled":active_scheduled,"after":after})
+        serde_json::json!({"sessions":count,"workers":workers,"format":args[4],"audioSeconds":audio_seconds,"wallSeconds":start.elapsed().as_secs_f64(),"startupSeconds":startup_seconds,"processingSeconds":processing_start.elapsed().as_secs_f64(),"startGate":true,"cpuMsPerAudioSecond":(cpu(&after)-cpu(&before))/audio_seconds,"samples":samples,"chunks":chunks,"checksums":checksums,"backends":backends,"diagnostics":diagnostics,"budget":budget,"pacing":format!("{pacing:?}"),"firstChunkLatencyMs":first_chunk_latency_ms,"deliveryP99MsFromFirstChunk":delivery_p99_ms,"deliveryMaxMsFromFirstChunk":lateness_ms.last().copied(),"worstLatenessPerSessionMs":worst_lateness_ms,"worstGapExcessPerSessionMs":worst_gap_excess_ms,"lastChunkMs":last_chunk_ms,"drainSeconds":drain_seconds,"cleanupAfterEofSeconds":processing_start.elapsed().as_secs_f64()-drain_seconds,"samplingEpochUnixMs":sampling_epoch_unix_ms,"before":before,"active":active,"activeScheduled":active_scheduled,"after":after})
     );
     Ok(())
 }

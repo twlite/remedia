@@ -55,6 +55,7 @@ struct State {
     wake: bool,
     reader: Option<Waker>,
     producer: Option<Waker>,
+    pacing_producer: Option<Waker>,
     clock: Option<(Instant, u64)>,
     next_sample: u64,
     paused: Option<Instant>,
@@ -73,12 +74,15 @@ impl Queue {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn notify(&self, state: &mut State) {
+    fn notify(&self, state: &mut State, pacing_changed: bool) {
         self.changed.notify_all();
         if let Some(waker) = state.reader.take() {
             waker.wake();
         }
         if let Some(waker) = state.producer.take() {
+            waker.wake();
+        }
+        if pacing_changed && let Some(waker) = state.pacing_producer.take() {
             waker.wake();
         }
     }
@@ -107,7 +111,7 @@ impl Queue {
             .saturating_add(u64::from(chunk.media_samples_per_channel));
         state.bytes += chunk.data.len();
         state.queue.push_back(chunk);
-        self.notify(&mut state);
+        self.notify(&mut state, false);
         Ok(())
     }
 
@@ -116,7 +120,7 @@ impl Queue {
         state.queue.clear();
         state.bytes = 0;
         state.clock = None;
-        self.notify(&mut state);
+        self.notify(&mut state, true);
     }
 
     fn close(&self, error: Option<String>, discard: bool) {
@@ -125,7 +129,7 @@ impl Queue {
             if discard {
                 state.queue.clear();
                 state.bytes = 0;
-                self.notify(&mut state);
+                self.notify(&mut state, true);
             }
             return;
         }
@@ -135,7 +139,7 @@ impl Queue {
             state.queue.clear();
             state.bytes = 0;
         }
-        self.notify(&mut state);
+        self.notify(&mut state, true);
     }
 }
 
@@ -158,7 +162,7 @@ impl StreamReader {
         let mut state = self.queue.lock();
         if let Some(chunk) = state.queue.pop_front() {
             state.bytes -= chunk.data.len();
-            self.queue.notify(&mut state);
+            self.queue.notify(&mut state, false);
             return Poll::Ready(Ok(Some(chunk)));
         }
         if let Some(error) = state.error.take() {
@@ -243,6 +247,9 @@ impl StreamOutput {
         if state.closed || cancellation.is_cancelled() {
             return Poll::Ready(Err(OutputError::Cancelled));
         }
+        // A new poll retires old registrations before choosing one suspension reason.
+        state.producer = None;
+        state.pacing_producer = None;
         if std::mem::take(&mut state.wake) {
             return Poll::Ready(Ok(None));
         }
@@ -250,9 +257,6 @@ impl StreamOutput {
             state.producer = Some(cx.waker().clone());
             return Poll::Pending;
         }
-        // A re-poll retires the preceding deadline registration. Otherwise the next write
-        // would wake its own stale producer waker and force an unnecessary extra turn.
-        state.producer = None;
         let deadline = if self.queue.pacing == StreamPacing::Realtime && state.paused.is_none() {
             state
                 .clock
@@ -267,7 +271,7 @@ impl StreamOutput {
             None
         };
         if deadline.is_some() {
-            state.producer = Some(cx.waker().clone());
+            state.pacing_producer = Some(cx.waker().clone());
         }
         Poll::Ready(Ok(deadline))
     }
@@ -376,7 +380,7 @@ impl MediaOutput for StreamOutput {
     fn wake(&self) {
         let mut state = self.queue.lock();
         state.wake = true;
-        self.queue.notify(&mut state);
+        self.queue.notify(&mut state, true);
     }
     fn fail(&self, message: String) {
         self.queue.close(Some(message), true);
@@ -549,7 +553,7 @@ impl MediaOutput for Arc<StreamOutput> {
 impl crate::source::CancellationWake for Queue {
     fn wake_for_cancellation(&self) {
         let mut state = self.lock();
-        self.notify(&mut state);
+        self.notify(&mut state, true);
     }
 }
 
@@ -694,5 +698,50 @@ mod tests {
         );
         drop(reader);
         assert!(output.wait_ready(&token).is_err());
+    }
+    #[test]
+    fn draining_capacity_does_not_wake_a_pacing_deadline_but_close_does() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::task::Wake;
+
+        struct Counter(AtomicUsize);
+        impl Wake for Counter {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+            fn wake_by_ref(self: &Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let (output, mut reader) = StreamOutput::new(
+            StreamFormat::F32le,
+            StreamPacing::Realtime,
+            OpusEncoderConfig::default(),
+        )
+        .unwrap();
+        let token = CancellationToken::new();
+        output
+            .write_frame(
+                PcmFrame {
+                    samples: vec![0.0; 1920],
+                    start_sample: 0,
+                    samples_per_channel: 960,
+                },
+                &token,
+            )
+            .unwrap();
+        // Keep the test independent of host scheduling delays without sleeping.
+        output.queue.lock().clock = Some((Instant::now() + Duration::from_secs(60), 0));
+        let counter = Arc::new(Counter(AtomicUsize::new(0)));
+        let waker = Waker::from(counter.clone());
+        assert!(matches!(
+            output.poll_ready(&mut Context::from_waker(&waker), &token),
+            Poll::Ready(Ok(Some(_)))
+        ));
+        assert!(matches!(read(&mut reader), Poll::Ready(Ok(Some(_)))));
+        assert_eq!(counter.0.load(Ordering::Relaxed), 0);
+        reader.cancel();
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
     }
 }
