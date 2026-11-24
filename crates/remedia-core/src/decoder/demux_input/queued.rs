@@ -71,7 +71,12 @@ impl QueuedInput {
         if let Some(packet) = &packet {
             state.bytes -= packet.size();
         }
-        if state.packets.len() <= 2 && !state.running && !state.eof && state.error.is_none() {
+        if state.packets.len() <= 2
+            && state.bytes < BYTES
+            && !state.running
+            && !state.eof
+            && state.error.is_none()
+        {
             state.running = true;
             let input = self.clone();
             if let Err(error) = self.executor.execute(move || {
@@ -264,5 +269,52 @@ mod tests {
             1,
             "read-ahead must not wake output pacing"
         );
+    }
+
+    #[test]
+    fn oversized_queued_packet_prevents_additional_read_ahead() {
+        let token = CancellationToken::new();
+        let source = InputSource::file(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/ffmpeg-opus-silent-lead-long.ogg"
+        ));
+        let input = input::open(&source, Duration::from_secs(5), token.clone()).unwrap();
+        let executor = Arc::new(BlockingExecutor::new(1, 8, "demux-byte-bound-test").unwrap());
+        let (started, running) = std::sync::mpsc::channel();
+        let (release, held) = std::sync::mpsc::channel();
+        executor
+            .execute(move || {
+                started.send(()).unwrap();
+                let _ = held.recv();
+            })
+            .unwrap();
+        running.recv().unwrap();
+        let queue = QueuedInput::new(input, executor.clone(), false, token);
+        {
+            let mut state = lock(&queue.state);
+            state.packets.push_back(ffmpeg::Packet::new(8));
+            state.packets.push_back(ffmpeg::Packet::new(BYTES + 1024));
+            state.bytes = BYTES + 1032;
+        }
+        let waker = Waker::from(Arc::new(Counter(AtomicUsize::new(0))));
+        let mut cx = Context::from_waker(&waker);
+        let polled = queue.poll_packet(&mut cx);
+        let reading = lock(&queue.state).running;
+        let queued = executor.queued();
+        release.send(()).unwrap();
+        assert!(matches!(polled, Poll::Ready(Ok(Some(_)))));
+        assert!(
+            !reading,
+            "an existing oversized packet must consume all byte headroom"
+        );
+        assert_eq!(
+            queued, 0,
+            "do not submit speculative reads beyond the watermark"
+        );
+        assert!(matches!(
+            queue.poll_packet(&mut cx),
+            Poll::Ready(Ok(Some(_)))
+        ));
+        queue.wait_idle();
     }
 }

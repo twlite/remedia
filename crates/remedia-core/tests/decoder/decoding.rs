@@ -330,38 +330,49 @@ fn standalone_probe_shares_metadata_without_pcm_initialization() {
 
 #[test]
 fn mp3_seek_matches_continuous_decode_independent_of_previous_reads() {
-    let bytes = include_bytes!("../fixtures/generated-hybrid-seek.mp3");
-    let mut reference = AudioDecoder::open(InputSource::bytes(bytes.to_vec())).unwrap();
-    let mut expected = Vec::new();
-    while let Some(frame) = reference.next_frame().unwrap() {
-        expected.extend(frame.samples);
-    }
-    for prior in [0, 1, 10] {
-        for target in [20, 70, 130, 1_500, 2_700] {
-            let mut decoder = AudioDecoder::open(InputSource::bytes(bytes.to_vec())).unwrap();
-            for _ in 0..prior {
-                let _ = decoder.next_frame().unwrap();
+    let cases: [(&[u8], &[u64]); 2] = [
+        (
+            include_bytes!("../fixtures/generated-tone.mp3"),
+            &[20, 70, 130],
+        ),
+        (
+            include_bytes!("../fixtures/generated-hybrid-seek.mp3"),
+            &[20, 70, 130, 1_500, 2_700],
+        ),
+    ];
+    for (bytes, targets) in cases {
+        let mut reference = AudioDecoder::open(InputSource::bytes(bytes.to_vec())).unwrap();
+        let mut expected = Vec::new();
+        while let Some(frame) = reference.next_frame().unwrap() {
+            expected.extend(frame.samples);
+        }
+        for prior in [0, 1, 10] {
+            for &target in targets {
+                let mut decoder = AudioDecoder::open(InputSource::bytes(bytes.to_vec())).unwrap();
+                for _ in 0..prior {
+                    let _ = decoder.next_frame().unwrap();
+                }
+                decoder.seek(Duration::from_millis(target)).unwrap();
+                let mut actual = Vec::new();
+                while let Some(frame) = decoder.next_frame().unwrap() {
+                    actual.extend(frame.samples);
+                }
+                let expected = &expected[target as usize * 48 * 2..];
+                assert_eq!(
+                    actual.len(),
+                    expected.len(),
+                    "prior={prior} target={target}"
+                );
+                let mismatch = actual
+                    .iter()
+                    .zip(expected)
+                    .position(|(a, b)| a.to_bits() != b.to_bits());
+                assert!(
+                    mismatch.is_none(),
+                    "prior={prior} target={target} mismatch={mismatch:?} info={:?}",
+                    decoder.info()
+                );
             }
-            decoder.seek(Duration::from_millis(target)).unwrap();
-            let mut actual = Vec::new();
-            while let Some(frame) = decoder.next_frame().unwrap() {
-                actual.extend(frame.samples);
-            }
-            let expected = &expected[target as usize * 48 * 2..];
-            assert_eq!(
-                actual.len(),
-                expected.len(),
-                "prior={prior} target={target}"
-            );
-            let mismatch = actual
-                .iter()
-                .zip(expected)
-                .position(|(a, b)| a.to_bits() != b.to_bits());
-            assert!(
-                mismatch.is_none(),
-                "prior={prior} target={target} mismatch={mismatch:?} info={:?}",
-                decoder.info()
-            );
         }
     }
 }
