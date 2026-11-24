@@ -45,3 +45,6 @@ url = "2.5"
 
 [lints]
 workspace = true
+
+[features]
+experimental-scheduler = ["remedia-core/experimental-scheduler"]

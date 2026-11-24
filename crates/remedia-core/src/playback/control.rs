@@ -94,7 +94,9 @@ pub(super) fn next_worker_action(
                 return WorkerAction::Decode;
             }
             PlaybackState::Paused | PlaybackState::Starting => {
-                data = wait(&shared.changed, data);
+                return WorkerAction::Wait(
+                    shared.revision.load(std::sync::atomic::Ordering::Acquire),
+                );
             }
             PlaybackState::Resuming => return WorkerAction::Resume,
             PlaybackState::Stopping => return WorkerAction::Exit,
@@ -143,7 +145,7 @@ pub(super) fn fail_session(
         let output_sample = data.submitted_sample;
         let pending_seek = data.pending_seek.take();
         let pending_filter = data.pending_filter_graph.take();
-        shared.changed.notify_all();
+        shared.signal_change();
         (pending_seek, pending_filter, playback_id, output_sample)
     };
     shared.notify_completion_waiters();

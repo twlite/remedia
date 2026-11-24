@@ -81,7 +81,7 @@ impl SeekCanceller {
             // A worker that is paused or blocked in a read notices at its next check.
             let mut data = lock(&self.shared.data);
             data.fallback_signal = true;
-            self.shared.changed.notify_all();
+            self.shared.signal_change();
         }
 
         cancelled

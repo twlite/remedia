@@ -2,8 +2,7 @@
 
 use super::*;
 
-pub(super) struct PreparedWorker<'a> {
-    pub(super) output_opus: Option<&'a dyn crate::output::EncodedOpusOutput>,
+pub(super) struct PreparedWorker {
     pub(super) decoder: AudioDecoder,
     pub(super) processor: PcmProcessor,
     pub(super) can_passthrough: bool,
@@ -12,14 +11,14 @@ pub(super) struct PreparedWorker<'a> {
     pub(super) _active_playback: ActivePlaybackGuard,
 }
 
-pub(super) fn prepare<'a>(
+pub(super) fn prepare(
     shared: &Arc<SessionShared>,
     generation: u64,
     source: InputSource,
-    output: &'a Arc<dyn MediaOutput>,
+    output: &Arc<dyn MediaOutput>,
     cancellation: &CancellationToken,
     ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
-) -> Option<PreparedWorker<'a>> {
+) -> Option<PreparedWorker> {
     let source_kind = source.kind();
     let decoder_started = Instant::now();
     let open_span = tracing::info_span!(
@@ -106,7 +105,7 @@ pub(super) fn prepare<'a>(
             PlaybackProcessingMode::Transcoding
         });
         data.passthrough_available = can_passthrough;
-        shared.changed.notify_all();
+        shared.signal_change();
     }
     if can_passthrough {
         tracing::info!(
@@ -157,7 +156,6 @@ pub(super) fn prepare<'a>(
     );
 
     Some(PreparedWorker {
-        output_opus,
         decoder,
         processor,
         can_passthrough,

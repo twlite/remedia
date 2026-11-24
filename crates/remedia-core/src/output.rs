@@ -48,6 +48,24 @@ impl OutputError {
 /// internally, but must bound that buffering. Long-running operations must
 /// observe `cancellation`; `cancel` is called concurrently to unblock them.
 pub trait MediaOutput: Send + Sync + 'static {
+    /// Whether every output operation is bounded CPU work without waiting for a consumer.
+    /// Experimental scheduling conservatively leaves custom outputs on dedicated workers.
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_nonblocking(&self) -> bool {
+        false
+    }
+
+    /// Poll output demand without blocking. Used only after `scheduler_nonblocking` opts in.
+    /// Implementations must register the waker before returning pending and wake it on controls.
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_ready(
+        &self,
+        _cx: &mut std::task::Context<'_>,
+        _cancellation: &CancellationToken,
+    ) -> std::task::Poll<Result<(), OutputError>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
     /// Wait until production can continue. Called at worker action boundaries, outside
     /// session locks. Control requests call `wake` so bounded outputs can yield to them.
     fn wait_ready(&self, _cancellation: &CancellationToken) -> Result<(), OutputError> {
@@ -247,6 +265,11 @@ impl NullOutput {
 }
 
 impl MediaOutput for NullOutput {
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_nonblocking(&self) -> bool {
+        true
+    }
+
     fn write_frame(
         &self,
         frame: PcmFrame,

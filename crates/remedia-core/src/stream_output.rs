@@ -300,6 +300,21 @@ impl StreamOutput {
 }
 
 impl MediaOutput for StreamOutput {
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_nonblocking(&self) -> bool {
+        self.queue.pacing == StreamPacing::Unpaced
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_ready(
+        &self,
+        cx: &mut std::task::Context<'_>,
+        cancellation: &CancellationToken,
+    ) -> Poll<Result<(), OutputError>> {
+        self.poll_ready(cx, cancellation)
+            .map(|result| result.map(|_| ()))
+    }
+
     fn wait_ready(&self, cancellation: &CancellationToken) -> Result<(), OutputError> {
         if !self
             .registered
@@ -455,6 +470,20 @@ impl MediaOutput for StreamOutput {
 
 // A host retains a control handle while the worker owns another reference.
 impl MediaOutput for Arc<StreamOutput> {
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_nonblocking(&self) -> bool {
+        (**self).scheduler_nonblocking()
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_ready(
+        &self,
+        cx: &mut std::task::Context<'_>,
+        cancellation: &CancellationToken,
+    ) -> Poll<Result<(), OutputError>> {
+        (**self).scheduler_poll_ready(cx, cancellation)
+    }
+
     fn wait_ready(&self, c: &CancellationToken) -> Result<(), OutputError> {
         (**self).wait_ready(c)
     }

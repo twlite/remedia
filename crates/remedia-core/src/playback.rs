@@ -232,6 +232,13 @@ pub struct PlaybackWaiter {
 }
 
 struct SessionShared {
+    #[cfg(feature = "experimental-scheduler")]
+    executor: std::sync::atomic::AtomicUsize,
+    revision: std::sync::atomic::AtomicU64,
+    #[cfg(feature = "experimental-scheduler")]
+    scheduler: Option<Arc<PlaybackScheduler>>,
+    #[cfg(feature = "experimental-scheduler")]
+    scheduled: Mutex<Option<Arc<scheduler::Job>>>,
     data: Mutex<SessionData>,
     changed: Condvar,
     completion_waiters: completion::CompletionWaiters,
@@ -287,6 +294,7 @@ struct FilterUpdate {
 }
 
 enum WorkerAction {
+    Wait(u64),
     ConfigureProcessing,
     PollFallback,
     Decode,
@@ -438,3 +446,20 @@ mod control;
 use control::*;
 
 mod controls;
+
+#[cfg(feature = "experimental-scheduler")]
+mod scheduler;
+#[cfg(feature = "experimental-scheduler")]
+pub use scheduler::{PlaybackScheduler, SchedulerDiagnostics};
+
+impl SessionShared {
+    fn signal_change(&self) {
+        self.revision
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        self.changed.notify_all();
+        #[cfg(feature = "experimental-scheduler")]
+        if let Some(job) = lock(&self.scheduled).as_ref() {
+            job.wake();
+        }
+    }
+}

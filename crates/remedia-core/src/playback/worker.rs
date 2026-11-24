@@ -40,6 +40,15 @@ pub(super) fn worker_entry(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum WorkerStep {
+    Runnable,
+    Paused(u64),
+    #[cfg(feature = "experimental-scheduler")]
+    WaitingOutput,
+    Terminal,
+}
+
 pub(super) fn worker_loop(
     shared: Arc<SessionShared>,
     generation: u64,
@@ -49,9 +58,102 @@ pub(super) fn worker_loop(
     ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
     reopen: fallback::Reopen,
 ) {
+    #[cfg(feature = "experimental-scheduler")]
+    let eligible = matches!(source, InputSource::Bytes(_)) && output.scheduler_nonblocking();
+    #[cfg(feature = "experimental-scheduler")]
+    let panic_context = (shared.clone(), output.clone(), cancellation.clone());
+    let Some(machine) = prepare_machine(
+        Arc::clone(&shared),
+        generation,
+        source,
+        output,
+        cancellation,
+        ready,
+        reopen,
+    ) else {
+        return;
+    };
+
+    #[cfg(feature = "experimental-scheduler")]
+    if eligible && let Some(pool) = &shared.scheduler {
+        let mut machine = machine;
+        let cancellation = panic_context.2.clone();
+        let safe_machine = move || match catch_unwind(AssertUnwindSafe(&mut machine)) {
+            Ok(step) => step,
+            Err(_) => {
+                fail_session(
+                    &panic_context.0,
+                    generation,
+                    PlaybackError::WorkerPanicked,
+                    &panic_context.2,
+                    &panic_context.1,
+                );
+                WorkerStep::Terminal
+            }
+        };
+        match pool.submit(safe_machine) {
+            Ok(job) => {
+                let wake = Arc::new(scheduler::CancelWake(Arc::downgrade(&job)));
+                cancellation.register_waker(wake.clone());
+                *lock(&job.cancel_wake) = Some(wake);
+                *lock(&shared.scheduled) = Some(job.clone());
+                shared
+                    .executor
+                    .store(1, std::sync::atomic::Ordering::Release);
+                job.wake();
+            }
+            Err(machine) => {
+                shared
+                    .executor
+                    .store(3, std::sync::atomic::Ordering::Release);
+                drive_machine(machine, &shared, generation);
+            }
+        }
+        return;
+    }
+    #[cfg(feature = "experimental-scheduler")]
+    shared.executor.store(
+        if shared.scheduler.is_some() { 2 } else { 0 },
+        std::sync::atomic::Ordering::Release,
+    );
+    drive_machine(machine, &shared, generation);
+}
+
+fn drive_machine(mut machine: impl FnMut() -> WorkerStep, shared: &SessionShared, generation: u64) {
+    loop {
+        match machine() {
+            WorkerStep::Runnable => {}
+            WorkerStep::Terminal => return,
+            #[cfg(feature = "experimental-scheduler")]
+            WorkerStep::WaitingOutput => unreachable!("dedicated output uses blocking readiness"),
+            WorkerStep::Paused(revision) => {
+                let mut data = lock(&shared.data);
+                while shared.revision.load(std::sync::atomic::Ordering::Acquire) == revision
+                    && data.generation == generation
+                    && matches!(data.state, PlaybackState::Paused | PlaybackState::Starting)
+                    && data.pending_seek.is_none()
+                    && data.pending_filter_graph.is_none()
+                    && !data.fallback_signal
+                    && !data.stopping
+                {
+                    data = wait(&shared.changed, data);
+                }
+            }
+        }
+    }
+}
+
+fn prepare_machine(
+    shared: Arc<SessionShared>,
+    generation: u64,
+    source: InputSource,
+    output: Arc<dyn MediaOutput>,
+    cancellation: CancellationToken,
+    ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
+    reopen: fallback::Reopen,
+) -> Option<impl FnMut() -> WorkerStep + Send> {
     let _log_capture = crate::ffmpeg_logging::capture();
     let Some(startup::PreparedWorker {
-        output_opus,
         mut decoder,
         mut processor,
         mut can_passthrough,
@@ -60,7 +162,7 @@ pub(super) fn worker_loop(
         _active_playback,
     }) = startup::prepare(&shared, generation, source, &output, &cancellation, ready)
     else {
-        return;
+        return None;
     };
 
     let mut pending_frame = None;
@@ -80,10 +182,33 @@ pub(super) fn worker_loop(
     // swapping decoders blends decoded audio.
     let mut fallback: Option<fallback::FallbackSeek> = None;
     let mut force_pcm = false;
-    loop {
-        if let Err(error) = output.wait_ready(&cancellation) {
+    Some(move || {
+        let _active = &_active_playback;
+        let _log_capture = crate::ffmpeg_logging::capture();
+        let output_opus = output.encoded_opus_output();
+        #[cfg(feature = "experimental-scheduler")]
+        let scheduled_waker = lock(&shared.scheduled)
+            .as_ref()
+            .and_then(|job| lock(&job.cancel_wake).clone());
+        #[cfg(feature = "experimental-scheduler")]
+        let readiness = if let Some(wake) = scheduled_waker {
+            let waker = std::task::Waker::from(wake);
+            let mut cx = std::task::Context::from_waker(&waker);
+            match output.scheduler_poll_ready(&mut cx, &cancellation) {
+                std::task::Poll::Pending => return WorkerStep::WaitingOutput,
+                std::task::Poll::Ready(result) => result,
+            }
+        } else {
+            output.wait_ready(&cancellation)
+        };
+        #[cfg(not(feature = "experimental-scheduler"))]
+        let readiness = output.wait_ready(&cancellation);
+        if cancellation.is_cancelled() {
+            return WorkerStep::Terminal;
+        }
+        if let Err(error) = readiness {
             fail_session(&shared, generation, error.into(), &cancellation, &output);
-            return;
+            return WorkerStep::Terminal;
         }
         if let Some(waiting) = fallback.as_ref() {
             waiting.set_playhead(fallback_playhead(&pending_frame, &processor));
@@ -130,7 +255,7 @@ pub(super) fn worker_loop(
                     Some(Ok(replacement)) => replacement,
                     _ => {
                         done.finish(Err(PlaybackError::Cancelled));
-                        continue;
+                        return WorkerStep::Runnable;
                     }
                 };
                 // The audio the old decoder would play next, at the exact sample the swap
@@ -139,7 +264,7 @@ pub(super) fn worker_loop(
                     Some(frame) => Some(frame),
                     None => match decoder.next_timed_frame() {
                         Ok(frame) => frame,
-                        Err(_) if is_stopped(&shared, generation) => return,
+                        Err(_) if is_stopped(&shared, generation) => return WorkerStep::Terminal,
                         Err(_) => None,
                     },
                 };
@@ -231,7 +356,7 @@ pub(super) fn worker_loop(
                             data.duration = info.duration;
                             data.info = Some(info);
                             data.passthrough_available = false;
-                            shared.changed.notify_all();
+                            shared.signal_change();
                         }
                         fallback::record_applied(
                             playback_id,
@@ -246,7 +371,7 @@ pub(super) fn worker_loop(
                         // The old source's next audio goes back where it was.
                         pending_frame = old;
                         if is_stopped(&shared, generation) {
-                            return;
+                            return WorkerStep::Terminal;
                         }
                         tracing::warn!(
                             name: "core.playback.fallback_seek_failed",
@@ -288,10 +413,10 @@ pub(super) fn worker_loop(
                 Ok(None) => {}
                 Err(error) => {
                     if is_stopped(&shared, generation) {
-                        return;
+                        return WorkerStep::Terminal;
                     }
                     fail_session(&shared, generation, error.into(), &cancellation, &output);
-                    return;
+                    return WorkerStep::Terminal;
                 }
             }
         }
@@ -303,7 +428,8 @@ pub(super) fn worker_loop(
             can_passthrough && !force_pcm,
             passthrough_mode,
         ) {
-            WorkerAction::Exit => return,
+            WorkerAction::Exit => return WorkerStep::Terminal,
+            WorkerAction::Wait(revision) => return WorkerStep::Paused(revision),
             // The replacement finished preparing; the check at the top of the loop acts on it.
             WorkerAction::PollFallback => {}
             WorkerAction::ConfigureProcessing => {
@@ -326,7 +452,7 @@ pub(super) fn worker_loop(
                 .apply()
                 .is_break()
                 {
-                    return;
+                    return WorkerStep::Terminal;
                 }
                 if was_passthrough && !passthrough_mode && seek_recovery.can_resume() {
                     // Entering PCM from forwarded packets. A stream whose pre-skip equals the
@@ -360,7 +486,7 @@ pub(super) fn worker_loop(
                             };
                             if should_process {
                                 decoder.queue_compressed_packet(packet);
-                                continue;
+                                return WorkerStep::Runnable;
                             }
                             let packet_info =
                                 encoded_packet_from_demuxed(&packet, decoder.info().channels);
@@ -372,7 +498,7 @@ pub(super) fn worker_loop(
                                 });
                             if accepted {
                                 let Some(packet_info) = packet_info else {
-                                    continue;
+                                    return WorkerStep::Runnable;
                                 };
                                 let start_sample = match processor.record_passthrough_packet(
                                     packet_info.media_samples_per_channel,
@@ -388,7 +514,7 @@ pub(super) fn worker_loop(
                                             &cancellation,
                                             &output,
                                         );
-                                        return;
+                                        return WorkerStep::Terminal;
                                     }
                                 };
                                 let packet_info = EncodedOpusPacket {
@@ -408,7 +534,7 @@ pub(super) fn worker_loop(
                                         encoded.write_encoded_packet(packet_info, &cancellation)
                                 {
                                     if is_stopped(&shared, generation) {
-                                        return;
+                                        return WorkerStep::Terminal;
                                     }
                                     fail_session(
                                         &shared,
@@ -417,7 +543,7 @@ pub(super) fn worker_loop(
                                         &cancellation,
                                         &output,
                                     );
-                                    return;
+                                    return WorkerStep::Terminal;
                                 } else {
                                     record_encoded_packet_submitted(
                                         &shared,
@@ -449,10 +575,10 @@ pub(super) fn worker_loop(
                         Ok(None) => input_finished = true,
                         Err(error) => {
                             if is_stopped(&shared, generation) {
-                                return;
+                                return WorkerStep::Terminal;
                             }
                             fail_session(&shared, generation, error.into(), &cancellation, &output);
-                            return;
+                            return WorkerStep::Terminal;
                         }
                     }
                 } else {
@@ -461,10 +587,10 @@ pub(super) fn worker_loop(
                         Ok(None) => input_finished = true,
                         Err(error) => {
                             if is_stopped(&shared, generation) {
-                                return;
+                                return WorkerStep::Terminal;
                             }
                             fail_session(&shared, generation, error.into(), &cancellation, &output);
-                            return;
+                            return WorkerStep::Terminal;
                         }
                     }
                 }
@@ -521,11 +647,13 @@ pub(super) fn worker_loop(
                             .apply()
                             .is_break()
                             {
-                                return;
+                                return WorkerStep::Terminal;
                             }
                         }
                     }
-                    Err(ProcessError::Output(_)) if is_stopped(&shared, generation) => return,
+                    Err(ProcessError::Output(_)) if is_stopped(&shared, generation) => {
+                        return WorkerStep::Terminal;
+                    }
                     Err(ProcessError::Output(error)) => {
                         fail_session(
                             &shared,
@@ -534,7 +662,7 @@ pub(super) fn worker_loop(
                             &cancellation,
                             &output,
                         );
-                        return;
+                        return WorkerStep::Terminal;
                     }
                     Err(ProcessError::Filter(error)) => {
                         fail_session(
@@ -544,7 +672,7 @@ pub(super) fn worker_loop(
                             &cancellation,
                             &output,
                         );
-                        return;
+                        return WorkerStep::Terminal;
                     }
                 }
             }
@@ -581,7 +709,7 @@ pub(super) fn worker_loop(
                     }
                     Err(_) if is_stopped(&shared, generation) => {
                         let _ = update.response.send(Err(PlaybackError::Cancelled));
-                        return;
+                        return WorkerStep::Terminal;
                     }
                     Err(error) => {
                         let playback_error = PlaybackError::Output(error);
@@ -595,7 +723,7 @@ pub(super) fn worker_loop(
                         );
                         let _ = update.response.send(Err(playback_error.clone()));
                         fail_session(&shared, generation, playback_error, &cancellation, &output);
-                        return;
+                        return WorkerStep::Terminal;
                     }
                 }
             }
@@ -608,7 +736,7 @@ pub(super) fn worker_loop(
                     if paused {
                         data.state = PlaybackState::Paused;
                     }
-                    shared.changed.notify_all();
+                    shared.signal_change();
                     drop(data);
                     if paused {
                         tracing::info!(
@@ -619,7 +747,7 @@ pub(super) fn worker_loop(
                         );
                     }
                 }
-                Err(_) if is_stopped(&shared, generation) => return,
+                Err(_) if is_stopped(&shared, generation) => return WorkerStep::Terminal,
                 Err(error) => {
                     fail_session(
                         &shared,
@@ -628,7 +756,7 @@ pub(super) fn worker_loop(
                         &cancellation,
                         &output,
                     );
-                    return;
+                    return WorkerStep::Terminal;
                 }
             },
             WorkerAction::Resume => match output.resume(&cancellation) {
@@ -640,7 +768,7 @@ pub(super) fn worker_loop(
                     if resumed {
                         data.state = PlaybackState::Playing;
                     }
-                    shared.changed.notify_all();
+                    shared.signal_change();
                     drop(data);
                     if resumed {
                         tracing::info!(
@@ -651,7 +779,7 @@ pub(super) fn worker_loop(
                         );
                     }
                 }
-                Err(_) if is_stopped(&shared, generation) => return,
+                Err(_) if is_stopped(&shared, generation) => return WorkerStep::Terminal,
                 Err(error) => {
                     fail_session(
                         &shared,
@@ -660,7 +788,7 @@ pub(super) fn worker_loop(
                         &cancellation,
                         &output,
                     );
-                    return;
+                    return WorkerStep::Terminal;
                 }
             },
             WorkerAction::Seek(request) => {
@@ -677,7 +805,7 @@ pub(super) fn worker_loop(
                 {
                     if request.ticket.is_cancelled() {
                         let _ = request.response.send(Err(PlaybackError::SeekCancelled));
-                        continue;
+                        return WorkerStep::Runnable;
                     }
                     let origin = fallback_playhead(&pending_frame, &processor);
                     match fallback::FallbackSeek::start(
@@ -702,12 +830,12 @@ pub(super) fn worker_loop(
                             let _ = request.response.send(Err(error));
                         }
                     }
-                    continue;
+                    return WorkerStep::Runnable;
                 }
                 // From here the seek changes the source, so it can no longer be cancelled.
                 if !request.ticket.commit() {
                     let _ = request.response.send(Err(PlaybackError::SeekCancelled));
-                    continue;
+                    return WorkerStep::Runnable;
                 }
 
                 // The demuxer is asked first and nothing else is changed until it agrees, so a
@@ -725,7 +853,7 @@ pub(super) fn worker_loop(
                                     &cancellation,
                                     &output,
                                 );
-                                return;
+                                return WorkerStep::Terminal;
                             }
                             passthrough_mode = false;
                         }
@@ -744,7 +872,7 @@ pub(super) fn worker_loop(
                             let mut data = lock(&shared.data);
                             data.passthrough_available = false;
                             data.processing_mode = Some(PlaybackProcessingMode::Transcoding);
-                            shared.changed.notify_all();
+                            shared.signal_change();
                         }
                         input_finished = false;
                         let target_sample = samples_from_duration(request.position);
@@ -758,7 +886,7 @@ pub(super) fn worker_loop(
                                 &cancellation,
                                 &output,
                             );
-                            return;
+                            return WorkerStep::Terminal;
                         }
                         let flushed =
                             output
@@ -798,7 +926,7 @@ pub(super) fn worker_loop(
                             }
                             Err(_) if is_stopped(&shared, generation) => {
                                 let _ = request.response.send(Err(PlaybackError::Cancelled));
-                                return;
+                                return WorkerStep::Terminal;
                             }
                             Err(error) => {
                                 let playback_error = PlaybackError::Output(error);
@@ -817,14 +945,14 @@ pub(super) fn worker_loop(
                                     &cancellation,
                                     &output,
                                 );
-                                return;
+                                return WorkerStep::Terminal;
                             }
                         }
                     }
                     Err(error) => {
                         if is_stopped(&shared, generation) {
                             let _ = request.response.send(Err(PlaybackError::Cancelled));
-                            return;
+                            return WorkerStep::Terminal;
                         }
                         let playback_error: PlaybackError = error.into();
                         if matches!(playback_error, PlaybackError::UnsupportedSeeking(_))
@@ -848,7 +976,7 @@ pub(super) fn worker_loop(
                                     let _ = request.response.send(Err(error));
                                 }
                             }
-                            continue;
+                            return WorkerStep::Runnable;
                         }
                         let recoverable = matches!(
                             playback_error,
@@ -872,10 +1000,10 @@ pub(super) fn worker_loop(
                                 &cancellation,
                                 &output,
                             );
-                            return;
+                            return WorkerStep::Terminal;
                         }
                         if is_stopped(&shared, generation) {
-                            return;
+                            return WorkerStep::Terminal;
                         }
                     }
                 }
@@ -898,7 +1026,9 @@ pub(super) fn worker_loop(
                     )
                 }) {
                     Ok(()) => {}
-                    Err(ProcessError::Output(_)) if is_stopped(&shared, generation) => return,
+                    Err(ProcessError::Output(_)) if is_stopped(&shared, generation) => {
+                        return WorkerStep::Terminal;
+                    }
                     Err(ProcessError::Output(error)) => {
                         fail_session(
                             &shared,
@@ -907,7 +1037,7 @@ pub(super) fn worker_loop(
                             &cancellation,
                             &output,
                         );
-                        return;
+                        return WorkerStep::Terminal;
                     }
                     Err(ProcessError::Filter(error)) => {
                         fail_session(
@@ -917,7 +1047,7 @@ pub(super) fn worker_loop(
                             &cancellation,
                             &output,
                         );
-                        return;
+                        return WorkerStep::Terminal;
                     }
                 }
                 match output.finish(&cancellation) {
@@ -933,7 +1063,7 @@ pub(super) fn worker_loop(
                             } else {
                                 (None, None)
                             };
-                            shared.changed.notify_all();
+                            shared.signal_change();
                             (pending.0, pending.1, completed)
                         };
                         if completed {
@@ -967,9 +1097,9 @@ pub(super) fn worker_loop(
                             playback_id,
                             "playback reached end of stream"
                         );
-                        return;
+                        return WorkerStep::Terminal;
                     }
-                    Err(_) if is_stopped(&shared, generation) => return,
+                    Err(_) if is_stopped(&shared, generation) => return WorkerStep::Terminal,
                     Err(error) => {
                         fail_session(
                             &shared,
@@ -978,12 +1108,13 @@ pub(super) fn worker_loop(
                             &cancellation,
                             &output,
                         );
-                        return;
+                        return WorkerStep::Terminal;
                     }
                 }
             }
         }
-    }
+        WorkerStep::Runnable
+    })
 }
 
 mod startup;

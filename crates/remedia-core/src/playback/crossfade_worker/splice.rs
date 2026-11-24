@@ -82,7 +82,7 @@ pub(super) fn finish_fallback_switch(
         state.source_serial = state.source_serial.saturating_add(1);
         state.source_generation = state.source_serial;
         state.latest_stage = None;
-        shared.changed.notify_all();
+        shared.signal_change();
 
         (previous_generation, state.source_generation)
     };

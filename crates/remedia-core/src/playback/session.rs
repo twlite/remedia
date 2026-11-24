@@ -19,6 +19,13 @@ impl PlaybackSession {
     pub fn with_observability(observability: ObservabilityHandle) -> Self {
         Self {
             shared: Arc::new(SessionShared {
+                #[cfg(feature = "experimental-scheduler")]
+                executor: std::sync::atomic::AtomicUsize::new(0),
+                revision: std::sync::atomic::AtomicU64::new(0),
+                #[cfg(feature = "experimental-scheduler")]
+                scheduler: None,
+                #[cfg(feature = "experimental-scheduler")]
+                scheduled: Mutex::new(None),
                 data: Mutex::new(SessionData {
                     state: PlaybackState::Idle,
                     generation: 0,
@@ -60,6 +67,32 @@ impl PlaybackSession {
             filter_update_lock: Mutex::new(()),
             stage: Arc::new(Mutex::new(None)),
             crossfade: Mutex::new(None),
+        }
+    }
+
+    /// Create an idle session attached to a shared experimental pool. Unsupported source/output
+    /// combinations and crossfade retain dedicated execution. Existing constructors stay dedicated.
+    #[cfg(feature = "experimental-scheduler")]
+    pub fn with_scheduler(scheduler: Arc<PlaybackScheduler>) -> Self {
+        let mut session = Self::new();
+        Arc::get_mut(&mut session.shared)
+            .expect("new session has one owner")
+            .scheduler = Some(scheduler);
+        session
+    }
+
+    /// Active backend, or dedicated fallback reason for a pool-attached session.
+    #[cfg(feature = "experimental-scheduler")]
+    pub fn executor_diagnostic(&self) -> &'static str {
+        match self
+            .shared
+            .executor
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            1 => "scheduled",
+            2 => "dedicated: unsupported workload",
+            3 => "dedicated: pool capacity",
+            _ => "dedicated",
         }
     }
 
@@ -248,7 +281,7 @@ impl PlaybackSession {
             match thread_result {
                 Ok(worker) => {
                     *lock(&self.worker) = Some(worker);
-                    self.shared.changed.notify_all();
+                    self.shared.signal_change();
                 }
                 Err(error) => {
                     let playback_error = PlaybackError::WorkerInitialization(Arc::new(error));
@@ -256,7 +289,7 @@ impl PlaybackSession {
                     data.last_error = Some(playback_error.clone());
                     data.cancellation = None;
                     data.output = None;
-                    self.shared.changed.notify_all();
+                    self.shared.signal_change();
                     drop(data);
                     self.shared.notify_completion_waiters();
                     drop(start_guard);
@@ -299,7 +332,7 @@ impl PlaybackSession {
                 data.duration = info.duration;
                 data.info = Some(info.clone());
                 data.state = PlaybackState::Playing;
-                self.shared.changed.notify_all();
+                self.shared.signal_change();
                 drop(data);
                 with_dispatch(&self.shared.observability, || {
                     tracing::info!(
@@ -469,6 +502,14 @@ impl PlaybackSession {
         let previous = lock(&self.worker).take();
         if previous.is_some_and(|worker| worker.join().is_err()) {
             return Err(PlaybackError::WorkerPanicked);
+        }
+        #[cfg(feature = "experimental-scheduler")]
+        {
+            let job = lock(&self.shared.scheduled).take();
+            if let Some(job) = job {
+                job.wake();
+                job.join();
+            }
         }
         Ok(())
     }

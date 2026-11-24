@@ -139,3 +139,6 @@ pub fn ffmpeg_capabilities() -> (Vec<String>, Vec<String>, Vec<String>) {
     }
     (decoders, filters, protocols)
 }
+
+#[cfg(feature = "experimental-scheduler")]
+pub use playback::{PlaybackScheduler, SchedulerDiagnostics};

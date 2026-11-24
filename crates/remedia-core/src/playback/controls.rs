@@ -12,7 +12,7 @@ impl PlaybackSession {
             PlaybackState::Paused => return Ok(()),
             PlaybackState::Playing => {
                 data.state = PlaybackState::Pausing;
-                self.shared.changed.notify_all();
+                self.shared.signal_change();
                 if let Some(output) = data.output.as_ref() {
                     output.wake();
                 }
@@ -51,7 +51,7 @@ impl PlaybackSession {
             PlaybackState::Playing => return Ok(()),
             PlaybackState::Paused => {
                 data.state = PlaybackState::Resuming;
-                self.shared.changed.notify_all();
+                self.shared.signal_change();
                 if let Some(output) = data.output.as_ref() {
                     output.wake();
                 }
@@ -156,7 +156,7 @@ impl PlaybackSession {
                 ticket: Arc::clone(&ticket),
             });
             data.seek_ticket = Some(Arc::clone(&ticket));
-            self.shared.changed.notify_all();
+            self.shared.signal_change();
             if let Some(output) = data.output.as_ref() {
                 output.wake();
             }
@@ -226,7 +226,7 @@ impl PlaybackSession {
                 graph: candidate,
                 response: sender,
             });
-            self.shared.changed.notify_all();
+            self.shared.signal_change();
             if let Some(output) = data.output.as_ref() {
                 output.wake();
             }
@@ -303,7 +303,7 @@ impl PlaybackSession {
                     && data.state == PlaybackState::Playing
                     && data.processing_mode != Some(*target)
             });
-            self.shared.changed.notify_all();
+            self.shared.signal_change();
             if let Some(output) = data.output.as_ref() {
                 output.wake();
             }
@@ -395,7 +395,7 @@ impl PlaybackSession {
             let pending_seek = data.pending_seek.take();
             let pending_filter = data.pending_filter_graph.take();
             let playback_id = data.playback_id;
-            self.shared.changed.notify_all();
+            self.shared.signal_change();
             if let Some(output) = data.output.as_ref() {
                 output.wake();
             }
@@ -456,7 +456,7 @@ impl PlaybackSession {
             let error = PlaybackError::WorkerPanicked;
             data.state = PlaybackState::Failed;
             data.last_error = Some(error.clone());
-            self.shared.changed.notify_all();
+            self.shared.signal_change();
             if let Some(output) = data.output.as_ref() {
                 output.wake();
             }
@@ -469,7 +469,7 @@ impl PlaybackSession {
             data.state = PlaybackState::Stopped;
         }
         let terminal_state = data.state;
-        self.shared.changed.notify_all();
+        self.shared.signal_change();
         if let Some(output) = data.output.as_ref() {
             output.wake();
         }
