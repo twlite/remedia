@@ -24,7 +24,7 @@ libproc.proc_pidinfo.restype = ctypes.c_int
 def roles(pid):
     ids = ctypes.create_string_buffer(8 * 2048)
     size = libproc.proc_pidinfo(pid, 6, 0, ids, len(ids))
-    counts = dict(cpu=0, playback_or_startup=0, other=0)
+    counts = dict(cpu=0, playback_or_startup=0, startup=0, control=0, demux=0, fallback=0, other=0)
     for offset in range(0, max(0, size) - 7, 8):
         tid = struct.unpack_from('Q', ids.raw, offset)[0]
         info = ctypes.create_string_buffer(112)
@@ -32,11 +32,15 @@ def roles(pid):
             continue
         name = info.raw[48:112].split(b'\0', 1)[0].decode(errors='replace')
         key = 'cpu' if name.startswith('remedia-cpu-') else 'playback_or_startup' if name.startswith('remedia-playback-') else 'other'
+        for prefix, role in [('remedia-startup-', 'startup'), ('remedia-control-', 'control'), ('remedia-demux-', 'demux'), ('remedia-fallback-', 'fallback')]:
+            if name.startswith(prefix):
+                key = role
+                break
         counts[key] += 1
     return counts
 
 
-with Path(args.output).open('w') as output:
+with Path(args.output).open('x') as output:
     for repeat in range(3):
         for workers in [0, 1, 4, 10]:
             binary = args.original if workers == 0 else args.scheduled
@@ -61,7 +65,7 @@ with Path(args.output).open('w') as output:
             row = json.loads(stdout)
             end = row['samplingEpochUnixMs'] + row['startupSeconds']*1000
             startup = [s for s in samples if s[0] <= end]
-            peaks = {k:max((s[1][k] for s in startup), default=0) for k in ['cpu','playback_or_startup','other']}
+            peaks = {k:max((s[1][k] for s in startup), default=0) for k in ['cpu','playback_or_startup','startup','control','demux','fallback','other']}
             if workers:
                 assert row['diagnostics']['admitted'] == 512 and row['diagnostics']['unsupportedFallbacks'] == 0
             result = dict(profilingOnly=True, sessions=512, workers=workers, repetition=repeat,

@@ -30,16 +30,25 @@ impl StartGate {
 
 struct GatedOutput<O> {
     gate: Arc<StartGate>,
+    control_wake: std::sync::atomic::AtomicBool,
     output: O,
 }
 
 impl<O: MediaOutput> MediaOutput for GatedOutput<O> {
     fn wait_ready(&self, cancellation: &CancellationToken) -> Result<(), OutputError> {
         let mut state = self.gate.state.lock().unwrap();
-        while !state.0 && !cancellation.is_cancelled() {
+        while !state.0
+            && !self.control_wake.load(std::sync::atomic::Ordering::Acquire)
+            && !cancellation.is_cancelled()
+        {
             state = self.gate.changed.wait(state).unwrap();
         }
+        let closed = !state.0;
         drop(state);
+        if closed {
+            self.control_wake
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
         if cancellation.is_cancelled() {
             return Err(OutputError::Cancelled);
         }
@@ -52,6 +61,22 @@ impl<O: MediaOutput> MediaOutput for GatedOutput<O> {
     }
 
     #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_activate(&self) {
+        self.output.scheduler_activate();
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_control(
+        &self,
+        control: remedia_core::OutputControl,
+        cx: &mut Context<'_>,
+        cancellation: &CancellationToken,
+    ) -> Poll<Result<(), OutputError>> {
+        self.output
+            .scheduler_poll_control(control, cx, cancellation)
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
     fn scheduler_poll_ready(
         &self,
         cx: &mut Context<'_>,
@@ -61,7 +86,11 @@ impl<O: MediaOutput> MediaOutput for GatedOutput<O> {
             return Poll::Ready(Err(OutputError::Cancelled));
         }
         let mut state = self.gate.state.lock().unwrap();
-        if !state.0 {
+        if !state.0
+            && !self
+                .control_wake
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
             if !state.1.iter().any(|w| w.will_wake(cx.waker())) {
                 state.1.push(cx.waker().clone());
             }
@@ -81,7 +110,11 @@ impl<O: MediaOutput> MediaOutput for GatedOutput<O> {
             return Poll::Ready(Err(OutputError::Cancelled));
         }
         let mut state = self.gate.state.lock().unwrap();
-        if !state.0 {
+        if !state.0
+            && !self
+                .control_wake
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
             if !state.1.iter().any(|w| w.will_wake(cx.waker())) {
                 state.1.push(cx.waker().clone());
             }
@@ -102,6 +135,9 @@ impl<O: MediaOutput> MediaOutput for GatedOutput<O> {
         self.output.encoded_opus_output()
     }
     fn wake(&self) {
+        self.control_wake
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.gate.changed.notify_all();
         self.output.wake();
     }
     fn flush(
@@ -190,7 +226,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         StreamPacing::Unpaced
     };
-    let encoded = std::fs::read(args.get(1).ok_or("missing file")?)?;
+    let paths: Vec<_> = args.get(1).ok_or("missing file")?.split('|').collect();
+    let file_input = args.get(6).map(String::as_str) == Some("file");
+    let encoded = if file_input {
+        Vec::new()
+    } else {
+        paths
+            .iter()
+            .map(std::fs::read)
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let startup_stagger_ms = args
+        .get(8)
+        .map(|value| value.parse::<u64>())
+        .transpose()?
+        .unwrap_or(0);
+    let mut startup_latencies_ms = Vec::with_capacity(count);
     let before = remedia_resources::collect();
     let sampling_epoch_unix_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
@@ -211,7 +262,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sessions = Vec::new();
     let mut readers = Vec::new();
     let mut null_stats = Vec::new();
-    for _ in 0..count {
+    for index in 0..count {
         #[cfg(not(feature = "experimental-scheduler"))]
         let session = PlaybackSession::new();
         #[cfg(feature = "experimental-scheduler")]
@@ -219,17 +270,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             PlaybackSession::with_scheduler(pool.clone())
         });
         // Independent input storage per session; all modes pay the same input ownership cost.
-        let source = if args.get(6).map(String::as_str) == Some("file") {
-            InputSource::file(&args[1])
+        let source = if file_input {
+            InputSource::file(paths[index % paths.len()])
         } else {
-            InputSource::bytes(encoded.clone())
+            InputSource::bytes(encoded[index % paths.len()].clone())
         };
+        let opened_at = Instant::now();
         if let Some(format) = format {
             let (output, reader) = StreamOutput::new(format, pacing, OpusEncoderConfig::default())?;
             session.play(
                 source,
                 GatedOutput {
                     gate: gate.clone(),
+                    control_wake: std::sync::atomic::AtomicBool::new(false),
                     output,
                 },
             )?;
@@ -241,11 +294,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 source,
                 GatedOutput {
                     gate: gate.clone(),
+                    control_wake: std::sync::atomic::AtomicBool::new(false),
                     output,
                 },
             )?;
         }
+        startup_latencies_ms.push(opened_at.elapsed().as_secs_f64() * 1000.0);
         sessions.push(session);
+        if startup_stagger_ms != 0 {
+            std::thread::sleep(Duration::from_millis(startup_stagger_ms));
+        }
     }
     #[cfg(feature = "experimental-scheduler")]
     if let Some(pool) = &pool {
@@ -259,6 +317,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             std::thread::yield_now();
         }
+    }
+    let control_rounds = args
+        .get(9)
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(0);
+    let mut control_latencies: std::collections::BTreeMap<&str, Vec<f64>> =
+        std::collections::BTreeMap::new();
+    for session in &sessions {
+        if control_rounds == 0 {
+            break;
+        }
+        let at = Instant::now();
+        session.pause()?;
+        control_latencies
+            .entry("pause")
+            .or_default()
+            .push(at.elapsed().as_secs_f64() * 1000.0);
+        for round in 0..control_rounds {
+            let at = Instant::now();
+            session.seek(Duration::from_millis(100 + (round % 4) as u64 * 10))?;
+            control_latencies
+                .entry("seek")
+                .or_default()
+                .push(at.elapsed().as_secs_f64() * 1000.0);
+            let at = Instant::now();
+            session.set_filter_graph(if round % 2 == 0 {
+                Some("volume=0.75")
+            } else {
+                None
+            })?;
+            control_latencies
+                .entry("filter")
+                .or_default()
+                .push(at.elapsed().as_secs_f64() * 1000.0);
+        }
+        let at = Instant::now();
+        session.resume()?;
+        control_latencies
+            .entry("resume")
+            .or_default()
+            .push(at.elapsed().as_secs_f64() * 1000.0);
     }
     let startup_seconds = start.elapsed().as_secs_f64();
     let active = remedia_resources::collect();
@@ -339,8 +439,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             samples[index] = null_stats[index].snapshot().sample_frames_received;
         }
         assert!(samples[index] > 0);
-        assert_eq!(samples[index], samples[0]);
-        assert_eq!(checksums[index], checksums[0]);
+        assert_eq!(samples[index], samples[index % paths.len()]);
+        assert_eq!(checksums[index], checksums[index % paths.len()]);
     }
     let after = remedia_resources::collect();
     let cpu = |s: &remedia_resources::ProcessSnapshot| {
@@ -358,7 +458,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "experimental-scheduler")]
     let diagnostics = pool.as_ref().map(|p| {
         let d = p.diagnostics();
-        serde_json::json!({"admitted":d.admitted,"scheduledLive":d.scheduled_sessions,"controlFallbacks":d.control_fallbacks,"unsupportedFallbacks":d.unsupported_fallbacks,"fallbackReasons":{"input":d.input_fallbacks,"output":d.output_fallbacks,"demuxer":d.demuxer_fallbacks,"filter":d.filter_fallbacks,"crossfade":d.crossfade_fallbacks},"capacityFallbacks":d.capacity_fallbacks,"actions":d.actions,"turns":d.turns,"queuePeak":d.queue_peak,"queueContentions":d.queue_contentions,"queueWaitNs":d.queue_wait_ns,"deadlineSuspensions":d.deadline_suspensions,"deadlineWakes":d.deadline_wakes,"deadlinePeak":d.deadline_peak,"pendingDeadlines":d.pending_deadlines})
+        serde_json::json!({"admitted":d.admitted,"scheduledLive":d.scheduled_sessions,"controlFallbacks":d.control_fallbacks,"unsupportedFallbacks":d.unsupported_fallbacks,"fallbackReasons":{"input":d.input_fallbacks,"output":d.output_fallbacks,"demuxer":d.demuxer_fallbacks,"filter":d.filter_fallbacks,"crossfade":d.crossfade_fallbacks},"capacityFallbacks":d.capacity_fallbacks,"actions":d.actions,"turns":d.turns,"queuePeak":d.queue_peak,"queueContentions":d.queue_contentions,"queueWaitNs":d.queue_wait_ns,"deadlineSuspensions":d.deadline_suspensions,"deadlineWakes":d.deadline_wakes,"deadlinePeak":d.deadline_peak,"pendingDeadlines":d.pending_deadlines,"workerBusyNs":d.worker_busy_ns,"controlHandoffs":d.control_handoffs,"controlWorkers":d.control_workers,"startupWorkers":d.startup_workers,"startupQueuePeak":d.startup_queue_peak,"startupRejections":d.startup_rejections,"ioWorkers":d.io_workers,"ioBursts":d.io_bursts,"ioBusyNs":d.io_busy_ns,"ioQueuePeak":d.io_queue_peak})
     });
     #[cfg(not(feature = "experimental-scheduler"))]
     let diagnostics: Option<serde_json::Value> = None;
@@ -368,7 +468,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .copied();
     println!(
         "{}",
-        serde_json::json!({"sessions":count,"workers":workers,"format":args[4],"audioSeconds":audio_seconds,"wallSeconds":start.elapsed().as_secs_f64(),"startupSeconds":startup_seconds,"processingSeconds":processing_start.elapsed().as_secs_f64(),"startGate":true,"cpuMsPerAudioSecond":(cpu(&after)-cpu(&before))/audio_seconds,"samples":samples,"chunks":chunks,"checksums":checksums,"backends":backends,"diagnostics":diagnostics,"budget":budget,"pacing":format!("{pacing:?}"),"firstChunkLatencyMs":first_chunk_latency_ms,"deliveryP99MsFromFirstChunk":delivery_p99_ms,"deliveryMaxMsFromFirstChunk":lateness_ms.last().copied(),"worstLatenessPerSessionMs":worst_lateness_ms,"worstGapExcessPerSessionMs":worst_gap_excess_ms,"lastChunkMs":last_chunk_ms,"drainSeconds":drain_seconds,"cleanupAfterEofSeconds":processing_start.elapsed().as_secs_f64()-drain_seconds,"samplingEpochUnixMs":sampling_epoch_unix_ms,"before":before,"active":active,"activeScheduled":active_scheduled,"after":after})
+        serde_json::json!({"sessions":count,"workers":workers,"format":args[4],"audioSeconds":audio_seconds,"wallSeconds":start.elapsed().as_secs_f64(),"startupSeconds":startup_seconds,"processingSeconds":processing_start.elapsed().as_secs_f64(),"startGate":true,"cpuMsPerAudioSecond":(cpu(&after)-cpu(&before))/audio_seconds,"samples":samples,"chunks":chunks,"checksums":checksums,"backends":backends,"diagnostics":diagnostics,"budget":budget,"pacing":format!("{pacing:?}"),"firstChunkLatencyMs":first_chunk_latency_ms,"deliveryP99MsFromFirstChunk":delivery_p99_ms,"deliveryMaxMsFromFirstChunk":lateness_ms.last().copied(),"worstLatenessPerSessionMs":worst_lateness_ms,"worstGapExcessPerSessionMs":worst_gap_excess_ms,"lastChunkMs":last_chunk_ms,"drainSeconds":drain_seconds,"cleanupAfterEofSeconds":processing_start.elapsed().as_secs_f64()-drain_seconds,"controlRounds":control_rounds,"controlLatenciesMs":control_latencies,"controlsSucceeded":true,"inputMode":if file_input {"file"} else {"bytes"},"startupStaggerMs":startup_stagger_ms,"startupLatenciesMs":startup_latencies_ms,"samplingEpochUnixMs":sampling_epoch_unix_ms,"before":before,"active":active,"activeScheduled":active_scheduled,"after":after})
     );
     Ok(())
 }

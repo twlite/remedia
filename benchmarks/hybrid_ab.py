@@ -25,6 +25,10 @@ parser.add_argument('--workers', default='1,2,4')
 parser.add_argument('--budgets', default='1,8,32')
 parser.add_argument('--formats', default='opus')
 parser.add_argument('--repeats', type=int, default=3)
+parser.add_argument('--source', choices=['bytes','file'], default='bytes')
+parser.add_argument('--startup-stagger-ms', type=int, default=0)
+parser.add_argument('--controls', type=int, default=0)
+parser.add_argument('--mixed', action='store_true')
 parser.add_argument('--pacing', choices=['unpaced','realtime'], default='unpaced')
 args = parser.parse_args()
 libproc = ctypes.CDLL('/usr/lib/libproc.dylib') if sys.platform == 'darwin' else None
@@ -87,10 +91,12 @@ def run(command):
 variants = [('original', args.original, 0, 1), ('dedicated', args.dedicated, 0, 1)]
 variants += [('scheduled', args.scheduled, w, b) for w in map(int, args.workers.split(',')) for b in map(int, args.budgets.split(','))]
 manifest = dict(binaries={name: dict(path=str(Path(path).resolve()), sha256=hashlib.sha256(Path(path).read_bytes()).hexdigest()) for name, path in [('original', args.original), ('dedicated', args.dedicated), ('scheduled', args.scheduled)]}, arguments=vars(args), fixtures={p: hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in args.fixtures.split(',')})
+if Path(args.output).exists() or Path(args.output + '.manifest.json').exists():
+    raise FileExistsError('choose a fresh output path to preserve previous results')
 Path(args.output + '.manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
 with Path(args.output).open('w') as output:
     for repeat in range(args.repeats):
-        for fixture in args.fixtures.split(','):
+        for fixture in (['|'.join(args.fixtures.split(','))] if args.mixed else args.fixtures.split(',')):
             for mode in args.formats.split(','):
                 for count in map(int, args.counts.split(',')):
                     reference = None
@@ -100,7 +106,7 @@ with Path(args.output).open('w') as output:
                     if repeat % 2:
                         ordered.reverse()
                     for backend, binary, workers, budget in ordered:
-                        row = run([binary, fixture, str(count), str(workers), mode, str(budget), 'bytes', args.pacing])
+                        row = run([binary, fixture, str(count), str(workers), mode, str(budget), args.source, args.pacing, str(args.startup_stagger_ms), str(args.controls)])
                         if args.pacing == 'realtime' and mode != 'null' and row['processingSeconds'] < max(row['samples'])/48000-0.05:
                             raise RuntimeError('realtime output completed faster than its media clock')
                         delivered = (row['samples'], row['checksums'], row['chunks'])

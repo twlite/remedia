@@ -623,6 +623,33 @@ fn opus_sender_backpressures_at_its_bounded_queue_and_cancellation_unblocks() {
     }
     #[cfg(not(feature = "experimental-scheduler"))]
     let _control_rx = control_rx;
+    #[cfg(feature = "experimental-scheduler")]
+    {
+        use std::task::{Context, Waker};
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(
+            sender
+                .scheduler_poll_control(remedia_core::OutputControl::Pause, &mut cx, &token)
+                .is_pending()
+        );
+        let Control::Pause { ack: old_ack, .. } = control_rx.try_recv().unwrap() else {
+            panic!("pause");
+        };
+        let flushing = sender.clone();
+        let flush_token = token.clone();
+        let flush = std::thread::spawn(move || flushing.flush(Duration::ZERO, &flush_token));
+        let Control::Flush { ack, .. } = control_rx.recv_timeout(Duration::from_secs(1)).unwrap()
+        else {
+            panic!("flush");
+        };
+        ack.send(Ok(())).unwrap();
+        flush.join().unwrap().unwrap();
+        assert!(
+            old_ack.send(Ok(())).is_err(),
+            "seek invalidates the previous barrier future"
+        );
+        assert!(lock(&sender.pending_control).is_none());
+    }
     // The bounded queue has accepted packets, but the RTP actor has not dispatched them.
     assert_eq!(sender.played_position(), None);
     sender.played_end_sample.store(960, Ordering::Release);
@@ -647,7 +674,14 @@ fn opus_sender_backpressures_at_its_bounded_queue_and_cancellation_unblocks() {
     worker.join().unwrap();
     assert_eq!(packet_rx.len(), QUEUE_CAPACITY);
     sender.cancel();
-    assert_eq!(sender.inner.cancelled_generation.load(Ordering::Acquire), 1);
+    assert_eq!(
+        sender.inner.cancelled_generation.load(Ordering::Acquire),
+        if cfg!(feature = "experimental-scheduler") {
+            2
+        } else {
+            1
+        }
+    );
 }
 
 mod real_opus {
@@ -666,7 +700,7 @@ mod real_opus {
     use crate::dave::tests::established_group;
     use crate::rtp::serialize_rtp_header;
 
-    const LONG: &[u8] =
+    pub(super) const LONG: &[u8] =
         include_bytes!("../../../remedia-core/tests/fixtures/ffmpeg-opus-silent-lead-long.ogg");
     const WEBM: &[u8] =
         include_bytes!("../../../remedia-core/tests/fixtures/ffmpeg-opus-silent-lead.webm");
@@ -771,7 +805,7 @@ mod real_opus {
         sink.packets()
     }
 
-    async fn through_rtp_and_dave(packets: &[EncodedOpusPacket], mode: EncryptionMode) {
+    pub(super) async fn through_rtp_and_dave(packets: &[EncodedOpusPacket], mode: EncryptionMode) {
         let (_gateway, sender, mut receiver) = established_group();
         let sender_identity = sender.clone_identity_for_test();
         let dave = Arc::new(Mutex::new(sender));
@@ -900,5 +934,54 @@ mod real_opus {
         assert_eq!(received(&old), packets[..split]);
         assert_eq!(received(&replacement), packets[split..]);
         assert_eq!(received(&old)[0].media_samples_per_channel, 648);
+    }
+}
+
+#[cfg(feature = "experimental-scheduler")]
+mod scheduled_transport_benchmark;
+
+#[cfg(feature = "experimental-scheduler")]
+#[tokio::test]
+async fn scheduled_owned_opus_matches_dedicated_through_rtp_and_dave() {
+    use remedia_core::{
+        InputSource, OpusEncoderOutput, PlaybackScheduler, PlaybackSession, PlaybackState,
+    };
+    let pool = PlaybackScheduler::with_processing_budget(2, 8, 8).unwrap();
+    let mut outputs = Vec::new();
+    for scheduled in [false, true] {
+        let voice = TestVoiceConnection::new(903);
+        let router = crate::DiscordOpusSenderRouter::new();
+        router.attach(voice.connection().opus_sender());
+        let session = if scheduled {
+            PlaybackSession::with_scheduler(pool.clone())
+        } else {
+            PlaybackSession::new()
+        };
+        session
+            .play(
+                InputSource::bytes(real_opus::LONG.to_vec()),
+                OpusEncoderOutput::new(router.sink()).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            session.wait(),
+            PlaybackState::Completed,
+            "{:?}",
+            session.last_error()
+        );
+        session.stop().unwrap();
+        outputs.push(
+            voice
+                .packets()
+                .into_iter()
+                .map(|(_, packet)| packet)
+                .collect::<Vec<_>>(),
+        );
+    }
+    assert_eq!(outputs[0], outputs[1]);
+    assert_eq!(pool.diagnostics().admitted, 1);
+    assert_eq!(pool.diagnostics().unsupported_fallbacks, 0);
+    for mode in [EncryptionMode::Aes256Gcm, EncryptionMode::XChaCha20Poly1305] {
+        real_opus::through_rtp_and_dave(&outputs[1], mode).await;
     }
 }
