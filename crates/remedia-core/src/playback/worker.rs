@@ -108,9 +108,22 @@ pub(super) enum WorkerStep {
     Deadline(Instant),
     #[cfg(feature = "experimental-scheduler")]
     DedicatedFallback,
+    #[cfg(feature = "experimental-scheduler")]
+    UnsupportedFilter,
     Completed,
     Cancelled,
     Failed,
+}
+
+struct PreparedMachine<M> {
+    machine: M,
+    scheduler_safe: bool,
+    filter_safe: bool,
+}
+
+struct DedicatedStart {
+    retry: startup::DedicatedRetry,
+    reopen: fallback::Reopen,
 }
 
 pub(super) fn worker_loop(
@@ -128,16 +141,34 @@ pub(super) fn worker_loop(
     let eligible = eligibility.0 && eligibility.1;
     #[cfg(feature = "experimental-scheduler")]
     let panic_context = (shared.clone(), output.clone(), cancellation.clone());
-    let Some((machine, _scheduler_safe)) = prepare_machine(
+    let PreparedMachine {
+        machine,
+        scheduler_safe: _scheduler_safe,
+        filter_safe: _filter_safe,
+    } = match prepare_machine(
         Arc::clone(&shared),
         generation,
         source,
-        output,
-        cancellation,
+        output.clone(),
+        cancellation.clone(),
         ready,
-        reopen,
-    ) else {
-        return;
+        (reopen, isolated_startup),
+    ) {
+        Ok(Some(prepared)) => prepared,
+        Ok(None) => return,
+        Err(retry) => {
+            #[cfg(feature = "experimental-scheduler")]
+            restart_dedicated(&shared, generation, output, cancellation, retry);
+            #[cfg(not(feature = "experimental-scheduler"))]
+            {
+                let DedicatedStart {
+                    retry: startup::DedicatedRetry { source, ready },
+                    reopen,
+                } = *retry;
+                let _ = (source, ready, reopen);
+            }
+            return;
+        }
     };
 
     #[cfg(feature = "experimental-scheduler")]
@@ -154,6 +185,28 @@ pub(super) fn worker_loop(
             cancellation.clone(),
         );
         let safe_machine = move || {
+            if panic_context
+                .0
+                .executor
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 5
+            {
+                return with_dispatch(&observability, || {
+                    if let Err(error) = panic_context.1.scheduler_deactivate(&panic_context.2) {
+                        fail_session(
+                            &panic_context.0,
+                            generation,
+                            error.into(),
+                            &panic_context.2,
+                            &panic_context.1,
+                        );
+                        return WorkerStep::Failed;
+                    }
+                    panic_context.1.wake();
+                    drive_machine(&mut machine, &panic_context.0, generation);
+                    terminal_outcome(&panic_context.0)
+                });
+            }
             let isolated = panic_context
                 .0
                 .executor
@@ -177,7 +230,13 @@ pub(super) fn worker_loop(
                     }
                 }
             });
-            if isolated {
+            if isolated
+                && panic_context
+                    .0
+                    .executor
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    == 4
+            {
                 panic_context
                     .0
                     .executor
@@ -221,7 +280,7 @@ pub(super) fn worker_loop(
             0
         } else if !eligibility.1 {
             1
-        } else if lock(&shared.data).filter_graph.is_some() {
+        } else if !_filter_safe {
             3
         } else {
             2
@@ -233,6 +292,56 @@ pub(super) fn worker_loop(
         std::sync::atomic::Ordering::Release,
     );
     drive_selected(machine, &shared, generation, isolated_startup);
+}
+
+#[cfg(feature = "experimental-scheduler")]
+fn restart_dedicated(
+    shared: &Arc<SessionShared>,
+    generation: u64,
+    output: Arc<dyn MediaOutput>,
+    cancellation: CancellationToken,
+    retry: Box<DedicatedStart>,
+) {
+    shared
+        .scheduler
+        .as_ref()
+        .expect("restricted startup scheduler")
+        .record_probe_retry();
+    shared
+        .executor
+        .store(2, std::sync::atomic::Ordering::Release);
+    let context = shared.clone();
+    let failure_ready = retry.retry.ready.clone();
+    let failure_context = (output.clone(), cancellation.clone());
+    let result = thread::Builder::new()
+        .name(format!("remedia-probe-fallback-{generation}"))
+        .spawn(move || {
+            with_dispatch(&context.observability, || {
+                worker_entry(
+                    context.clone(),
+                    generation,
+                    retry.retry.source,
+                    output,
+                    cancellation,
+                    retry.retry.ready,
+                    (retry.reopen, false),
+                )
+            });
+        });
+    match result {
+        Ok(worker) => *lock(&shared.fallback_worker) = Some(worker),
+        Err(error) => {
+            let error = PlaybackError::WorkerInitialization(Arc::new(error));
+            fail_session(
+                shared,
+                generation,
+                error.clone(),
+                &failure_context.1,
+                &failure_context.0,
+            );
+            let _ = failure_ready.try_send(Err(error));
+        }
+    }
 }
 
 fn drive_selected(
@@ -247,25 +356,27 @@ fn drive_selected(
         let result = thread::Builder::new()
             .name(format!("remedia-fallback-{generation}"))
             .spawn(move || {
-                if catch_unwind(AssertUnwindSafe(|| {
-                    drive_machine(machine, &context, generation)
-                }))
-                .is_err()
-                {
-                    let (output, cancellation) = {
-                        let data = lock(&context.data);
-                        (data.output.clone(), data.cancellation.clone())
-                    };
-                    if let (Some(output), Some(cancellation)) = (output, cancellation) {
-                        fail_session(
-                            &context,
-                            generation,
-                            PlaybackError::WorkerPanicked,
-                            &cancellation,
-                            &output,
-                        );
+                with_dispatch(&context.observability, || {
+                    if catch_unwind(AssertUnwindSafe(|| {
+                        drive_machine(machine, &context, generation)
+                    }))
+                    .is_err()
+                    {
+                        let (output, cancellation) = {
+                            let data = lock(&context.data);
+                            (data.output.clone(), data.cancellation.clone())
+                        };
+                        if let (Some(output), Some(cancellation)) = (output, cancellation) {
+                            fail_session(
+                                &context,
+                                generation,
+                                PlaybackError::WorkerPanicked,
+                                &cancellation,
+                                &output,
+                            );
+                        }
                     }
-                }
+                })
             });
         match result {
             Ok(worker) => *lock(&shared.fallback_worker) = Some(worker),
@@ -309,7 +420,8 @@ fn drive_machine(mut machine: impl FnMut() -> WorkerStep, shared: &SessionShared
             | WorkerStep::WaitingInput
             | WorkerStep::WaitingControl
             | WorkerStep::Deadline(_)
-            | WorkerStep::DedicatedFallback => {
+            | WorkerStep::DedicatedFallback
+            | WorkerStep::UnsupportedFilter => {
                 unreachable!("dedicated output uses blocking readiness")
             }
             WorkerStep::Paused(revision) => {
@@ -336,8 +448,8 @@ fn prepare_machine(
     output: Arc<dyn MediaOutput>,
     cancellation: CancellationToken,
     ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
-    reopen: fallback::Reopen,
-) -> Option<(impl FnMut() -> WorkerStep + Send, bool)> {
+    (reopen, restricted): (fallback::Reopen, bool),
+) -> Result<Option<PreparedMachine<impl FnMut() -> WorkerStep + Send>>, Box<DedicatedStart>> {
     #[cfg(feature = "experimental-scheduler")]
     let isolate_file = matches!(source, InputSource::File(_));
     let _log_capture = crate::ffmpeg_logging::capture();
@@ -348,16 +460,33 @@ fn prepare_machine(
         mut passthrough_mode,
         playback_id,
         _active_playback,
-    } = startup::prepare(&shared, generation, source, &output, &cancellation, ready)?;
+    } = match startup::prepare(
+        &shared,
+        generation,
+        source,
+        &output,
+        &cancellation,
+        (ready, restricted),
+    ) {
+        Ok(Some(prepared)) => prepared,
+        Ok(None) => return Ok(None),
+        Err(retry) => return Err(Box::new(DedicatedStart { retry, reopen })),
+    };
 
     #[cfg(feature = "experimental-scheduler")]
-    let scheduler_safe = decoder.scheduler_demuxer_supported();
+    let filter_safe = processor.scheduler_cpu_safe();
+    #[cfg(feature = "experimental-scheduler")]
+    let scheduler_safe = decoder.scheduler_demuxer_supported() && filter_safe;
+    #[cfg(not(feature = "experimental-scheduler"))]
+    let filter_safe = false;
     #[cfg(not(feature = "experimental-scheduler"))]
     let scheduler_safe = false;
     let mut pending_frame = None;
     let mut deferred_filter_update: Option<FilterUpdate> = None;
     let mut input_finished = false;
     let mut processor_finished = false;
+    #[cfg(feature = "experimental-scheduler")]
+    let mut pending_output_seek: Option<SeekRequest> = None;
     // A seek moves the demuxer to an arbitrary sample, so the first packet must be decoded and
     // trimmed. `passthrough_eligible` records whether the stream could otherwise forward packets,
     // and `seek_recovery` tracks the return to whole source packets after that first frame.
@@ -372,8 +501,8 @@ fn prepare_machine(
     // swapping decoders blends decoded audio.
     let mut fallback: Option<fallback::FallbackSeek> = None;
     let mut force_pcm = false;
-    Some((
-        move || {
+    Ok(Some(PreparedMachine {
+        machine: move || {
             #[cfg(feature = "experimental-scheduler")]
             if isolate_file
                 && matches!(
@@ -395,10 +524,63 @@ fn prepare_machine(
             let _active = &_active_playback;
             let _log_capture = crate::ffmpeg_logging::capture();
             #[cfg(feature = "experimental-scheduler")]
+            if let Some(request) = pending_output_seek.as_ref() {
+                if is_stopped(&shared, generation) || cancellation.is_cancelled() {
+                    let request = pending_output_seek.take().expect("pending output seek");
+                    let _ = request.response.send(Err(PlaybackError::Cancelled));
+                    return terminal_outcome(&shared);
+                }
+                let target = samples_from_duration(request.position);
+                let wake = lock(&shared.scheduled)
+                    .as_ref()
+                    .and_then(|job| lock(&job.cancel_wake).clone())
+                    .expect("scheduled seek waker");
+                let waker = std::task::Waker::from(wake);
+                let mut cx = std::task::Context::from_waker(&waker);
+                let flushed =
+                    match output.scheduler_poll_flush_samples(target, &mut cx, &cancellation) {
+                        std::task::Poll::Pending => return WorkerStep::WaitingControl,
+                        std::task::Poll::Ready(result) => result,
+                    }
+                    .and_then(|()| match output.encoded_opus_output() {
+                        Some(encoded) if seek_recovery.pending => {
+                            encoded.align_encoder_frames(target)
+                        }
+                        _ => Ok(()),
+                    });
+                return acknowledge_seek(
+                    &shared,
+                    (generation, playback_id),
+                    &output,
+                    &cancellation,
+                    pending_output_seek.take().expect("pending output seek"),
+                    target,
+                    flushed,
+                );
+            }
+            #[cfg(feature = "experimental-scheduler")]
+            if shared.executor.load(std::sync::atomic::Ordering::Acquire) == 4
+                && !processor_finished
+                && lock(&shared.data)
+                    .pending_filter_graph
+                    .as_ref()
+                    .and_then(|update| update.graph.as_ref())
+                    .is_some_and(|graph| !graph.scheduler_cpu_safe())
+            {
+                shared
+                    .executor
+                    .store(5, std::sync::atomic::Ordering::Release);
+                return WorkerStep::UnsupportedFilter;
+            }
+            #[cfg(feature = "experimental-scheduler")]
             if shared.executor.load(std::sync::atomic::Ordering::Acquire) == 1 {
                 let data = lock(&shared.data);
                 if data.pending_seek.is_some()
-                    || data.pending_filter_graph.is_some()
+                    || data
+                        .pending_filter_graph
+                        .as_ref()
+                        .and_then(|update| update.graph.as_ref())
+                        .is_some_and(|graph| !graph.scheduler_cpu_safe())
                     || fallback.is_some()
                 {
                     shared
@@ -963,6 +1145,20 @@ fn prepare_machine(
                     }
                 }
                 WorkerAction::ReplaceFilter(update) => {
+                    #[cfg(feature = "experimental-scheduler")]
+                    if shared.executor.load(std::sync::atomic::Ordering::Acquire) == 4
+                        && !processor_finished
+                        && update
+                            .graph
+                            .as_ref()
+                            .is_some_and(|graph| !graph.scheduler_cpu_safe())
+                    {
+                        lock(&shared.data).pending_filter_graph = Some(update);
+                        shared
+                            .executor
+                            .store(5, std::sync::atomic::Ordering::Release);
+                        return WorkerStep::UnsupportedFilter;
+                    }
                     let next_sample = processor.next_sample();
                     let should_switch_mode = {
                         let data = lock(&shared.data);
@@ -1190,6 +1386,11 @@ fn prepare_machine(
                                 );
                                 return terminal_outcome(&shared);
                             }
+                            #[cfg(feature = "experimental-scheduler")]
+                            if shared.executor.load(std::sync::atomic::Ordering::Acquire) == 4 {
+                                pending_output_seek = Some(request);
+                                return WorkerStep::Runnable;
+                            }
                             let flushed = output
                                 .flush_samples(target_sample, &cancellation)
                                 .and_then(|()| match output.encoded_opus_output() {
@@ -1198,57 +1399,15 @@ fn prepare_machine(
                                     }
                                     _ => Ok(()),
                                 });
-                            match flushed {
-                                Ok(()) => {
-                                    let played = safe_played_position(&output);
-                                    let mut data = lock(&shared.data);
-                                    if data.generation == generation && !data.stopping {
-                                        data.submitted_sample = target_sample;
-                                        data.submitted_position = request.position;
-                                        data.media_position = Some(MediaPosition {
-                                            position: request.position,
-                                            accuracy: MediaPositionAccuracy::Estimated,
-                                        });
-                                        data.played_position = played;
-                                    }
-                                    drop(data);
-                                    let _ = request.response.send(Ok(SeekOutcome {
-                                        requested: request.position,
-                                        applied: request.position,
-                                        replaced_source: false,
-                                    }));
-                                    tracing::info!(
-                                        name: "core.playback.seek_completed",
-                                        target: "remedia_core::playback",
-                                        playback_id,
-                                        position_ms = request.position.as_millis() as u64,
-                                        "playback seek applied"
-                                    );
-                                }
-                                Err(_) if is_stopped(&shared, generation) => {
-                                    let _ = request.response.send(Err(PlaybackError::Cancelled));
-                                    return terminal_outcome(&shared);
-                                }
-                                Err(error) => {
-                                    let playback_error = PlaybackError::Output(error);
-                                    tracing::error!(
-                                        name: "core.playback.seek_failed",
-                                        target: "remedia_core::playback",
-                                        playback_id,
-                                        error_kind = playback_error_kind(&playback_error),
-                                        "playback seek failed in output"
-                                    );
-                                    let _ = request.response.send(Err(playback_error.clone()));
-                                    fail_session(
-                                        &shared,
-                                        generation,
-                                        playback_error,
-                                        &cancellation,
-                                        &output,
-                                    );
-                                    return terminal_outcome(&shared);
-                                }
-                            }
+                            return acknowledge_seek(
+                                &shared,
+                                (generation, playback_id),
+                                &output,
+                                &cancellation,
+                                request,
+                                target_sample,
+                                flushed,
+                            );
                         }
                         Err(error) => {
                             if is_stopped(&shared, generation) {
@@ -1422,7 +1581,8 @@ fn prepare_machine(
             WorkerStep::Runnable
         },
         scheduler_safe,
-    ))
+        filter_safe,
+    }))
 }
 
 mod startup;
@@ -1533,6 +1693,63 @@ impl SeekRecovery {
         let data = lock(&shared.data);
         data.filter_graph.is_none() && data.volume == 1.0 && data.state == PlaybackState::Playing
     }
+}
+
+fn acknowledge_seek(
+    shared: &Arc<SessionShared>,
+    (generation, playback_id): (u64, u64),
+    output: &Arc<dyn MediaOutput>,
+    cancellation: &CancellationToken,
+    request: SeekRequest,
+    target_sample: u64,
+    flushed: Result<(), OutputError>,
+) -> WorkerStep {
+    match flushed {
+        Ok(()) => {
+            let played = safe_played_position(output);
+            let mut data = lock(&shared.data);
+            if data.generation == generation && !data.stopping {
+                data.submitted_sample = target_sample;
+                data.submitted_position = request.position;
+                data.media_position = Some(MediaPosition {
+                    position: request.position,
+                    accuracy: MediaPositionAccuracy::Estimated,
+                });
+                data.played_position = played;
+            }
+            drop(data);
+            let _ = request.response.send(Ok(SeekOutcome {
+                requested: request.position,
+                applied: request.position,
+                replaced_source: false,
+            }));
+            tracing::info!(
+                name: "core.playback.seek_completed",
+                target: "remedia_core::playback",
+                playback_id,
+                position_ms = request.position.as_millis() as u64,
+                "playback seek applied"
+            );
+        }
+        Err(_) if is_stopped(shared, generation) => {
+            let _ = request.response.send(Err(PlaybackError::Cancelled));
+            return terminal_outcome(shared);
+        }
+        Err(error) => {
+            let playback_error = PlaybackError::Output(error);
+            tracing::error!(
+                name: "core.playback.seek_failed",
+                target: "remedia_core::playback",
+                playback_id,
+                error_kind = playback_error_kind(&playback_error),
+                "playback seek failed in output"
+            );
+            let _ = request.response.send(Err(playback_error.clone()));
+            fail_session(shared, generation, playback_error, cancellation, output);
+            return terminal_outcome(shared);
+        }
+    }
+    WorkerStep::Runnable
 }
 
 #[cfg(test)]

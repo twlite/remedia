@@ -141,6 +141,16 @@ impl Drop for ConnectionInner {
     }
 }
 
+#[cfg(feature = "experimental-scheduler")]
+struct ReadinessExit(Arc<futures_util::task::AtomicWaker>);
+
+#[cfg(feature = "experimental-scheduler")]
+impl Drop for ReadinessExit {
+    fn drop(&mut self) {
+        self.0.wake();
+    }
+}
+
 struct QueuedPacket {
     generation: u64,
     id: u64,
@@ -155,19 +165,41 @@ enum Control {
         ack: flume::Sender<Result<(), VoiceError>>,
     },
     Pause {
+        generation: u64,
         target_id: u64,
         ack: flume::Sender<Result<(), VoiceError>>,
     },
     Resume {
+        generation: u64,
         ack: flume::Sender<Result<(), VoiceError>>,
     },
     Finish {
+        generation: u64,
         target_id: u64,
         ack: flume::Sender<Result<(), VoiceError>>,
     },
     Cancel {
         generation: u64,
     },
+}
+
+impl Control {
+    fn for_generation(self, current: u64) -> Option<Self> {
+        match self {
+            Self::Flush { generation, ack }
+            | Self::Pause {
+                generation, ack, ..
+            }
+            | Self::Resume { generation, ack }
+            | Self::Finish {
+                generation, ack, ..
+            } if generation != current => {
+                let _ = ack.send(Err(VoiceError::Superseded));
+                None
+            }
+            control => Some(control),
+        }
+    }
 }
 
 enum BarrierKind {
@@ -177,6 +209,7 @@ enum BarrierKind {
 }
 
 struct PendingBarrier {
+    generation: Option<u64>,
     target_id: u64,
     silence_packets: u8,
     kind: BarrierKind,
@@ -251,6 +284,8 @@ pub(crate) struct TestVoiceConnection {
     packets: Arc<Mutex<Vec<(u64, EncodedOpusPacket)>>>,
     packets_changed: Arc<Condvar>,
     controls: Arc<Mutex<Vec<&'static str>>>,
+    #[cfg(feature = "experimental-scheduler")]
+    hold_finishes: Arc<AtomicBool>,
     actor: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -259,7 +294,7 @@ impl TestVoiceConnection {
     pub(crate) fn new(guild_id: u64) -> Self {
         let (packet_tx, packet_rx) = flume::bounded(QUEUE_CAPACITY);
         let (control_tx, control_rx) = flume::bounded(16);
-        let (generation_tx, _generation_rx) = watch::channel(0);
+        let (generation_tx, generation_rx) = watch::channel(0);
         let (state, _) = watch::channel(ConnectionState::Connected);
         let cancellation = TokioCancellationToken::new();
         let inner = Arc::new(ConnectionInner {
@@ -287,6 +322,8 @@ impl TestVoiceConnection {
         let actor_packets = Arc::clone(&packets);
         let actor_packets_changed = Arc::clone(&packets_changed);
         let actor_controls = Arc::clone(&controls);
+        let hold_finishes = Arc::new(AtomicBool::new(false));
+        let actor_hold_finishes = hold_finishes.clone();
         let actor_cancellation = cancellation.clone();
         #[cfg(feature = "experimental-scheduler")]
         let actor_readiness = inner.readiness.clone();
@@ -306,22 +343,33 @@ impl TestVoiceConnection {
                     Err(flume::RecvTimeoutError::Disconnected) => break,
                 }
                 while let Ok(control) = control_rx.try_recv() {
+                    let Some(control) = control.for_generation(*generation_rx.borrow()) else {
+                        continue;
+                    };
                     match control {
                         Control::Flush { ack, .. } => {
                             lock(&actor_controls).push("flush");
                             let _ = ack.send(Ok(()));
                         }
-                        Control::Pause { target_id, ack } => {
+                        Control::Pause {
+                            generation,
+                            target_id,
+                            ack,
+                        } => {
                             lock(&actor_controls).push("pause");
-                            pending_barriers.push((target_id, ack));
+                            pending_barriers.push((target_id, generation, ack, false));
                         }
-                        Control::Resume { ack } => {
+                        Control::Resume { ack, .. } => {
                             lock(&actor_controls).push("resume");
                             let _ = ack.send(Ok(()));
                         }
-                        Control::Finish { target_id, ack } => {
+                        Control::Finish {
+                            generation,
+                            target_id,
+                            ack,
+                        } => {
                             lock(&actor_controls).push("finish");
-                            pending_barriers.push((target_id, ack));
+                            pending_barriers.push((target_id, generation, ack, true));
                         }
                         Control::Cancel { .. } => lock(&actor_controls).push("cancel"),
                     }
@@ -329,8 +377,14 @@ impl TestVoiceConnection {
                 // Controls and packets use separate channels. Defer acknowledgements
                 // until the target packet is recorded, but keep receiving both channels
                 // so a control observed before its packets cannot deadlock the actor.
-                pending_barriers.retain(|(target_id, ack)| {
-                    if processed_id >= *target_id {
+                pending_barriers.retain(|(target_id, generation, ack, finish)| {
+                    if *generation != *generation_rx.borrow() {
+                        let _ = ack.send(Err(VoiceError::Superseded));
+                        return false;
+                    }
+                    if processed_id >= *target_id
+                        && (!*finish || !actor_hold_finishes.load(Ordering::Acquire))
+                    {
                         let _ = ack.send(Ok(()));
                         false
                     } else {
@@ -344,8 +398,15 @@ impl TestVoiceConnection {
             packets,
             packets_changed,
             controls,
+            #[cfg(feature = "experimental-scheduler")]
+            hold_finishes,
             actor: Some(actor),
         }
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    pub(crate) fn hold_finishes(&self, hold: bool) {
+        self.hold_finishes.store(hold, Ordering::Release);
     }
 
     pub(crate) fn connection(&self) -> DiscordVoiceConnection {

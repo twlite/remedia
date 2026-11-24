@@ -72,6 +72,38 @@ impl DiscordOpusSender {
             .map_or_else(|| "voice transport failed".into(), ToString::to_string)
     }
 
+    pub(super) fn begin_flush(&self) -> Result<u64, OutputError> {
+        let generation = {
+            let _generation_update = lock(&self.inner.generation_update);
+            let old_generation = self.generation.load(Ordering::Acquire);
+            let generation = self
+                .inner
+                .generation
+                .compare_exchange(
+                    old_generation,
+                    old_generation.wrapping_add(1),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .map_err(|_| OutputError::with_source(VoiceError::Superseded))?
+                .wrapping_add(1);
+            self.generation.store(generation, Ordering::Release);
+            self.inner.generation_tx.send_replace(generation);
+            generation
+        };
+        with_dispatch(&self.inner.observability, || {
+            tracing::info!(
+                name: "discord.rtp_sender.flushed",
+                target: "remedia_discord::connection",
+                voice_connection_id = self.inner.voice_connection_id,
+                guild_id = self.inner.guild_id,
+                generation,
+                "queued pre-seek RTP frames invalidated"
+            );
+        });
+        Ok(generation)
+    }
+
     pub(super) fn wait_for_control(
         &self,
         receiver: flume::Receiver<Result<(), VoiceError>>,
@@ -234,34 +266,7 @@ impl OpusPacketSink for DiscordOpusSender {
         {
             lock(&self.pending_control).take();
         }
-        let generation = {
-            let _generation_update = lock(&self.inner.generation_update);
-            let old_generation = self.generation.load(Ordering::Acquire);
-            let generation = self
-                .inner
-                .generation
-                .compare_exchange(
-                    old_generation,
-                    old_generation.wrapping_add(1),
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .map_err(|_| OutputError::with_source(VoiceError::Superseded))?
-                .wrapping_add(1);
-            self.generation.store(generation, Ordering::Release);
-            self.inner.generation_tx.send_replace(generation);
-            generation
-        };
-        with_dispatch(&self.inner.observability, || {
-            tracing::info!(
-                name: "discord.rtp_sender.flushed",
-                target: "remedia_discord::connection",
-                voice_connection_id = self.inner.voice_connection_id,
-                guild_id = self.inner.guild_id,
-                generation,
-                "queued pre-seek RTP frames invalidated"
-            );
-        });
+        let generation = self.begin_flush()?;
         self.request_barrier(|ack| Control::Flush { generation, ack }, cancellation)
             .map_err(OutputError::with_source)?;
         // The next dispatched packet belongs to the new seek timeline.
@@ -270,26 +275,43 @@ impl OpusPacketSink for DiscordOpusSender {
     }
 
     fn pause(&self, cancellation: &CoreCancellationToken) -> Result<(), OutputError> {
-        self.ensure_current(cancellation)
+        let generation = self
+            .ensure_current(cancellation)
             .map_err(OutputError::with_source)?;
         let target_id = self.inner.accepted_packet_id.load(Ordering::Acquire);
-        self.request_barrier(|ack| Control::Pause { target_id, ack }, cancellation)
-            .map_err(OutputError::with_source)
+        self.request_barrier(
+            |ack| Control::Pause {
+                generation,
+                target_id,
+                ack,
+            },
+            cancellation,
+        )
+        .map_err(OutputError::with_source)
     }
 
     fn resume(&self, cancellation: &CoreCancellationToken) -> Result<(), OutputError> {
-        self.ensure_current(cancellation)
+        let generation = self
+            .ensure_current(cancellation)
             .map_err(OutputError::with_source)?;
-        self.request_barrier(|ack| Control::Resume { ack }, cancellation)
+        self.request_barrier(|ack| Control::Resume { generation, ack }, cancellation)
             .map_err(OutputError::with_source)
     }
 
     fn finish(&self, cancellation: &CoreCancellationToken) -> Result<(), OutputError> {
-        self.ensure_current(cancellation)
+        let generation = self
+            .ensure_current(cancellation)
             .map_err(OutputError::with_source)?;
         let target_id = self.inner.accepted_packet_id.load(Ordering::Acquire);
-        self.request_barrier(|ack| Control::Finish { target_id, ack }, cancellation)
-            .map_err(OutputError::with_source)?;
+        self.request_barrier(
+            |ack| Control::Finish {
+                generation,
+                target_id,
+                ack,
+            },
+            cancellation,
+        )
+        .map_err(OutputError::with_source)?;
         self.finished.store(true, Ordering::Release);
         with_dispatch(&self.inner.observability, || {
             tracing::info!(

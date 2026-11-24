@@ -89,8 +89,9 @@ pub trait OpusPacketSink: Send + Sync + 'static {
         false
     }
 
-    /// Accept the packet only on success. Pending and errors retain the original allocation
-    /// in `packet`; a pending poll must register the waker before checking capacity.
+    /// Pending retains the original allocation in `packet` and registers the waker before
+    /// checking capacity. Errors retain unaccepted packets; cancellation after admission may
+    /// leave ownership with the transport, and must never replay an accepted packet.
     #[cfg(feature = "experimental-scheduler")]
     fn scheduler_poll_packet(
         &self,
@@ -182,6 +183,8 @@ pub struct OpusEncoderOutput {
     sink: packet_buffer::PacketBuffer,
     #[cfg(feature = "experimental-scheduler")]
     pending_pcm: Mutex<Option<(PcmFrame, usize)>>,
+    #[cfg(feature = "experimental-scheduler")]
+    pending_flush: Mutex<Option<u64>>,
     cancelled: AtomicBool,
     observability: ObservabilityHandle,
 }
@@ -266,6 +269,8 @@ impl OpusEncoderOutput {
             sink: packet_buffer::PacketBuffer::new(Box::new(sink)),
             #[cfg(feature = "experimental-scheduler")]
             pending_pcm: Mutex::new(None),
+            #[cfg(feature = "experimental-scheduler")]
+            pending_flush: Mutex::new(None),
             cancelled: AtomicBool::new(false),
             observability,
         })

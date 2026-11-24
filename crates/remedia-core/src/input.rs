@@ -89,6 +89,15 @@ pub(crate) fn open(
     timeout: Duration,
     cancellation: CancellationToken,
 ) -> Result<OpenedInput, DecoderError> {
+    open_restricted(source, timeout, cancellation, false)
+}
+
+pub(crate) fn open_restricted(
+    source: &InputSource,
+    timeout: Duration,
+    cancellation: CancellationToken,
+    restricted: bool,
+) -> Result<OpenedInput, DecoderError> {
     let _log_capture = crate::ffmpeg_logging::capture();
     initialize()?;
 
@@ -110,6 +119,11 @@ pub(crate) fn open(
     let mut custom_io = custom_io_for(source, cancellation.clone())?;
 
     let mut options = ffmpeg::Dictionary::new();
+    if restricted {
+        // Reject containers with nested/external inputs before read_header or stream probing.
+        // Unsupported formats are retried on the tracked dedicated backend, never on this pool.
+        options.set("format_whitelist", "ogg,mp3,aac,wav,flac");
+    }
     if is_network {
         let timeout_micros = timeout.as_micros().min(i64::MAX as u128).to_string();
         options.set("rw_timeout", &timeout_micros);

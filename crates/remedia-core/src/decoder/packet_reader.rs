@@ -87,7 +87,11 @@ fn skip_samples(packet: &ffmpeg::Packet) -> (u32, u32) {
 }
 
 impl AudioPacketReader {
-    pub(super) fn open(source: InputSource, options: DecoderOptions) -> Result<Self, DecoderError> {
+    pub(super) fn open(
+        source: InputSource,
+        options: DecoderOptions,
+        restricted: bool,
+    ) -> Result<Self, DecoderError> {
         if options.io_timeout.is_zero() {
             return Err(DecoderError::InvalidOptions(
                 "I/O timeout must be greater than zero",
@@ -100,7 +104,12 @@ impl AudioPacketReader {
             &source,
             InputSource::HttpUrl(_) | InputSource::HttpUrlWithHeaders { .. }
         );
-        let input = input::open(&source, options.io_timeout, options.cancellation.clone())?;
+        let input = input::open_restricted(
+            &source,
+            options.io_timeout,
+            options.cancellation.clone(),
+            restricted,
+        )?;
         let stream = input
             .streams()
             .best(ffmpeg::media::Type::Audio)

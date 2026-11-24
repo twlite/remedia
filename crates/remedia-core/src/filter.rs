@@ -27,6 +27,8 @@ pub(crate) struct PcmFilterGraph {
     graph: ffmpeg::filter::Graph,
     expression: String,
     eof_sent: bool,
+    #[cfg(feature = "experimental-scheduler")]
+    scheduler_cpu_safe: bool,
 }
 
 impl PcmFilterGraph {
@@ -77,13 +79,21 @@ impl PcmFilterGraph {
         graph
             .validate()
             .map_err(|error| FilterGraphError::Invalid(error.to_string()))?;
-        validate_single_input_output(&graph)?;
+        let scheduler_cpu_safe = validate_single_input_output(&graph)?;
+        let _ = scheduler_cpu_safe;
 
         Ok(Self {
             graph,
             expression: expression.to_owned(),
             eof_sent: false,
+            #[cfg(feature = "experimental-scheduler")]
+            scheduler_cpu_safe,
         })
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    pub(crate) fn scheduler_cpu_safe(&self) -> bool {
+        self.scheduler_cpu_safe
     }
 
     pub(crate) fn expression(&self) -> &str {
@@ -197,12 +207,13 @@ impl PcmFilterGraph {
     }
 }
 
-fn validate_single_input_output(graph: &ffmpeg::filter::Graph) -> Result<(), FilterGraphError> {
+fn validate_single_input_output(graph: &ffmpeg::filter::Graph) -> Result<bool, FilterGraphError> {
     // SAFETY: this graph was allocated and configured by ffmpeg-next and stays
     // immutably borrowed for the duration of this inspection. FFmpeg owns the
     // graph, filter array, contexts, and NUL-terminated filter names. Every
     // pointer is checked before dereferencing; the array length comes from the
     // same live AVFilterGraph.
+    let mut scheduler_cpu_safe = true;
     unsafe {
         let graph_ptr = graph.as_ptr();
         if graph_ptr.is_null() {
@@ -232,6 +243,28 @@ fn validate_single_input_output(graph: &ffmpeg::filter::Graph) -> Result<(), Fil
                 ));
             }
             let name = CStr::from_ptr(name).to_bytes();
+            // One-input graphs may still do I/O (metadata printing, commands, plugins).
+            // Conservatively admit only these CPU-only filters and automatic adapters.
+            scheduler_cpu_safe &= matches!(
+                name,
+                b"abuffer"
+                    | b"abuffersink"
+                    | b"anull"
+                    | b"aformat"
+                    | b"aresample"
+                    | b"volume"
+                    | b"atempo"
+                    | b"bass"
+                    | b"treble"
+                    | b"equalizer"
+                    | b"highpass"
+                    | b"lowpass"
+                    | b"bandpass"
+                    | b"bandreject"
+                    | b"pan"
+                    | b"asetrate"
+                    | b"asetpts"
+            );
             if (*context).nb_inputs == 0 {
                 input_count += 1;
                 if name != b"abuffer" {
@@ -255,7 +288,7 @@ fn validate_single_input_output(graph: &ffmpeg::filter::Graph) -> Result<(), Fil
             )));
         }
     }
-    Ok(())
+    Ok(scheduler_cpu_safe)
 }
 
 /// Maintains a contiguous output timeline independently of input/source PTS.

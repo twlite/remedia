@@ -212,6 +212,8 @@ impl DiscordVoiceConnection {
             )
         });
         let actor_future = async move {
+            #[cfg(feature = "experimental-scheduler")]
+            let _readiness_exit = ReadinessExit(actor_readiness.clone());
             let result = voice_actor(VoiceActorSetup {
                 voice_connection_id: actor_id,
                 metrics: actor_metrics.clone(),

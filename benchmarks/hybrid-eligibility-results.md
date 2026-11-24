@@ -50,7 +50,7 @@ cannot enter either CPU or control execution twice; wakes during the handoff are
 and returning always requeues it to observe pending cancellation or later controls. The same
 seek ticket, generation checks, decoder/encoder state and acknowledgements are retained. A seek
 can invalidate full output without waiting for its consumer. Filter replacement first preserves
-already accepted PCM. Native filters may now start on scheduled owned-memory sessions.
+already accepted PCM. Whitelisted CPU-only native filters may now start on scheduled owned-memory sessions.
 
 Diagnostics report control workers, queued/current handoffs and cumulative handoffs separately
 from permanent fallback counters. A temporary handoff is not reported as dedicated playback.
@@ -100,3 +100,37 @@ The available-parallelism convenience constructor drops the old four-worker cap 
 eight-action budget. This follows the previous measured ten-worker synchronized-tail recovery
 and dispatch-overhead results. Explicit constructors keep their previous budgets. FIFO and the
 existing ordered deadline queue remain; no affinity, stealing or dynamic resizing is added.
+
+An additional deterministic regression holds an actual routed Discord finish acknowledgement,
+completes unrelated playback on the same single CPU worker, seeks the pending-EOF session, and
+checks the resumed generation's sample continuity through natural EOF. Queued controls and
+in-flight barriers now carry generation ownership; stale flush/pause/resume/finish operations
+are rejected and stale barriers cannot finish the new timeline. Read-ahead registers a wake
+only for an empty queue, so speculative input completion does not interrupt output pacing.
+
+The blocking audit also found that one-input/one-output native graphs can perform I/O (for
+example metadata printing) or invoke plugins. Native graph inspection therefore admits only
+CPU-only volume, tempo, biquad, pan and resampling/timeline filters listed in the Fumadocs guide.
+Initial unsupported graphs bypass bounded startup, using the cached classification from their
+existing caller-side validation. Live unsupported graphs use a tracked dedicated fallback,
+with separate control/filter fallback counters; pending encoder production drains before the
+output returns to its synchronous contract. These workloads are never scheduler evidence.
+The ordinary seek and whitelisted filter path still returns to CPU workers. This conservatism
+preserves existing graph functionality without allowing hidden I/O onto codec workers.
+
+Seek output invalidation is also resumable. Native decoder/filter repositioning returns from the
+bounded isolated executor before polling the output flush. The machine retains the request and
+acknowledges it only after transport invalidation and encoder alignment. Three detached Discord
+seeks can remain pending while unrelated seek/filter controls succeed on the same one-worker
+CPU pool, proving transport replacement does not exhaust the two isolated control workers.
+A pause may supersede a pending EOF barrier; resume requests a fresh acknowledgement without
+re-encoding or replaying tail packets. Additional byte comparisons cover draining retained PCM
+before a deliberately unsupported graph returns the Opus output to synchronous delivery.
+
+Shared startup additionally sets FFmpeg's format whitelist before read_header/find_stream_info;
+post-probe classification alone would allow unsupported containers to open nested inputs while
+occupying a shared startup worker. A failed restricted attempt retries the unchanged source on
+a tracked dedicated worker and preserves the original readiness handshake and error behavior.
+Diagnostics expose probe_retries; qualified benchmark rows require zero retries. A regression
+opens owned WebM through this fallback, drains valid audio, joins both workers, and verifies
+zero scheduled admissions and the explicit demuxer fallback reason.

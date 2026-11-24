@@ -9,6 +9,8 @@ struct ReadySink {
     capture: CaptureSink,
     packets_open: Arc<AtomicBool>,
     barrier_open: Arc<AtomicBool>,
+    allow_sync: Arc<AtomicBool>,
+    wake: Arc<Mutex<Option<Waker>>>,
 }
 
 impl OpusPacketSink for ReadySink {
@@ -19,9 +21,10 @@ impl OpusPacketSink for ReadySink {
     fn scheduler_poll_packet(
         &self,
         packet: &mut Option<EncodedOpusPacket>,
-        _: &mut Context<'_>,
+        cx: &mut Context<'_>,
         cancellation: &CancellationToken,
     ) -> Poll<Result<(), OutputError>> {
+        *lock(&self.wake) = Some(cx.waker().clone());
         if !self.packets_open.load(Ordering::Acquire) {
             return Poll::Pending;
         }
@@ -44,19 +47,35 @@ impl OpusPacketSink for ReadySink {
         Poll::Ready(self.capture.finish(cancellation))
     }
 
-    fn send_packet(&self, _: EncodedOpusPacket, _: &CancellationToken) -> Result<(), OutputError> {
-        panic!("scheduled output called blocking send")
+    fn send_packet(
+        &self,
+        packet: EncodedOpusPacket,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OutputError> {
+        assert!(
+            self.allow_sync.load(Ordering::Acquire),
+            "scheduled output called blocking send"
+        );
+        self.capture.send_packet(packet, cancellation)
     }
 
     fn flush(&self, _: Duration, _: &CancellationToken) -> Result<(), OutputError> {
         Ok(())
     }
 
-    fn finish(&self, _: &CancellationToken) -> Result<(), OutputError> {
-        panic!("scheduled output called blocking finish")
+    fn finish(&self, cancellation: &CancellationToken) -> Result<(), OutputError> {
+        assert!(
+            self.allow_sync.load(Ordering::Acquire),
+            "scheduled output called blocking finish"
+        );
+        self.capture.finish(cancellation)
     }
 
-    fn cancel(&self) {}
+    fn cancel(&self) {
+        if let Some(wake) = lock(&self.wake).take() {
+            wake.wake();
+        }
+    }
 }
 
 #[test]
@@ -102,4 +121,57 @@ fn scheduled_encoding_retains_bounded_packets_and_matches_dedicated_bytes() {
     ));
     assert_eq!(lock(&capture.0).packets, lock(&sink.capture.0).packets);
     assert_settings(&scheduled, OpusEncoderConfig::default());
+}
+
+#[test]
+fn unsupported_filter_fallback_drains_retained_pcm_before_synchronous_delivery() {
+    use crate::{InputSource, PlaybackScheduler, PlaybackSession, PlaybackState};
+    use std::time::Instant;
+    let pool = PlaybackScheduler::new(1, 8).unwrap();
+    let session = Arc::new(PlaybackSession::with_scheduler(pool.clone()));
+    let sink = ReadySink::default();
+    sink.allow_sync.store(true, Ordering::Release);
+    sink.barrier_open.store(true, Ordering::Release);
+    let source =
+        || InputSource::bytes(include_bytes!("../../tests/fixtures/generated-tone.mp3").to_vec());
+    session
+        .play(source(), OpusEncoderOutput::new(sink.clone()).unwrap())
+        .unwrap();
+    let limit = Instant::now() + Duration::from_secs(5);
+    while lock(&sink.wake).is_none() {
+        assert!(Instant::now() < limit);
+        std::thread::yield_now();
+    }
+    let updating = session.clone();
+    let update = std::thread::spawn(move || {
+        updating.set_filter_graph(Some(if cfg!(windows) {
+            "ametadata=mode=print:file=NUL"
+        } else {
+            "ametadata=mode=print:file=/dev/null"
+        }))
+    });
+    while session.executor_diagnostic() != "dedicated: unsupported filter" {
+        assert!(Instant::now() < limit);
+        std::thread::yield_now();
+    }
+    let other = PlaybackSession::with_scheduler(pool.clone());
+    other.play(source(), crate::NullOutput::new()).unwrap();
+    assert_eq!(other.wait(), PlaybackState::Completed);
+    other.stop().unwrap();
+    sink.packets_open.store(true, Ordering::Release);
+    if let Some(wake) = lock(&sink.wake).take() {
+        wake.wake();
+    }
+    update.join().unwrap().unwrap();
+    assert_eq!(session.wait(), PlaybackState::Completed);
+    session.stop().unwrap();
+    let capture = CaptureSink::default();
+    let reference = PlaybackSession::new();
+    reference
+        .play(source(), OpusEncoderOutput::new(capture.clone()).unwrap())
+        .unwrap();
+    assert_eq!(reference.wait(), PlaybackState::Completed);
+    reference.stop().unwrap();
+    assert_eq!(lock(&sink.capture.0).packets, lock(&capture.0).packets);
+    assert_eq!(pool.diagnostics().control_fallbacks, 1);
 }

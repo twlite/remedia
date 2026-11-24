@@ -24,6 +24,7 @@ pub(crate) struct QueuedInput {
     cancellation: CancellationToken,
     network: bool,
     seekable: AtomicBool,
+    dispatch: tracing::Dispatch,
 }
 
 impl QueuedInput {
@@ -49,6 +50,7 @@ impl QueuedInput {
             cancellation,
             network,
             seekable,
+            dispatch: tracing::dispatcher::get_default(Clone::clone),
         })
     }
 
@@ -64,7 +66,7 @@ impl QueuedInput {
         if self.cancellation.is_cancelled() {
             return Poll::Ready(Err(DecoderError::Cancelled));
         }
-        state.waker = Some(cx.waker().clone());
+        state.waker = None;
         let packet = state.packets.pop_front();
         if let Some(packet) = &packet {
             state.bytes -= packet.size();
@@ -99,11 +101,21 @@ impl QueuedInput {
         if state.eof {
             Poll::Ready(Ok(None))
         } else {
+            // Register only an actual input wait. Read-ahead completion must not interrupt
+            // an unrelated output-capacity or pacing suspension.
+            state.waker = Some(cx.waker().clone());
             Poll::Pending
         }
     }
 
     fn fill(&self) {
+        tracing::dispatcher::with_default(&self.dispatch, || {
+            let _capture = crate::ffmpeg_logging::capture();
+            self.fill_inner();
+        });
+    }
+
+    fn fill_inner(&self) {
         let (mut input, slots, room) = {
             let mut state = lock(&self.state);
             (
@@ -193,7 +205,7 @@ impl QueuedInput {
         state
             .input
             .as_mut()
-            .expect("idle demux input")
+            .ok_or(ffmpeg::Error::InvalidData)?
             .seek(timestamp, ..)?;
         state.packets.clear();
         state.bytes = 0;
@@ -207,4 +219,50 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::task::Wake;
+
+    struct Counter(AtomicUsize);
+    impl Wake for Counter {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn read_ahead_completion_only_wakes_an_empty_queue_waiter() {
+        let token = CancellationToken::new();
+        let source = InputSource::file(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/ffmpeg-opus-silent-lead-long.ogg"
+        ));
+        let input = input::open(&source, Duration::from_secs(5), token.clone()).unwrap();
+        let executor = Arc::new(BlockingExecutor::new(1, 8, "demux-wake-test").unwrap());
+        let queue = QueuedInput::new(input, executor.clone(), false, token);
+        let count = Arc::new(Counter(AtomicUsize::new(0)));
+        let waker = Waker::from(count.clone());
+        let mut cx = Context::from_waker(&waker);
+        assert!(queue.poll_packet(&mut cx).is_pending());
+        queue.wait_idle();
+        executor.submit(|| {}).unwrap().join().unwrap();
+        assert_eq!(count.0.load(Ordering::Relaxed), 1);
+        for _ in 0..6 {
+            assert!(matches!(
+                queue.poll_packet(&mut cx),
+                Poll::Ready(Ok(Some(_)))
+            ));
+        }
+        queue.wait_idle();
+        executor.submit(|| {}).unwrap().join().unwrap();
+        assert_eq!(
+            count.0.load(Ordering::Relaxed),
+            1,
+            "read-ahead must not wake output pacing"
+        );
+    }
 }

@@ -12,6 +12,44 @@ impl MediaOutput for OpusEncoderOutput {
     }
 
     #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_deactivate(&self, cancellation: &CancellationToken) -> Result<(), OutputError> {
+        self.wait_ready(cancellation)?;
+        self.sink.deactivate();
+        Ok(())
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_flush_samples(
+        &self,
+        sample: u64,
+        cx: &mut std::task::Context<'_>,
+        cancellation: &CancellationToken,
+    ) -> std::task::Poll<Result<(), OutputError>> {
+        self.ensure_active(cancellation)?;
+        let mut pending = lock(&self.pending_flush);
+        if pending.is_some_and(|position| position != sample) {
+            return std::task::Poll::Ready(Err(OutputError::new(
+                "overlapping output seek flushes",
+            )));
+        }
+        if pending.is_none() {
+            lock(&self.pending_pcm).take();
+            self.sink.clear();
+            self.reset_timeline(sample)?;
+            *pending = Some(sample);
+        }
+        let result = self.sink.inner.scheduler_poll_control(
+            crate::OutputControl::Flush(sample),
+            cx,
+            cancellation,
+        );
+        if result.is_ready() {
+            pending.take();
+        }
+        result
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
     fn scheduler_poll_ready(
         &self,
         cx: &mut std::task::Context<'_>,
@@ -115,20 +153,7 @@ impl MediaOutput for OpusEncoderOutput {
             lock(&self.pending_pcm).take();
         }
         self.sink.flush_samples(sample_position, cancellation)?;
-        let mut state = lock(&self.state);
-        if let Some(encoder) = state.encoder.as_mut() {
-            encoder.reset_state().map_err(OutputError::with_source)?;
-        }
-        state.partial_scalars = 0;
-        state.partial_start_sample = None;
-        state.partial_lead_samples = 0;
-        state.suppressed_frames = 0;
-        state.primed_unflushed = false;
-        state.start_bias = 0;
-        state.partial_is_alignment_only = false;
-        state.next_input_sample = Some(sample_position);
-        state.finished = false;
-        Ok(())
+        self.reset_timeline(sample_position)
     }
 
     fn filter_transition(
@@ -285,5 +310,24 @@ impl MediaOutput for OpusEncoderOutput {
 
     fn played_position(&self) -> Option<Duration> {
         self.sink.played_position()
+    }
+}
+
+impl OpusEncoderOutput {
+    fn reset_timeline(&self, sample_position: u64) -> Result<(), OutputError> {
+        let mut state = lock(&self.state);
+        if let Some(encoder) = state.encoder.as_mut() {
+            encoder.reset_state().map_err(OutputError::with_source)?;
+        }
+        state.partial_scalars = 0;
+        state.partial_start_sample = None;
+        state.partial_lead_samples = 0;
+        state.suppressed_frames = 0;
+        state.primed_unflushed = false;
+        state.start_bias = 0;
+        state.partial_is_alignment_only = false;
+        state.next_input_sample = Some(sample_position);
+        state.finished = false;
+        Ok(())
     }
 }

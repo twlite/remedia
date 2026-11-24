@@ -32,6 +32,16 @@ impl PacketBuffer {
     }
 
     #[cfg(feature = "experimental-scheduler")]
+    pub(super) fn clear(&self) {
+        lock(&self.pending).clear();
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    pub(super) fn deactivate(&self) {
+        self.enabled.store(false, Ordering::Release);
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
     pub(super) fn poll(
         &self,
         cx: &mut std::task::Context<'_>,

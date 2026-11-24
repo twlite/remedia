@@ -62,19 +62,45 @@ impl DiscordOpusSender {
         cancellation: &CoreCancellationToken,
     ) -> Poll<Result<(), OutputError>> {
         self.inner.readiness.register(cx.waker());
-        self.ensure_current(cancellation)
+        let generation = self
+            .ensure_current(cancellation)
             .map_err(OutputError::with_source)?;
         let mut slot = lock(&self.pending_control);
         if slot.as_ref().is_some_and(|pending| pending.kind != kind) {
-            return Poll::Ready(Err(OutputError::new("overlapping Discord output barriers")));
+            if matches!(kind, OutputControl::Flush(_))
+                || (slot
+                    .as_ref()
+                    .is_some_and(|pending| pending.kind == OutputControl::Finish)
+                    && kind == OutputControl::Pause)
+            {
+                // FIFO admission lets pause replace a draining finish barrier. Resume will
+                // request a fresh EOF acknowledgement without encoding the tail twice.
+                slot.take();
+            } else {
+                return Poll::Ready(Err(OutputError::new("overlapping Discord output barriers")));
+            }
         }
+        let generation = if slot.is_none() && matches!(kind, OutputControl::Flush(_)) {
+            self.begin_flush()?
+        } else {
+            generation
+        };
         let pending = slot.get_or_insert_with(|| {
             let (ack, receiver) = flume::bounded(1);
             let target_id = self.inner.accepted_packet_id.load(Ordering::Acquire);
             let control = match kind {
-                OutputControl::Pause => Control::Pause { target_id, ack },
-                OutputControl::Resume => Control::Resume { ack },
-                OutputControl::Finish => Control::Finish { target_id, ack },
+                OutputControl::Pause => Control::Pause {
+                    generation,
+                    target_id,
+                    ack,
+                },
+                OutputControl::Resume => Control::Resume { generation, ack },
+                OutputControl::Flush(_) => Control::Flush { generation, ack },
+                OutputControl::Finish => Control::Finish {
+                    generation,
+                    target_id,
+                    ack,
+                },
             };
             let sender = self.inner.control_tx.clone();
             PendingControl {
@@ -111,5 +137,8 @@ fn lock_free_finish(
 ) {
     if kind == OutputControl::Finish && matches!(result, Poll::Ready(Ok(()))) {
         sender.finished.store(true, Ordering::Release);
+    }
+    if matches!(kind, OutputControl::Flush(_)) && matches!(result, Poll::Ready(Ok(()))) {
+        sender.played_end_sample.store(u64::MAX, Ordering::Release);
     }
 }

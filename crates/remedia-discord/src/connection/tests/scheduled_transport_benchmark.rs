@@ -33,6 +33,7 @@ fn consumer(
     let delivery = Arc::new(Mutex::new(Delivery::default()));
     let (stats, notify, cancel) = (delivery.clone(), readiness.clone(), cancellation.clone());
     let worker = tokio::spawn(async move {
+        let _readiness_exit = ReadinessExit(notify.clone());
         let mut gate = gate;
         gate.wait_for(|open| *open).await.unwrap();
         time::sleep(Duration::from_millis(stagger_ms)).await;
@@ -69,8 +70,8 @@ fn consumer(
                     if stall_now { time::sleep(Duration::from_millis(100)).await; }
                 }
                 control = control_rx.recv_async() => match control {
-                    Ok(Control::Pause { target_id, ack } | Control::Finish { target_id, ack }) => barriers.push((target_id, ack)),
-                    Ok(Control::Resume { ack } | Control::Flush { ack, .. }) => { let _ = ack.send(Ok(())); }
+                    Ok(Control::Pause { target_id, ack, .. } | Control::Finish { target_id, ack, .. }) => barriers.push((target_id, ack)),
+                    Ok(Control::Resume { ack, .. } | Control::Flush { ack, .. }) => { let _ = ack.send(Ok(())); }
                     Ok(Control::Cancel { .. }) => {},
                     Err(_) => break,
                 }

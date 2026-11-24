@@ -39,11 +39,13 @@ struct Pool {
     turns: AtomicUsize,
     admitted: AtomicUsize,
     migrated: AtomicUsize,
+    permanent: AtomicUsize,
     isolated: AtomicUsize,
     controls: blocking::BlockingExecutor,
     startup: blocking::BlockingExecutor,
     io: Arc<blocking::BlockingExecutor>,
     startup_rejections: AtomicUsize,
+    probe_retries: AtomicUsize,
     unsupported: AtomicUsize,
     reasons: [AtomicUsize; 5],
     rejected: AtomicUsize,
@@ -91,6 +93,8 @@ pub struct SchedulerDiagnostics {
     pub queued_startups: usize,
     /// Rejected startup requests (reported to callers, never silently admitted).
     pub startup_rejections: usize,
+    /// Restricted startup failures retried on a tracked dedicated worker before readiness.
+    pub probe_retries: usize,
     /// Admitted tasks, including suspended sessions.
     pub sessions: usize,
     /// Currently admitted sessions still executing on CPU workers, excluding control fallbacks.
@@ -109,7 +113,7 @@ pub struct SchedulerDiagnostics {
     pub control_handoffs: usize,
     /// Admitted sessions currently awaiting or executing an isolated control.
     pub isolated_controls: usize,
-    /// Legacy permanent control fallback counter (zero with reversible handoff).
+    /// Permanent dedicated migrations for native filters outside the CPU-only whitelist.
     pub control_fallbacks: usize,
     /// Cumulative unsupported-workload dedicated fallbacks.
     pub unsupported_fallbacks: usize,
@@ -119,7 +123,7 @@ pub struct SchedulerDiagnostics {
     pub output_fallbacks: usize,
     /// Inputs with demuxers outside the conservative whitelist.
     pub demuxer_fallbacks: usize,
-    /// Legacy initial-filter fallback counter; supported native filters now qualify.
+    /// Initial/live native graphs outside the CPU-only filter whitelist.
     pub filter_fallbacks: usize,
     /// Crossfade sessions retaining dedicated execution.
     pub crossfade_fallbacks: usize,
@@ -180,11 +184,13 @@ impl PlaybackScheduler {
             turns: AtomicUsize::new(0),
             admitted: AtomicUsize::new(0),
             migrated: AtomicUsize::new(0),
+            permanent: AtomicUsize::new(0),
             isolated: AtomicUsize::new(0),
             controls: blocking::BlockingExecutor::new(2, capacity, "control")?,
             startup: blocking::BlockingExecutor::new(2, capacity, "startup")?,
             io: Arc::new(blocking::BlockingExecutor::new(2, capacity, "demux")?),
             startup_rejections: AtomicUsize::new(0),
+            probe_retries: AtomicUsize::new(0),
             unsupported: AtomicUsize::new(0),
             reasons: std::array::from_fn(|_| AtomicUsize::new(0)),
             rejected: AtomicUsize::new(0),
@@ -221,6 +227,10 @@ impl PlaybackScheduler {
             1024,
             8,
         )
+    }
+
+    pub(super) fn record_probe_retry(&self) {
+        self.inner.probe_retries.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(super) fn io_executor(&self) -> Arc<blocking::BlockingExecutor> {
@@ -260,6 +270,7 @@ impl PlaybackScheduler {
             worker_busy_ns: self.inner.busy_ns.load(Ordering::Relaxed),
             queued_startups: self.inner.startup.queued(),
             startup_rejections: self.inner.startup_rejections.load(Ordering::Relaxed),
+            probe_retries: self.inner.probe_retries.load(Ordering::Relaxed),
             sessions: self.inner.live.load(Ordering::Relaxed),
             scheduled_sessions: self
                 .inner
@@ -271,7 +282,7 @@ impl PlaybackScheduler {
             processing_budget: self.inner.budget,
             turns: self.inner.turns.load(Ordering::Relaxed),
             admitted: self.inner.admitted.load(Ordering::Relaxed),
-            control_fallbacks: 0,
+            control_fallbacks: self.inner.permanent.load(Ordering::Relaxed),
             control_handoffs: self.inner.migrated.load(Ordering::Relaxed),
             isolated_controls: self.inner.isolated.load(Ordering::Relaxed),
             unsupported_fallbacks: self.inner.unsupported.load(Ordering::Relaxed),
@@ -324,6 +335,7 @@ impl PlaybackScheduler {
         self.inner.admitted.fetch_add(1, Ordering::Relaxed);
         self.inner.scheduled_live.fetch_add(1, Ordering::Relaxed);
         let job = Arc::new(Job {
+            dedicated: std::sync::atomic::AtomicBool::new(false),
             on_error: Box::new(on_error),
 
             cancel_wake: Mutex::new(None),
@@ -354,6 +366,7 @@ impl Drop for PlaybackScheduler {
 type Machine = Box<dyn FnMut() -> worker::WorkerStep + Send>;
 
 pub(super) struct Job {
+    dedicated: std::sync::atomic::AtomicBool,
     on_error: Box<dyn Fn(std::io::Error) + Send + Sync>,
     pub(super) cancel_wake: Mutex<Option<Arc<CancelWake>>>,
     pool: std::sync::Weak<Pool>,
@@ -547,6 +560,28 @@ fn run(pool: Arc<Pool>) {
                         drop(isolated);
                         complete(&control_job, &control_pool);
                     }
+                    Ok(worker::WorkerStep::UnsupportedFilter) => {
+                        control_pool.permanent.fetch_add(1, Ordering::Relaxed);
+                        control_pool.reasons[3].fetch_add(1, Ordering::Relaxed);
+                        control_pool.scheduled_live.fetch_sub(1, Ordering::Relaxed);
+                        control_job.dedicated.store(true, Ordering::Release);
+                        let context = (control_job.clone(), control_pool.clone());
+                        if let Err(error) = thread::Builder::new()
+                            .name("remedia-filter-fallback".into())
+                            .spawn(move || {
+                                if catch_unwind(AssertUnwindSafe(&mut isolated)).is_err() {
+                                    (context.0.on_error)(std::io::Error::other(
+                                        "filter fallback panicked",
+                                    ));
+                                }
+                                drop(isolated);
+                                complete(&context.0, &context.1);
+                            })
+                        {
+                            (control_job.on_error)(error);
+                            complete(&control_job, &control_pool);
+                        }
+                    }
                     Ok(_) => {
                         *lock(&control_job.machine) = Some(isolated);
                         control_job.state.store(IDLE, Ordering::Release);
@@ -584,7 +619,9 @@ fn run(pool: Arc<Pool>) {
 }
 
 fn complete(job: &Job, pool: &Pool) {
-    pool.scheduled_live.fetch_sub(1, Ordering::Relaxed);
+    if !job.dedicated.load(Ordering::Acquire) {
+        pool.scheduled_live.fetch_sub(1, Ordering::Relaxed);
+    }
     job.state.store(DONE, Ordering::Release);
     pool.live.fetch_sub(1, Ordering::AcqRel);
     *lock(&job.finished) = true;

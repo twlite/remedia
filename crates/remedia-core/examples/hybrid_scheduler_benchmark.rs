@@ -370,6 +370,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cx = Context::from_waker(&waker);
     gate.release();
     let processing_start = Instant::now();
+    let start_sample = if control_rounds == 0 {
+        0
+    } else {
+        (100 + ((control_rounds - 1) % 4) as u64 * 10) * 48
+    };
+    let mut next_samples = vec![start_sample; count];
     let mut samples = vec![0_u64; count];
     let mut chunks = vec![0_u64; count];
     let mut checksums = vec![0_u64; count];
@@ -402,13 +408,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         if pacing == StreamPacing::Realtime {
                             let expected = origin
-                                + Duration::from_secs_f64(chunk.start_sample as f64 / 48000.0);
+                                + Duration::from_secs_f64(
+                                    (chunk.start_sample - start_sample) as f64 / 48000.0,
+                                );
                             let late =
                                 now.saturating_duration_since(expected).as_secs_f64() * 1000.0;
                             lateness_ms.push(late);
                             worst_lateness_ms[index] = worst_lateness_ms[index].max(late);
                         }
-                        assert_eq!(chunk.start_sample, samples[index], "packet continuity");
+                        assert_eq!(chunk.start_sample, next_samples[index], "packet continuity");
+                        next_samples[index] += u64::from(chunk.media_samples_per_channel);
                         samples[index] += u64::from(chunk.media_samples_per_channel);
                         chunks[index] += 1;
                         for byte in chunk.data {
@@ -458,7 +467,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "experimental-scheduler")]
     let diagnostics = pool.as_ref().map(|p| {
         let d = p.diagnostics();
-        serde_json::json!({"admitted":d.admitted,"scheduledLive":d.scheduled_sessions,"controlFallbacks":d.control_fallbacks,"unsupportedFallbacks":d.unsupported_fallbacks,"fallbackReasons":{"input":d.input_fallbacks,"output":d.output_fallbacks,"demuxer":d.demuxer_fallbacks,"filter":d.filter_fallbacks,"crossfade":d.crossfade_fallbacks},"capacityFallbacks":d.capacity_fallbacks,"actions":d.actions,"turns":d.turns,"queuePeak":d.queue_peak,"queueContentions":d.queue_contentions,"queueWaitNs":d.queue_wait_ns,"deadlineSuspensions":d.deadline_suspensions,"deadlineWakes":d.deadline_wakes,"deadlinePeak":d.deadline_peak,"pendingDeadlines":d.pending_deadlines,"workerBusyNs":d.worker_busy_ns,"controlHandoffs":d.control_handoffs,"controlWorkers":d.control_workers,"startupWorkers":d.startup_workers,"startupQueuePeak":d.startup_queue_peak,"startupRejections":d.startup_rejections,"ioWorkers":d.io_workers,"ioBursts":d.io_bursts,"ioBusyNs":d.io_busy_ns,"ioQueuePeak":d.io_queue_peak})
+        serde_json::json!({"admitted":d.admitted,"scheduledLive":d.scheduled_sessions,"controlFallbacks":d.control_fallbacks,"unsupportedFallbacks":d.unsupported_fallbacks,"fallbackReasons":{"input":d.input_fallbacks,"output":d.output_fallbacks,"demuxer":d.demuxer_fallbacks,"filter":d.filter_fallbacks,"crossfade":d.crossfade_fallbacks},"capacityFallbacks":d.capacity_fallbacks,"actions":d.actions,"turns":d.turns,"queuePeak":d.queue_peak,"queueContentions":d.queue_contentions,"queueWaitNs":d.queue_wait_ns,"deadlineSuspensions":d.deadline_suspensions,"deadlineWakes":d.deadline_wakes,"deadlinePeak":d.deadline_peak,"pendingDeadlines":d.pending_deadlines,"workerBusyNs":d.worker_busy_ns,"controlHandoffs":d.control_handoffs,"controlWorkers":d.control_workers,"startupWorkers":d.startup_workers,"startupQueuePeak":d.startup_queue_peak,"startupRejections":d.startup_rejections,"probeRetries":d.probe_retries,"ioWorkers":d.io_workers,"ioBursts":d.io_bursts,"ioBusyNs":d.io_busy_ns,"ioQueuePeak":d.io_queue_peak})
     });
     #[cfg(not(feature = "experimental-scheduler"))]
     let diagnostics: Option<serde_json::Value> = None;

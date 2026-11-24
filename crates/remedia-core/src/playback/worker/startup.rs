@@ -11,15 +11,21 @@ pub(super) struct PreparedWorker {
     pub(super) _active_playback: ActivePlaybackGuard,
 }
 
+pub(super) struct DedicatedRetry {
+    pub(super) source: InputSource,
+    pub(super) ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
+}
+
 pub(super) fn prepare(
     shared: &Arc<SessionShared>,
     generation: u64,
     source: InputSource,
     output: &Arc<dyn MediaOutput>,
     cancellation: &CancellationToken,
-    ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
-) -> Option<PreparedWorker> {
+    (ready, restricted): (SyncSender<Result<AudioStreamInfo, PlaybackError>>, bool),
+) -> Result<Option<PreparedWorker>, DedicatedRetry> {
     let source_kind = source.kind();
+    let retry_source = restricted.then(|| source.clone());
     let decoder_started = Instant::now();
     let open_span = tracing::info_span!(
         target: "remedia_core::decoder",
@@ -29,12 +35,13 @@ pub(super) fn prepare(
         error.type = tracing::field::Empty,
     );
     let decoder_result = open_span.in_scope(|| {
-        AudioDecoder::open_for_playback(
+        AudioDecoder::open_for_playback_restricted(
             source,
             DecoderOptions {
                 cancellation: cancellation.clone(),
                 ..DecoderOptions::default()
             },
+            restricted,
         )
     });
     let metrics = shared.observability.metrics();
@@ -55,6 +62,12 @@ pub(super) fn prepare(
             );
             decoder
         }
+        Err(_error) if restricted && !cancellation.is_cancelled() => {
+            return Err(DedicatedRetry {
+                source: retry_source.expect("restricted source"),
+                ready,
+            });
+        }
         Err(error) => {
             open_span.record("otel.status_code", "ERROR");
             open_span.record("error.type", error.kind());
@@ -72,7 +85,7 @@ pub(super) fn prepare(
             };
             fail_session(shared, generation, error.clone(), cancellation, output);
             let _ = ready.send(Err(error));
-            return None;
+            return Ok(None);
         }
     };
 
@@ -87,7 +100,7 @@ pub(super) fn prepare(
             let error = PlaybackError::FilterGraph(Arc::new(error));
             fail_session(shared, generation, error.clone(), cancellation, output);
             let _ = ready.send(Err(error));
-            return None;
+            return Ok(None);
         }
     };
 
@@ -135,15 +148,15 @@ pub(super) fn prepare(
         let error: PlaybackError = error.into();
         fail_session(shared, generation, error.clone(), cancellation, output);
         let _ = ready.send(Err(error));
-        return None;
+        return Ok(None);
     }
     if ready.send(Ok(info)).is_err() {
         cancellation.cancel();
         let _ = safe_cancel(output);
-        return None;
+        return Ok(None);
     }
     if !wait_for_start(shared, generation) {
-        return None;
+        return Ok(None);
     }
     metrics.playback_started();
     let _active_playback = ActivePlaybackGuard { metrics };
@@ -155,12 +168,12 @@ pub(super) fn prepare(
         "playback worker entered decode loop"
     );
 
-    Some(PreparedWorker {
+    Ok(Some(PreparedWorker {
         decoder,
         processor,
         can_passthrough,
         passthrough_mode,
         playback_id,
         _active_playback,
-    })
+    }))
 }

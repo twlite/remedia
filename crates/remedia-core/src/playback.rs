@@ -296,6 +296,8 @@ struct SessionData {
     /// A fallback replacement finished preparing (or failed); the worker should look at it.
     fallback_signal: bool,
     filter_graph: Option<String>,
+    #[cfg(feature = "experimental-scheduler")]
+    filter_scheduler_safe: bool,
     pending_filter_graph: Option<FilterUpdate>,
     processor_initialized: bool,
     volume: f32,

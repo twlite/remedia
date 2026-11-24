@@ -110,7 +110,15 @@ impl AudioDecoder {
         source: InputSource,
         options: DecoderOptions,
     ) -> Result<Self, DecoderError> {
-        let reader = AudioPacketReader::open(source, options)?;
+        Self::open_for_playback_restricted(source, options, false)
+    }
+
+    pub(crate) fn open_for_playback_restricted(
+        source: InputSource,
+        options: DecoderOptions,
+        restricted: bool,
+    ) -> Result<Self, DecoderError> {
+        let reader = AudioPacketReader::open(source, options, restricted)?;
         let cancellation = reader.cancellation.clone();
         Ok(Self {
             reader,

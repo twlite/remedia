@@ -55,6 +55,8 @@ impl PlaybackSession {
                     fallback_seeking: false,
                     fallback_signal: false,
                     filter_graph: None,
+                    #[cfg(feature = "experimental-scheduler")]
+                    filter_scheduler_safe: true,
                     pending_filter_graph: None,
                     processor_initialized: false,
                     volume: 1.0,
@@ -97,6 +99,7 @@ impl PlaybackSession {
             2 => "dedicated: unsupported workload",
             3 => "dedicated: pool capacity",
             4 => "scheduled: isolated control",
+            5 => "dedicated: unsupported filter",
             _ => "dedicated",
         }
     }
@@ -241,6 +244,7 @@ impl PlaybackSession {
             let bounded_startup = self.shared.scheduler.is_some()
                 && worker_crossfade.is_none()
                 && source.scheduler_input()
+                && data.filter_scheduler_safe
                 && output.scheduler_nonblocking();
             #[cfg(not(feature = "experimental-scheduler"))]
             let bounded_startup = false;

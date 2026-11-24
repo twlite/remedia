@@ -7,9 +7,17 @@ fn mock_packet_barriers_wait_for_target_without_blocking_other_channels() {
         let voice = TestVoiceConnection::new(42);
         let (ack, result) = flume::bounded(1);
         let control = if finish {
-            Control::Finish { target_id: 2, ack }
+            Control::Finish {
+                generation: 0,
+                target_id: 2,
+                ack,
+            }
         } else {
-            Control::Pause { target_id: 2, ack }
+            Control::Pause {
+                generation: 0,
+                target_id: 2,
+                ack,
+            }
         };
         voice.connection.inner.control_tx.send(control).unwrap();
 
@@ -20,7 +28,7 @@ fn mock_packet_barriers_wait_for_target_without_blocking_other_channels() {
             .connection
             .inner
             .control_tx
-            .send(Control::Resume { ack })
+            .send(Control::Resume { generation: 0, ack })
             .unwrap();
         resumed
             .recv_timeout(Duration::from_secs(1))
@@ -349,6 +357,7 @@ fn output_cancel_fallback_discards_stale_packets_and_is_idempotent() {
 fn new_output_packet_supersedes_an_old_cancel_barrier() {
     let deadline = Instant::now() + Duration::from_millis(20);
     let mut barrier = Some(PendingBarrier {
+        generation: None,
         target_id: 8,
         silence_packets: 4,
         kind: BarrierKind::Cancel,
@@ -602,7 +611,7 @@ fn opus_sender_backpressures_at_its_bounded_queue_and_cancellation_unblocks() {
                 .scheduler_poll_control(kind, &mut cx, &token)
                 .is_pending()
         );
-        let Control::Pause { target_id, ack } = control_rx.try_recv().unwrap() else {
+        let Control::Pause { target_id, ack, .. } = control_rx.try_recv().unwrap() else {
             panic!("pause barrier");
         };
         assert_eq!(
@@ -983,5 +992,49 @@ async fn scheduled_owned_opus_matches_dedicated_through_rtp_and_dave() {
     assert_eq!(pool.diagnostics().unsupported_fallbacks, 0);
     for mode in [EncryptionMode::Aes256Gcm, EncryptionMode::XChaCha20Poly1305] {
         real_opus::through_rtp_and_dave(&outputs[1], mode).await;
+    }
+}
+
+#[test]
+fn stale_queued_and_inflight_controls_cannot_finish_a_new_generation() {
+    for kind in 0..4 {
+        let (ack, result) = flume::bounded(1);
+        let control = match kind {
+            0 => Control::Flush { generation: 1, ack },
+            1 => Control::Pause {
+                generation: 1,
+                target_id: 9,
+                ack,
+            },
+            2 => Control::Resume { generation: 1, ack },
+            _ => Control::Finish {
+                generation: 1,
+                target_id: 9,
+                ack,
+            },
+        };
+        assert!(control.for_generation(2).is_none());
+        assert!(matches!(
+            result.recv().unwrap(),
+            Err(VoiceError::Superseded)
+        ));
+    }
+    for kind in [BarrierKind::Pause, BarrierKind::Finish] {
+        let (ack, result) = flume::bounded(1);
+        let mut barrier = Some(PendingBarrier {
+            generation: Some(1),
+            target_id: 9,
+            silence_packets: 5,
+            kind,
+            ack: Some(ack),
+        });
+        discard_stale_barrier(&mut barrier, 1);
+        assert!(barrier.is_some());
+        discard_stale_barrier(&mut barrier, 2);
+        assert!(barrier.is_none());
+        assert!(matches!(
+            result.recv().unwrap(),
+            Err(VoiceError::Superseded)
+        ));
     }
 }

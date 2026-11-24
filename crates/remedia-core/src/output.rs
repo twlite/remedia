@@ -50,6 +50,8 @@ pub enum OutputControl {
     Resume,
     /// Drain final audio and finish the playback generation.
     Finish,
+    /// Invalidate earlier output and reset to this normalized 48 kHz sample.
+    Flush(u64),
 }
 
 /// A consumer for normalized PCM frames.
@@ -73,6 +75,13 @@ pub trait MediaOutput: Send + Sync + 'static {
     #[cfg(feature = "experimental-scheduler")]
     fn scheduler_activate(&self) {}
 
+    /// Restore synchronous production on an isolated dedicated fallback, after draining any
+    /// retained production. Never called on a CPU worker. Existing outputs need no transition.
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_deactivate(&self, _cancellation: &CancellationToken) -> Result<(), OutputError> {
+        Ok(())
+    }
+
     /// Execute a resumable output barrier. Pending must retain the operation and register a wake.
     /// Called repeatedly with the same control until acknowledged or playback is cancelled.
     #[cfg(feature = "experimental-scheduler")]
@@ -86,7 +95,20 @@ pub trait MediaOutput: Send + Sync + 'static {
             OutputControl::Pause => self.pause(cancellation),
             OutputControl::Resume => self.resume(cancellation),
             OutputControl::Finish => self.finish(cancellation),
+            OutputControl::Flush(sample) => self.flush_samples(sample, cancellation),
         })
+    }
+
+    /// Reset a seek timeline without blocking a CPU or isolated control worker. The default
+    /// uses the synchronous flush for outputs whose opted-in flush is already nonblocking.
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_flush_samples(
+        &self,
+        sample: u64,
+        _cx: &mut std::task::Context<'_>,
+        cancellation: &CancellationToken,
+    ) -> std::task::Poll<Result<(), OutputError>> {
+        std::task::Poll::Ready(self.flush_samples(sample, cancellation))
     }
 
     /// Poll output demand without blocking. Used only after `scheduler_nonblocking` opts in.

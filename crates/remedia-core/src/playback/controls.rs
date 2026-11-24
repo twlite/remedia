@@ -218,6 +218,12 @@ impl PlaybackSession {
         data.last_processing_error = None;
         let playback_id = data.playback_id;
         let graph_enabled = expression.is_some();
+        #[cfg(feature = "experimental-scheduler")]
+        {
+            data.filter_scheduler_safe = candidate
+                .as_ref()
+                .is_none_or(PcmFilterGraph::scheduler_cpu_safe);
+        }
         data.filter_graph = expression;
         let active = is_active(data.state) && !data.stopping;
         let response = if active && data.processor_initialized {

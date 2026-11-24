@@ -348,7 +348,7 @@ session.stop()?;
 
 This experiment schedules owned-byte and local-file Ogg, MP3, ADTS AAC, WAV and FLAC inputs with
 `NullOutput`, `StreamOutput` with unpaced or realtime pacing, or `OpusEncoderOutput` attached
-to `DiscordOpusSender` / `RoutedOpusSender`, including native filtergraphs.
+to `DiscordOpusSender` / `RoutedOpusSender`, including CPU-only native filtergraphs.
 Full streaming queues suspend production using the existing readiness waker; consumption through
 `StreamReader::poll_next` wakes production. Buffer limits, encoding settings and EOF are unchanged.
 Network sources, other containers (including MP4/M4A), producer byte streams,
@@ -376,7 +376,8 @@ Larger bursts reduce queue dispatches but can increase the time before another s
 Diagnostics distinguish cumulative `admitted` from currently `scheduled_sessions`; `sessions`
 also includes admitted jobs temporarily awaiting isolated controls. `control_workers`,
 `queued_controls`, `isolated_controls` and cumulative `control_handoffs` identify this work;
-`control_fallbacks` remains zero because handoffs return to scheduling. Dedicated fallbacks are counted
+`control_fallbacks` counts only dedicated migrations for native graphs outside the CPU-only
+whitelist; ordinary seek/filter handoffs return to scheduling. Dedicated fallbacks are counted
 separately by capacity, control migration, input, output, demuxer, initial filtergraph and crossfade.
 `turns`, `actions`, `queue_peak`, `queue_contentions` and `queue_wait_ns` expose dispatch frequency
 and queue mutex waiting. Contention counts failed immediate mutex acquisitions; wait time includes
@@ -444,3 +445,34 @@ budget, with 1024 admission slots. Explicit `new(workers, capacity)` still uses 
 HTTP and producer/plugin streams remain dedicated: a stalled native read could otherwise
 occupy every bounded I/O worker and delay unrelated sources. This branch does not claim those
 fallbacks as scheduled performance, and scheduled crossfade remains deferred.
+
+Discord controls and in-flight pause/finish barriers are fenced by output generation. A seek
+while finish acknowledgement is pending invalidates the old barrier and resumes the same
+playback machine; the old acknowledgement cannot complete the new timeline. Local read-ahead
+completion wakes a session only when it is waiting for input, preserving output pacing deadlines.
+
+The current CPU-only filter whitelist is `anull`, `aformat`, `aresample`, `volume`, `atempo`,
+`bass`, `treble`, `equalizer`, `highpass`, `lowpass`, `bandpass`, `bandreject`, `pan`, `asetrate`
+and `asetpts`, plus the engine's `abuffer`/`abuffersink` endpoints. Classification inspects the
+configured native graph, including automatically inserted adapters. Other filters can perform
+I/O or invoke external plugins despite having one audio input/output; they retain dedicated
+execution. A live replacement with such a graph drains retained production on a tracked dedicated
+fallback, then continues there for that generation. Its fallback is explicit in diagnostics and
+is excluded from scheduler performance claims. Normal CPU-only replacements remain reversible.
+Pause can supersede a pending EOF acknowledgement; resume requests a fresh finish barrier without
+encoding or replaying the tail again.
+
+Scheduled seeking isolates native decoder/filter repositioning, then retains the seek request
+while `scheduler_poll_flush_samples(sample, cx, cancellation)` waits for output invalidation.
+Its acknowledgement is published only after the flush and encoder alignment succeed. Discord
+flush admission and acknowledgement use the same asynchronous control path as other barriers;
+a detached transport parks the seek without occupying either a codec or isolated control worker.
+Later controls remain ordered behind that seek, and stop cancels and acknowledges outstanding
+requests before joining. Custom scheduling outputs whose flush can wait must override this poll;
+the default calls `flush_samples` for outputs with an already nonblocking flush.
+
+Bounded startup pins FFmpeg's `format_whitelist` before container headers and stream probing,
+so containers outside the supported set cannot open nested inputs on a shared startup worker.
+A rejected/failed restricted probe retries the original source on a tracked dedicated worker;
+`probe_retries` reports these attempts. Unsupported containers keep their original playback
+functionality, and these retries/fallbacks are excluded from scheduler benchmark evidence.

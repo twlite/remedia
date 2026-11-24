@@ -422,3 +422,74 @@ fn concurrent_file_cancellation_reclaims_bounded_demux_tasks() {
     assert_eq!(pool.diagnostics().queued_io, 0);
     assert_eq!(pool.diagnostics().queued_startups, 0);
 }
+
+#[test]
+fn native_filters_with_io_capabilities_report_dedicated_fallbacks() {
+    for initial in [true, false] {
+        let pool = PlaybackScheduler::new(1, 8).unwrap();
+        let session = PlaybackSession::with_scheduler(pool.clone());
+        let graph = if cfg!(windows) {
+            "ametadata=mode=print:file=NUL"
+        } else {
+            "ametadata=mode=print:file=/dev/null"
+        };
+        if initial {
+            session.set_filter_graph(Some(graph)).unwrap();
+        }
+        let (output, mut reader) = StreamOutput::new(
+            StreamFormat::F32le,
+            StreamPacing::Unpaced,
+            OpusEncoderConfig::default(),
+        )
+        .unwrap();
+        session.play(source(), output).unwrap();
+        if !initial {
+            session.pause().unwrap();
+            session.set_filter_graph(Some(graph)).unwrap();
+            assert_eq!(
+                session.executor_diagnostic(),
+                "dedicated: unsupported filter"
+            );
+            session.resume().unwrap();
+        }
+        assert!(!drain(&mut reader).is_empty());
+        assert_eq!(session.wait(), PlaybackState::Completed);
+        session.stop().unwrap();
+        let d = pool.diagnostics();
+        assert_eq!(d.filter_fallbacks, 1);
+        assert_eq!(d.admitted, usize::from(!initial));
+        assert_eq!(d.control_fallbacks, usize::from(!initial));
+        assert_eq!(d.unsupported_fallbacks, usize::from(initial));
+        assert_eq!(d.sessions, 0);
+    }
+}
+
+#[test]
+fn unsupported_container_probes_retry_on_a_tracked_dedicated_worker() {
+    let pool = PlaybackScheduler::new(1, 8).unwrap();
+    let session = PlaybackSession::with_scheduler(pool.clone());
+    let (output, mut reader) = StreamOutput::new(
+        StreamFormat::F32le,
+        StreamPacing::Unpaced,
+        OpusEncoderConfig::default(),
+    )
+    .unwrap();
+    session
+        .play(
+            InputSource::bytes(include_bytes!("fixtures/ffmpeg-opus-silent-lead.webm").to_vec()),
+            output,
+        )
+        .unwrap();
+    assert!(!drain(&mut reader).is_empty());
+    assert_eq!(session.wait(), PlaybackState::Completed);
+    session.stop().unwrap();
+    let d = pool.diagnostics();
+    assert_eq!(d.probe_retries, 1);
+    assert_eq!(d.admitted, 0);
+    assert_eq!(d.demuxer_fallbacks, 1);
+    assert_eq!(d.unsupported_fallbacks, 1);
+    assert_eq!(
+        session.executor_diagnostic(),
+        "dedicated: unsupported workload"
+    );
+}
