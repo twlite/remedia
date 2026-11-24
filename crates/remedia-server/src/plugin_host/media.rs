@@ -5,7 +5,6 @@
 //! to the decoder. FFmpeg does not make HTTP requests for this source.
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use remedia_core::{ByteStreamWriter, InputSource};
 use tokio::runtime::Handle;
@@ -16,8 +15,6 @@ use remedia_server_config::error::{PluginError, PluginErrorKind};
 use remedia_server_config::transport::send_cancellable;
 
 use super::registry::HostState;
-
-const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Cancels an in-flight media transfer unless ownership has passed to a decoder.
 ///
@@ -237,6 +234,8 @@ async fn pump(
 ) -> PumpEnd {
     let limits = &host.config().limits;
     let mut total = 0_u64;
+    let closed = writer.closed_async();
+    tokio::pin!(closed);
 
     loop {
         let read = response.chunk();
@@ -244,21 +243,14 @@ async fn pump(
         tokio::pin!(read);
 
         let deadline = tokio::time::Instant::now() + limits.media_idle_timeout;
-        let chunk = loop {
-            tokio::select! {
-                biased;
-                () = token.cancelled() => return PumpEnd::Cancelled,
-                () = host.registry_shutdown().cancelled() => return PumpEnd::Cancelled,
-                result = &mut read => break result,
-                () = tokio::time::sleep(POLL_INTERVAL) => {
-                    if writer.is_closed() {
-                        return PumpEnd::Cancelled;
-                    }
-
-                    if tokio::time::Instant::now() >= deadline {
-                        return PumpEnd::Failed("media transfer stalled");
-                    }
-                }
+        let chunk = tokio::select! {
+            biased;
+            () = token.cancelled() => return PumpEnd::Cancelled,
+            () = host.registry_shutdown().cancelled() => return PumpEnd::Cancelled,
+            () = &mut closed => return PumpEnd::Cancelled,
+            result = &mut read => result,
+            () = tokio::time::sleep_until(deadline) => {
+                return PumpEnd::Failed("media transfer stalled");
             }
         };
 

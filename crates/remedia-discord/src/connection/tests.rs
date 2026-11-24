@@ -74,6 +74,21 @@ fn endpoint_is_secure_and_pins_voice_gateway_v8() {
     assert!(voice_endpoint("ws://voice.example.test").is_err());
 }
 
+#[tokio::test]
+async fn voice_state_subscriber_wakes_on_transport_failure() {
+    let voice = TestVoiceConnection::new(7);
+    let connection = voice.connection();
+    let mut changes = connection.subscribe_state();
+    assert_eq!(*changes.borrow_and_update(), ConnectionState::Connected);
+
+    voice.lose_transport();
+    tokio::time::timeout(Duration::from_secs(1), changes.changed())
+        .await
+        .expect("a state change should wake the subscriber")
+        .expect("connection state publisher is still alive");
+    assert_eq!(*changes.borrow_and_update(), ConnectionState::Disconnected);
+}
+
 #[test]
 fn close_codes_resume_only_when_discord_allows_it() {
     assert_eq!(voice_close_policy(4015), VoiceClosePolicy::Resume);

@@ -191,6 +191,17 @@ pub(crate) trait CancellationWake: Send + Sync {
     fn wake_for_cancellation(&self);
 }
 
+#[derive(Default)]
+struct AsyncCancellationWake(Mutex<Option<std::task::Waker>>);
+
+impl CancellationWake for AsyncCancellationWake {
+    fn wake_for_cancellation(&self) {
+        if let Some(waker) = lock(&self.0).take() {
+            waker.wake();
+        }
+    }
+}
+
 impl fmt::Debug for CancellationToken {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -232,6 +243,28 @@ impl CancellationToken {
         self.0.cancelled.load(Ordering::Acquire)
     }
 
+    /// Wait asynchronously until cancellation without scheduling periodic checks.
+    ///
+    /// The returned future is safe to drop before cancellation. Notifications are registered
+    /// through weak references so abandoned waiters cannot keep tasks alive.
+    pub async fn cancelled_async(&self) {
+        if self.is_cancelled() {
+            return;
+        }
+
+        let waiter = Arc::new(AsyncCancellationWake::default());
+        self.register_waker(waiter.clone());
+        std::future::poll_fn(|context| {
+            *lock(&waiter.0) = Some(context.waker().clone());
+            if self.is_cancelled() {
+                std::task::Poll::Ready(())
+            } else {
+                std::task::Poll::Pending
+            }
+        })
+        .await
+    }
+
     pub(crate) fn as_opaque_ptr(&self) -> *mut std::ffi::c_void {
         (&self.0.cancelled as *const AtomicBool).cast_mut().cast()
     }
@@ -253,4 +286,55 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use std::future::Future;
+    use std::sync::atomic::AtomicUsize;
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct WakeCounter(AtomicUsize);
+
+    impl Wake for WakeCounter {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    #[test]
+    fn async_cancellation_wakes_without_a_polling_timer() {
+        let token = CancellationToken::new();
+        let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&counter));
+        let mut context = Context::from_waker(&waker);
+        let mut pending = Box::pin(token.cancelled_async());
+
+        assert!(matches!(pending.as_mut().poll(&mut context), Poll::Pending));
+        token.cancel();
+        assert_eq!(counter.0.load(Ordering::Acquire), 1);
+        assert!(matches!(
+            pending.as_mut().poll(&mut context),
+            Poll::Ready(())
+        ));
+    }
+
+    #[test]
+    fn dropped_async_cancellation_does_not_retain_a_waiter() {
+        let token = CancellationToken::new();
+        let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&counter));
+        let mut context = Context::from_waker(&waker);
+        {
+            let mut pending = Box::pin(token.cancelled_async());
+            assert!(matches!(pending.as_mut().poll(&mut context), Poll::Pending));
+        }
+        token.cancel();
+        assert_eq!(counter.0.load(Ordering::Acquire), 0);
+    }
 }

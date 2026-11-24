@@ -20,6 +20,11 @@ source from opening. After startup it interrupts decoder I/O. Call `stop()` as
 well to join the worker and release its output. Ordinary callers can use
 `play()`, which creates its own token and is cancelled by `stop()`.
 
+Async code can await `token.cancelled_async()` instead of waking on a periodic timer.
+The future returns immediately when the token is already cancelled; dropping a pending
+future unregisters its waiter without keeping the task alive. The same token still
+interrupts synchronous decoder I/O through `cancel()`.
+
 ```rust
 use remedia_core::{InputSource, NullOutput, PlaybackSession, PlaybackState};
 

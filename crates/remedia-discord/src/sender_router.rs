@@ -142,7 +142,12 @@ impl DiscordOpusSenderRouter {
             transport_generation = state.transport_generation,
             "parked playback output for Discord transport replacement"
         );
+        // The router no longer needs the old connection while playback waits
+        // for a replacement. The connection manager still owns its shutdown.
+        let previous_connection = state.connection.take();
         self.inner.changed.notify_all();
+        drop(state);
+        drop(previous_connection);
     }
 
     /// Fail parked playback after the connection manager exhausts recovery or
@@ -168,7 +173,11 @@ impl DiscordOpusSenderRouter {
             error = %message,
             "could not restore Discord packet delivery"
         );
+        // Drop the cached transport as soon as routing terminates.
+        let previous_connection = state.connection.take();
         self.inner.changed.notify_all();
+        drop(state);
+        drop(previous_connection);
     }
 
     /// Stop routing because the owning voice session is intentionally closing.
@@ -190,7 +199,11 @@ impl DiscordOpusSenderRouter {
             reason = %message,
             "stopped the Discord output router during voice session cleanup"
         );
+        // Drop the cached transport as soon as routing terminates.
+        let previous_connection = state.connection.take();
         self.inner.changed.notify_all();
+        drop(state);
+        drop(previous_connection);
     }
 
     fn target(

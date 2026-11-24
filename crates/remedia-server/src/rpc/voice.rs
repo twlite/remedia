@@ -47,7 +47,7 @@ pub(super) async fn execute(
                     }
                 }
             }
-            let voice_generation = guild.voice_generation.fetch_add(1, Ordering::AcqRel) + 1;
+            let voice_generation = guild.next_voice_generation();
             if params.session_id.is_empty()
                 || params.session_id.len() > 1024
                 || params.token.is_empty()
@@ -189,7 +189,8 @@ pub(super) async fn execute(
                     },
                 ));
             }
-            let initial_state = voice_state_name(voice.state());
+            let initial_voice_state = voice.state();
+            let initial_state = voice_state_name(initial_voice_state);
             guild.voice_sender_router.attach(voice.opus_sender());
             *lock(&guild.voice) = Some(voice);
             guild
@@ -216,6 +217,7 @@ pub(super) async fn execute(
                 Arc::downgrade(&session),
                 voice_generation,
                 request_generation,
+                initial_voice_state,
             );
             Ok(json!({ "guildId": guild.guild_id, "state": initial_state }))
         }
@@ -264,7 +266,7 @@ pub(super) async fn execute(
                     json!({"guildId": guild.guild_id, "state": "connected", "alreadyConnected": true}),
                 );
             }
-            let _generation = guild.voice_generation.fetch_add(1, Ordering::AcqRel) + 1;
+            let _generation = guild.next_voice_generation();
             guild.voice_reconnecting.store(true, Ordering::Release);
             guild.voice_sender_router.detach();
             let _voice_operation = Arc::clone(&guild.voice_operations).lock_owned().await;
@@ -322,7 +324,7 @@ pub(super) async fn execute(
                 &guild.voice_request_generation,
                 params.transport_generation,
             )?;
-            let _voice_generation = guild.voice_generation.fetch_add(1, Ordering::AcqRel) + 1;
+            let _voice_generation = guild.next_voice_generation();
             guild
                 .voice_terminal_generation
                 .fetch_max(request_generation, Ordering::AcqRel);
@@ -397,7 +399,7 @@ pub(super) async fn execute(
                     json!({"guildId": guild.guild_id, "state": "reconnecting", "superseded": true}),
                 );
             }
-            let _voice_generation = guild.voice_generation.fetch_add(1, Ordering::AcqRel) + 1;
+            let _voice_generation = guild.next_voice_generation();
             guild
                 .voice_terminal_generation
                 .fetch_max(request_generation, Ordering::AcqRel);

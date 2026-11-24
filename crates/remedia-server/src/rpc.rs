@@ -11,7 +11,6 @@ use remedia_observability::ObservabilityHandle;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use tokio::time::MissedTickBehavior;
 use tracing::instrument::WithSubscriber;
 
 use crate::config::{CrossfadeCurve, MediaAccessError, engine_curve};
