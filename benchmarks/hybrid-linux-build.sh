@@ -5,13 +5,14 @@ set -eu
 hybrid_root=$(git rev-parse --show-toplevel)
 hybrid_output=${1:-/tmp/remedia-hybrid-linux}
 hybrid_container=${HYBRID_CONTAINER:-remedia-hybrid-linux}
+hybrid_revision=$(git rev-parse HEAD)
 mkdir -p "$hybrid_output"
 if ! docker container inspect "$hybrid_container" >/dev/null 2>&1; then
   docker run -d --name "$hybrid_container" --dns "${HYBRID_DNS:-1.1.1.1}" --cpus 4 \
     -v "$hybrid_output:/experiment" -v "$hybrid_root:/repo:ro" ubuntu:24.04 sleep infinity
 fi
 docker start "$hybrid_container" >/dev/null
-docker exec -e HYBRID_REUSE_NATIVE="${HYBRID_REUSE_NATIVE:-0}" -e HYBRID_LINUX_RELEASE_DIR="${HYBRID_LINUX_RELEASE_DIR:-/experiment/releases}" "$hybrid_container" bash -c '
+docker exec -e HYBRID_REVISION="$hybrid_revision" -e HYBRID_REUSE_NATIVE="${HYBRID_REUSE_NATIVE:-0}" -e HYBRID_LINUX_RELEASE_DIR="${HYBRID_LINUX_RELEASE_DIR:-/experiment/releases}" "$hybrid_container" bash -c '
   set -e
   if ! command -v clang >/dev/null || ! command -v node >/dev/null; then
     apt-get update
@@ -22,7 +23,14 @@ docker exec -e HYBRID_REUSE_NATIVE="${HYBRID_REUSE_NATIVE:-0}" -e HYBRID_LINUX_R
   fi
   . /root/.cargo/env
   git config --global --add safe.directory /repo
-  cd /repo
+  # Build a fixed commit on the container filesystem. Never compile a live host mount:
+  # Docker Desktop can retain stale/truncated pages while host editors rewrite files.
+  hybrid_source="/experiment/source-$HYBRID_REVISION"
+  if [ ! -d "$hybrid_source/.git" ]; then
+    git clone --no-hardlinks --no-checkout /repo "$hybrid_source"
+  fi
+  git -C "$hybrid_source" checkout --detach "$HYBRID_REVISION"
+  cd "$hybrid_source"
   export RUNNER_TEMP=/experiment/native-work FFMPEG_DIR=/experiment/native-prefix FFMPEG_BUILD_JOBS=4
   if [ "$HYBRID_REUSE_NATIVE" = 1 ]; then
     # Reuse only the already-built prefix; every variant links these identical archives.
