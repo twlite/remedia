@@ -48,7 +48,8 @@ impl OutputError {
 /// internally, but must bound that buffering. Long-running operations must
 /// observe `cancellation`; `cancel` is called concurrently to unblock them.
 pub trait MediaOutput: Send + Sync + 'static {
-    /// Whether every output operation is bounded CPU work without waiting for a consumer.
+    /// Whether production/control operations are bounded CPU work, with capacity and pacing
+    /// waits exposed through nonblocking polls. The dedicated `wait_ready` method may block.
     /// Experimental scheduling conservatively leaves custom outputs on dedicated workers.
     #[cfg(feature = "experimental-scheduler")]
     fn scheduler_nonblocking(&self) -> bool {
@@ -64,6 +65,19 @@ pub trait MediaOutput: Send + Sync + 'static {
         _cancellation: &CancellationToken,
     ) -> std::task::Poll<Result<(), OutputError>> {
         std::task::Poll::Ready(Ok(()))
+    }
+
+    /// Poll output capacity and an optional absolute pacing deadline without blocking.
+    /// A future deadline suspends CPU execution until that instant or a readiness/control wake.
+    /// The default preserves existing nonblocking outputs by wrapping `scheduler_poll_ready`.
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_deadline(
+        &self,
+        cx: &mut std::task::Context<'_>,
+        cancellation: &CancellationToken,
+    ) -> std::task::Poll<Result<Option<std::time::Instant>, OutputError>> {
+        self.scheduler_poll_ready(cx, cancellation)
+            .map(|result| result.map(|()| None))
     }
 
     /// Wait until production can continue. Called at worker action boundaries, outside

@@ -130,6 +130,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (filename, codec, seconds) in [
         ("music60.opus", "libopus", 60),
         ("music15.opus", "libopus", 15),
+        ("music3.opus", "libopus", 3),
         ("music60.mp3", "libmp3lame", 60),
         ("music3.mp3", "libmp3lame", 3),
         ("music3.aac", "aac", 3),

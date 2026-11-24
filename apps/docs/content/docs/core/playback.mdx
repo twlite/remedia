@@ -347,11 +347,11 @@ session.stop()?;
 ```
 
 This initial experiment schedules owned-byte Ogg, MP3, ADTS AAC, WAV and FLAC inputs with
-`NullOutput` or unpaced `StreamOutput`, without a native filtergraph.
+`NullOutput` or `StreamOutput` with unpaced or realtime pacing, without a native filtergraph.
 Full streaming queues suspend production using the existing readiness waker; consumption through
 `StreamReader::poll_next` wakes production. Buffer limits, encoding settings and EOF are unchanged.
-Files, network sources, other containers (including MP4/M4A), producer byte streams, realtime
-outputs, synchronous custom outputs, native filtergraphs and crossfade retain dedicated execution. Opening and probing run on a temporary dedicated startup
+Files, network sources, other containers (including MP4/M4A), producer byte streams,
+synchronous custom outputs, native filtergraphs and crossfade retain dedicated execution. Opening and probing run on a temporary dedicated startup
 thread. A seek or live filter update transfers the same machine to a dedicated fallback thread
 before the control is applied; subsequent work stays dedicated for that generation. Codec
 actions still do not have a hard CPU-time budget. The pool is therefore experimental and is not a replacement for production scheduling.
@@ -375,3 +375,16 @@ separately by capacity, control migration, input, output, demuxer, initial filte
 and queue mutex waiting. Contention counts failed immediate mutex acquisitions; wait time includes
 OS descheduling while waiting, and is not isolated mutex instruction cost. These counters do not
 change production executor selection or qualify fallback workloads as scheduler performance.
+
+Realtime streams now use `scheduler_poll_deadline`: a future absolute `Instant` suspends the job
+in the pool's ordered deadline queue. Workers sleep on the readiness condition variable until
+work or the next deadline arrives. No timer thread is created per session. Each job has at most
+one deadline; control, output and cancellation wakes remove it before enqueueing the job, so
+stale timers cannot run a later playback generation. Paused streams stop scheduling deadlines.
+`pending_deadlines`, `deadline_peak`, `deadline_suspensions` and `deadline_wakes` expose this state.
+
+Custom outputs keep their existing defaults. The new optional method delegates to
+`scheduler_poll_ready` unless overridden. An output opting in must expose capacity without
+blocking and retain no more queued audio than its existing buffering contract permits. Returning
+a pacing deadline must not consume the next frame. Scheduling deadlines is not a hard realtime
+or Discord RTP delivery guarantee; overloaded codec work can still deliver audio late.

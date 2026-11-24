@@ -1,6 +1,6 @@
 //! Fixed-size FIFO executor. Admission bounds both live tasks and readiness storage.
 use super::*;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const IDLE: usize = 0;
@@ -8,6 +8,16 @@ const QUEUED: usize = 1;
 const RUNNING: usize = 2;
 const NOTIFIED: usize = 3;
 const DONE: usize = 4;
+const TIMED: usize = 5;
+
+type DeadlineKey = (Instant, usize);
+
+#[derive(Default)]
+struct ReadyQueue {
+    jobs: VecDeque<Arc<Job>>,
+    deadlines: BTreeMap<DeadlineKey, Arc<Job>>,
+    shutdown: bool,
+}
 
 /// An application-owned experimental CPU pool, shared by explicitly attached sessions.
 /// Dropping the last owner shuts down and joins all pool threads. Dedicated playback remains
@@ -18,7 +28,7 @@ pub struct PlaybackScheduler {
 }
 
 struct Pool {
-    queue: Mutex<(VecDeque<Arc<Job>>, bool)>,
+    queue: Mutex<ReadyQueue>,
     changed: Condvar,
     live: AtomicUsize,
     scheduled_live: AtomicUsize,
@@ -34,6 +44,9 @@ struct Pool {
     queue_peak: AtomicUsize,
     queue_contentions: AtomicUsize,
     queue_wait_ns: std::sync::atomic::AtomicU64,
+    deadline_suspensions: AtomicUsize,
+    deadline_wakes: AtomicUsize,
+    deadline_peak: AtomicUsize,
 }
 
 /// Instantaneous scheduler diagnostics; counts include all sessions attached to this pool.
@@ -77,6 +90,14 @@ pub struct SchedulerDiagnostics {
     pub queue_contentions: usize,
     /// Total measured nanoseconds waiting for contended queue mutex acquisitions.
     pub queue_wait_ns: u64,
+    /// Current generation-specific pacing deadlines (at most one per admitted job).
+    pub pending_deadlines: usize,
+    /// Maximum number of pending pacing deadlines.
+    pub deadline_peak: usize,
+    /// Pacing suspensions, including deadlines replaced after an early control wake.
+    pub deadline_suspensions: usize,
+    /// Expired deadlines promoted to the runnable FIFO.
+    pub deadline_wakes: usize,
 }
 
 impl PlaybackScheduler {
@@ -101,7 +122,7 @@ impl PlaybackScheduler {
             ));
         }
         let inner = Arc::new(Pool {
-            queue: Mutex::new((VecDeque::new(), false)),
+            queue: Mutex::new(ReadyQueue::default()),
             changed: Condvar::new(),
             live: AtomicUsize::new(0),
             scheduled_live: AtomicUsize::new(0),
@@ -117,6 +138,9 @@ impl PlaybackScheduler {
             queue_peak: AtomicUsize::new(0),
             queue_contentions: AtomicUsize::new(0),
             queue_wait_ns: std::sync::atomic::AtomicU64::new(0),
+            deadline_suspensions: AtomicUsize::new(0),
+            deadline_wakes: AtomicUsize::new(0),
+            deadline_peak: AtomicUsize::new(0),
         });
         let mut scheduler = Self {
             inner,
@@ -143,11 +167,15 @@ impl PlaybackScheduler {
 
     /// Read bounded-queue and execution counters without collecting OS resources.
     pub fn diagnostics(&self) -> SchedulerDiagnostics {
+        let (queued, pending_deadlines) = {
+            let queue = lock(&self.inner.queue);
+            (queue.jobs.len(), queue.deadlines.len())
+        };
         SchedulerDiagnostics {
             workers: self.threads.len(),
             sessions: self.inner.live.load(Ordering::Relaxed),
             scheduled_sessions: self.inner.scheduled_live.load(Ordering::Relaxed),
-            queued: lock(&self.inner.queue).0.len(),
+            queued,
             actions: self.inner.polls.load(Ordering::Relaxed),
             processing_budget: self.inner.budget,
             turns: self.inner.turns.load(Ordering::Relaxed),
@@ -163,6 +191,10 @@ impl PlaybackScheduler {
             queue_peak: self.inner.queue_peak.load(Ordering::Relaxed),
             queue_contentions: self.inner.queue_contentions.load(Ordering::Relaxed),
             queue_wait_ns: self.inner.queue_wait_ns.load(Ordering::Relaxed),
+            pending_deadlines,
+            deadline_peak: self.inner.deadline_peak.load(Ordering::Relaxed),
+            deadline_suspensions: self.inner.deadline_suspensions.load(Ordering::Relaxed),
+            deadline_wakes: self.inner.deadline_wakes.load(Ordering::Relaxed),
         }
     }
 
@@ -201,6 +233,7 @@ impl PlaybackScheduler {
             cancel_wake: Mutex::new(None),
             pool: Arc::downgrade(&self.inner),
             state: AtomicUsize::new(IDLE),
+            deadline: Mutex::new(None),
             machine: Mutex::new(Some(machine)),
             finished: Mutex::new(false),
             changed: Condvar::new(),
@@ -211,7 +244,7 @@ impl PlaybackScheduler {
 
 impl Drop for PlaybackScheduler {
     fn drop(&mut self) {
-        lock(&self.inner.queue).1 = true;
+        lock(&self.inner.queue).shutdown = true;
         self.inner.changed.notify_all();
         for thread in self.threads.drain(..) {
             // Last ownership can retire on a worker after its final session is released.
@@ -230,6 +263,7 @@ pub(super) struct Job {
     pub(super) cancel_wake: Mutex<Option<Arc<CancelWake>>>,
     pool: std::sync::Weak<Pool>,
     state: AtomicUsize,
+    deadline: Mutex<Option<DeadlineKey>>,
     machine: Mutex<Option<Machine>>,
     finished: Mutex<bool>,
     changed: Condvar,
@@ -240,16 +274,20 @@ impl Job {
         loop {
             let state = self.state.load(Ordering::Acquire);
             match state {
-                IDLE => {
+                IDLE | TIMED => {
                     if self
                         .state
-                        .compare_exchange(IDLE, QUEUED, Ordering::AcqRel, Ordering::Acquire)
+                        .compare_exchange(state, QUEUED, Ordering::AcqRel, Ordering::Acquire)
                         .is_ok()
                     {
                         if let Some(pool) = self.pool.upgrade() {
                             let mut queue = queue_lock(&pool);
-                            queue.0.push_back(self.clone());
-                            pool.queue_peak.fetch_max(queue.0.len(), Ordering::Relaxed);
+                            if let Some(key) = lock(&self.deadline).take() {
+                                queue.deadlines.remove(&key);
+                            }
+                            queue.jobs.push_back(self.clone());
+                            pool.queue_peak
+                                .fetch_max(queue.jobs.len(), Ordering::Relaxed);
                             drop(queue);
                             pool.changed.notify_one();
                         }
@@ -278,7 +316,7 @@ impl Job {
     }
 }
 
-fn queue_lock(pool: &Pool) -> std::sync::MutexGuard<'_, (VecDeque<Arc<Job>>, bool)> {
+fn queue_lock(pool: &Pool) -> std::sync::MutexGuard<'_, ReadyQueue> {
     match pool.queue.try_lock() {
         Ok(queue) => queue,
         Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
@@ -299,13 +337,45 @@ fn run(pool: Arc<Pool>) {
     loop {
         let job = {
             let mut queue = queue_lock(&pool);
-            while queue.0.is_empty() && !queue.1 {
-                queue = wait(&pool.changed, queue);
+            loop {
+                let now = Instant::now();
+                while queue
+                    .deadlines
+                    .first_key_value()
+                    .is_some_and(|(key, _)| key.0 <= now)
+                {
+                    let (_, due) = queue.deadlines.pop_first().expect("due deadline");
+                    lock(&due.deadline).take();
+                    if due
+                        .state
+                        .compare_exchange(TIMED, QUEUED, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        queue.jobs.push_back(due);
+                        pool.deadline_wakes.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                pool.queue_peak
+                    .fetch_max(queue.jobs.len(), Ordering::Relaxed);
+                if queue.shutdown {
+                    return;
+                }
+                if let Some(job) = queue.jobs.pop_front() {
+                    if !queue.jobs.is_empty() {
+                        pool.changed.notify_one();
+                    }
+                    break job;
+                }
+                queue = if let Some((key, _)) = queue.deadlines.first_key_value() {
+                    let delay = key.0.saturating_duration_since(Instant::now());
+                    pool.changed
+                        .wait_timeout(queue, delay)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .0
+                } else {
+                    wait(&pool.changed, queue)
+                };
             }
-            if queue.1 {
-                return;
-            }
-            queue.0.pop_front().expect("nonempty queue")
         };
         job.state.store(RUNNING, Ordering::Release);
         let mut machine = lock(&job.machine);
@@ -319,7 +389,32 @@ fn run(pool: Arc<Pool>) {
         };
         pool.polls.fetch_add(actions, Ordering::Relaxed);
         pool.turns.fetch_add(1, Ordering::Relaxed);
-        if outcome == worker::WorkerStep::DedicatedFallback {
+        if let worker::WorkerStep::Deadline(deadline) = outcome {
+            let mut queue = queue_lock(&pool);
+            if job
+                .state
+                .compare_exchange(RUNNING, TIMED, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                let key = (deadline, Arc::as_ptr(&job) as usize);
+                let earlier = queue
+                    .deadlines
+                    .first_key_value()
+                    .is_none_or(|(first, _)| key < *first);
+                *lock(&job.deadline) = Some(key);
+                queue.deadlines.insert(key, job.clone());
+                pool.deadline_suspensions.fetch_add(1, Ordering::Relaxed);
+                pool.deadline_peak
+                    .fetch_max(queue.deadlines.len(), Ordering::Relaxed);
+                if earlier {
+                    pool.changed.notify_one();
+                }
+            } else {
+                drop(queue);
+                job.state.store(IDLE, Ordering::Release);
+                job.wake();
+            }
+        } else if outcome == worker::WorkerStep::DedicatedFallback {
             pool.migrated.fetch_add(1, Ordering::Relaxed);
             pool.scheduled_live.fetch_sub(1, Ordering::Relaxed);
             job.migrated.store(true, Ordering::Release);

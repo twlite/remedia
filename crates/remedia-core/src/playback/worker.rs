@@ -47,6 +47,8 @@ pub(super) enum WorkerStep {
     #[cfg(feature = "experimental-scheduler")]
     WaitingOutput,
     #[cfg(feature = "experimental-scheduler")]
+    Deadline(Instant),
+    #[cfg(feature = "experimental-scheduler")]
     DedicatedFallback,
     Completed,
     Cancelled,
@@ -187,7 +189,7 @@ fn drive_machine(mut machine: impl FnMut() -> WorkerStep, shared: &SessionShared
             WorkerStep::Runnable => {}
             WorkerStep::Completed | WorkerStep::Cancelled | WorkerStep::Failed => return,
             #[cfg(feature = "experimental-scheduler")]
-            WorkerStep::WaitingOutput | WorkerStep::DedicatedFallback => {
+            WorkerStep::WaitingOutput | WorkerStep::Deadline(_) | WorkerStep::DedicatedFallback => {
                 unreachable!("dedicated output uses blocking readiness")
             }
             WorkerStep::Paused(revision) => {
@@ -265,9 +267,12 @@ fn prepare_machine(
             let readiness = if let Some(wake) = scheduled_waker {
                 let waker = std::task::Waker::from(wake);
                 let mut cx = std::task::Context::from_waker(&waker);
-                match output.scheduler_poll_ready(&mut cx, &cancellation) {
+                match output.scheduler_poll_deadline(&mut cx, &cancellation) {
                     std::task::Poll::Pending => return WorkerStep::WaitingOutput,
-                    std::task::Poll::Ready(result) => result,
+                    std::task::Poll::Ready(Ok(Some(deadline))) if deadline > Instant::now() => {
+                        return WorkerStep::Deadline(deadline);
+                    }
+                    std::task::Poll::Ready(result) => result.map(|_| ()),
                 }
             } else {
                 output.wait_ready(&cancellation)

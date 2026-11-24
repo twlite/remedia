@@ -222,3 +222,71 @@ fn processing_budgets_preserve_audio_and_account_for_dispatches() {
         }
     }
 }
+
+#[test]
+fn paced_streams_use_bounded_deadlines_and_preserve_payloads() {
+    let mut reference = None;
+    for budget in [1, 8, 32] {
+        let pool = PlaybackScheduler::with_processing_budget(2, 8, budget).unwrap();
+        let session = PlaybackSession::with_scheduler(pool.clone());
+        let (output, mut reader) = StreamOutput::new(
+            StreamFormat::Opus,
+            StreamPacing::Realtime,
+            OpusEncoderConfig::default(),
+        )
+        .unwrap();
+        let started = Instant::now();
+        session.play(source(), output).unwrap();
+        let chunks = drain(&mut reader);
+        session.stop().unwrap();
+        assert!(
+            started.elapsed() >= Duration::from_millis(100),
+            "pacing must not become unpaced"
+        );
+        if let Some(expected) = &reference {
+            assert_eq!(&chunks, expected);
+        } else {
+            reference = Some(chunks);
+        }
+        let d = pool.diagnostics();
+        assert!(d.deadline_suspensions > 0);
+        assert!(d.deadline_wakes > 0);
+        assert_eq!(d.pending_deadlines, 0);
+        assert!(d.deadline_peak <= 1);
+        assert_eq!(session.executor_diagnostic(), "scheduled");
+    }
+}
+
+#[test]
+fn cancelling_and_pausing_timed_sessions_reclaims_all_deadlines() {
+    let pool = PlaybackScheduler::with_processing_budget(1, 64, 8).unwrap();
+    let mut sessions = Vec::new();
+    for _ in 0..32 {
+        let session = PlaybackSession::with_scheduler(pool.clone());
+        let (output, reader) = StreamOutput::new(
+            StreamFormat::Opus,
+            StreamPacing::Realtime,
+            OpusEncoderConfig::default(),
+        )
+        .unwrap();
+        session.play(source(), output).unwrap();
+        sessions.push((session, reader));
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while pool.diagnostics().deadline_suspensions == 0 {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    for (session, reader) in sessions {
+        session.pause().unwrap();
+        session.resume().unwrap();
+        session.stop().unwrap();
+        drop(reader);
+    }
+    let d = pool.diagnostics();
+    assert_eq!(d.pending_deadlines, 0);
+    assert_eq!(d.scheduled_sessions, 0);
+    assert_eq!(d.sessions, 0);
+    assert_eq!(d.queued, 0);
+    assert!(d.deadline_peak <= 32);
+}

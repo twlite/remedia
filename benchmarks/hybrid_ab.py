@@ -25,6 +25,7 @@ parser.add_argument('--workers', default='1,2,4')
 parser.add_argument('--budgets', default='1,8,32')
 parser.add_argument('--formats', default='opus')
 parser.add_argument('--repeats', type=int, default=3)
+parser.add_argument('--pacing', choices=['unpaced','realtime'], default='unpaced')
 args = parser.parse_args()
 libproc = ctypes.CDLL('/usr/lib/libproc.dylib') if sys.platform == 'darwin' else None
 
@@ -99,7 +100,9 @@ with Path(args.output).open('w') as output:
                     if repeat % 2:
                         ordered.reverse()
                     for backend, binary, workers, budget in ordered:
-                        row = run([binary, fixture, str(count), str(workers), mode, str(budget)])
+                        row = run([binary, fixture, str(count), str(workers), mode, str(budget), 'bytes', args.pacing])
+                        if args.pacing == 'realtime' and mode != 'null' and row['processingSeconds'] < max(row['samples'])/48000-0.05:
+                            raise RuntimeError('realtime output completed faster than its media clock')
                         delivered = (row['samples'], row['checksums'], row['chunks'])
                         if reference is None:
                             reference = delivered

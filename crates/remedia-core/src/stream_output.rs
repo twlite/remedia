@@ -250,7 +250,10 @@ impl StreamOutput {
             state.producer = Some(cx.waker().clone());
             return Poll::Pending;
         }
-        let deadline = if self.queue.pacing == StreamPacing::Realtime {
+        // A re-poll retires the preceding deadline registration. Otherwise the next write
+        // would wake its own stale producer waker and force an unnecessary extra turn.
+        state.producer = None;
+        let deadline = if self.queue.pacing == StreamPacing::Realtime && state.paused.is_none() {
             state
                 .clock
                 .map(|(origin, sample)| {
@@ -263,6 +266,9 @@ impl StreamOutput {
         } else {
             None
         };
+        if deadline.is_some() {
+            state.producer = Some(cx.waker().clone());
+        }
         Poll::Ready(Ok(deadline))
     }
 
@@ -302,7 +308,16 @@ impl StreamOutput {
 impl MediaOutput for StreamOutput {
     #[cfg(feature = "experimental-scheduler")]
     fn scheduler_nonblocking(&self) -> bool {
-        self.queue.pacing == StreamPacing::Unpaced
+        true
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_deadline(
+        &self,
+        cx: &mut std::task::Context<'_>,
+        cancellation: &CancellationToken,
+    ) -> Poll<Result<Option<Instant>, OutputError>> {
+        self.poll_ready(cx, cancellation)
     }
 
     #[cfg(feature = "experimental-scheduler")]
@@ -470,6 +485,15 @@ impl MediaOutput for StreamOutput {
 
 // A host retains a control handle while the worker owns another reference.
 impl MediaOutput for Arc<StreamOutput> {
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_deadline(
+        &self,
+        cx: &mut std::task::Context<'_>,
+        cancellation: &CancellationToken,
+    ) -> Poll<Result<Option<Instant>, OutputError>> {
+        (**self).scheduler_poll_deadline(cx, cancellation)
+    }
+
     #[cfg(feature = "experimental-scheduler")]
     fn scheduler_nonblocking(&self) -> bool {
         (**self).scheduler_nonblocking()

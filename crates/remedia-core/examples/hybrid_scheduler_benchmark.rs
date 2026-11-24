@@ -71,6 +71,26 @@ impl<O: MediaOutput> MediaOutput for GatedOutput<O> {
         self.output.scheduler_poll_ready(cx, cancellation)
     }
 
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_deadline(
+        &self,
+        cx: &mut Context<'_>,
+        cancellation: &CancellationToken,
+    ) -> Poll<Result<Option<std::time::Instant>, OutputError>> {
+        if cancellation.is_cancelled() {
+            return Poll::Ready(Err(OutputError::Cancelled));
+        }
+        let mut state = self.gate.state.lock().unwrap();
+        if !state.0 {
+            if !state.1.iter().any(|w| w.will_wake(cx.waker())) {
+                state.1.push(cx.waker().clone());
+            }
+            return Poll::Pending;
+        }
+        drop(state);
+        self.output.scheduler_poll_deadline(cx, cancellation)
+    }
+
     fn write_frame(
         &self,
         frame: PcmFrame,
@@ -165,6 +185,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("opus") => Some(StreamFormat::Opus),
         _ => return Err("expected null|s16le|f32le|opus".into()),
     };
+    let pacing = if args.get(7).map(String::as_str) == Some("realtime") {
+        StreamPacing::Realtime
+    } else {
+        StreamPacing::Unpaced
+    };
     let encoded = std::fs::read(args.get(1).ok_or("missing file")?)?;
     let before = remedia_resources::collect();
     let sampling_epoch_unix_ms = std::time::SystemTime::now()
@@ -200,8 +225,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             InputSource::bytes(encoded.clone())
         };
         if let Some(format) = format {
-            let (output, reader) =
-                StreamOutput::new(format, StreamPacing::Unpaced, OpusEncoderConfig::default())?;
+            let (output, reader) = StreamOutput::new(format, pacing, OpusEncoderConfig::default())?;
             session.play(
                 source,
                 GatedOutput {
@@ -249,12 +273,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut samples = vec![0_u64; count];
     let mut chunks = vec![0_u64; count];
     let mut checksums = vec![0_u64; count];
+    let mut first_chunk_latency_ms = vec![None; count];
+    let mut origins: Vec<Option<Instant>> = vec![None; count];
+    let mut lateness_ms = Vec::new();
     while readers.iter().any(Option::is_some) {
         let mut progress = false;
         for (index, reader) in readers.iter_mut().enumerate() {
             if let Some(active) = reader {
                 match active.poll_next(&mut cx) {
                     Poll::Ready(Ok(Some(chunk))) => {
+                        let now = Instant::now();
+                        let origin = *origins[index].get_or_insert(now);
+                        if first_chunk_latency_ms[index].is_none() {
+                            first_chunk_latency_ms[index] =
+                                Some(now.duration_since(processing_start).as_secs_f64() * 1000.0);
+                        }
+                        if pacing == StreamPacing::Realtime {
+                            let expected = origin
+                                + Duration::from_secs_f64(chunk.start_sample as f64 / 48000.0);
+                            lateness_ms.push(
+                                now.saturating_duration_since(expected).as_secs_f64() * 1000.0,
+                            );
+                        }
                         assert_eq!(chunk.start_sample, samples[index], "packet continuity");
                         samples[index] += u64::from(chunk.media_samples_per_channel);
                         chunks[index] += 1;
@@ -304,13 +344,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "experimental-scheduler")]
     let diagnostics = pool.as_ref().map(|p| {
         let d = p.diagnostics();
-        serde_json::json!({"admitted":d.admitted,"scheduledLive":d.scheduled_sessions,"controlFallbacks":d.control_fallbacks,"unsupportedFallbacks":d.unsupported_fallbacks,"fallbackReasons":{"input":d.input_fallbacks,"output":d.output_fallbacks,"demuxer":d.demuxer_fallbacks,"filter":d.filter_fallbacks,"crossfade":d.crossfade_fallbacks},"capacityFallbacks":d.capacity_fallbacks,"actions":d.actions,"turns":d.turns,"queuePeak":d.queue_peak,"queueContentions":d.queue_contentions,"queueWaitNs":d.queue_wait_ns})
+        serde_json::json!({"admitted":d.admitted,"scheduledLive":d.scheduled_sessions,"controlFallbacks":d.control_fallbacks,"unsupportedFallbacks":d.unsupported_fallbacks,"fallbackReasons":{"input":d.input_fallbacks,"output":d.output_fallbacks,"demuxer":d.demuxer_fallbacks,"filter":d.filter_fallbacks,"crossfade":d.crossfade_fallbacks},"capacityFallbacks":d.capacity_fallbacks,"actions":d.actions,"turns":d.turns,"queuePeak":d.queue_peak,"queueContentions":d.queue_contentions,"queueWaitNs":d.queue_wait_ns,"deadlineSuspensions":d.deadline_suspensions,"deadlineWakes":d.deadline_wakes,"deadlinePeak":d.deadline_peak,"pendingDeadlines":d.pending_deadlines})
     });
     #[cfg(not(feature = "experimental-scheduler"))]
     let diagnostics: Option<serde_json::Value> = None;
+    lateness_ms.sort_by(f64::total_cmp);
+    let delivery_p99_ms = lateness_ms
+        .get(lateness_ms.len().saturating_sub(1) * 99 / 100)
+        .copied();
     println!(
         "{}",
-        serde_json::json!({"sessions":count,"workers":workers,"format":args[4],"audioSeconds":audio_seconds,"wallSeconds":start.elapsed().as_secs_f64(),"startupSeconds":startup_seconds,"processingSeconds":processing_start.elapsed().as_secs_f64(),"startGate":true,"cpuMsPerAudioSecond":(cpu(&after)-cpu(&before))/audio_seconds,"samples":samples,"chunks":chunks,"checksums":checksums,"backends":backends,"diagnostics":diagnostics,"budget":budget,"samplingEpochUnixMs":sampling_epoch_unix_ms,"before":before,"active":active,"activeScheduled":active_scheduled,"after":after})
+        serde_json::json!({"sessions":count,"workers":workers,"format":args[4],"audioSeconds":audio_seconds,"wallSeconds":start.elapsed().as_secs_f64(),"startupSeconds":startup_seconds,"processingSeconds":processing_start.elapsed().as_secs_f64(),"startGate":true,"cpuMsPerAudioSecond":(cpu(&after)-cpu(&before))/audio_seconds,"samples":samples,"chunks":chunks,"checksums":checksums,"backends":backends,"diagnostics":diagnostics,"budget":budget,"pacing":format!("{pacing:?}"),"firstChunkLatencyMs":first_chunk_latency_ms,"deliveryP99MsFromFirstChunk":delivery_p99_ms,"samplingEpochUnixMs":sampling_epoch_unix_ms,"before":before,"active":active,"activeScheduled":active_scheduled,"after":after})
     );
     Ok(())
 }
