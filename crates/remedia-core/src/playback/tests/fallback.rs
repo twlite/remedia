@@ -1835,6 +1835,7 @@ mod cancellation {
     fn a_cancel_that_arrives_after_the_swap_is_told_it_was_too_late() {
         let server = RangelessServer::start(ramp_wave());
         let (session, gate) = reopenable_session(&server);
+        server.hold_new_connections();
 
         let pending = {
             assert!(gate.wait_for_calls(gate.snapshot().accepted.len() + 1));
@@ -1842,7 +1843,28 @@ mod cancellation {
         };
         let canceller = pending.canceller();
         let waiter = thread::spawn(move || pending.wait_outcome());
-        let outcome = pump_until(&gate, waiter).expect("the seek was applied");
+
+        // Let the worker start fallback preparation, then block its next output write.
+        // The replacement HTTP request is held so preparation cannot finish early.
+        consume(&gate, 1);
+        assert!(
+            server.wait_for_connections(2),
+            "the replacement connection was not opened"
+        );
+        assert!(gate.wait_for_calls(gate.snapshot().accepted.len() + 1));
+
+        // The worker is now blocked on output, so its source playhead cannot race
+        // ahead to the end of the 20-second track while the replacement decodes.
+        server.release();
+        assert!(
+            wait_for_condition(&session.shared, TEST_TIMEOUT, |data| data.fallback_signal),
+            "the replacement did not finish preparing"
+        );
+
+        // One write is enough to unblock the worker so it can commit the prepared
+        // swap. Do not keep pumping frames while waiting for the seek response.
+        gate.release(1);
+        let outcome = join_without_pumping(waiter).expect("the seek was applied");
 
         assert!(!canceller.cancel(), "an applied seek cannot be cancelled");
         assert!(outcome.replaced_source);
