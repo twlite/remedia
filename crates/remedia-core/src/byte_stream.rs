@@ -514,7 +514,10 @@ impl QueueInner {
     fn wake_close_waiters(&self) {
         let waiters = {
             let mut listeners = lock(&self.close_waiters);
-            let live = listeners.iter().filter_map(Weak::upgrade).collect::<Vec<_>>();
+            let live = listeners
+                .iter()
+                .filter_map(Weak::upgrade)
+                .collect::<Vec<_>>();
             listeners.retain(|listener| listener.strong_count() > 0);
             live
         };
@@ -581,7 +584,10 @@ mod tests {
         assert!(matches!(pending.as_mut().poll(&mut context), Poll::Pending));
         drop(input);
         assert_eq!(counter.0.load(Ordering::Acquire), 1);
-        assert!(matches!(pending.as_mut().poll(&mut context), Poll::Ready(())));
+        assert!(matches!(
+            pending.as_mut().poll(&mut context),
+            Poll::Ready(())
+        ));
     }
 
     #[test]
@@ -595,9 +601,11 @@ mod tests {
         assert!(matches!(pending.as_mut().poll(&mut context), Poll::Pending));
         writer.finish().unwrap();
         assert_eq!(counter.0.load(Ordering::Acquire), 1);
-        assert!(matches!(pending.as_mut().poll(&mut context), Poll::Ready(())));
+        assert!(matches!(
+            pending.as_mut().poll(&mut context),
+            Poll::Ready(())
+        ));
     }
-
 
     fn wait_for_state(inner: &QueueInner, predicate: impl Fn(&QueueState) -> bool) {
         let mut state = lock(&inner.state);
