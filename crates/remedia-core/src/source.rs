@@ -315,10 +315,7 @@ mod cancellation_tests {
         let mut context = Context::from_waker(&waker);
         let mut pending = Box::pin(token.cancelled_async());
 
-        assert!(matches!(
-            pending.as_mut().poll(&mut context),
-            Poll::Pending
-        ));
+        assert!(matches!(pending.as_mut().poll(&mut context), Poll::Pending));
         token.cancel();
         assert_eq!(counter.0.load(Ordering::Acquire), 1);
         assert!(matches!(
