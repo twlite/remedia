@@ -45,7 +45,7 @@ impl AudioDecoder {
         if !self.reader.input.supports_random_access() {
             return self.seek_forward(target_sample, position, pending_frame);
         }
-        if let Err(error) = self.reader.input.seek(timestamp, ..) {
+        if let Err(error) = self.reader.input.seek(timestamp) {
             if self.cancellation.is_cancelled() {
                 return Err(DecoderError::Cancelled);
             }

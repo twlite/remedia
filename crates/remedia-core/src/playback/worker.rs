@@ -21,7 +21,7 @@ macro_rules! output_barrier {
                     &mut cx,
                     $cancellation,
                 ) {
-                    std::task::Poll::Pending => return WorkerStep::WaitingOutput,
+                    std::task::Poll::Pending => return WorkerStep::WaitingControl,
                     std::task::Poll::Ready(result) => result,
                 }
             } else {
@@ -35,6 +35,26 @@ macro_rules! output_barrier {
     }};
 }
 
+macro_rules! input_action {
+    ($shared:expr, $decoder:expr, $poll:ident, $sync:ident $(, $arg:expr)*) => {{
+        #[cfg(feature = "experimental-scheduler")]
+        {
+            let wake = ($shared.executor.load(std::sync::atomic::Ordering::Acquire) == 1)
+                .then(|| lock(&$shared.scheduled).as_ref().and_then(|job| lock(&job.cancel_wake).clone())).flatten();
+            if let Some(wake) = wake {
+                let waker = std::task::Waker::from(wake);
+                let mut cx = std::task::Context::from_waker(&waker);
+                match $decoder.$poll($($arg,)* &mut cx) {
+                    std::task::Poll::Pending => return WorkerStep::WaitingInput,
+                    std::task::Poll::Ready(result) => result,
+                }
+            } else { $decoder.$sync($($arg),*) }
+        }
+        #[cfg(not(feature = "experimental-scheduler"))]
+        { $decoder.$sync($($arg),*) }
+    }};
+}
+
 pub(super) fn worker_entry(
     shared: Arc<SessionShared>,
     generation: u64,
@@ -42,7 +62,7 @@ pub(super) fn worker_entry(
     output: Arc<dyn MediaOutput>,
     cancellation: CancellationToken,
     ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
-    reopen: fallback::Reopen,
+    (reopen, isolated_startup): (fallback::Reopen, bool),
 ) {
     let panic_ready = ready.clone();
     let worker_shared = Arc::clone(&shared);
@@ -56,7 +76,7 @@ pub(super) fn worker_entry(
             output,
             cancellation,
             ready,
-            reopen,
+            (reopen, isolated_startup),
         );
     }));
 
@@ -81,6 +101,10 @@ pub(super) enum WorkerStep {
     #[cfg(feature = "experimental-scheduler")]
     WaitingOutput,
     #[cfg(feature = "experimental-scheduler")]
+    WaitingInput,
+    #[cfg(feature = "experimental-scheduler")]
+    WaitingControl,
+    #[cfg(feature = "experimental-scheduler")]
     Deadline(Instant),
     #[cfg(feature = "experimental-scheduler")]
     DedicatedFallback,
@@ -96,13 +120,10 @@ pub(super) fn worker_loop(
     output: Arc<dyn MediaOutput>,
     cancellation: CancellationToken,
     ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
-    reopen: fallback::Reopen,
+    (reopen, isolated_startup): (fallback::Reopen, bool),
 ) {
     #[cfg(feature = "experimental-scheduler")]
-    let eligibility = (
-        matches!(source, InputSource::Bytes(_)),
-        output.scheduler_nonblocking(),
-    );
+    let eligibility = (source.scheduler_input(), output.scheduler_nonblocking());
     #[cfg(feature = "experimental-scheduler")]
     let eligible = eligibility.0 && eligibility.1;
     #[cfg(feature = "experimental-scheduler")]
@@ -189,7 +210,7 @@ pub(super) fn worker_loop(
                 shared
                     .executor
                     .store(3, std::sync::atomic::Ordering::Release);
-                drive_machine(machine, &shared, generation);
+                drive_selected(machine, &shared, generation, isolated_startup);
             }
         }
         return;
@@ -211,7 +232,63 @@ pub(super) fn worker_loop(
         if shared.scheduler.is_some() { 2 } else { 0 },
         std::sync::atomic::Ordering::Release,
     );
-    drive_machine(machine, &shared, generation);
+    drive_selected(machine, &shared, generation, isolated_startup);
+}
+
+fn drive_selected(
+    machine: impl FnMut() -> WorkerStep + Send + 'static,
+    shared: &Arc<SessionShared>,
+    generation: u64,
+    isolated_startup: bool,
+) {
+    #[cfg(feature = "experimental-scheduler")]
+    if isolated_startup {
+        let context = shared.clone();
+        let result = thread::Builder::new()
+            .name(format!("remedia-fallback-{generation}"))
+            .spawn(move || {
+                if catch_unwind(AssertUnwindSafe(|| {
+                    drive_machine(machine, &context, generation)
+                }))
+                .is_err()
+                {
+                    let (output, cancellation) = {
+                        let data = lock(&context.data);
+                        (data.output.clone(), data.cancellation.clone())
+                    };
+                    if let (Some(output), Some(cancellation)) = (output, cancellation) {
+                        fail_session(
+                            &context,
+                            generation,
+                            PlaybackError::WorkerPanicked,
+                            &cancellation,
+                            &output,
+                        );
+                    }
+                }
+            });
+        match result {
+            Ok(worker) => *lock(&shared.fallback_worker) = Some(worker),
+            Err(error) => {
+                let (output, cancellation) = {
+                    let data = lock(&shared.data);
+                    (data.output.clone(), data.cancellation.clone())
+                };
+                if let (Some(output), Some(cancellation)) = (output, cancellation) {
+                    fail_session(
+                        shared,
+                        generation,
+                        PlaybackError::WorkerInitialization(Arc::new(error)),
+                        &cancellation,
+                        &output,
+                    );
+                }
+            }
+        }
+        return;
+    }
+    let _ = isolated_startup;
+    drive_machine(machine, shared, generation);
 }
 
 fn terminal_outcome(shared: &SessionShared) -> WorkerStep {
@@ -228,7 +305,11 @@ fn drive_machine(mut machine: impl FnMut() -> WorkerStep, shared: &SessionShared
             WorkerStep::Runnable => {}
             WorkerStep::Completed | WorkerStep::Cancelled | WorkerStep::Failed => return,
             #[cfg(feature = "experimental-scheduler")]
-            WorkerStep::WaitingOutput | WorkerStep::Deadline(_) | WorkerStep::DedicatedFallback => {
+            WorkerStep::WaitingOutput
+            | WorkerStep::WaitingInput
+            | WorkerStep::WaitingControl
+            | WorkerStep::Deadline(_)
+            | WorkerStep::DedicatedFallback => {
                 unreachable!("dedicated output uses blocking readiness")
             }
             WorkerStep::Paused(revision) => {
@@ -257,6 +338,8 @@ fn prepare_machine(
     ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
     reopen: fallback::Reopen,
 ) -> Option<(impl FnMut() -> WorkerStep + Send, bool)> {
+    #[cfg(feature = "experimental-scheduler")]
+    let isolate_file = matches!(source, InputSource::File(_));
     let _log_capture = crate::ffmpeg_logging::capture();
     let startup::PreparedWorker {
         mut decoder,
@@ -268,7 +351,7 @@ fn prepare_machine(
     } = startup::prepare(&shared, generation, source, &output, &cancellation, ready)?;
 
     #[cfg(feature = "experimental-scheduler")]
-    let scheduler_safe = decoder.scheduler_memory_demuxer();
+    let scheduler_safe = decoder.scheduler_demuxer_supported();
     #[cfg(not(feature = "experimental-scheduler"))]
     let scheduler_safe = false;
     let mut pending_frame = None;
@@ -291,12 +374,33 @@ fn prepare_machine(
     let mut force_pcm = false;
     Some((
         move || {
+            #[cfg(feature = "experimental-scheduler")]
+            if isolate_file
+                && matches!(
+                    shared.executor.load(std::sync::atomic::Ordering::Acquire),
+                    1 | 4
+                )
+                && lock(&shared.input_io).is_none()
+            {
+                *lock(&shared.input_io) = decoder
+                    .isolate_demux(
+                        shared
+                            .scheduler
+                            .as_ref()
+                            .expect("file scheduler")
+                            .io_executor(),
+                    )
+                    .map(|input| Arc::downgrade(&input));
+            }
             let _active = &_active_playback;
             let _log_capture = crate::ffmpeg_logging::capture();
             #[cfg(feature = "experimental-scheduler")]
             if shared.executor.load(std::sync::atomic::Ordering::Acquire) == 1 {
                 let data = lock(&shared.data);
-                if data.pending_seek.is_some() || data.pending_filter_graph.is_some() {
+                if data.pending_seek.is_some()
+                    || data.pending_filter_graph.is_some()
+                    || fallback.is_some()
+                {
                     shared
                         .executor
                         .store(4, std::sync::atomic::Ordering::Release);
@@ -393,7 +497,12 @@ fn prepare_machine(
                     // happens on. If the old source cannot produce any more, the swap still works.
                     let old = match pending_frame.take() {
                         Some(frame) => Some(frame),
-                        None => match decoder.next_timed_frame() {
+                        None => match input_action!(
+                            shared,
+                            decoder,
+                            poll_next_timed_frame,
+                            next_timed_frame
+                        ) {
                             Ok(frame) => frame,
                             Err(_) if is_stopped(&shared, generation) => {
                                 return terminal_outcome(&shared);
@@ -472,6 +581,13 @@ fn prepare_machine(
                                 head.source_start_sample.unwrap_or(head.frame.start_sample);
                             let info = replacement.info.clone();
                             // The old decoder, and with it its connection, is released here.
+                            #[cfg(feature = "experimental-scheduler")]
+                            if let Some(input) = lock(&shared.input_io)
+                                .take()
+                                .and_then(|input| input.upgrade())
+                            {
+                                input.wait_idle();
+                            }
                             decoder = *replacement.decoder;
                             pending_frame = Some(head);
                             input_finished = false;
@@ -532,8 +648,15 @@ fn prepare_machine(
             {
                 // The encoder lags its input by its lookahead, so it must be given the first
                 // samples of the next packet before that packet is forwarded in their place.
+                let overshoot = input_action!(
+                    shared,
+                    decoder,
+                    poll_overshoot_next_packet,
+                    overshoot_next_packet,
+                    OPUS_ENCODER_LOOKAHEAD as usize
+                );
                 seek_recovery.pending = false;
-                match decoder.overshoot_next_packet(OPUS_ENCODER_LOOKAHEAD as usize) {
+                match overshoot {
                     Ok(Some(head)) => {
                         pending_frame = Some(head);
                         seek_recovery.junction = true;
@@ -619,7 +742,12 @@ fn prepare_machine(
                 }
                 WorkerAction::Decode => {
                     if passthrough_mode {
-                        match decoder.read_compressed_packet() {
+                        match input_action!(
+                            shared,
+                            decoder,
+                            poll_compressed_packet,
+                            read_compressed_packet
+                        ) {
                             Ok(Some(packet)) => {
                                 let should_process = {
                                     let data = lock(&shared.data);
@@ -729,7 +857,12 @@ fn prepare_machine(
                             }
                         }
                     } else {
-                        match decoder.next_timed_frame() {
+                        match input_action!(
+                            shared,
+                            decoder,
+                            poll_next_timed_frame,
+                            next_timed_frame
+                        ) {
                             Ok(Some(frame)) => pending_frame = Some(frame),
                             Ok(None) => input_finished = true,
                             Err(error) => {

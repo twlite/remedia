@@ -59,3 +59,44 @@ Deterministic regression coverage performs eight seeks and eight graph replaceme
 paused, returns to scheduled playback, completes, and compares every Opus payload and sample
 position to the dedicated backend. Existing stalled-consumer cancellation and lifecycle stress
 also run through the bounded control executor.
+
+## Bounded startup and local demux isolation
+
+Eligible owned-memory and file sessions use two shared startup workers and a bounded admission
+queue; overload returns an explicit worker-initialization failure. Unsupported workloads retain
+their dedicated backend. A startup which discovers an unsupported demuxer, or exceeds live
+scheduler capacity, transfers its machine to a tracked dedicated worker; stop joins both the
+startup task and that fallback. No unsupported generation occupies a startup worker indefinitely.
+
+Local files using the conservative demuxer whitelist now isolate the FFmpeg input context on
+two shared demux workers. Codecs, resampling, packet metadata normalization and filtering stay
+on CPU workers. Each read burst admits up to eight AVPackets, stopping at a 128 KiB watermark;
+a single oversized native packet is preserved whole. A queue contains no more than eight
+packets and crosses the watermark by at most one packet. A source has at most one read burst
+in flight. Reads are requested only at the low watermark; full output eventually stops further
+input demand. Empty packet queues return explicit WaitingInput and register the session wake.
+Native EOF, codec drain, trimming metadata, Opus history/recovery and resampler drain retain the
+same logic for both backends. No entire-file preload or new unsafe Send/Sync implementation is
+used. The FFmpeg binding already marks its exclusively owned input and packets Send; cloned
+codec parameters own independent native storage. Native contexts are never used concurrently.
+
+Seek handoff waits for its own read burst, then seeks the original context and invalidates old
+read-ahead only after success. A weak cleanup registration avoids retaining idle demux contexts;
+stop joins outstanding reads outside CPU workers, and cancellation closes the native input
+before publishing read completion. Tests compare complete PCM and Opus payloads across direct
+and queued file demux with three seeks and filter replacement/removal, including trimmed and
+passthrough Opus. Thirty-two simultaneously stalled consumers cancel and reclaim all queues.
+A deterministic injected stall of both I/O workers leaves unrelated owned-memory startup and
+playback able to complete. A full startup/isolated queue rejects work without growing threads.
+
+HTTP/plugin eligibility is deliberately deferred. Bounded blocking I/O alone cannot guarantee
+fairness when every worker is indefinitely stalled in a producer callback. FFmpeg demuxers do
+not provide a general promise that arbitrary AVIO EAGAIN or interrupt-based suspension can be
+resumed without losing parser state; changing those callbacks requires container-specific
+regressions and readiness integration first. Local filesystem kernel stalls can still delay
+other local-file reads; owned-memory codec workers remain independent. Crossfade stays dedicated.
+
+The available-parallelism convenience constructor drops the old four-worker cap and uses an
+eight-action budget. This follows the previous measured ten-worker synchronized-tail recovery
+and dispatch-overhead results. Explicit constructors keep their previous budgets. FIFO and the
+existing ordered deadline queue remain; no affinity, stealing or dynamic resizing is added.

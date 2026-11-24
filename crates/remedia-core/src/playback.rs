@@ -170,11 +170,27 @@ pub enum MediaPositionAccuracy {
 /// while a source is active; call `stop` before starting a replacement.
 pub struct PlaybackSession {
     shared: Arc<SessionShared>,
-    worker: Mutex<Option<JoinHandle<()>>>,
+    worker: Mutex<Option<WorkerHandle>>,
     start_lock: Mutex<()>,
     filter_update_lock: Mutex<()>,
     stage: Arc<Mutex<Option<Arc<PreparedStage>>>>,
     crossfade: Mutex<Option<CrossfadeConfig>>,
+}
+
+enum WorkerHandle {
+    Dedicated(JoinHandle<()>),
+    #[cfg(feature = "experimental-scheduler")]
+    Startup(blocking::TaskHandle),
+}
+
+impl WorkerHandle {
+    fn join(self) -> std::thread::Result<()> {
+        match self {
+            Self::Dedicated(handle) => handle.join(),
+            #[cfg(feature = "experimental-scheduler")]
+            Self::Startup(handle) => handle.join(),
+        }
+    }
 }
 
 /// A seek that has been submitted to a session. See [`PlaybackSession::start_seek`].
@@ -239,6 +255,10 @@ struct SessionShared {
     scheduler: Option<Arc<PlaybackScheduler>>,
     #[cfg(feature = "experimental-scheduler")]
     scheduled: Mutex<Option<Arc<scheduler::Job>>>,
+    #[cfg(feature = "experimental-scheduler")]
+    fallback_worker: Mutex<Option<JoinHandle<()>>>,
+    #[cfg(feature = "experimental-scheduler")]
+    input_io: Mutex<Option<std::sync::Weak<crate::decoder::demux_input::queued::QueuedInput>>>,
     data: Mutex<SessionData>,
     changed: Condvar,
     completion_waiters: completion::CompletionWaiters,
@@ -313,7 +333,7 @@ enum WorkerAction {
 mod tests;
 
 #[cfg(feature = "experimental-scheduler")]
-mod blocking;
+pub(crate) mod blocking;
 
 mod completion;
 mod crossfade_events;

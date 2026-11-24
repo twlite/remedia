@@ -21,7 +21,7 @@ struct ReadyQueue {
 
 /// An application-owned experimental CPU pool, shared by explicitly attached sessions.
 /// Dropping the last owner shuts down and joins all pool threads. Dedicated playback remains
-/// the default. Only owned-byte input and built-in nonblocking outputs are eligible initially.
+/// the default. Owned-byte/regular-file inputs with supported demuxers and readiness-aware outputs qualify.
 pub struct PlaybackScheduler {
     inner: Arc<Pool>,
     threads: Vec<JoinHandle<()>>,
@@ -34,12 +34,16 @@ struct Pool {
     scheduled_live: AtomicUsize,
     capacity: usize,
     polls: AtomicUsize,
+    busy_ns: std::sync::atomic::AtomicU64,
     budget: usize,
     turns: AtomicUsize,
     admitted: AtomicUsize,
     migrated: AtomicUsize,
     isolated: AtomicUsize,
     controls: blocking::BlockingExecutor,
+    startup: blocking::BlockingExecutor,
+    io: Arc<blocking::BlockingExecutor>,
+    startup_rejections: AtomicUsize,
     unsupported: AtomicUsize,
     reasons: [AtomicUsize; 5],
     rejected: AtomicUsize,
@@ -49,6 +53,9 @@ struct Pool {
     deadline_suspensions: AtomicUsize,
     deadline_wakes: AtomicUsize,
     deadline_peak: AtomicUsize,
+    input_waits: AtomicUsize,
+    output_waits: AtomicUsize,
+    barrier_waits: AtomicUsize,
 }
 
 /// Instantaneous scheduler diagnostics; counts include all sessions attached to this pool.
@@ -60,6 +67,30 @@ pub struct SchedulerDiagnostics {
     pub control_workers: usize,
     /// Pending exclusive control handoffs, bounded by admitted sessions.
     pub queued_controls: usize,
+    /// Fixed startup workers. Unsupported workloads still retain dedicated playback workers.
+    pub startup_workers: usize,
+    /// Fixed local demux workers, shared across admitted file sessions.
+    pub io_workers: usize,
+    /// Pending read-ahead bursts, bounded by admission capacity.
+    pub queued_io: usize,
+    /// Currently executing local demux bursts.
+    pub active_io: usize,
+    /// Maximum queued local demux bursts.
+    pub io_queue_peak: usize,
+    /// Completed local demux bursts, including EOF/error reads.
+    pub io_bursts: usize,
+    /// Sum of local demux burst wall times, in nanoseconds.
+    pub io_busy_ns: u64,
+    /// Currently executing startup operations.
+    pub active_startups: usize,
+    /// Maximum queued startup requests.
+    pub startup_queue_peak: usize,
+    /// Sum of CPU action wall times, in nanoseconds; excludes idle waits.
+    pub worker_busy_ns: u64,
+    /// Pending startup requests; bounded by this scheduler's admission capacity.
+    pub queued_startups: usize,
+    /// Rejected startup requests (reported to callers, never silently admitted).
+    pub startup_rejections: usize,
     /// Admitted tasks, including suspended sessions.
     pub sessions: usize,
     /// Currently admitted sessions still executing on CPU workers, excluding control fallbacks.
@@ -82,13 +113,13 @@ pub struct SchedulerDiagnostics {
     pub control_fallbacks: usize,
     /// Cumulative unsupported-workload dedicated fallbacks.
     pub unsupported_fallbacks: usize,
-    /// Unsupported input-source fallbacks (files, network, producer streams).
+    /// Unsupported source fallbacks (network, producer streams, pipes/devices).
     pub input_fallbacks: usize,
-    /// Outputs lacking the nonblocking scheduling contract, including realtime outputs.
+    /// Outputs lacking the nonblocking scheduling contract.
     pub output_fallbacks: usize,
-    /// Owned inputs with demuxers outside the memory-only whitelist.
+    /// Inputs with demuxers outside the conservative whitelist.
     pub demuxer_fallbacks: usize,
-    /// Sessions starting with a native filtergraph.
+    /// Legacy initial-filter fallback counter; supported native filters now qualify.
     pub filter_fallbacks: usize,
     /// Crossfade sessions retaining dedicated execution.
     pub crossfade_fallbacks: usize,
@@ -108,6 +139,12 @@ pub struct SchedulerDiagnostics {
     pub deadline_suspensions: usize,
     /// Expired deadlines promoted to the runnable FIFO.
     pub deadline_wakes: usize,
+    /// Cumulative empty compressed-input queue polls.
+    pub input_suspensions: usize,
+    /// Cumulative output capacity/production readiness suspensions.
+    pub output_suspensions: usize,
+    /// Cumulative pending transport barrier polls, separate from isolated controls.
+    pub barrier_suspensions: usize,
 }
 
 impl PlaybackScheduler {
@@ -138,12 +175,16 @@ impl PlaybackScheduler {
             scheduled_live: AtomicUsize::new(0),
             capacity,
             polls: AtomicUsize::new(0),
+            busy_ns: std::sync::atomic::AtomicU64::new(0),
             budget: actions_per_turn,
             turns: AtomicUsize::new(0),
             admitted: AtomicUsize::new(0),
             migrated: AtomicUsize::new(0),
             isolated: AtomicUsize::new(0),
             controls: blocking::BlockingExecutor::new(2, capacity, "control")?,
+            startup: blocking::BlockingExecutor::new(2, capacity, "startup")?,
+            io: Arc::new(blocking::BlockingExecutor::new(2, capacity, "demux")?),
+            startup_rejections: AtomicUsize::new(0),
             unsupported: AtomicUsize::new(0),
             reasons: std::array::from_fn(|_| AtomicUsize::new(0)),
             rejected: AtomicUsize::new(0),
@@ -153,6 +194,9 @@ impl PlaybackScheduler {
             deadline_suspensions: AtomicUsize::new(0),
             deadline_wakes: AtomicUsize::new(0),
             deadline_peak: AtomicUsize::new(0),
+            input_waits: AtomicUsize::new(0),
+            output_waits: AtomicUsize::new(0),
+            barrier_waits: AtomicUsize::new(0),
         });
         let mut scheduler = Self {
             inner,
@@ -169,12 +213,29 @@ impl PlaybackScheduler {
         Ok(Arc::new(scheduler))
     }
 
-    /// Create a pool using available parallelism, capped at four workers, and 1024 live tasks.
+    /// Use available CPU parallelism, 1024 live tasks and an eight-action processing budget.
+    /// This opt-in default avoids the measured synchronized-tail regression of an undersized pool.
     pub fn for_available_parallelism() -> std::io::Result<Arc<Self>> {
-        Self::new(
-            thread::available_parallelism().map_or(1, |n| n.get().min(4)),
+        Self::with_processing_budget(
+            thread::available_parallelism().map_or(1, |n| n.get()),
             1024,
+            8,
         )
+    }
+
+    pub(super) fn io_executor(&self) -> Arc<blocking::BlockingExecutor> {
+        self.inner.io.clone()
+    }
+
+    pub(super) fn start(
+        &self,
+        task: impl FnOnce() + Send + 'static,
+    ) -> std::io::Result<blocking::TaskHandle> {
+        self.inner.startup.submit(task).inspect_err(|_| {
+            self.inner
+                .startup_rejections
+                .fetch_add(1, Ordering::Relaxed);
+        })
     }
 
     /// Read bounded-queue and execution counters without collecting OS resources.
@@ -187,6 +248,18 @@ impl PlaybackScheduler {
             workers: self.threads.len(),
             control_workers: self.inner.controls.workers(),
             queued_controls: self.inner.controls.queued(),
+            startup_workers: self.inner.startup.workers(),
+            io_workers: self.inner.io.workers(),
+            queued_io: self.inner.io.queued(),
+            active_io: self.inner.io.active(),
+            io_queue_peak: self.inner.io.peak(),
+            io_bursts: self.inner.io.completed(),
+            io_busy_ns: self.inner.io.busy_ns(),
+            active_startups: self.inner.startup.active(),
+            startup_queue_peak: self.inner.startup.peak(),
+            worker_busy_ns: self.inner.busy_ns.load(Ordering::Relaxed),
+            queued_startups: self.inner.startup.queued(),
+            startup_rejections: self.inner.startup_rejections.load(Ordering::Relaxed),
             sessions: self.inner.live.load(Ordering::Relaxed),
             scheduled_sessions: self
                 .inner
@@ -215,6 +288,9 @@ impl PlaybackScheduler {
             deadline_peak: self.inner.deadline_peak.load(Ordering::Relaxed),
             deadline_suspensions: self.inner.deadline_suspensions.load(Ordering::Relaxed),
             deadline_wakes: self.inner.deadline_wakes.load(Ordering::Relaxed),
+            input_suspensions: self.inner.input_waits.load(Ordering::Relaxed),
+            output_suspensions: self.inner.output_waits.load(Ordering::Relaxed),
+            barrier_suspensions: self.inner.barrier_waits.load(Ordering::Relaxed),
         }
     }
 
@@ -397,6 +473,7 @@ fn run(pool: Arc<Pool>) {
             }
         };
         job.state.store(RUNNING, Ordering::Release);
+        let turn_start = Instant::now();
         let mut machine = lock(&job.machine);
         let mut actions = 0;
         let outcome = loop {
@@ -406,8 +483,24 @@ fn run(pool: Arc<Pool>) {
                 break outcome;
             }
         };
+        pool.busy_ns.fetch_add(
+            turn_start.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
         pool.polls.fetch_add(actions, Ordering::Relaxed);
         pool.turns.fetch_add(1, Ordering::Relaxed);
+        match outcome {
+            worker::WorkerStep::WaitingInput => {
+                pool.input_waits.fetch_add(1, Ordering::Relaxed);
+            }
+            worker::WorkerStep::WaitingOutput => {
+                pool.output_waits.fetch_add(1, Ordering::Relaxed);
+            }
+            worker::WorkerStep::WaitingControl => {
+                pool.barrier_waits.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
         if let worker::WorkerStep::Deadline(deadline) = outcome {
             let mut queue = queue_lock(&pool);
             if job
@@ -442,7 +535,7 @@ fn run(pool: Arc<Pool>) {
             drop(machine);
             let control_job = job.clone();
             let control_pool = pool.clone();
-            if let Err(error) = pool.controls.submit(move || {
+            if let Err(error) = pool.controls.execute(move || {
                 let outcome = catch_unwind(AssertUnwindSafe(&mut isolated));
                 control_pool.isolated.fetch_sub(1, Ordering::Relaxed);
                 match outcome {
@@ -516,6 +609,53 @@ impl std::task::Wake for CancelWake {
     fn wake_by_ref(self: &Arc<Self>) {
         if let Some(job) = self.0.upgrade() {
             job.wake();
+        }
+    }
+}
+
+#[cfg(test)]
+mod isolation_tests {
+    use super::*;
+
+    #[test]
+    fn stalled_demux_workers_do_not_occupy_codec_or_startup_workers() {
+        let pool = PlaybackScheduler::new(1, 16).unwrap();
+        let started = Arc::new(std::sync::Barrier::new(3));
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let started = started.clone();
+            let release = release.clone();
+            handles.push(
+                pool.io_executor()
+                    .submit(move || {
+                        started.wait();
+                        let mut released = lock(&release.0);
+                        while !*released {
+                            released = wait(&release.1, released);
+                        }
+                    })
+                    .unwrap(),
+            );
+        }
+        started.wait();
+        let session = PlaybackSession::with_scheduler(pool.clone());
+        session
+            .play(
+                InputSource::bytes(
+                    include_bytes!("../../tests/fixtures/generated-tone.mp3").to_vec(),
+                ),
+                crate::NullOutput::new(),
+            )
+            .unwrap();
+        assert_eq!(session.wait(), PlaybackState::Completed);
+        session.stop().unwrap();
+        assert_eq!(pool.diagnostics().admitted, 1);
+        assert_eq!(pool.diagnostics().active_io, 2);
+        *lock(&release.0) = true;
+        release.1.notify_all();
+        for handle in handles {
+            handle.join().unwrap();
         }
     }
 }

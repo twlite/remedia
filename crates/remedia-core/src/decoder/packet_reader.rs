@@ -4,10 +4,9 @@ use super::*;
 /// compressed audio packets without opening a codec; PCM decoding is attached
 /// lazily when a consumer needs it.
 pub(crate) struct AudioPacketReader {
-    pub(super) input: OpenedInput,
+    pub(super) input: demux_input::DemuxInput,
     pub(super) codec_parameters: ffmpeg::codec::Parameters,
     pub(super) audio_stream_index: usize,
-    pub(super) network_input: bool,
     pub(super) stream_time_base: Rational,
     pub(super) info: AudioStreamInfo,
     pub(super) cancellation: CancellationToken,
@@ -147,10 +146,9 @@ impl AudioPacketReader {
             }
         };
         Ok(Self {
-            input,
+            input: demux_input::DemuxInput::new(input, network_input, options.cancellation.clone()),
             codec_parameters,
             audio_stream_index: stream_index,
-            network_input,
             stream_time_base,
             info,
             cancellation: options.cancellation,
@@ -225,6 +223,19 @@ impl AudioPacketReader {
     }
 
     pub(super) fn read_audio_packet(&mut self) -> Result<Option<DemuxedAudioPacket>, DecoderError> {
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        loop {
+            match self.poll_audio_packet(&mut cx) {
+                std::task::Poll::Ready(result) => return result,
+                std::task::Poll::Pending => self.input.wait_ready(),
+            }
+        }
+    }
+
+    pub(super) fn poll_audio_packet(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<Option<DemuxedAudioPacket>, DecoderError>> {
         if let Some(packet) = self.pending_packets.pop_front() {
             // A packet put back by `queue_compressed_packet` moved the position back to its start.
             if let (Some(start), Some(samples)) =
@@ -234,125 +245,103 @@ impl AudioPacketReader {
                     start.saturating_add(u64::from(samples.saturating_sub(packet.media_offset))),
                 );
             }
-            return Ok(Some(packet));
+            return std::task::Poll::Ready(Ok(Some(packet)));
         }
         if self.demux_finished {
-            return Ok(None);
+            return std::task::Poll::Ready(Ok(None));
         }
         loop {
             if self.cancellation.is_cancelled() {
-                return Err(DecoderError::Cancelled);
+                return std::task::Poll::Ready(Err(DecoderError::Cancelled));
             }
-            let mut packet = ffmpeg::Packet::empty();
-            match packet.read(&mut self.input) {
-                Ok(()) if packet.stream() != self.audio_stream_index => continue,
-                Ok(()) => {
-                    let timestamp = packet.pts().or_else(|| packet.dts());
-                    let timestamp_sample = timestamp_to_output_sample(
-                        timestamp,
+            let packet = match std::task::ready!(self.input.poll_packet(cx))? {
+                Some(packet) => packet,
+                None => {
+                    self.demux_finished = true;
+                    return std::task::Poll::Ready(Ok(None));
+                }
+            };
+            if packet.stream() != self.audio_stream_index {
+                continue;
+            }
+            let timestamp = packet.pts().or_else(|| packet.dts());
+            let timestamp_sample =
+                timestamp_to_output_sample(timestamp, self.stream_time_base, OUTPUT_SAMPLE_RATE_HZ)
+                    .and_then(|sample| sample.checked_sub(self.stream_start_sample.unwrap_or(0)));
+            let source_start_sample = timestamp_sample.or(self.next_source_sample);
+            let samples = (self.codec_parameters.id() == ffmpeg::codec::Id::OPUS)
+                .then(|| {
+                    packet.data().and_then(|bytes| {
+                        opus2::packet::get_nb_samples(bytes, OUTPUT_SAMPLE_RATE_HZ).ok()
+                    })
+                })
+                .flatten();
+            let samples_per_channel = samples.and_then(|samples| u32::try_from(samples).ok());
+            let (start_skip, end_skip) = skip_samples(&packet);
+            let is_first = std::mem::take(&mut self.first_packet_pending);
+            let carries_pre_skip = is_first && self.pre_skip > 0;
+            // FFmpeg's Ogg demuxer attaches the pre-skip to the first packet; Matroska
+            // exposes it only through the codec parameters.
+            let skip_matches_stream = carries_pre_skip
+                && (start_skip == 0 || start_skip == self.pre_skip)
+                && end_skip == 0
+                && samples_per_channel.is_some_and(|samples| samples > self.pre_skip);
+            let mut leading_skip = 0;
+            if skip_matches_stream {
+                let delay = packet
+                    .data()
+                    .and_then(|bytes| preroll_is_encoder_delay(bytes, self.pre_skip));
+                // Anything else is decoded, where FFmpeg trims the pre-skip itself.
+                if delay == Some(true) {
+                    leading_skip = self.pre_skip;
+                }
+            }
+            let unmodeled_skip = (start_skip != 0 && leading_skip == 0)
+                || end_skip != 0
+                || (carries_pre_skip && leading_skip == 0);
+            let has_skip_samples = unmodeled_skip;
+            let has_trimmed_duration = packet.duration() > 0
+                && samples_per_channel.is_some_and(|samples| {
+                    timestamp_to_output_sample(
+                        Some(packet.duration()),
                         self.stream_time_base,
                         OUTPUT_SAMPLE_RATE_HZ,
-                    )
-                    .and_then(|sample| sample.checked_sub(self.stream_start_sample.unwrap_or(0)));
-                    let source_start_sample = timestamp_sample.or(self.next_source_sample);
-                    let samples = (self.codec_parameters.id() == ffmpeg::codec::Id::OPUS)
-                        .then(|| {
-                            packet.data().and_then(|bytes| {
-                                opus2::packet::get_nb_samples(bytes, OUTPUT_SAMPLE_RATE_HZ).ok()
-                            })
-                        })
-                        .flatten();
-                    let samples_per_channel =
-                        samples.and_then(|samples| u32::try_from(samples).ok());
-                    let (start_skip, end_skip) = skip_samples(&packet);
-                    let is_first = std::mem::take(&mut self.first_packet_pending);
-                    let carries_pre_skip = is_first && self.pre_skip > 0;
-                    // FFmpeg's Ogg demuxer attaches the pre-skip to the first packet; Matroska
-                    // exposes it only through the codec parameters.
-                    let skip_matches_stream = carries_pre_skip
-                        && (start_skip == 0 || start_skip == self.pre_skip)
-                        && end_skip == 0
-                        && samples_per_channel.is_some_and(|samples| samples > self.pre_skip);
-                    let mut leading_skip = 0;
-                    if skip_matches_stream {
-                        let delay = packet
-                            .data()
-                            .and_then(|bytes| preroll_is_encoder_delay(bytes, self.pre_skip));
-                        // Anything else is decoded, where FFmpeg trims the pre-skip itself.
-                        if delay == Some(true) {
-                            leading_skip = self.pre_skip;
-                        }
-                    }
-                    let unmodeled_skip = (start_skip != 0 && leading_skip == 0)
-                        || end_skip != 0
-                        || (carries_pre_skip && leading_skip == 0);
-                    let has_skip_samples = unmodeled_skip;
-                    let has_trimmed_duration = packet.duration() > 0
-                        && samples_per_channel.is_some_and(|samples| {
-                            timestamp_to_output_sample(
-                                Some(packet.duration()),
-                                self.stream_time_base,
-                                OUTPUT_SAMPLE_RATE_HZ,
-                            ) != Some(u64::from(samples))
-                        });
-                    // A packet's media starts after its pre-skip region, at media sample 0. FFmpeg
-                    // also reports that region when a seek lands on the first packet again.
-                    let preskip_media_offset = if carries_pre_skip && skip_matches_stream {
-                        self.pre_skip
-                    } else if timestamp_sample.is_none()
-                        && start_skip != 0
-                        && samples_per_channel.is_some_and(|samples| start_skip < samples)
-                    {
-                        start_skip
-                    } else {
-                        0
-                    };
-                    let source_start_sample = if preskip_media_offset != 0 {
-                        Some(0)
-                    } else {
-                        source_start_sample
-                    };
-                    if let (Some(start), Some(samples)) = (source_start_sample, samples_per_channel)
-                    {
-                        let media_samples = samples - preskip_media_offset;
-                        self.next_source_sample =
-                            Some(start.saturating_add(u64::from(media_samples)));
-                    }
-                    let demuxed = DemuxedAudioPacket {
-                        packet,
-                        source_start_sample,
-                        source_position_estimated: timestamp_sample.is_none()
-                            && preskip_media_offset == 0,
-                        samples_per_channel,
-                        has_trimming_metadata: has_skip_samples || has_trimmed_duration,
-                        leading_skip,
-                        media_offset: preskip_media_offset,
-                    };
-                    if self.codec_parameters.id() == ffmpeg::codec::Id::OPUS {
-                        self.remember_packet(&demuxed);
-                    }
-                    return Ok(Some(demuxed));
-                }
-                Err(ffmpeg::Error::Eof) => {
-                    if let Some(message) = self.input.producer_failure() {
-                        return Err(DecoderError::InputFailure(message));
-                    }
-                    self.demux_finished = true;
-                    return Ok(None);
-                }
-                Err(error) if is_again(error) => continue,
-                Err(error) => {
-                    if let Some(message) = self.input.producer_failure() {
-                        return Err(DecoderError::InputFailure(message));
-                    }
-                    return Err(ffmpeg_error(
-                        error,
-                        "reading media packets",
-                        self.cancellation.is_cancelled(),
-                        self.network_input,
-                    ));
-                }
+                    ) != Some(u64::from(samples))
+                });
+            // A packet's media starts after its pre-skip region, at media sample 0. FFmpeg
+            // also reports that region when a seek lands on the first packet again.
+            let preskip_media_offset = if carries_pre_skip && skip_matches_stream {
+                self.pre_skip
+            } else if timestamp_sample.is_none()
+                && start_skip != 0
+                && samples_per_channel.is_some_and(|samples| start_skip < samples)
+            {
+                start_skip
+            } else {
+                0
+            };
+            let source_start_sample = if preskip_media_offset != 0 {
+                Some(0)
+            } else {
+                source_start_sample
+            };
+            if let (Some(start), Some(samples)) = (source_start_sample, samples_per_channel) {
+                let media_samples = samples - preskip_media_offset;
+                self.next_source_sample = Some(start.saturating_add(u64::from(media_samples)));
             }
+            let demuxed = DemuxedAudioPacket {
+                packet,
+                source_start_sample,
+                source_position_estimated: timestamp_sample.is_none() && preskip_media_offset == 0,
+                samples_per_channel,
+                has_trimming_metadata: has_skip_samples || has_trimmed_duration,
+                leading_skip,
+                media_offset: preskip_media_offset,
+            };
+            if self.codec_parameters.id() == ffmpeg::codec::Id::OPUS {
+                self.remember_packet(&demuxed);
+            }
+            return std::task::Poll::Ready(Ok(Some(demuxed)));
         }
     }
 }

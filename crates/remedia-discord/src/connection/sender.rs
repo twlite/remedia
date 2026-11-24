@@ -230,6 +230,10 @@ impl OpusPacketSink for DiscordOpusSender {
     ) -> Result<(), OutputError> {
         self.ensure_current(cancellation)
             .map_err(OutputError::with_source)?;
+        #[cfg(feature = "experimental-scheduler")]
+        {
+            lock(&self.pending_control).take();
+        }
         let generation = {
             let _generation_update = lock(&self.inner.generation_update);
             let old_generation = self.generation.load(Ordering::Acquire);

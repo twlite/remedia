@@ -346,14 +346,15 @@ session.play(InputSource::bytes(encoded_media), NullOutput::new())?;
 session.stop()?;
 ```
 
-This initial experiment schedules owned-byte Ogg, MP3, ADTS AAC, WAV and FLAC inputs with
+This experiment schedules owned-byte and local-file Ogg, MP3, ADTS AAC, WAV and FLAC inputs with
 `NullOutput`, `StreamOutput` with unpaced or realtime pacing, or `OpusEncoderOutput` attached
 to `DiscordOpusSender` / `RoutedOpusSender`, including native filtergraphs.
 Full streaming queues suspend production using the existing readiness waker; consumption through
 `StreamReader::poll_next` wakes production. Buffer limits, encoding settings and EOF are unchanged.
-Files, network sources, other containers (including MP4/M4A), producer byte streams,
-synchronous custom outputs and crossfade retain dedicated execution. Opening and probing run on a temporary dedicated startup
-thread. A seek or live filter update transfers exclusive ownership of the same machine to a shared,
+Network sources, other containers (including MP4/M4A), producer byte streams,
+synchronous custom outputs and crossfade retain dedicated execution. Eligible sources open and probe on a bounded shared two-thread startup executor. A full
+startup queue returns a worker-initialization error instead of creating additional threads.
+Unsupported source/output combinations retain dedicated startup and playback. A seek or live filter update transfers exclusive ownership of the same machine to a shared,
 bounded two-thread control executor for one operation. It then returns to CPU scheduling.
 No permanent control thread is added per session. A stalled control can delay other controls,
 but cannot occupy a codec worker; cancellation continues to interrupt its existing source and
@@ -426,3 +427,20 @@ Custom readiness-aware outputs can override `scheduler_activate` (called once af
 and `scheduler_poll_control(control, cx, cancellation)`. A pending control must retain its
 operation, register the waker and acknowledge it exactly once before returning success. Legacy
 outputs use the existing synchronous pause/resume/finish defaults.
+
+Local files demux on a separate shared two-thread executor. A read-ahead burst transfers up to
+eight owned FFmpeg AVPackets through a readiness-driven queue, targeting at most 128 KiB; one
+larger source packet is retained whole, as on the direct decoder path. Codecs, resampling and
+filters stay on CPU workers. Empty compressed queues suspend the session, and a completed burst
+wakes it. Seeking waits for its in-flight burst on the isolated control executor, then discards
+old read-ahead after the native seek succeeds. Cancellation and `stop` join outstanding reads.
+The file is read incrementally and is never copied wholesale into memory for eligibility.
+`io_workers`, `queued_io`, `active_io`, `io_queue_peak`, `io_bursts` and `io_busy_ns` identify
+this executor. These are fixed pools, not additional permanent threads per session.
+
+`for_available_parallelism()` now uses the platform's available CPU count and an eight-action
+budget, with 1024 admission slots. Explicit `new(workers, capacity)` still uses one action;
+`with_processing_budget` retains caller-selected fixed values. No dynamic resizing is enabled.
+HTTP and producer/plugin streams remain dedicated: a stalled native read could otherwise
+occupy every bounded I/O worker and delay unrelated sources. This branch does not claim those
+fallbacks as scheduled performance, and scheduled crossfade remains deferred.

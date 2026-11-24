@@ -32,6 +32,8 @@ pub(crate) const OPUS_ENCODER_LOOKAHEAD: u32 = 312;
 pub(crate) const OPUS_RECOVERY_WARM_FRAMES: u32 = 6;
 const OPUS_HISTORY_MAX_BYTES: usize = 512 * 1024;
 
+pub(crate) mod demux_input;
+
 mod audio_decoder;
 mod helpers;
 mod packet_reader;

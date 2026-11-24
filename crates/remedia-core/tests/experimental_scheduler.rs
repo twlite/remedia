@@ -128,10 +128,7 @@ fn unsupported_inputs_and_capacity_exhaustion_report_fallback() {
     drop(reader);
     other
         .play(
-            InputSource::file(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/generated-tone.mp3"
-            )),
+            InputSource::bytes(include_bytes!("fixtures/ffmpeg-opus-silent-lead.webm").to_vec()),
             NullOutput::new(),
         )
         .unwrap();
@@ -335,4 +332,93 @@ fn repeated_paused_controls_return_to_scheduler_and_match_dedicated_audio() {
     assert_eq!(diagnostics.control_fallbacks, 0);
     assert_eq!(diagnostics.isolated_controls, 0);
     assert_eq!(diagnostics.sessions, 0);
+}
+
+#[test]
+fn local_demux_queues_preserve_audio_controls_and_cleanup() {
+    let pool = PlaybackScheduler::with_processing_budget(2, 64, 8).unwrap();
+    for fixture in [
+        "generated-tone.mp3",
+        "generated-opus-passthrough-long.ogg",
+        "generated-opus-trimmed.ogg",
+    ] {
+        for format in [StreamFormat::F32le, StreamFormat::Opus] {
+            let mut results = Vec::new();
+            for scheduled in [false, true] {
+                let session = if scheduled {
+                    PlaybackSession::with_scheduler(pool.clone())
+                } else {
+                    PlaybackSession::new()
+                };
+                let (output, mut reader) =
+                    StreamOutput::new(format, StreamPacing::Unpaced, OpusEncoderConfig::default())
+                        .unwrap();
+                session
+                    .play(
+                        InputSource::file(
+                            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                                .join("tests/fixtures")
+                                .join(fixture),
+                        ),
+                        output,
+                    )
+                    .unwrap();
+                session.pause().unwrap();
+                for target in [20, 40, 30] {
+                    let outcome = session.seek_outcome(Duration::from_millis(target)).unwrap();
+                    assert_eq!(outcome.applied, Duration::from_millis(target));
+                }
+                session.set_filter_graph(Some("volume=0.75")).unwrap();
+                session.set_filter_graph(None).unwrap();
+                session.resume().unwrap();
+                results.push(drain(&mut reader));
+                assert_eq!(session.wait(), PlaybackState::Completed);
+                session.stop().unwrap();
+                if scheduled {
+                    assert_eq!(session.executor_diagnostic(), "scheduled");
+                }
+            }
+            assert!(!results[0].is_empty());
+            assert_eq!(results[0], results[1], "{fixture} {format:?}");
+        }
+    }
+    assert_eq!(pool.diagnostics().admitted, 6);
+    assert_eq!(pool.diagnostics().unsupported_fallbacks, 0);
+    assert_eq!(pool.diagnostics().sessions, 0);
+    assert_eq!(pool.diagnostics().queued_io, 0);
+}
+
+#[test]
+fn concurrent_file_cancellation_reclaims_bounded_demux_tasks() {
+    let pool = PlaybackScheduler::new(1, 64).unwrap();
+    let mut sessions = Vec::new();
+    for _ in 0..32 {
+        let session = PlaybackSession::with_scheduler(pool.clone());
+        let token = CancellationToken::new();
+        let (output, reader) = StreamOutput::new(
+            StreamFormat::F32le,
+            StreamPacing::Unpaced,
+            OpusEncoderConfig::default(),
+        )
+        .unwrap();
+        session
+            .play_with_cancellation(
+                InputSource::file(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/fixtures/generated-tone.mp3"
+                )),
+                output,
+                token.clone(),
+            )
+            .unwrap();
+        sessions.push((session, token, reader));
+    }
+    for (session, token, reader) in sessions {
+        token.cancel();
+        session.stop().unwrap();
+        drop(reader);
+    }
+    assert_eq!(pool.diagnostics().sessions, 0);
+    assert_eq!(pool.diagnostics().queued_io, 0);
+    assert_eq!(pool.diagnostics().queued_startups, 0);
 }
