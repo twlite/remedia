@@ -478,7 +478,8 @@ A rejected/failed restricted probe retries the original source on a tracked dedi
 functionality, and these retries/fallbacks are excluded from scheduler benchmark evidence.
 
 MP3, MP2 and AAC native seeks decode up to one second before the requested position to
-restore codec history, then discard preroll samples. This work runs on the isolated
-control executor for scheduled sessions. The seek acknowledgement still waits for
-output invalidation; preroll can increase seek latency without changing the requested
-media position or encoder quality.
+restore codec history, then discard preroll samples. Scheduled sessions reposition
+the demuxer on the isolated control executor and decode preroll in bounded codec
+turns. The seek acknowledgement still waits for output invalidation; recovery before
+the first post-seek audio can take longer without changing the requested media
+position or encoder quality.

@@ -11,7 +11,7 @@ if ! docker container inspect "$hybrid_container" >/dev/null 2>&1; then
     -v "$hybrid_output:/experiment" -v "$hybrid_root:/repo:ro" ubuntu:24.04 sleep infinity
 fi
 docker start "$hybrid_container" >/dev/null
-docker exec -e HYBRID_LINUX_RELEASE_DIR="${HYBRID_LINUX_RELEASE_DIR:-/experiment/releases}" "$hybrid_container" bash -c '
+docker exec -e HYBRID_REUSE_NATIVE="${HYBRID_REUSE_NATIVE:-0}" -e HYBRID_LINUX_RELEASE_DIR="${HYBRID_LINUX_RELEASE_DIR:-/experiment/releases}" "$hybrid_container" bash -c '
   set -e
   if ! command -v clang >/dev/null || ! command -v node >/dev/null; then
     apt-get update
@@ -24,8 +24,17 @@ docker exec -e HYBRID_LINUX_RELEASE_DIR="${HYBRID_LINUX_RELEASE_DIR:-/experiment
   git config --global --add safe.directory /repo
   cd /repo
   export RUNNER_TEMP=/experiment/native-work FFMPEG_DIR=/experiment/native-prefix FFMPEG_BUILD_JOBS=4
-  bash .github/scripts/build-ffmpeg-static.sh
-  export PKG_CONFIG_PATH=/experiment/native-prefix/lib/pkgconfig CARGO_BUILD_JOBS=4 HYBRID_COPY_BUILD_CACHE=1
+  if [ "$HYBRID_REUSE_NATIVE" = 1 ]; then
+    # Reuse only the already-built prefix; every variant links these identical archives.
+    test -f "$FFMPEG_DIR/lib/libavcodec.a"
+    node .github/scripts/audit-ffmpeg-config.mjs "$FFMPEG_DIR/share/remedia-build/config.mak"
+  else
+    bash .github/scripts/build-ffmpeg-static.sh
+  fi
+  # Use pkg-config private static dependencies (including OpenSSL), not the FFMPEG_DIR
+  # abbreviated library list in ffmpeg-sys-next.
+  unset FFMPEG_DIR
+  export PKG_CONFIG_PATH=/experiment/native-prefix/lib/pkgconfig PKG_CONFIG_ALL_STATIC=1 CARGO_BUILD_JOBS=4 HYBRID_COPY_BUILD_CACHE=1
   bash benchmarks/hybrid-ab-build.sh "$HYBRID_LINUX_RELEASE_DIR"
   CARGO_TARGET_DIR="$HYBRID_LINUX_RELEASE_DIR/scheduled-target" cargo test --release --locked -p remedia-discord --features experimental-scheduler --lib --no-run
   CARGO_TARGET_DIR="$HYBRID_LINUX_RELEASE_DIR/scheduled-target" cargo test --release --locked -p remedia-core --features experimental-scheduler --test experimental_scheduler
