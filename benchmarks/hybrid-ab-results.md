@@ -1,0 +1,201 @@
+# Hybrid scheduler: isolated comparison and processing budgets
+
+This continuation measures the original `55b71e5` playback implementation, the refactored
+feature-disabled dedicated backend, and the current experimental pool. Production selection stays
+unchanged. Source milestone: `ea8691e` (budget/counter implementation: `ba1c68d`).
+
+## Method and reproducibility
+
+Hardware remains Apple M5, 10 logical CPUs, 24 GiB RAM, macOS 27.0.1 arm64, Rust 1.99.1 and
+Homebrew FFmpeg 9. Native dependencies, Opus settings, release profile and fat LTO are identical.
+The original engine is extracted with `git archive`; only the common benchmark example and an
+unused manifest feature declaration are added. No original playback implementation is edited.
+The refactored dedicated executable is built with the Cargo feature disabled. The scheduled
+executable enables the feature and explicitly creates a pool. All use the same harness source.
+Previous preserved baseline binaries remain untouched.
+
+```sh
+export PKG_CONFIG_PATH=/opt/homebrew/opt/ffmpeg/lib/pkgconfig
+export RUSTFLAGS='-L native=/opt/homebrew/opt/lame/lib -L native=/opt/homebrew/opt/svt-av1/lib -L native=/opt/homebrew/opt/openssl@4/lib -l c++'
+benchmarks/hybrid-ab-build.sh /tmp/remedia-hybrid-ab
+/tmp/remedia-hybrid-ab/scheduled-target/release/examples/resource_audit_fixtures /tmp/remedia-hybrid-ab/fixtures
+python3 benchmarks/hybrid_ab.py \
+  --original /tmp/remedia-hybrid-ab/original-target/release/examples/hybrid_scheduler_benchmark \
+  --dedicated /tmp/remedia-hybrid-ab/dedicated-target/release/examples/hybrid_scheduler_benchmark \
+  --scheduled /tmp/remedia-hybrid-ab/scheduled-target/release/examples/hybrid_scheduler_benchmark \
+  --fixtures /tmp/remedia-hybrid-ab/fixtures/music15.opus,/tmp/remedia-hybrid-ab/fixtures/music3.mp3,/tmp/remedia-hybrid-ab/fixtures/music3.aac \
+  --output benchmarks/data/hybrid/ab/opus-matrix.jsonl
+```
+
+The main matrix covers 1, 8, 32, 64, 128, 256 and 512 sessions, three repetitions, 1/2/4 CPU
+workers, and budgets of 1/8/32 actions per queue turn. A separate MP3-to-f32le matrix covers
+32/128/512 sessions with the same variants/repetitions. Native fixture generation uses unchanged
+128 kbps settings and does not spawn media-processing subprocesses. Every source has independent
+owned storage per session. Default output bitrate, VBR and Opus complexity are unchanged.
+Builds, Rust/Node tests, Clippy and docs generation finish before measurements begin. Repetitions
+rotate and reverse variant order within each fixture/format/concurrency case.
+
+A benchmark-only output gate holds production until every session has opened. Scheduled runs
+also wait for all admissions or explicit fallbacks to be accounted for, with a ten-second startup
+limit. The common gate forwards output methods and encoded capability; it neither changes audio
+nor increases native stream queue limits. A dedicated worker sleeps at the gate; a CPU worker
+registers a readiness waker and suspends. All scheduled rows must have the full requested count
+in `activeScheduled`, exactly that many cumulative admissions and zero fallbacks, otherwise the
+runner rejects the result. This avoids reporting fallback or sequential short-track completion
+as pool concurrency. The gate does synchronize startup and adds wake-up work: this is a controlled
+concurrent processing comparison, not phased realtime traffic or a production startup trace.
+
+`ungated-pilot.jsonl` is a stopped, incomplete pilot retained separately. Three-second encoded
+output can finish below the 64 KiB readiness boundary while sessions open sequentially. Its
+nominal concurrency therefore does not prove live concurrency. It is excluded from conclusions.
+
+The parent samples child RSS and OS threads every approximately 2 ms and separates the startup
+window using the child's timestamp and startup duration. These are sampled peaks and can miss
+shorter transients. Child kernel user/system CPU and context switches exclude parent sampler CPU.
+In-process snapshots record physical footprint, lifetime peak RSS and live resources immediately
+before gate release and after stop. Memory includes input copies, native codecs, queue payloads,
+stacks and allocator retention; footprint is not a native heap inventory.
+
+Every run asserts packet/sample-position continuity, successful completion and stop, positive
+sample counts, equal per-session work and equal payload checksums. Every paired variant additionally
+matches the complete sample, chunk and checksum arrays against the original result. Tests compare
+stream payloads byte for byte. No fallback row qualifies as scheduler performance evidence.
+
+## What the processing budget measures
+
+`new(workers, capacity)` retains a one-action turn. `with_processing_budget` configures a positive
+maximum action count per turn; it does not bound native action wall time. Output readiness and
+controls are checked on each action, and suspension/completion/migration ends a burst immediately.
+Each burst still owns exactly one job; wake coalescing and single-session exclusion are unchanged.
+A larger budget saves FIFO mutex operations and dispatches at the cost of a larger fairness quantum.
+
+Diagnostics record cumulative admissions, currently live scheduled sessions (including suspended
+ones), control/capacity/unsupported fallbacks and unsupported input/output/demux/filter/crossfade
+reasons. Queue depth peaks, action counts, dispatch counts, contended enqueue/dequeue acquisitions
+and aggregate wait nanoseconds are measured. Mutex wait includes descheduling and excludes
+condition-variable reacquisitions; it is not isolated lock instruction time. CPU includes these
+experimental diagnostics. The measurement does not separate cache-coherence cost, machine-state
+mutexes, playback-state locks and native codec work into an allocation or hardware-counter profile.
+
+## Complete unpaced results
+
+All 792 gated runs completed and matched the original delivered audio. Every scheduled row had
+the full requested live scheduled count at release, cumulative admissions equal to that count,
+and zero input/output/demux/filter/crossfade/capacity/control fallbacks. There are 693 Opus-output
+rows plus 99 PCM-output rows. Full medians/ranges and resource counters are in `ab/summary.json`.
+
+The following are three-run medians at 512 genuinely live sessions. CPU uses the child kernel
+user+system delta divided by the exact delivered audio duration, including process startup,
+gating, consumption/checksum work and cleanup. Smaller is better; these are not isolated codec costs.
+
+| Backend | Workers | Budget | Opus passthrough CPU ms/audio s | MP3→Opus | AAC→Opus | MP3→f32le |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| original | 0 | 1 | 0.447 | 6.899 | 7.254 | 1.410 |
+| dedicated | 0 | 1 | 0.457 | 6.934 | 7.261 | 1.378 |
+| scheduled | 1 | 1 | 0.159 | 4.977 | 5.294 | 1.079 |
+| scheduled | 1 | 8 | 0.146 | 5.002 | 5.297 | 1.069 |
+| scheduled | 1 | 32 | 0.144 | 5.149 | 5.452 | 1.061 |
+| scheduled | 2 | 1 | 0.224 | 5.048 | 5.347 | 1.296 |
+| scheduled | 2 | 8 | 0.180 | 5.042 | 5.322 | 1.253 |
+| scheduled | 2 | 32 | 0.179 | 5.277 | 5.580 | 1.262 |
+| scheduled | 4 | 1 | 0.288 | 5.284 | 5.394 | 1.528 |
+| scheduled | 4 | 8 | 0.262 | 4.995 | 5.368 | 1.303 |
+| scheduled | 4 | 32 | 0.265 | 5.294 | 5.607 | 1.306 |
+
+Resource and timing examples at the same concurrency follow. Thread peaks are sampled total OS
+threads; the live snapshot is separate. Startup peaks exclude the post-gate interval but may miss
+sub-2ms transients. Context switches are raw kernel voluntary+involuntary counters; near-zero
+voluntary counts on this Darwin collector do not mean no thread ever blocked.
+
+| Workload | Backend/workers/budget | Wall s | Live/peak/startup-peak threads | Peak RSS MiB | Active footprint MiB | Context switches | Queue wait ms |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: |
+| music15.opus→opus | original/0/1 | 0.949 | 513/513/505 | 391.1 | 252.5 | 323789 | 0.00 |
+| music15.opus→opus | dedicated/0/1 | 0.960 | 513/513/509 | 386.8 | 252.5 | 325955 | 0.00 |
+| music15.opus→opus | scheduled/4/1 | 0.579 | 6/6/6 | 518.5 | 244.8 | 52908 | 264.45 |
+| music15.opus→opus | scheduled/4/8 | 0.554 | 6/6/6 | 403.5 | 244.8 | 72322 | 74.88 |
+| music3.mp3→opus | original/0/1 | 1.180 | 513/513/506 | 266.3 | 139.2 | 9131 | 0.00 |
+| music3.mp3→opus | dedicated/0/1 | 1.202 | 513/513/505 | 265.4 | 139.2 | 10085 | 0.00 |
+| music3.mp3→opus | scheduled/4/1 | 1.890 | 6/7/7 | 234.9 | 131.5 | 40650 | 9.05 |
+| music3.mp3→opus | scheduled/4/8 | 1.845 | 6/7/7 | 226.1 | 131.5 | 29637 | 0.46 |
+| music3.aac→opus | original/0/1 | 1.304 | 513/513/509 | 584.1 | 458.4 | 10448 | 0.00 |
+| music3.aac→opus | dedicated/0/1 | 1.328 | 513/513/507 | 592.2 | 458.4 | 12099 | 0.00 |
+| music3.aac→opus | scheduled/4/1 | 2.057 | 6/7/7 | 553.6 | 450.7 | 34508 | 13.15 |
+| music3.aac→opus | scheduled/4/8 | 2.029 | 6/7/7 | 549.7 | 450.7 | 35872 | 0.41 |
+| music3.mp3→f32le | original/0/1 | 0.955 | 513/513/499 | 254.1 | 139.1 | 68273 | 0.00 |
+| music3.mp3→f32le | dedicated/0/1 | 0.938 | 513/513/513 | 254.2 | 139.2 | 65956 | 0.00 |
+| music3.mp3→f32le | scheduled/4/1 | 0.909 | 6/6/6 | 253.5 | 131.6 | 189453 | 15.02 |
+| music3.mp3→f32le | scheduled/4/8 | 0.940 | 6/7/7 | 245.6 | 131.6 | 62754 | 0.29 |
+
+At 512 MP3→f32le sessions, four workers with one action per turn regressed CPU by 10.9% versus
+the refactored dedicated driver. Budget eight improved it by 5.4%; budget 32 was similar. The
+one-action policy therefore introduces material avoidable dispatch/synchronization overhead in
+this workload. MP3→Opus improved from 5.284 to 4.995 ms/audio s when moving from budget one to
+eight, but worsened to 5.294 at budget 32. AAC shows the same lack of monotonic improvement.
+A larger burst is not automatically better and does not guarantee fairness latency.
+
+The extraction itself is close to the original at these workloads: at 512 streams, dedicated
+CPU changes are about +2.2% for passthrough, +0.5% for MP3 encoding, +0.1% for AAC encoding and
+-2.2% for PCM output. These small differences are not a universal extraction-overhead guarantee.
+
+The shared pool saves substantial CPU for encoded output on this host, but trades CPU against
+throughput for transcoding. Four-worker/budget-eight MP3→Opus takes 1.845 s versus 1.202 s for
+dedicated; AAC takes 2.029 s versus 1.328 s. One-worker configurations are slower still. Conversely,
+passthrough finishes faster with a small pool. The raw runs must be evaluated against required
+real-time audio demand rather than selecting the best CPU-only column.
+
+Memory does not universally improve. Four-worker, one-action passthrough peaks at 518.5 MiB
+versus 386.8 MiB for refactored dedicated, despite far fewer OS threads. Larger budgets reduce
+this regression, while transcoding and PCM cases have different footprints. Input allocations,
+queue occupancy and native allocator behavior are included; no native heap explanation is proven.
+
+Queue wait is diagnostic evidence, not a complete causal CPU profile. For MP3→Opus at 512 streams
+and four workers it drops from about 9.05 ms to 0.46 ms at budget eight, while CPU savings are
+larger than that waiting time alone explains. Fast-path mutex/atomic cost, wake-ups, cache effects,
+reader scheduling and host CPU-frequency differences remain involved. The heterogeneous Apple
+CPU was not affinity-pinned. These results do not establish Linux vCPU behavior.
+
+The evidence justifies testing pacing on the already readiness-aware stream output. It does not
+justify marking blocking file/network input or Discord acknowledgements nonblocking, nor changing
+the production backend or silently selecting a larger default budget.
+
+## Eligibility investigation
+
+The measurement gate precedes any expansion of eligibility. Existing eligibility is owned bytes
+in the five whitelisted demuxers, without native filtergraphs, into NullOutput or unpaced streams.
+The following blocking boundaries remain explicit:
+
+- Local files: FFmpeg demux reads and seeks remain synchronous. Loading an entire file into owned
+  bytes would change retained-memory and input ownership guarantees. A shared bounded I/O pool
+  could run packet-reader bursts into byte/packet-bounded queues, then wake codec workers, but
+  filesystem stalls must not monopolize CPU workers or create a permanent thread per session.
+  `AudioDecoder` currently owns its packet reader, codec, resampler and pending frames together;
+  this separation requires an explicit ownership/seek-generation protocol, not a thread-pool wrapper.
+- Realtime streams: `StreamOutput::poll_ready` already returns an absolute pacing deadline, but
+  the experimental MediaOutput bridge currently discards that value and only opts in unpaced
+  streams. Enabling realtime without a deadline queue would silently run unpaced. A valid timer
+  design needs one outstanding deadline per generation, cancellation/control invalidation and a
+  single bounded timer service rather than per-session sleeps or periodic polling.
+- Discord: `connection/sender.rs` packet submission uses a bounded channel with retrying 25 ms
+  sends; control barriers wait for actor acknowledgements. `sender_router.rs` can wait for a new
+  transport. Those methods must expose readiness and retained-packet ownership before opting in.
+  Queue acceptance must remain distinct from RTP dispatch/played position, with existing generation
+  checks, retry ownership, DAVE and encryption intact. No live Discord qualification is inferred
+  from raw stream checksums or existing mock-transport tests.
+- Seek/filter replacement: current controls permanently transfer the machine to a dedicated
+  fallback. Keeping the CPU job requires control-operation outcomes/futures, acknowledged output
+  transitions and generation-bound completion. A bounded control pool could temporarily own the
+  machine and return it after completion, but must handle shutdown, cancelled seeks and filter
+  initialization that may perform blocking work. It must not wait for acknowledgement on a CPU
+  worker, publish completion before ownership returns, or acknowledge an unapplied transition.
+- HTTP/plugin sources: custom AVIO invokes a synchronous read. `ByteStreamReader` waits on a
+  condition variable; an asynchronous plugin producer does not make this consumer nonblocking.
+  Returning EAGAIN speculatively needs demuxer-specific recovery tests, including partial headers,
+  probing, errors and cancellation. A shared blocking pool alone still permits stalled sources
+  to occupy every I/O slot. No unbounded encoded-byte or packet staging queue is acceptable.
+- Crossfade: staging currently has a producer thread, bounded PCM cushion and decoder handoff.
+  Promotion, passthrough recovery and fallback seeks share ownership-sensitive state. Merely
+  scheduling the active worker leaves staging threads and blocking promotion intact. A future
+  staged-source job needs the same readiness/generation protocol as an ordinary source and must
+  preserve the audible tail rather than cutting it off to satisfy a scheduling budget.
+
+These are source-audited design constraints, not implemented support or performance evidence.
