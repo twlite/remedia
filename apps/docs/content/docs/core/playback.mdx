@@ -362,3 +362,16 @@ depth and action count. Capacity bounds admitted scheduled sessions; excess sess
 dedicated execution, so it does not cap total engine concurrency. Pool creation rejects zero counts
 and returns thread creation failures. Existing Node and RPC playback APIs remain dedicated; this
 branch does not add a JavaScript or remote executor-selection API.
+
+For budget experiments, `PlaybackScheduler::with_processing_budget(workers, capacity, actions_per_turn)`
+sets a positive maximum action count per queue dispatch. `new` keeps its existing one-action budget.
+Every action checks controls and readiness; the budget does not bound native codec wall time.
+Larger bursts reduce queue dispatches but can increase the time before another session runs.
+
+Diagnostics distinguish cumulative `admitted` from currently `scheduled_sessions`; `sessions`
+also includes admitted jobs which migrated to dedicated controls. Dedicated fallbacks are counted
+separately by capacity, control migration, input, output, demuxer, initial filtergraph and crossfade.
+`turns`, `actions`, `queue_peak`, `queue_contentions` and `queue_wait_ns` expose dispatch frequency
+and queue mutex waiting. Contention counts failed immediate mutex acquisitions; wait time includes
+OS descheduling while waiting, and is not isolated mutex instruction cost. These counters do not
+change production executor selection or qualify fallback workloads as scheduler performance.

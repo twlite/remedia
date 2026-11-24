@@ -21,8 +21,19 @@ struct Pool {
     queue: Mutex<(VecDeque<Arc<Job>>, bool)>,
     changed: Condvar,
     live: AtomicUsize,
+    scheduled_live: AtomicUsize,
     capacity: usize,
     polls: AtomicUsize,
+    budget: usize,
+    turns: AtomicUsize,
+    admitted: AtomicUsize,
+    migrated: AtomicUsize,
+    unsupported: AtomicUsize,
+    reasons: [AtomicUsize; 5],
+    rejected: AtomicUsize,
+    queue_peak: AtomicUsize,
+    queue_contentions: AtomicUsize,
+    queue_wait_ns: std::sync::atomic::AtomicU64,
 }
 
 /// Instantaneous scheduler diagnostics; counts include all sessions attached to this pool.
@@ -32,28 +43,80 @@ pub struct SchedulerDiagnostics {
     pub workers: usize,
     /// Admitted tasks, including suspended sessions.
     pub sessions: usize,
+    /// Currently admitted sessions still executing on CPU workers, excluding control fallbacks.
+    pub scheduled_sessions: usize,
     /// Tasks currently queued for CPU work.
     pub queued: usize,
     /// Completed bounded action invocations since pool creation.
     pub actions: usize,
+    /// Maximum actions per turn. Readiness/control boundaries are checked on every action.
+    pub processing_budget: usize,
+    /// CPU queue dispatches, including turns that immediately suspend.
+    pub turns: usize,
+    /// Cumulative scheduled admissions, including already completed sessions.
+    pub admitted: usize,
+    /// Cumulative permanent control migrations to dedicated execution.
+    pub control_fallbacks: usize,
+    /// Cumulative unsupported-workload dedicated fallbacks.
+    pub unsupported_fallbacks: usize,
+    /// Unsupported input-source fallbacks (files, network, producer streams).
+    pub input_fallbacks: usize,
+    /// Outputs lacking the nonblocking scheduling contract, including realtime outputs.
+    pub output_fallbacks: usize,
+    /// Owned inputs with demuxers outside the memory-only whitelist.
+    pub demuxer_fallbacks: usize,
+    /// Sessions starting with a native filtergraph.
+    pub filter_fallbacks: usize,
+    /// Crossfade sessions retaining dedicated execution.
+    pub crossfade_fallbacks: usize,
+    /// Cumulative capacity-related dedicated fallbacks.
+    pub capacity_fallbacks: usize,
+    /// Maximum observed runnable queue length.
+    pub queue_peak: usize,
+    /// Queue mutex acquisitions which could not immediately acquire the mutex.
+    pub queue_contentions: usize,
+    /// Total measured nanoseconds waiting for contended queue mutex acquisitions.
+    pub queue_wait_ns: u64,
 }
 
 impl PlaybackScheduler {
     /// Create a fixed pool with a positive worker count and positive live-session capacity.
     /// Thread creation failures are returned; already-created workers are shut down and joined.
     pub fn new(workers: usize, capacity: usize) -> std::io::Result<Arc<Self>> {
-        if workers == 0 || capacity == 0 {
+        Self::with_processing_budget(workers, capacity, 1)
+    }
+
+    /// Create a fixed pool with a positive maximum number of actions per scheduling turn.
+    /// Each action still checks output readiness and pending controls. The budget bounds action
+    /// count, not native codec execution time. A larger budget can increase fairness latency.
+    pub fn with_processing_budget(
+        workers: usize,
+        capacity: usize,
+        actions_per_turn: usize,
+    ) -> std::io::Result<Arc<Self>> {
+        if workers == 0 || capacity == 0 || actions_per_turn == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "workers and capacity must be positive",
+                "workers, capacity and processing budget must be positive",
             ));
         }
         let inner = Arc::new(Pool {
             queue: Mutex::new((VecDeque::new(), false)),
             changed: Condvar::new(),
             live: AtomicUsize::new(0),
+            scheduled_live: AtomicUsize::new(0),
             capacity,
             polls: AtomicUsize::new(0),
+            budget: actions_per_turn,
+            turns: AtomicUsize::new(0),
+            admitted: AtomicUsize::new(0),
+            migrated: AtomicUsize::new(0),
+            unsupported: AtomicUsize::new(0),
+            reasons: std::array::from_fn(|_| AtomicUsize::new(0)),
+            rejected: AtomicUsize::new(0),
+            queue_peak: AtomicUsize::new(0),
+            queue_contentions: AtomicUsize::new(0),
+            queue_wait_ns: std::sync::atomic::AtomicU64::new(0),
         });
         let mut scheduler = Self {
             inner,
@@ -83,9 +146,29 @@ impl PlaybackScheduler {
         SchedulerDiagnostics {
             workers: self.threads.len(),
             sessions: self.inner.live.load(Ordering::Relaxed),
+            scheduled_sessions: self.inner.scheduled_live.load(Ordering::Relaxed),
             queued: lock(&self.inner.queue).0.len(),
             actions: self.inner.polls.load(Ordering::Relaxed),
+            processing_budget: self.inner.budget,
+            turns: self.inner.turns.load(Ordering::Relaxed),
+            admitted: self.inner.admitted.load(Ordering::Relaxed),
+            control_fallbacks: self.inner.migrated.load(Ordering::Relaxed),
+            unsupported_fallbacks: self.inner.unsupported.load(Ordering::Relaxed),
+            input_fallbacks: self.inner.reasons[0].load(Ordering::Relaxed),
+            output_fallbacks: self.inner.reasons[1].load(Ordering::Relaxed),
+            demuxer_fallbacks: self.inner.reasons[2].load(Ordering::Relaxed),
+            filter_fallbacks: self.inner.reasons[3].load(Ordering::Relaxed),
+            crossfade_fallbacks: self.inner.reasons[4].load(Ordering::Relaxed),
+            capacity_fallbacks: self.inner.rejected.load(Ordering::Relaxed),
+            queue_peak: self.inner.queue_peak.load(Ordering::Relaxed),
+            queue_contentions: self.inner.queue_contentions.load(Ordering::Relaxed),
+            queue_wait_ns: self.inner.queue_wait_ns.load(Ordering::Relaxed),
         }
+    }
+
+    pub(super) fn unsupported(&self, reason: usize) {
+        self.inner.reasons[reason].fetch_add(1, Ordering::Relaxed);
+        self.inner.unsupported.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(super) fn submit(
@@ -97,6 +180,7 @@ impl PlaybackScheduler {
         let mut live = self.inner.live.load(Ordering::Acquire);
         loop {
             if live >= self.inner.capacity {
+                self.inner.rejected.fetch_add(1, Ordering::Relaxed);
                 return Err(machine);
             }
             match self.inner.live.compare_exchange_weak(
@@ -109,8 +193,11 @@ impl PlaybackScheduler {
                 Err(current) => live = current,
             }
         }
+        self.inner.admitted.fetch_add(1, Ordering::Relaxed);
+        self.inner.scheduled_live.fetch_add(1, Ordering::Relaxed);
         let job = Arc::new(Job {
             on_error: Box::new(on_error),
+            migrated: std::sync::atomic::AtomicBool::new(false),
             cancel_wake: Mutex::new(None),
             pool: Arc::downgrade(&self.inner),
             state: AtomicUsize::new(IDLE),
@@ -138,6 +225,7 @@ impl Drop for PlaybackScheduler {
 type Machine = Box<dyn FnMut() -> worker::WorkerStep + Send>;
 
 pub(super) struct Job {
+    migrated: std::sync::atomic::AtomicBool,
     on_error: Box<dyn Fn(std::io::Error) + Send + Sync>,
     pub(super) cancel_wake: Mutex<Option<Arc<CancelWake>>>,
     pool: std::sync::Weak<Pool>,
@@ -159,7 +247,10 @@ impl Job {
                         .is_ok()
                     {
                         if let Some(pool) = self.pool.upgrade() {
-                            lock(&pool.queue).0.push_back(self.clone());
+                            let mut queue = queue_lock(&pool);
+                            queue.0.push_back(self.clone());
+                            pool.queue_peak.fetch_max(queue.0.len(), Ordering::Relaxed);
+                            drop(queue);
                             pool.changed.notify_one();
                         }
                         return;
@@ -187,10 +278,27 @@ impl Job {
     }
 }
 
+fn queue_lock(pool: &Pool) -> std::sync::MutexGuard<'_, (VecDeque<Arc<Job>>, bool)> {
+    match pool.queue.try_lock() {
+        Ok(queue) => queue,
+        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            pool.queue_contentions.fetch_add(1, Ordering::Relaxed);
+            let start = Instant::now();
+            let queue = lock(&pool.queue);
+            pool.queue_wait_ns.fetch_add(
+                start.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+                Ordering::Relaxed,
+            );
+            queue
+        }
+    }
+}
+
 fn run(pool: Arc<Pool>) {
     loop {
         let job = {
-            let mut queue = lock(&pool.queue);
+            let mut queue = queue_lock(&pool);
             while queue.0.is_empty() && !queue.1 {
                 queue = wait(&pool.changed, queue);
             }
@@ -201,9 +309,20 @@ fn run(pool: Arc<Pool>) {
         };
         job.state.store(RUNNING, Ordering::Release);
         let mut machine = lock(&job.machine);
-        let outcome = machine.as_mut().expect("live task")();
-        pool.polls.fetch_add(1, Ordering::Relaxed);
+        let mut actions = 0;
+        let outcome = loop {
+            let outcome = machine.as_mut().expect("live task")();
+            actions += 1;
+            if outcome != worker::WorkerStep::Runnable || actions >= pool.budget {
+                break outcome;
+            }
+        };
+        pool.polls.fetch_add(actions, Ordering::Relaxed);
+        pool.turns.fetch_add(1, Ordering::Relaxed);
         if outcome == worker::WorkerStep::DedicatedFallback {
+            pool.migrated.fetch_add(1, Ordering::Relaxed);
+            pool.scheduled_live.fetch_sub(1, Ordering::Relaxed);
+            job.migrated.store(true, Ordering::Release);
             let mut dedicated = machine.take().expect("migrating machine");
             drop(machine);
             let fallback_job = job.clone();
@@ -244,6 +363,9 @@ fn run(pool: Arc<Pool>) {
 }
 
 fn complete(job: &Job, pool: &Pool) {
+    if !job.migrated.load(Ordering::Acquire) {
+        pool.scheduled_live.fetch_sub(1, Ordering::Relaxed);
+    }
     job.state.store(DONE, Ordering::Release);
     pool.live.fetch_sub(1, Ordering::AcqRel);
     *lock(&job.finished) = true;

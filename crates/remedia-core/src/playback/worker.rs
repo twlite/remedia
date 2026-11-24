@@ -63,7 +63,12 @@ pub(super) fn worker_loop(
     reopen: fallback::Reopen,
 ) {
     #[cfg(feature = "experimental-scheduler")]
-    let eligible = matches!(source, InputSource::Bytes(_)) && output.scheduler_nonblocking();
+    let eligibility = (
+        matches!(source, InputSource::Bytes(_)),
+        output.scheduler_nonblocking(),
+    );
+    #[cfg(feature = "experimental-scheduler")]
+    let eligible = eligibility.0 && eligibility.1;
     #[cfg(feature = "experimental-scheduler")]
     let panic_context = (shared.clone(), output.clone(), cancellation.clone());
     let Some((machine, _scheduler_safe)) = prepare_machine(
@@ -147,6 +152,18 @@ pub(super) fn worker_loop(
             }
         }
         return;
+    }
+    #[cfg(feature = "experimental-scheduler")]
+    if let Some(pool) = &shared.scheduler {
+        pool.unsupported(if !eligibility.0 {
+            0
+        } else if !eligibility.1 {
+            1
+        } else if lock(&shared.data).filter_graph.is_some() {
+            3
+        } else {
+            2
+        });
     }
     #[cfg(feature = "experimental-scheduler")]
     shared.executor.store(

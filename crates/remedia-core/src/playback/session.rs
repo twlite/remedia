@@ -248,6 +248,10 @@ impl PlaybackSession {
                         let _entered = span.enter();
                         let span_shared = Arc::clone(&shared);
                         if let Some(config) = worker_crossfade {
+                            #[cfg(feature = "experimental-scheduler")]
+                            if let Some(pool) = &shared.scheduler {
+                                pool.unsupported(4);
+                            }
                             crossfade_worker::worker_entry(
                                 shared,
                                 generation,

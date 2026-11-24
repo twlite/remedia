@@ -186,3 +186,39 @@ fn live_filter_migrates_before_building_a_graph_on_a_cpu_worker() {
     drop(reader);
     assert_eq!(pool.diagnostics().sessions, 0);
 }
+
+#[test]
+fn processing_budgets_preserve_audio_and_account_for_dispatches() {
+    assert!(PlaybackScheduler::with_processing_budget(1, 8, 0).is_err());
+    let mut reference = None;
+    for budget in [1, 8, 32] {
+        let pool = PlaybackScheduler::with_processing_budget(2, 8, budget).unwrap();
+        let session = PlaybackSession::with_scheduler(pool.clone());
+        let (output, mut reader) = StreamOutput::new(
+            StreamFormat::F32le,
+            StreamPacing::Unpaced,
+            OpusEncoderConfig::default(),
+        )
+        .unwrap();
+        session.play(source(), output).unwrap();
+        let chunks = drain(&mut reader);
+        session.stop().unwrap();
+        if let Some(expected) = &reference {
+            assert_eq!(&chunks, expected);
+        } else {
+            reference = Some(chunks);
+        }
+        let d = pool.diagnostics();
+        assert_eq!(d.admitted, 1);
+        assert_eq!(d.scheduled_sessions, 0);
+        assert_eq!(
+            d.control_fallbacks + d.unsupported_fallbacks + d.capacity_fallbacks,
+            0
+        );
+        if budget == 1 {
+            assert_eq!(d.turns, d.actions);
+        } else {
+            assert!(d.turns < d.actions);
+        }
+    }
+}
