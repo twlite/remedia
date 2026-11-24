@@ -1,0 +1,14 @@
+{
+  "sourceCommit": "758a1bb129f50e755e4052f467992d82a0f67cc0",
+  "binary": "/tmp/remedia-hybrid-experiment/release/examples/hybrid_scheduler_benchmark",
+  "sha256": "4401d7632271eff4257aa3a38ae8569744046ce5d8313fd09bef597e63e186e4",
+  "hardware": "Apple M5, 10 logical CPUs, 24 GiB RAM",
+  "os": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "fixtures": {
+    "/tmp/remedia-audit-fixtures/music60.opus": "5c69a6bedf73081ddefb261744ef15c52410932742ba502fcbb49bc38bc2efd1",
+    "/tmp/remedia-audit-fixtures/music60.m4a": "cf3b49b5a9c482a22a3b8bbf2fa0a1896d08c5a61f44a717d46e654be8879323",
+    "/tmp/remedia-audit-fixtures/music60.mp3": "2824e06c1892288364be6a1ed0f633219b0f6e485ca4d72c605fb4e00de08f20",
+    "/tmp/remedia-audit-fixtures/music15.opus": "1b1d0469d61e248a14b9b70970f95f487f7e84252c6b3c63c54676293c180f0f",
+    "crates/remedia-core/tests/fixtures/generated-tone.mp3": "d1c93dedab01e40951c4732d81090a0095a16b38f2557ec1f123d9b96bc143bf"
+  }
+}

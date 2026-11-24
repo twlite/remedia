@@ -178,6 +178,53 @@ These small differences do not establish an improvement. This is an independentl
 comparison with identical input and output settings; the single-session extraction check does not
 establish extraction overhead at 512 sessions.
 
+## Final release sweep at the blocking-audit milestone
+
+The final binary was built from `758a1bb`; its hash is in `experiment-manifest.json`. These
+420 fresh-process rows ran after compilation and validation finished: 84 Opus passthrough cases
+using independent 15-second sources and 336 cases using the short checked-in MP3 fixture.
+Both cover 1, 8, 32, 64, 128, 256 and 512 sessions, workers 0/1/2/4, and three repetitions.
+Worker count zero is the extracted dedicated driver. Every paired delivered-work check passed.
+The short MP3 fixture is a startup/lifecycle and serialization comparison, not sustained transcoding.
+
+| Input/output at 512 sessions | Workers | CPU ms/audio s | Wall s | Live threads snapshot | Live RSS MiB | Live footprint MiB |
+| ---------------------------- | ------: | -------------: | -----: | --------------------: | -----------: | -----------------: |
+| 15 s Opus / opus             |       0 |          0.429 |  0.935 |                   513 |       315.50 |             306.39 |
+| 15 s Opus / opus             |       1 |          0.153 |  0.836 |                     3 |       299.55 |             290.39 |
+| 15 s Opus / opus             |       2 |          0.202 |  0.632 |                     4 |       299.58 |             290.45 |
+| 15 s Opus / opus             |       4 |          0.316 |  0.622 |                     6 |       300.30 |             291.17 |
+| short MP3 / f32le            |       0 |          1.548 |  0.121 |                   513 |       232.00 |             222.95 |
+| short MP3 / f32le            |       1 |          1.415 |  0.113 |                     2 |       172.02 |             162.91 |
+| short MP3 / f32le            |       2 |          1.552 |  0.124 |                     3 |       223.11 |             214.03 |
+| short MP3 / f32le            |       4 |          1.852 |  0.125 |                     6 |       224.02 |             214.94 |
+| short MP3 / null             |       0 |          0.788 |  0.032 |                     4 |        25.34 |              16.16 |
+| short MP3 / null             |       1 |          0.881 |  0.102 |                     3 |       159.80 |             150.69 |
+| short MP3 / null             |       2 |          0.886 |  0.052 |                     3 |       141.56 |             132.42 |
+| short MP3 / null             |       4 |          0.987 |  0.039 |                     6 |        25.88 |              16.69 |
+| short MP3 / opus             |       0 |          6.487 |  0.114 |                    11 |        61.72 |              52.30 |
+| short MP3 / opus             |       1 |          5.172 |  0.715 |                     3 |       147.61 |             138.24 |
+| short MP3 / opus             |       2 |          5.282 |  0.373 |                     3 |       171.38 |             162.00 |
+| short MP3 / opus             |       4 |          5.435 |  0.189 |                     6 |       187.05 |             177.67 |
+| short MP3 / s16le            |       0 |          1.242 |  0.073 |                     4 |        60.98 |              51.83 |
+| short MP3 / s16le            |       1 |          1.426 |  0.123 |                     3 |       166.48 |             157.38 |
+| short MP3 / s16le            |       2 |          1.215 |  0.075 |                     4 |       168.81 |             159.70 |
+| short MP3 / s16le            |       4 |          1.352 |  0.078 |                     6 |        62.59 |              53.44 |
+
+At 512 passthrough streams, one worker reduced median CPU by about 64% with the same audio
+and a similar completion time. Four workers gave better unpaced throughput but spent more CPU
+than one or two. This supports continued experimentation for cheap packet-forwarding workloads.
+The short MP3 NullOutput case regressed with every pool size, and one-worker Opus transcoding
+traded lower CPU for substantially longer wall time. Serialization/checksum work on the single
+consumer thread also limits this harness. Reducing threads is insufficient to decide a default.
+
+Do not interpret the live thread snapshot as a peak or as equal simultaneous codec occupancy.
+Many short-input Null/s16le/Opus sessions finish during sequential startup; f32le streams remain
+backpressured long enough to expose the full dedicated thread population. Realtime sustainable
+concurrency and latency remain separate measurements.
+
+The preaudit sweeps are retained separately with `-preaudit` filenames. They measure the earlier
+source revision and are not silently mixed with the final sweep.
+
 ## Measurement limitations and adoption decision
 
 Host: Apple M5, 10 logical CPUs, 24 GiB RAM, macOS 27.0.1 arm64; Rust 1.99.1. Locally linked
@@ -206,3 +253,36 @@ readiness-driven source demuxing, a deadline scheduler and corresponding latency
 must precede a complete production comparison. Retain dedicated execution and the experimental
 feature boundary while evaluating those items. Dynamic pool resizing and more complex queues are
 deferred until measurements of this fixed FIFO prototype identify a concrete bottleneck.
+
+## Metric coverage
+
+| Requested metric                       | Evidence and boundary                                                                                            |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| CPU/audio second and throughput        | Native process CPU snapshots, child CPU counters, exact delivered samples and wall time                          |
+| Peak/incremental RSS                   | Lifetime peak RSS and startup/active/end snapshots; active minus baseline is derivable, not isolated native heap |
+| Private memory/physical footprint      | macOS physical footprint; private resident bytes unsupported on this collector                                   |
+| Threads/context switches               | Live snapshots and child voluntary/involuntary switch deltas; no sampled scheduler thread peak                   |
+| Queue depth/contention                 | Live queue/action diagnostics implemented; contention and queue-depth time series unmeasured                     |
+| Worker utilization                     | Unmeasured; wall time is not utilization                                                                         |
+| Startup/seek latency percentiles       | Total startup measured; percentiles and sustained seek latency unmeasured                                        |
+| Continuity/lateness/underruns          | Samples, payloads and chunk continuity checked; realtime lateness/underruns unmeasured                           |
+| Allocation overhead                    | Original/extracted Rust stream allocation runs; scheduler/native C allocation inventories unmeasured             |
+| Stability                              | Deterministic cancellation/churn tests; long-duration resource stability unmeasured                              |
+| Paced/network/filter/crossfade/Discord | Existing deterministic regressions and explicit fallbacks; no matched production performance qualification       |
+| Node streaming performance             | Binding correctness checked both ways; no release-addon performance sweep                                        |
+
+## Final verification
+
+- `cargo test --workspace --features experimental-scheduler`: 520 passed, seven existing manual tests ignored.
+- `cargo test --workspace`: 515 passed, seven existing manual tests ignored.
+- Workspace/all-target Clippy with `-D warnings`: passed with feature enabled and disabled.
+- Node addon regenerated and tested both ways: 108 binding tests passed per configuration.
+- `pnpm lint`, `pnpm typecheck`, repository formatting and Rust formatting: passed.
+- Fumadocs production build, 60,988 local link checks and API export verification: passed.
+
+Local native builds emit an existing missing-arm64 QTKit framework warning but link successfully.
+Doctests require `RUSTDOCFLAGS` with the native search paths and `-C link-arg=-lc++`; using only
+`RUSTFLAGS` initially failed to find `mp3lame`. The corrected full workspace runs passed. The local
+Homebrew-linked addon was tested directly through `napi build` and `test:bindings`; the repository's
+static-distribution audit was not bypassed or claimed to pass. Hosted CI, other OSes and live voice
+were not run. No branch was pushed, merged or opened as a PR, and local commits contain no attribution trailers.

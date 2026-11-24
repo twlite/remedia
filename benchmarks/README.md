@@ -224,3 +224,11 @@ calls and requested bytes during startup, playback and teardown. This excludes F
 allocator calls and V8. Byte serialization counts describe the explicit PCM conversion; Opus packet
 ownership transfer is also tested by pointer identity. The benchmark's blocking executor parks its
 calling thread on a waker and creates no output bridge thread.
+
+## Experimental hybrid playback scheduler
+
+The local experiment is described in [hybrid-scheduler.md](hybrid-scheduler.md). It preserves the
+original main release binaries separately, compares the extracted dedicated driver, and uses
+`hybrid.py` for interleaved dedicated/pool comparisons with delivered-audio checks. Build with
+`hybrid-build.sh`; raw rows, binary/fixture manifests and check summaries are under `data/hybrid`.
+The feature remains opt-in and the report lists unqualified workloads and measurements.
