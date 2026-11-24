@@ -643,7 +643,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo pkg update -f
-          sudo pkg install -y curl git node24 npm-node24 cmake pkgconf llvm19 gmake nasm python3
+          sudo pkg install -y curl git node24 npm-node24 cmake-core pkgconf llvm19 gmake nasm python3
           sudo pkg clean -ay
           # The VM disk is small; debug assertions stay enabled without large DWARF files.
           export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
