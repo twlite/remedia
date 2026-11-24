@@ -1,0 +1,99 @@
+---
+title: Streaming audio output
+description: Pipe processed PCM or timed Opus packets from a standalone embedded session.
+---
+
+`PlaybackSession.playStream(source, options)` uses the ordinary playback pipeline with a bounded
+output queue. It requires a standalone session created with `createPlaybackSession()` in
+`@remedia/node`. Discord sessions and remote clients do not expose streaming output.
+Existing `play()` calls continue using `NullOutput` for standalone sessions.
+
+## PCM to a file or speaker
+
+Select `s16le` or `f32le`. Both are raw interleaved little-endian PCM at **48000 Hz, two channels**.
+The stream has no WAV header. Use an appropriate container writer if you need a WAV file.
+
+```ts
+import { createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
+import { Remedia } from '@remedia/node';
+
+const engine = await Remedia.create();
+try {
+  const session = engine.createPlaybackSession();
+  const audio = await session.playStream(
+    { file: './music.mp3' },
+    {
+      format: 's16le',
+      pacing: 'unpaced',
+    },
+  );
+  await pipeline(audio, createWriteStream('./music.pcm'));
+} finally {
+  await engine.close();
+}
+```
+
+For speaker playback, supply a writable speaker adapter configured for signed 16-bit little-endian
+PCM, 48000 Hz and two channels, then use `await pipeline(audio, speakerDestination)`.
+The adapter owns the audio device; Remedia does not open a speaker device. Use `realtime` pacing if
+your destination does not pace playback itself. A file or network socket is also a valid writable
+destination. Consumers must respect Node stream backpressure.
+
+## Opus for a custom transport
+
+`format: 'opus'` returns an object-mode `AudioReadable<OpusPacket>`. Each object contains a `Buffer`
+`data`, `startSample`, `samplesPerChannel`, and `mediaSamplesPerChannel`. Sample counts use 48000 Hz.
+`startSample` advances by media samples; encoded duration can include padding or pre-roll. These are
+raw packets, without Ogg framing, RTP headers, encryption or transport signaling.
+
+```ts
+const audio = await session.playStream(
+  { file: './music.opus' },
+  {
+    format: 'opus',
+    opus: { bitrate: 96000, complexity: 5, vbr: true },
+  },
+);
+for await (const packet of audio) {
+  await customTransport.send(packet.data, {
+    startSample: packet.startSample,
+    samplesPerChannel: packet.samplesPerChannel,
+    mediaSamplesPerChannel: packet.mediaSamplesPerChannel,
+  });
+}
+```
+
+Here `customTransport` is your application's transport. Its `send` promise must represent bounded
+acceptance. Compatible source Opus packets use the existing passthrough path; filters, gain and
+crossfades use the existing PCM processing and encoder. Encoder options apply to encoding only:
+bitrate 500–512000 bits/s (default 128000), complexity 0–10 (default 9), VBR default true.
+
+## Pacing, backpressure and lifecycle
+
+`pacing: 'unpaced'` is the default. Production follows downstream demand without timers.
+`realtime` anchors delivery to the output sample timeline and adjusts its clock across pause/resume;
+it does not add successive relative sleeps. Delivery remains chunked at worker action boundaries.
+An event-loop stall or downstream stall can delay delivery; this is not a hard realtime guarantee.
+
+Native production waits between worker actions once 64 KiB or 256 chunks are queued. A single decoder/filter
+operation can emit a burst; an 8 MiB / 4096-chunk hard queue limit rejects oversized bursts with a stream error.
+The Node wrapper buffers up to a 16 KiB binary high-water mark or one Opus object, plus one pending
+read. Individual chunks may exceed a high-water mark. Each active session retains its existing
+playback worker thread; no output bridge thread, callback-per-packet loop or polling timer is added.
+Opus payload ownership transfers to Node Buffers; PCM serialization creates a byte representation
+before transferring it. No payload copy is added by the TypeScript adapter.
+
+Pause, resume, volume, filters, seeking, fallback seeking and staged crossfades remain session
+operations. Seeking discards queued native output and resets the encoder. **Audio already handed
+to JavaScript or a downstream consumer cannot be retracted.** Stop, disposal and engine shutdown
+wake pending reads and production waits. Natural completion drains buffered audio and emits EOF;
+decoder/output failures error the stream. Destroying the stream stops its associated active run;
+destroying an older stream cannot stop a later run. Destroy abandoned streams explicitly.
+
+Startup resolves after the source opens, before output consumption is required, so an unread stream
+cannot deadlock startup. Stream errors after startup must be handled through `pipeline`, an `error`
+listener, or asynchronous iteration. Input-opening failures reject `playStream()`.
+
+See [Rust output adapters](/docs/core/outputs) and the generated
+[API reference](/docs/architecture/api-reference) for signatures.

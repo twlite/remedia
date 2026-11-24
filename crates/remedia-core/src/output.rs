@@ -48,6 +48,21 @@ impl OutputError {
 /// internally, but must bound that buffering. Long-running operations must
 /// observe `cancellation`; `cancel` is called concurrently to unblock them.
 pub trait MediaOutput: Send + Sync + 'static {
+    /// Wait until production can continue. Called at worker action boundaries, outside
+    /// session locks. Control requests call `wake` so bounded outputs can yield to them.
+    fn wait_ready(&self, _cancellation: &CancellationToken) -> Result<(), OutputError> {
+        Ok(())
+    }
+
+    /// Interrupt a readiness wait to let the worker process pending controls.
+    /// Must not acquire playback state locks.
+    fn wake(&self) {}
+
+    /// Publish a terminal failure. The default retains existing cancellation behavior.
+    fn fail(&self, _message: String) {
+        self.cancel();
+    }
+
     /// Accept one owned frame. The frame is interleaved 48 kHz stereo `f32`.
     fn write_frame(
         &self,

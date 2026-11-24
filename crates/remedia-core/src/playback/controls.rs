@@ -13,6 +13,9 @@ impl PlaybackSession {
             PlaybackState::Playing => {
                 data.state = PlaybackState::Pausing;
                 self.shared.changed.notify_all();
+                if let Some(output) = data.output.as_ref() {
+                    output.wake();
+                }
             }
             PlaybackState::Pausing => {}
             state => {
@@ -49,6 +52,9 @@ impl PlaybackSession {
             PlaybackState::Paused => {
                 data.state = PlaybackState::Resuming;
                 self.shared.changed.notify_all();
+                if let Some(output) = data.output.as_ref() {
+                    output.wake();
+                }
             }
             PlaybackState::Resuming => {}
             state => {
@@ -151,6 +157,9 @@ impl PlaybackSession {
             });
             data.seek_ticket = Some(Arc::clone(&ticket));
             self.shared.changed.notify_all();
+            if let Some(output) = data.output.as_ref() {
+                output.wake();
+            }
             data.playback_id
         };
         with_dispatch(&self.shared.observability, || {
@@ -218,6 +227,9 @@ impl PlaybackSession {
                 response: sender,
             });
             self.shared.changed.notify_all();
+            if let Some(output) = data.output.as_ref() {
+                output.wake();
+            }
             Some(receiver)
         } else {
             None
@@ -292,6 +304,9 @@ impl PlaybackSession {
                     && data.processing_mode != Some(*target)
             });
             self.shared.changed.notify_all();
+            if let Some(output) = data.output.as_ref() {
+                output.wake();
+            }
             (data.generation, target_mode)
         };
 
@@ -381,6 +396,9 @@ impl PlaybackSession {
             let pending_filter = data.pending_filter_graph.take();
             let playback_id = data.playback_id;
             self.shared.changed.notify_all();
+            if let Some(output) = data.output.as_ref() {
+                output.wake();
+            }
             (
                 needs_cleanup,
                 active,
@@ -439,6 +457,9 @@ impl PlaybackSession {
             data.state = PlaybackState::Failed;
             data.last_error = Some(error.clone());
             self.shared.changed.notify_all();
+            if let Some(output) = data.output.as_ref() {
+                output.wake();
+            }
             drop(data);
             self.shared.notify_completion_waiters();
             self.shared.notify_crossfade_events();
@@ -449,6 +470,9 @@ impl PlaybackSession {
         }
         let terminal_state = data.state;
         self.shared.changed.notify_all();
+        if let Some(output) = data.output.as_ref() {
+            output.wake();
+        }
         drop(data);
         self.shared.notify_completion_waiters();
         self.shared.notify_crossfade_events();

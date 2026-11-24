@@ -104,3 +104,23 @@ unchanged without initializing libopus. Their original bitrate and quality are u
 or gain that require PCM activate encoding with the output's settings. The server resolves settings
 from [`audio.opus`](/docs/server/configuration#opus-encoder-settings). Embedded Node.js uses core
 defaults without a configuration file or a new JavaScript API.
+
+## Bounded stream output
+
+`StreamOutput::new(format, pacing, opus_config)` returns a reusable output adapter and a one-shot
+`StreamReader`. Use `StreamFormat::{S16le, F32le, Opus}` and
+`StreamPacing::{Unpaced, Realtime}`. `StreamReader::next().await` or `poll_next` transfers an owned
+`StreamChunk`, returns EOF after finish, or propagates a failure. Dropping the reader cancels its
+queue. Opus uses `OpusEncoderOutput`, including its encoded-packet capability.
+
+The playback worker calls `MediaOutput::wait_ready` between actions. Control requests call `wake`
+to interrupt that wait without losing queued audio; implementations must never acquire session
+locks in `wake`. The defaults preserve existing output behavior. `fail(message)` defaults to
+`cancel`, while streaming outputs retain the error for their reader. Streaming uses a 64 KiB / 256-chunk
+readiness threshold and an 8 MiB / 4096-chunk hard burst limit. Oversized filter bursts fail explicitly. This
+`StreamOutput::poll_ready` also exposes nonblocking readiness and absolute pacing deadlines, so a
+future scheduler can register a waker while a queue is full. It does not reserve capacity; one
+producer owns the output. This keeps readiness separate from submission; the current worker still waits
+on a condition variable. No shared-worker scheduler is implemented.
+
+See [Node streaming output](/docs/node/stream-output) for ownership, pacing and downstream limits.

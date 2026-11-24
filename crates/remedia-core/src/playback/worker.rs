@@ -81,6 +81,10 @@ pub(super) fn worker_loop(
     let mut fallback: Option<fallback::FallbackSeek> = None;
     let mut force_pcm = false;
     loop {
+        if let Err(error) = output.wait_ready(&cancellation) {
+            fail_session(&shared, generation, error.into(), &cancellation, &output);
+            return;
+        }
         if let Some(waiting) = fallback.as_ref() {
             waiting.set_playhead(fallback_playhead(&pending_frame, &processor));
             if waiting.is_cancelled() {

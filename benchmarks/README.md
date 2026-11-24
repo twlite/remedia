@@ -180,3 +180,47 @@ Agent 6's repeated client/guild create, detach, resume, close, and expiry-waiter
 documented in [resource-audit-6.md](resource-audit-6.md), with raw runs in
 [`data/resource-audit-6.jsonl`](data/resource-audit-6.jsonl). It uses an ignored `remedia-server`
 unit workload rather than the concurrent playback matrix.
+
+## Standalone stream output
+
+Build `@remedia/node` with the same native release configuration for every run, then:
+
+```sh
+STREAM_SECONDS=3 STREAM_REPETITIONS=3 STREAM_CONCURRENCY=1,8,32 \
+  node --expose-gc --experimental-strip-types benchmarks/stream-output.ts > stream-output.jsonl
+```
+
+The harness generates stereo WAV bytes in-process and compares `NullOutput` with s16le, f32le and
+Opus. Fast consumers measure throughput; slow consumers use realtime pacing and await each chunk;
+stalled consumers remain unread for 250 ms before cancellation. Every row creates/disposes all
+sessions, so repeated rows also expose lifecycle churn. Use at least three repetitions in a quiet
+process and compare medians at matching concurrency. Preserve machine, compiler, FFmpeg identity
+and native release flags alongside results. No competing projects or external services are used.
+
+JSONL includes process CPU ms per audio second, audio seconds per wall second, maximum delivery
+lag relative to the output sample clock, payload/chunk counts, PCM serialization bytes, JS heap and
+external-memory peaks, RSS, post-GC memory and cached native process resource/thread measurements.
+The 25 ms sampler and native cache can miss brief peaks; native snapshots describe the whole Node
+process, not an isolated Rust heap. Stalled rows deliberately have no throughput/CPU-per-audio
+result because they do not finish their input. Subtract comparable null rows to estimate streaming
+overhead. Payload counts and PCM serialization bytes quantify explicit payload work, **not total
+allocator calls**. Use the platform allocator profiler to measure allocation stacks and native
+heap separately; RSS minus JS heap does not establish Rust heap consumption. The harness itself
+adds sampling and per-chunk bookkeeping overhead. No performance claim is made without runtime
+results. Longer repetitions are needed to assess allocator-cache stability versus leaks.
+
+For Rust allocator traffic independently of V8 and NAPI, run the companion example for each output:
+
+```sh
+cargo run --release -p remedia-core --example stream_output_benchmark -- \
+  crates/remedia-core/tests/fixtures/generated-tone.mp3 null 3
+cargo run --release -p remedia-core --example stream_output_benchmark -- \
+  crates/remedia-core/tests/fixtures/generated-tone.mp3 s16le 3
+```
+
+Repeat with `f32le` and `opus`, and with the generated Opus fixture to measure passthrough. It uses
+the existing benchmark's Rust system-allocator instrumentation and reports allocation/reallocation
+calls and requested bytes during startup, playback and teardown. This excludes FFmpeg/libopus C
+allocator calls and V8. Byte serialization counts describe the explicit PCM conversion; Opus packet
+ownership transfer is also tested by pointer identity. The benchmark's blocking executor parks its
+calling thread on a waker and creates no output bridge thread.

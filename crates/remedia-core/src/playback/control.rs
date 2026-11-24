@@ -122,7 +122,7 @@ pub(super) fn fail_session(
     }
 
     cancellation.cancel();
-    let _ = safe_cancel(output);
+    let _ = catch_unwind(AssertUnwindSafe(|| output.fail(error.to_string())));
     let (pending_seek, pending_filter, playback_id, output_sample) = {
         let mut data = lock(&shared.data);
         if data.generation != generation

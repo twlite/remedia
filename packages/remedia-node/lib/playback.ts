@@ -1,3 +1,6 @@
+import { Readable } from 'node:stream';
+import { NativeAudioOutput } from '../native.js';
+import type { AudioReadable, OpusPacket, StreamOutputOptions } from './stream-output.js';
 import { RemediaEventEmitter } from './events.js';
 import { NativeRemedia } from './native-binding.js';
 import type { NativeMediaSource, NativeCrossfadeEvent, NativeStageSnapshot } from '../native.js';
@@ -69,6 +72,8 @@ interface StageRecord<Metadata> {
  * the session's current one first, so a late callback never releases what a replacement owns.
  */
 interface PlaybackRun {
+  /** Native stream output owned by this run, if streaming. */
+  output?: NativeAudioOutput | undefined;
   /** Cancels this run's startup and, through its abort binding, its playback. */
   readonly controller: AbortController;
   /** The input the run started with. Promoted stage inputs replace it as the session's input. */
@@ -467,6 +472,103 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
    * @returns Selected stream metadata once startup succeeds; rejects if hooks, input opening, or playback startup fail.
    */
   async play(source: MediaSource, options: PlayOptions<Metadata> = {}): Promise<AudioStreamInfo> {
+    return this.#play(source, options);
+  }
+
+  /** Start packet-preserving Opus output on this standalone session.
+   * @param source - Encoded media source owned by this playback generation.
+   * @param options - Opus format, pacing, encoder controls, metadata and cancellation.
+   * @returns Object-mode Readable; destruction cancels only its associated playback.
+   */
+  playStream(
+    source: MediaSource,
+    options: StreamOutputOptions & PlayOptions<Metadata> & { format: 'opus' },
+  ): Promise<AudioReadable<OpusPacket>>;
+  /** Start normalized PCM output on this standalone session.
+   * @param source - Encoded media source owned by this playback generation.
+   * @param options - PCM format, pacing, metadata and cancellation.
+   * @returns Binary Readable carrying interleaved 48 kHz stereo PCM.
+   */
+  playStream(
+    source: MediaSource,
+    options: StreamOutputOptions & PlayOptions<Metadata> & { format: 's16le' | 'f32le' },
+  ): Promise<AudioReadable<Buffer>>;
+  /** Start streaming with a dynamically selected format.
+   * @param source - Encoded media input.
+   * @param options - Output and playback configuration; unpaced by default.
+   * @returns A bounded Node Readable. Native queued data is flushed on seek; data
+   * already handed to JavaScript or a downstream consumer cannot be retracted.
+   */
+  playStream(
+    source: MediaSource,
+    options: StreamOutputOptions & PlayOptions<Metadata>,
+  ): Promise<AudioReadable<Buffer | OpusPacket>>;
+  async playStream(
+    source: MediaSource,
+    options: StreamOutputOptions & PlayOptions<Metadata>,
+  ): Promise<AudioReadable<Buffer | OpusPacket>> {
+    const output = new NativeAudioOutput(
+      options.format,
+      options.pacing ?? 'unpaced',
+      options.opus?.bitrate,
+      options.opus?.complexity,
+      options.opus?.vbr,
+    );
+    try {
+      await this.#play(source, options, output);
+    } catch (error) {
+      output.cancel();
+      throw error;
+    }
+    let ended = false;
+    const stopRun = (): Promise<void> =>
+      !this.#disposed &&
+      this.#run?.output === output &&
+      !this.#run.controller.signal.aborted &&
+      this.#hasActivePlayback()
+        ? this.stop()
+        : Promise.resolve();
+    let reading = false;
+    const stream = new Readable({
+      objectMode: options.format === 'opus',
+      highWaterMark: options.format === 'opus' ? 1 : 16 * 1024,
+      read() {
+        if (reading) return;
+        reading = true;
+        void output.read().then(
+          (chunk) => {
+            reading = false;
+            if (!chunk) ended = true;
+            if (!this.destroyed)
+              this.push(chunk ? (options.format === 'opus' ? chunk : chunk.data) : null);
+          },
+          (error: unknown) => {
+            reading = false;
+            this.destroy(asError(error));
+          },
+        );
+      },
+      destroy(error, done) {
+        void (ended ? Promise.resolve() : stopRun()).then(
+          () => {
+            output.cancel();
+            done(error);
+          },
+          (failure: unknown) => {
+            output.cancel();
+            done(error ?? asError(failure));
+          },
+        );
+      },
+    });
+    return stream;
+  }
+
+  async #play(
+    source: MediaSource,
+    options: PlayOptions<Metadata>,
+    output?: NativeAudioOutput,
+  ): Promise<AudioStreamInfo> {
     this.#assertActive();
     if (this.#starting || isPlaybackActive(this.state)) {
       throw new Error('playback is already active; stop it before starting another source');
@@ -506,7 +608,7 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
       // makes every pending observer, wait() and stop() of the previous run a bystander, and the
       // previous run's inputs and stages are released here instead of by those late callbacks.
       if (this.#run) this.#run.finalGeneration = this.#latestGeneration;
-      run = { controller, input: undefined };
+      run = { controller, input: undefined, output };
       this.#run = run;
       await this.#releaseInput();
       await this.#releaseStagedResources();
@@ -523,7 +625,7 @@ export class PlaybackSession<Metadata = unknown> extends RemediaEventEmitter<
 
       if (controller.signal.aborted) throw abortError(controller.signal.reason);
       nativeAttempted = true;
-      const info = toStreamInfo(await this.#native.play(this.#playbackId, nativeSource));
+      const info = toStreamInfo(await this.#native.play(this.#playbackId, nativeSource, output));
       const workerGeneration = numericGeneration(this.#native.playbackGeneration(this.#playbackId));
       const generation = numericGeneration(this.#native.playbackSourceGeneration(this.#playbackId));
       this.#latestGeneration = generation;

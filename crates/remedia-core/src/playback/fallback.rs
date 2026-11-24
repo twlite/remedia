@@ -295,6 +295,9 @@ impl FallbackSeek {
                     let mut data = lock(&thread_session.data);
                     data.fallback_signal = true;
                     thread_session.changed.notify_all();
+                    if let Some(output) = data.output.as_ref() {
+                        output.wake();
+                    }
                 });
             });
         let thread = match spawned {

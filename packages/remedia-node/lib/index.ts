@@ -49,3 +49,5 @@ export type {
 } from './lifecycle.js';
 
 export type { ResourceMemory, ResourceCpu, ProcessResourceStatistics } from './resources.js';
+
+export type { AudioReadable, OpusPacket, StreamOutputOptions } from './stream-output.js';

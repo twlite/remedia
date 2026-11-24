@@ -35,13 +35,19 @@ impl NativeRemedia {
         Ok(id)
     }
 
-    /// Start decoding into the null output or the associated Discord Opus sender.
+    /// Start decoding into the null output, a standalone stream, or the associated Discord sender.
+    /// @param playbackId - Standalone or voice-bound session identity.
+    /// @param source - Encoded media input resolved by this runtime.
+    /// @param streamOutput - Optional one-shot standalone audio output; forbidden for voice sessions.
+    /// @returns Selected stream information after startup; rejects on invalid state or input failure.
     #[napi]
     pub async fn play(
         &self,
         playback_id: String,
         source: NativeMediaSource,
+        stream_output: Option<&crate::stream_output::NativeAudioOutput>,
     ) -> napi::Result<NativeStreamInfo> {
+        let stream_output = stream_output.map(|stream| Arc::clone(&stream.output));
         let _operation = self.inner.operations.read().await;
         self.inner.ensure_open()?;
         let entry = self.inner.playback(&playback_id)?;
@@ -75,6 +81,12 @@ impl NativeRemedia {
             None => None,
         };
 
+        if stream_output.is_some() && entry.voice_id.is_some() {
+            return Err(napi_error(
+                Status::InvalidArg,
+                "stream output requires a standalone playback session",
+            ));
+        }
         let cancellation = entry.begin_start()?;
         let sender_router = entry.sender_router.clone();
         let result = run_blocking(move || match connection {
@@ -89,7 +101,10 @@ impl NativeRemedia {
                         .map_err(PlaybackError::from)?;
                 session.play_with_cancellation(input, output, cancellation)
             }
-            None => session.play_with_cancellation(input, NullOutput::new(), cancellation),
+            None => match stream_output {
+                Some(output) => session.play_with_cancellation(input, output, cancellation),
+                None => session.play_with_cancellation(input, NullOutput::new(), cancellation),
+            },
         })
         .await;
         entry.finish_start();

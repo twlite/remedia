@@ -9,6 +9,30 @@
  */
 export declare const __napiBindingTarget: 'native' | 'wasm32-wasi' | 'wasm32-wasip1'
 
+/** One-shot, bounded native output, consumed only by the TypeScript Readable adapter. */
+export declare class NativeAudioOutput {
+  /**
+   * Create a stream output before playback starts; construction does not start production.
+   * @param format - s16le, f32le or opus output representation.
+   * @param pacing - unpaced (demand-driven) or realtime (sample-clock pacing).
+   * @param bitrate - Optional Opus target bits/s, 500–512000; default 128000.
+   * @param complexity - Optional Opus complexity, 0–10; default 9.
+   * @param vbr - Optional variable bitrate flag; default true.
+   * @returns One-shot output handle; rejects invalid output or encoder settings.
+   */
+  constructor(format: string, pacing: string, bitrate?: number | undefined | null, complexity?: number | undefined | null, vbr?: boolean | undefined | null)
+  /**
+   * Wait for downstream demand without occupying a blocking thread.
+   * @returns An owned chunk, null at EOF, or rejection on playback failure.
+   */
+  read(): Promise<NativeAudioChunk | null>
+  /**
+   * Wake both sides and release queued native payloads, including a pending read.
+   * @returns No value. Later playback outputs are unaffected.
+   */
+  cancel(): void
+}
+
 export declare class NativeRemedia {
   /** Forward this context's bounded diagnostic queue to one JavaScript callback. */
   setDebugCallback(callback: (arg: NativeDiagnosticEvent) => void): void
@@ -73,8 +97,14 @@ export declare class NativeRemedia {
   close(): Promise<void>
   /** Create a decoder-only session that consumes frames into a no-op output. */
   createPlaybackSession(): string
-  /** Start decoding into the null output or the associated Discord Opus sender. */
-  play(playbackId: string, source: NativeMediaSource): Promise<NativeStreamInfo>
+  /**
+   * Start decoding into the null output, a standalone stream, or the associated Discord sender.
+   * @param playbackId - Standalone or voice-bound session identity.
+   * @param source - Encoded media input resolved by this runtime.
+   * @param streamOutput - Optional one-shot standalone audio output; forbidden for voice sessions.
+   * @returns Selected stream information after startup; rejects on invalid state or input failure.
+   */
+  play(playbackId: string, source: NativeMediaSource, streamOutput?: NativeAudioOutput | undefined | null): Promise<NativeStreamInfo>
   /**
    * Configure the optional continuous PCM transition worker before playback.
    * `curve` is `equalPower` (the default when omitted) or `adaptive`.
@@ -186,6 +216,18 @@ export declare class NativeRemedia {
  * @returns JSON containing build identity and the linked FFmpeg metadata.
  */
 export declare function bundledFfmpegInfo(): string
+
+/** One owned audio chunk transferred to JavaScript without copying its payload. */
+export interface NativeAudioChunk {
+  /** PCM bytes or exactly one Opus packet. */
+  data: Buffer
+  /** Start on the normalized 48 kHz output timeline. */
+  startSample: number
+  /** Encoded duration in samples per channel. */
+  samplesPerChannel: number
+  /** Media duration excluding padding. */
+  mediaSamplesPerChannel: number
+}
 
 /** One ordered event emitted by the native staged-source worker. */
 export interface NativeCrossfadeEvent {

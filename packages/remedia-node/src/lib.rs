@@ -5,6 +5,7 @@ mod native;
 mod playback;
 mod probe;
 mod runtime;
+mod stream_output;
 #[cfg(test)]
 mod tests;
 mod types;

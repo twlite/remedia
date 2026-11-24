@@ -12,6 +12,8 @@ mod filter;
 mod input;
 mod opus;
 mod output;
+mod stream_output;
+pub use stream_output::{StreamChunk, StreamFormat, StreamOutput, StreamPacing, StreamReader};
 mod playback;
 mod source;
 

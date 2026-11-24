@@ -154,6 +154,10 @@ fn worker_loop(
     let playback_id = lock(&shared.data).playback_id;
 
     loop {
+        if let Err(error) = output.wait_ready(&cancellation) {
+            fail_session(&shared, generation, error.into(), &cancellation, &output);
+            return;
+        }
         if cancellation.is_cancelled() || is_stopped(&shared, generation) {
             return;
         }

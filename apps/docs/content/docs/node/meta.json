@@ -3,6 +3,7 @@
   "pages": [
     "ffmpeg-9",
     "inputs",
+    "stream-output",
     "voice",
     "filters",
     "diagnostics",
