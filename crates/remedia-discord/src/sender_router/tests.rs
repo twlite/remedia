@@ -86,7 +86,10 @@ fn detached_failed_and_shutdown_routers_release_cached_voice_connections() {
         assert!(state.connection.is_none());
         assert!(state.target.is_none());
         assert_eq!(state.transport_state, RouterTransportState::Failed);
-        assert_eq!(state.failure.as_deref(), Some("transport recovery exhausted"));
+        assert_eq!(
+            state.failure.as_deref(),
+            Some("transport recovery exhausted")
+        );
     }
 
     router.detach();
