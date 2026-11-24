@@ -557,7 +557,10 @@ pub(super) fn spawn_voice_monitor(
                 previous = state;
             }
 
-            if matches!(state, ConnectionState::Disconnected | ConnectionState::Failed) {
+            if matches!(
+                state,
+                ConnectionState::Disconnected | ConnectionState::Failed
+            ) {
                 return;
             }
 
