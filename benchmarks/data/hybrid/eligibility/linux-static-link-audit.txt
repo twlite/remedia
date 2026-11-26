@@ -1,0 +1,104 @@
+/experiment/releases-qualified/original-target/release/examples/hybrid_scheduler_benchmark: 20984776 bytes
+
+Dynamic section at offset 0x11ecd88 contains 30 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libm.so.6]
+ 0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x0000000000000001 (NEEDED)             Shared library: [ld-linux-aarch64.so.1]
+ 0x000000000000000c (INIT)               0x13d730
+ 0x000000000000000d (FINI)               0xc11cdc
+ 0x0000000000000019 (INIT_ARRAY)         0x10d7ad8
+ 0x000000000000001b (INIT_ARRAYSZ)       32 (bytes)
+ 0x000000000000001a (FINI_ARRAY)         0x10d7af8
+ 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)
+ 0x000000006ffffef5 (GNU_HASH)           0x2d0
+ 0x0000000000000005 (STRTAB)             0x1e98
+ 0x0000000000000006 (SYMTAB)             0x2f0
+ 0x000000000000000a (STRSZ)              3154 (bytes)
+ 0x000000000000000b (SYMENT)             24 (bytes)
+ 0x0000000000000015 (DEBUG)              0x0
+ 0x0000000000000003 (PLTGOT)             0x11ecfa8
+ 0x0000000000000002 (PLTRELSZ)           6864 (bytes)
+ 0x0000000000000014 (PLTREL)             RELA
+ 0x0000000000000017 (JMPREL)             0x13bc60
+ 0x0000000000000007 (RELA)               0x2e98
+ 0x0000000000000008 (RELASZ)             1281480 (bytes)
+ 0x0000000000000009 (RELAENT)            24 (bytes)
+ 0x000000000000001e (FLAGS)              BIND_NOW
+ 0x000000006ffffffb (FLAGS_1)            Flags: NOW PIE
+ 0x000000006ffffffe (VERNEED)            0x2d38
+ 0x000000006fffffff (VERNEEDNUM)         4
+ 0x000000006ffffff0 (VERSYM)             0x2aea
+ 0x000000006ffffff9 (RELACOUNT)          53370
+ 0x0000000000000000 (NULL)               0x0
+
+/experiment/releases-qualified/dedicated-target/release/examples/hybrid_scheduler_benchmark: 20919008 bytes
+
+Dynamic section at offset 0x11dcd88 contains 30 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libm.so.6]
+ 0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x0000000000000001 (NEEDED)             Shared library: [ld-linux-aarch64.so.1]
+ 0x000000000000000c (INIT)               0x13d778
+ 0x000000000000000d (FINI)               0xc0bc5c
+ 0x0000000000000019 (INIT_ARRAY)         0x10d7a98
+ 0x000000000000001b (INIT_ARRAYSZ)       32 (bytes)
+ 0x000000000000001a (FINI_ARRAY)         0x10d7ab8
+ 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)
+ 0x000000006ffffef5 (GNU_HASH)           0x2d0
+ 0x0000000000000005 (STRTAB)             0x1e98
+ 0x0000000000000006 (SYMTAB)             0x2f0
+ 0x000000000000000a (STRSZ)              3154 (bytes)
+ 0x000000000000000b (SYMENT)             24 (bytes)
+ 0x0000000000000015 (DEBUG)              0x0
+ 0x0000000000000003 (PLTGOT)             0x11ecfa8
+ 0x0000000000000002 (PLTRELSZ)           6864 (bytes)
+ 0x0000000000000014 (PLTREL)             RELA
+ 0x0000000000000017 (JMPREL)             0x13bca8
+ 0x0000000000000007 (RELA)               0x2e98
+ 0x0000000000000008 (RELASZ)             1281552 (bytes)
+ 0x0000000000000009 (RELAENT)            24 (bytes)
+ 0x000000000000001e (FLAGS)              BIND_NOW
+ 0x000000006ffffffb (FLAGS_1)            Flags: NOW PIE
+ 0x000000006ffffffe (VERNEED)            0x2d38
+ 0x000000006fffffff (VERNEEDNUM)         4
+ 0x000000006ffffff0 (VERSYM)             0x2aea
+ 0x000000006ffffff9 (RELACOUNT)          53373
+ 0x0000000000000000 (NULL)               0x0
+
+/experiment/releases-qualified/scheduled-target/release/examples/hybrid_scheduler_benchmark: 21098464 bytes
+
+Dynamic section at offset 0x11fcd88 contains 30 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libm.so.6]
+ 0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x0000000000000001 (NEEDED)             Shared library: [ld-linux-aarch64.so.1]
+ 0x000000000000000c (INIT)               0x13e0d8
+ 0x000000000000000d (FINI)               0xc2075c
+ 0x0000000000000019 (INIT_ARRAY)         0x10f7528
+ 0x000000000000001b (INIT_ARRAYSZ)       32 (bytes)
+ 0x000000000000001a (FINI_ARRAY)         0x10f7548
+ 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)
+ 0x000000006ffffef5 (GNU_HASH)           0x2d0
+ 0x0000000000000005 (STRTAB)             0x1e98
+ 0x0000000000000006 (SYMTAB)             0x2f0
+ 0x000000000000000a (STRSZ)              3154 (bytes)
+ 0x000000000000000b (SYMENT)             24 (bytes)
+ 0x0000000000000015 (DEBUG)              0x0
+ 0x0000000000000003 (PLTGOT)             0x120cfa8
+ 0x0000000000000002 (PLTRELSZ)           6864 (bytes)
+ 0x0000000000000014 (PLTREL)             RELA
+ 0x0000000000000017 (JMPREL)             0x13c608
+ 0x0000000000000007 (RELA)               0x2e98
+ 0x0000000000000008 (RELASZ)             1283952 (bytes)
+ 0x0000000000000009 (RELAENT)            24 (bytes)
+ 0x000000000000001e (FLAGS)              BIND_NOW
+ 0x000000006ffffffb (FLAGS_1)            Flags: NOW PIE
+ 0x000000006ffffffe (VERNEED)            0x2d38
+ 0x000000006fffffff (VERNEEDNUM)         4
+ 0x000000006ffffff0 (VERSYM)             0x2aea
+ 0x000000006ffffff9 (RELACOUNT)          53473
+ 0x0000000000000000 (NULL)               0x0

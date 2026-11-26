@@ -1,0 +1,67 @@
+{
+  "after": {
+    "collectedAtUnixMs": 1795537834958,
+    "collectionDurationMs": 0.010917000000000001,
+    "cpu": {
+      "availableParallelism": 10,
+      "loadAverage1m": 7.52197265625,
+      "processPercent": null,
+      "systemTimeMs": 33.832,
+      "threadCount": 11,
+      "userTimeMs": 80.439
+    },
+    "cpuSampleIntervalMs": null,
+    "memory": {
+      "committedPrivateBytes": null,
+      "footprintBytes": 11600472,
+      "peakResidentBytes": 22380544,
+      "privateResidentBytes": null,
+      "proportionalResidentBytes": null,
+      "reservedVirtualBytes": null,
+      "residentBytes": 21790720,
+      "virtualBytes": 500586266624
+    },
+    "openHandles": 3,
+    "samplingIntervalMs": 1000
+  },
+  "callerDriverThreads": 16,
+  "diagnostics": {
+    "admitted": 0,
+    "inputFallbacks": 16,
+    "unsupported": 16
+  },
+  "profilingOnly": true,
+  "samples": [
+    144047, 144047, 144047, 144047, 144047, 144047, 144047, 144047, 144047, 144047, 144047, 144047,
+    144047, 144047, 144047, 144047
+  ],
+  "scheduledPerformanceEvidence": false,
+  "sessions": 16,
+  "source": "stalled bounded byte stream",
+  "stalled": {
+    "collectedAtUnixMs": 1795537834949,
+    "collectionDurationMs": 0.012834,
+    "cpu": {
+      "availableParallelism": 10,
+      "loadAverage1m": 7.52197265625,
+      "processPercent": null,
+      "systemTimeMs": 10.014,
+      "threadCount": 43,
+      "userTimeMs": 28.353
+    },
+    "cpuSampleIntervalMs": null,
+    "memory": {
+      "committedPrivateBytes": null,
+      "footprintBytes": 4948568,
+      "peakResidentBytes": 12566528,
+      "privateResidentBytes": null,
+      "proportionalResidentBytes": null,
+      "reservedVirtualBytes": null,
+      "residentBytes": 12566528,
+      "virtualBytes": 500634501120
+    },
+    "openHandles": 3,
+    "samplingIntervalMs": 1000
+  },
+  "workers": 4
+}

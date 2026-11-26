@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "experimental-scheduler")]
+use std::sync::Arc;
 
 /// A pull-based decoder that owns its FFmpeg input, codec, and resampler.
 ///
@@ -27,6 +29,24 @@ struct ResamplerState {
 }
 
 impl AudioDecoder {
+    #[cfg(feature = "experimental-scheduler")]
+    pub(crate) fn scheduler_demuxer_supported(&self) -> bool {
+        // Conservative containers without nested network inputs or external media references.
+        self.reader
+            .input
+            .name()
+            .split(',')
+            .all(|name| matches!(name, "ogg" | "mp3" | "aac" | "wav" | "flac"))
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    pub(crate) fn isolate_demux(
+        &mut self,
+        executor: Arc<crate::playback::blocking::BlockingExecutor>,
+    ) -> Option<Arc<demux_input::queued::QueuedInput>> {
+        self.reader.input.isolate(executor)
+    }
+
     /// Open a local file or an explicitly tagged HTTP(S) source with default
     /// network timeout and cancellation settings.
     pub fn open(source: InputSource) -> Result<Self, DecoderError> {
@@ -90,7 +110,15 @@ impl AudioDecoder {
         source: InputSource,
         options: DecoderOptions,
     ) -> Result<Self, DecoderError> {
-        let reader = AudioPacketReader::open(source, options)?;
+        Self::open_for_playback_restricted(source, options, false)
+    }
+
+    pub(crate) fn open_for_playback_restricted(
+        source: InputSource,
+        options: DecoderOptions,
+        restricted: bool,
+    ) -> Result<Self, DecoderError> {
+        let reader = AudioPacketReader::open(source, options, restricted)?;
         let cancellation = reader.cancellation.clone();
         Ok(Self {
             reader,
@@ -155,13 +183,27 @@ impl AudioDecoder {
         &mut self,
         head_samples: usize,
     ) -> Result<Option<DecodedPcmFrame>, DecoderError> {
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        loop {
+            match self.poll_overshoot_next_packet(head_samples, &mut cx) {
+                std::task::Poll::Ready(result) => return result,
+                std::task::Poll::Pending => self.reader.input.wait_ready(),
+            }
+        }
+    }
+
+    pub(crate) fn poll_overshoot_next_packet(
+        &mut self,
+        head_samples: usize,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<Option<DecodedPcmFrame>, DecoderError>> {
         let _log_capture = crate::ffmpeg_logging::capture();
         self.check_cancelled()?;
         if self.decoder.is_none() || !self.pending_frames.is_empty() {
-            return Ok(None);
+            return std::task::Poll::Ready(Ok(None));
         }
-        let Some(packet) = self.read_compressed_packet()? else {
-            return Ok(None);
+        let Some(packet) = std::task::ready!(self.poll_compressed_packet(cx))? else {
+            return std::task::Poll::Ready(Ok(None));
         };
         if packet.has_trimming_metadata
             || !packet
@@ -169,7 +211,7 @@ impl AudioDecoder {
                 .is_some_and(|samples| samples as usize >= head_samples)
         {
             self.queue_compressed_packet(packet);
-            return Ok(None);
+            return std::task::Poll::Ready(Ok(None));
         }
         self.send_packet(&packet.packet)?;
         self.drain_decoder()?;
@@ -189,13 +231,13 @@ impl AudioDecoder {
         match head {
             Some(frame) => {
                 self.queue_compressed_packet(packet);
-                Ok(Some(frame))
+                std::task::Poll::Ready(Ok(Some(frame)))
             }
             None => {
                 self.queue_compressed_packet(packet);
-                Err(DecoderError::Decode(
+                std::task::Poll::Ready(Err(DecoderError::Decode(
                     "packet decoded to fewer samples than the encoder lookahead".into(),
-                ))
+                )))
             }
         }
     }
@@ -232,23 +274,44 @@ impl AudioDecoder {
     }
 
     pub(crate) fn next_timed_frame(&mut self) -> Result<Option<DecodedPcmFrame>, DecoderError> {
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        loop {
+            match self.poll_next_timed_frame(&mut cx) {
+                std::task::Poll::Ready(result) => return result,
+                std::task::Poll::Pending => self.reader.input.wait_ready(),
+            }
+        }
+    }
+
+    pub(crate) fn poll_compressed_packet(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<Option<DemuxedAudioPacket>, DecoderError>> {
+        self.check_cancelled()?;
+        self.reader.poll_audio_packet(cx)
+    }
+
+    pub(crate) fn poll_next_timed_frame(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<Option<DecodedPcmFrame>, DecoderError>> {
         let _log_capture = crate::ffmpeg_logging::capture();
         self.check_cancelled()?;
         if self.decoder.is_none() {
             self.activate_decoder(&[], None)?;
         }
         if let Some(frame) = self.pending_frames.pop_front() {
-            return Ok(Some(frame));
+            return std::task::Poll::Ready(Ok(Some(frame)));
         }
         if self.finished {
-            return Ok(None);
+            return std::task::Poll::Ready(Ok(None));
         }
 
         loop {
             self.check_cancelled()?;
 
             if !self.reader.demux_finished {
-                match self.read_compressed_packet()? {
+                match std::task::ready!(self.poll_compressed_packet(cx))? {
                     Some(packet) => self.send_packet(&packet.packet)?,
                     None => self
                         .decoder
@@ -263,13 +326,13 @@ impl AudioDecoder {
 
             self.drain_decoder()?;
             if let Some(frame) = self.pending_frames.pop_front() {
-                return Ok(Some(frame));
+                return std::task::Poll::Ready(Ok(Some(frame)));
             }
 
             if self.reader.demux_finished {
                 self.flush_resampler()?;
                 self.finished = true;
-                return Ok(self.pending_frames.pop_front());
+                return std::task::Poll::Ready(Ok(self.pending_frames.pop_front()));
             }
         }
     }

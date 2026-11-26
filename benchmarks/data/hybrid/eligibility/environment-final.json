@@ -1,0 +1,20 @@
+{
+  "sourceRevision": "7e489aac3d57f63a06fc9f1afbbb030445de485d",
+  "baselineRevision": "55b71e55b38722401dbd6d0011ccf31b0337000c",
+  "hardware": "Apple M5",
+  "logicalCpus": "10",
+  "memoryBytes": "25769803776",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0.1\nBuildVersion:\t\t26A434",
+  "architecture": "arm64",
+  "rust": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: aarch64-apple-darwin\nrelease: 1.99.1\nLLVM version: 23.1.1",
+  "ffmpeg": "63.1.102\n63.1.102\n12.1.102\n7.1.102",
+  "native": "Homebrew FFmpeg 9 with identical RUSTFLAGS and release profile for every macOS variant",
+  "limitations": [
+    "Shared interactive host; unrelated OS/app CPU activity cannot be eliminated",
+    "Docker Desktop VM quota and affinity are not physical Linux server isolation",
+    "2ms parent sampling can miss shorter thread/RSS peaks",
+    "No live Discord or HTTP/plugin scheduler admission claimed"
+  ],
+  "postBoundaryRevision": "b763e7eb9fc12395594082ba0750fcc7cf3d43cd",
+  "opusBuild": "libopus_sys 0.3.3 static feature; CMake Release; Homebrew static search path precedes bundled output; native linkage identical within macOS variants"
+}

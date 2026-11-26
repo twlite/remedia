@@ -467,7 +467,7 @@ mod tests {
         {
             let mut data = lock(&session.shared.data);
             data.state = PlaybackState::Completed;
-            session.shared.changed.notify_all();
+            session.shared.signal_change();
         }
         session.shared.notify_completion_waiters();
         session.shared.notify_crossfade_events();

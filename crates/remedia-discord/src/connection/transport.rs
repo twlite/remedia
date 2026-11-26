@@ -127,6 +127,7 @@ pub(super) fn begin_output_cancel(
     *playback_active = false;
     if speaking {
         *barrier = Some(PendingBarrier {
+            generation: None,
             target_id: *processed_id,
             silence_packets: 5,
             kind: BarrierKind::Cancel,
@@ -312,4 +313,17 @@ pub(super) fn heartbeat_ack_matches(pending: Option<u64>, received: Option<u64>)
 
 pub(super) fn heartbeat_expired(last_ack: Instant, now: Instant, interval: Duration) -> bool {
     now.duration_since(last_ack) > interval.saturating_mul(2)
+}
+
+/// A finish/pause acknowledgement belongs to the generation that requested it. In particular,
+/// seeking during an asynchronous EOF barrier must not silence or finish the new timeline.
+pub(super) fn discard_stale_barrier(barrier: &mut Option<PendingBarrier>, current: u64) {
+    if barrier.as_ref().is_some_and(|barrier| {
+        barrier
+            .generation
+            .is_some_and(|generation| generation != current)
+    }) && let Some(ack) = barrier.take().and_then(|barrier| barrier.ack)
+    {
+        let _ = ack.send(Err(VoiceError::Superseded));
+    }
 }

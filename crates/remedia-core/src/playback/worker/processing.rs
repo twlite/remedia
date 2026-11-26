@@ -63,10 +63,14 @@ impl ProcessingTransition<'_> {
                     {
                         let mut data = lock(&shared.data);
                         data.filter_graph = processor.expression().map(str::to_owned);
+                        #[cfg(feature = "experimental-scheduler")]
+                        {
+                            data.filter_scheduler_safe = processor.scheduler_cpu_safe();
+                        }
                         data.volume = 1.0;
                         data.processing_mode = Some(PlaybackProcessingMode::Passthrough);
                         data.last_processing_error = Some(playback_error.clone());
-                        shared.changed.notify_all();
+                        shared.signal_change();
                     }
                     tracing::warn!(
                         name: "core.playback.processing_mode_transition_failed",
@@ -126,7 +130,7 @@ impl ProcessingTransition<'_> {
                 {
                     let mut data = lock(&shared.data);
                     data.processing_mode = Some(PlaybackProcessingMode::Transcoding);
-                    shared.changed.notify_all();
+                    shared.signal_change();
                 }
                 // Do not acknowledge a filter change until the decoder,
                 // graph, and public processing-mode snapshot agree.
@@ -136,7 +140,7 @@ impl ProcessingTransition<'_> {
                 {
                     let mut data = lock(&shared.data);
                     data.processing_mode = Some(PlaybackProcessingMode::Transcoding);
-                    shared.changed.notify_all();
+                    shared.signal_change();
                 }
             }
             tracing::info!(
@@ -197,7 +201,7 @@ impl ProcessingTransition<'_> {
             {
                 let mut data = lock(&shared.data);
                 data.processing_mode = Some(PlaybackProcessingMode::Passthrough);
-                shared.changed.notify_all();
+                shared.signal_change();
             }
             if let Some(update) = deferred_filter_update.take() {
                 let _ = update.response.send(Ok(()));

@@ -1,15 +1,138 @@
 use super::*;
 
 impl MediaOutput for OpusEncoderOutput {
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_nonblocking(&self) -> bool {
+        self.sink.inner.scheduler_nonblocking()
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_activate(&self) {
+        self.sink.activate();
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_deactivate(&self, cancellation: &CancellationToken) -> Result<(), OutputError> {
+        self.wait_ready(cancellation)?;
+        self.sink.deactivate();
+        Ok(())
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_flush_samples(
+        &self,
+        sample: u64,
+        cx: &mut std::task::Context<'_>,
+        cancellation: &CancellationToken,
+    ) -> std::task::Poll<Result<(), OutputError>> {
+        self.ensure_active(cancellation)?;
+        let mut pending = lock(&self.pending_flush);
+        if pending.is_some_and(|position| position != sample) {
+            return std::task::Poll::Ready(Err(OutputError::new(
+                "overlapping output seek flushes",
+            )));
+        }
+        if pending.is_none() {
+            lock(&self.pending_pcm).take();
+            self.sink.clear();
+            self.reset_timeline(sample)?;
+            *pending = Some(sample);
+        }
+        let result = self.sink.inner.scheduler_poll_control(
+            crate::OutputControl::Flush(sample),
+            cx,
+            cancellation,
+        );
+        if result.is_ready() {
+            pending.take();
+        }
+        result
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_ready(
+        &self,
+        cx: &mut std::task::Context<'_>,
+        cancellation: &CancellationToken,
+    ) -> std::task::Poll<Result<(), OutputError>> {
+        self.poll_production(cx, cancellation)
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn scheduler_poll_control(
+        &self,
+        control: crate::OutputControl,
+        cx: &mut std::task::Context<'_>,
+        cancellation: &CancellationToken,
+    ) -> std::task::Poll<Result<(), OutputError>> {
+        match control {
+            crate::OutputControl::Flush(sample) => {
+                self.scheduler_poll_flush_samples(sample, cx, cancellation)
+            }
+            _ => self.poll_barrier(control, cx, cancellation),
+        }
+    }
+
+    #[cfg(feature = "experimental-scheduler")]
+    fn wait_ready(&self, cancellation: &CancellationToken) -> Result<(), OutputError> {
+        if !self.sink.active() {
+            return Ok(());
+        }
+        struct ThreadWake(std::thread::Thread);
+        impl std::task::Wake for ThreadWake {
+            fn wake(self: std::sync::Arc<Self>) {
+                self.0.unpark();
+            }
+            fn wake_by_ref(self: &std::sync::Arc<Self>) {
+                self.0.unpark();
+            }
+        }
+        impl crate::source::CancellationWake for ThreadWake {
+            fn wake_for_cancellation(&self) {
+                self.0.unpark();
+            }
+        }
+        let wake = std::sync::Arc::new(ThreadWake(std::thread::current()));
+        cancellation.register_waker(wake.clone());
+        let waker = std::task::Waker::from(wake);
+        let mut cx = std::task::Context::from_waker(&waker);
+        loop {
+            match self.poll_production(&mut cx, cancellation) {
+                std::task::Poll::Ready(result) => return result,
+                std::task::Poll::Pending => std::thread::park(),
+            }
+        }
+    }
+
     fn write_frame(
         &self,
         frame: PcmFrame,
         cancellation: &CancellationToken,
     ) -> Result<(), OutputError> {
         self.ensure_active(cancellation)?;
+        if frame.samples_per_channel.checked_mul(2) != Some(frame.samples.len()) {
+            return Err(OutputError::new(
+                "PCM frame does not contain stereo samples",
+            ));
+        }
+        #[cfg(feature = "experimental-scheduler")]
+        if self.sink.active() {
+            let mut pending = lock(&self.pending_pcm);
+            if pending.is_some() {
+                return Err(OutputError::new("PCM written before output became ready"));
+            }
+            *pending = Some((frame, 0));
+            return Ok(());
+        }
         let mut state = lock(&self.state);
         self.initialize_encoder(&mut state)?;
-        Self::write_pcm(&mut state, frame, &*self.sink, cancellation)
+        Self::write_pcm(
+            &mut state,
+            &frame.samples,
+            frame.start_sample,
+            &self.sink,
+            cancellation,
+        )
     }
 
     fn encoded_opus_output(&self) -> Option<&dyn EncodedOpusOutput> {
@@ -30,21 +153,12 @@ impl MediaOutput for OpusEncoderOutput {
         cancellation: &CancellationToken,
     ) -> Result<(), OutputError> {
         self.ensure_active(cancellation)?;
-        self.sink.flush_samples(sample_position, cancellation)?;
-        let mut state = lock(&self.state);
-        if let Some(encoder) = state.encoder.as_mut() {
-            encoder.reset_state().map_err(OutputError::with_source)?;
+        #[cfg(feature = "experimental-scheduler")]
+        {
+            lock(&self.pending_pcm).take();
         }
-        state.partial_scalars = 0;
-        state.partial_start_sample = None;
-        state.partial_lead_samples = 0;
-        state.suppressed_frames = 0;
-        state.primed_unflushed = false;
-        state.start_bias = 0;
-        state.partial_is_alignment_only = false;
-        state.next_input_sample = Some(sample_position);
-        state.finished = false;
-        Ok(())
+        self.sink.flush_samples(sample_position, cancellation)?;
+        self.reset_timeline(sample_position)
     }
 
     fn filter_transition(
@@ -122,7 +236,7 @@ impl MediaOutput for OpusEncoderOutput {
                     0,
                     start_sample,
                     true,
-                    &*self.sink,
+                    &self.sink,
                     cancellation,
                 )?;
             }
@@ -134,7 +248,7 @@ impl MediaOutput for OpusEncoderOutput {
                     live,
                     start_sample,
                     false,
-                    &*self.sink,
+                    &self.sink,
                     cancellation,
                 )?;
             }
@@ -171,11 +285,16 @@ impl MediaOutput for OpusEncoderOutput {
                 media_samples,
                 start_sample,
                 false,
-                &*self.sink,
+                &self.sink,
                 cancellation,
             )?;
             state.partial_scalars = 0;
             state.partial_lead_samples = 0;
+        }
+        #[cfg(feature = "experimental-scheduler")]
+        if self.sink.active() {
+            state.finished = true;
+            return Ok(());
         }
         self.sink.finish(cancellation)?;
         state.finished = true;
@@ -196,5 +315,24 @@ impl MediaOutput for OpusEncoderOutput {
 
     fn played_position(&self) -> Option<Duration> {
         self.sink.played_position()
+    }
+}
+
+impl OpusEncoderOutput {
+    fn reset_timeline(&self, sample_position: u64) -> Result<(), OutputError> {
+        let mut state = lock(&self.state);
+        if let Some(encoder) = state.encoder.as_mut() {
+            encoder.reset_state().map_err(OutputError::with_source)?;
+        }
+        state.partial_scalars = 0;
+        state.partial_start_sample = None;
+        state.partial_lead_samples = 0;
+        state.suppressed_frames = 0;
+        state.primed_unflushed = false;
+        state.start_bias = 0;
+        state.partial_is_alignment_only = false;
+        state.next_input_sample = Some(sample_position);
+        state.finished = false;
+        Ok(())
     }
 }

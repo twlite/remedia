@@ -19,6 +19,17 @@ impl PlaybackSession {
     pub fn with_observability(observability: ObservabilityHandle) -> Self {
         Self {
             shared: Arc::new(SessionShared {
+                #[cfg(feature = "experimental-scheduler")]
+                executor: std::sync::atomic::AtomicUsize::new(0),
+                revision: std::sync::atomic::AtomicU64::new(0),
+                #[cfg(feature = "experimental-scheduler")]
+                scheduler: None,
+                #[cfg(feature = "experimental-scheduler")]
+                scheduled: Mutex::new(None),
+                #[cfg(feature = "experimental-scheduler")]
+                fallback_worker: Mutex::new(None),
+                #[cfg(feature = "experimental-scheduler")]
+                input_io: Mutex::new(None),
                 data: Mutex::new(SessionData {
                     state: PlaybackState::Idle,
                     generation: 0,
@@ -44,6 +55,8 @@ impl PlaybackSession {
                     fallback_seeking: false,
                     fallback_signal: false,
                     filter_graph: None,
+                    #[cfg(feature = "experimental-scheduler")]
+                    filter_scheduler_safe: true,
                     pending_filter_graph: None,
                     processor_initialized: false,
                     volume: 1.0,
@@ -60,6 +73,34 @@ impl PlaybackSession {
             filter_update_lock: Mutex::new(()),
             stage: Arc::new(Mutex::new(None)),
             crossfade: Mutex::new(None),
+        }
+    }
+
+    /// Create an idle session attached to a shared experimental pool. Unsupported source/output
+    /// combinations and crossfade retain dedicated execution. Existing constructors stay dedicated.
+    #[cfg(feature = "experimental-scheduler")]
+    pub fn with_scheduler(scheduler: Arc<PlaybackScheduler>) -> Self {
+        let mut session = Self::new();
+        Arc::get_mut(&mut session.shared)
+            .expect("new session has one owner")
+            .scheduler = Some(scheduler);
+        session
+    }
+
+    /// Active backend, or dedicated fallback reason for a pool-attached session.
+    #[cfg(feature = "experimental-scheduler")]
+    pub fn executor_diagnostic(&self) -> &'static str {
+        match self
+            .shared
+            .executor
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            1 => "scheduled",
+            2 => "dedicated: unsupported workload",
+            3 => "dedicated: pool capacity",
+            4 => "scheduled: isolated control",
+            5 => "dedicated: unsupported filter",
+            _ => "dedicated",
         }
     }
 
@@ -188,67 +229,105 @@ impl PlaybackSession {
             let worker_cancellation = cancellation.clone();
             let worker_observability = self.shared.observability.clone();
             let worker_crossfade = *lock(&self.crossfade);
+            #[cfg(feature = "experimental-scheduler")]
+            self.shared.executor.store(
+                if self.shared.scheduler.is_some() {
+                    2
+                } else {
+                    0
+                },
+                std::sync::atomic::Ordering::Release,
+            );
             let worker_stage = Arc::clone(&self.stage);
             let worker_reopen = fallback::Reopen::new(&source, reopener);
+            #[cfg(feature = "experimental-scheduler")]
+            let bounded_startup = self.shared.scheduler.is_some()
+                && worker_crossfade.is_none()
+                && source.scheduler_input()
+                && data.filter_scheduler_safe
+                && output.scheduler_nonblocking();
+            #[cfg(not(feature = "experimental-scheduler"))]
+            let bounded_startup = false;
+            let run = move || {
+                with_dispatch(&worker_observability, || {
+                    let span = tracing::info_span!(
+                        target: "remedia_core::playback",
+                        "core.playback.session",
+                        playback_id,
+                        generation,
+                        otel.status_code = tracing::field::Empty,
+                        error.type = tracing::field::Empty,
+                    );
+                    let _entered = span.enter();
+                    let span_shared = Arc::clone(&shared);
+                    if let Some(config) = worker_crossfade {
+                        #[cfg(feature = "experimental-scheduler")]
+                        if let Some(pool) = &shared.scheduler {
+                            pool.unsupported(4);
+                        }
+                        crossfade_worker::worker_entry(
+                            shared,
+                            generation,
+                            source,
+                            worker_output,
+                            worker_cancellation,
+                            ready_tx,
+                            worker_stage,
+                            config,
+                            worker_reopen,
+                        );
+                    } else {
+                        worker_entry(
+                            shared,
+                            generation,
+                            source,
+                            worker_output,
+                            worker_cancellation,
+                            ready_tx,
+                            (worker_reopen, bounded_startup),
+                        );
+                    }
+                    let data = lock(&span_shared.data);
+                    if data.generation == generation {
+                        match data.state {
+                            PlaybackState::Completed => {
+                                span.record("otel.status_code", "OK");
+                            }
+                            PlaybackState::Failed => {
+                                span.record("otel.status_code", "ERROR");
+                                if let Some(error) = &data.last_error {
+                                    span.record("error.type", playback_error_kind(error));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+            };
+            #[cfg(feature = "experimental-scheduler")]
+            let thread_result = if bounded_startup {
+                self.shared
+                    .scheduler
+                    .as_ref()
+                    .expect("startup scheduler")
+                    .start(run)
+                    .map(WorkerHandle::Startup)
+            } else {
+                thread::Builder::new()
+                    .name(format!("remedia-playback-{generation}"))
+                    .spawn(run)
+                    .map(WorkerHandle::Dedicated)
+            };
+            #[cfg(not(feature = "experimental-scheduler"))]
             let thread_result = thread::Builder::new()
                 .name(format!("remedia-playback-{generation}"))
-                .spawn(move || {
-                    with_dispatch(&worker_observability, || {
-                        let span = tracing::info_span!(
-                            target: "remedia_core::playback",
-                            "core.playback.session",
-                            playback_id,
-                            generation,
-                            otel.status_code = tracing::field::Empty,
-                            error.type = tracing::field::Empty,
-                        );
-                        let _entered = span.enter();
-                        let span_shared = Arc::clone(&shared);
-                        if let Some(config) = worker_crossfade {
-                            crossfade_worker::worker_entry(
-                                shared,
-                                generation,
-                                source,
-                                worker_output,
-                                worker_cancellation,
-                                ready_tx,
-                                worker_stage,
-                                config,
-                                worker_reopen,
-                            );
-                        } else {
-                            worker_entry(
-                                shared,
-                                generation,
-                                source,
-                                worker_output,
-                                worker_cancellation,
-                                ready_tx,
-                                worker_reopen,
-                            );
-                        }
-                        let data = lock(&span_shared.data);
-                        if data.generation == generation {
-                            match data.state {
-                                PlaybackState::Completed => {
-                                    span.record("otel.status_code", "OK");
-                                }
-                                PlaybackState::Failed => {
-                                    span.record("otel.status_code", "ERROR");
-                                    if let Some(error) = &data.last_error {
-                                        span.record("error.type", playback_error_kind(error));
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    });
-                });
+                .spawn(run)
+                .map(WorkerHandle::Dedicated);
 
             match thread_result {
                 Ok(worker) => {
                     *lock(&self.worker) = Some(worker);
-                    self.shared.changed.notify_all();
+                    self.shared.signal_change();
                 }
                 Err(error) => {
                     let playback_error = PlaybackError::WorkerInitialization(Arc::new(error));
@@ -256,7 +335,7 @@ impl PlaybackSession {
                     data.last_error = Some(playback_error.clone());
                     data.cancellation = None;
                     data.output = None;
-                    self.shared.changed.notify_all();
+                    self.shared.signal_change();
                     drop(data);
                     self.shared.notify_completion_waiters();
                     drop(start_guard);
@@ -299,7 +378,7 @@ impl PlaybackSession {
                 data.duration = info.duration;
                 data.info = Some(info.clone());
                 data.state = PlaybackState::Playing;
-                self.shared.changed.notify_all();
+                self.shared.signal_change();
                 drop(data);
                 with_dispatch(&self.shared.observability, || {
                     tracing::info!(
@@ -469,6 +548,24 @@ impl PlaybackSession {
         let previous = lock(&self.worker).take();
         if previous.is_some_and(|worker| worker.join().is_err()) {
             return Err(PlaybackError::WorkerPanicked);
+        }
+        #[cfg(feature = "experimental-scheduler")]
+        {
+            let fallback = lock(&self.shared.fallback_worker).take();
+            if fallback.is_some_and(|worker| worker.join().is_err()) {
+                return Err(PlaybackError::WorkerPanicked);
+            }
+            let job = lock(&self.shared.scheduled).take();
+            if let Some(job) = job {
+                job.wake();
+                job.join();
+            }
+            if let Some(input) = lock(&self.shared.input_io)
+                .take()
+                .and_then(|input| input.upgrade())
+            {
+                input.wait_idle();
+            }
         }
         Ok(())
     }

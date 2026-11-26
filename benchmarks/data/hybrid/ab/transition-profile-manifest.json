@@ -1,0 +1,6 @@
+{
+  "sourceRevision": "2be796c",
+  "instrumentedBinary": "/tmp/remedia-hybrid-profile/target/release/examples/hybrid_scheduler_benchmark",
+  "sha256": "f897dceba4414ef0e96e84480660d3f58e27f72ba122fa0cdc965398f26c5dfc",
+  "method": "Action, machine-drop and processing-transition wall timers in archived source; diagnostic only"
+}

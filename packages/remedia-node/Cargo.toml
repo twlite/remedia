@@ -30,3 +30,6 @@ napi-build = "2.4.2"
 
 [lints]
 workspace = true
+
+[features]
+experimental-scheduler = ["remedia-core/experimental-scheduler"]

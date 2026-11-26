@@ -1,0 +1,1059 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root {
+        font-family: var(--font-sans);
+        color: var(--foreground);
+        font-size: 14px;
+      }
+      body {
+        margin: 0;
+      }
+      main {
+        width: 100%;
+      }
+      select {
+        font: inherit;
+        background: var(--secondary);
+        color: var(--foreground);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 7px;
+      }
+      nav {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-bottom: 14px;
+      }
+      label {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+      }
+      .panels {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+      .panel {
+        background: var(--card);
+        padding: 16px;
+        border-radius: var(--radius);
+      }
+      h4 {
+        margin: 0 0 14px;
+        font-size: 14px;
+      }
+      p {
+        color: var(--muted-foreground);
+        line-height: 1.5;
+      }
+      .row {
+        margin: 12px 0;
+      }
+      .labels {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 12px;
+      }
+      .track {
+        height: 8px;
+        background: var(--secondary);
+        border-radius: 4px;
+        margin-top: 5px;
+      }
+      .fill {
+        height: 8px;
+        border-radius: 4px;
+      }
+      .bad {
+        color: var(--destructive);
+      }
+      .good {
+        color: var(--success);
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 12px;
+        margin-top: 16px;
+      }
+      td,
+      th {
+        text-align: right;
+        padding: 8px 4px;
+        border-bottom: 1px solid var(--border);
+      }
+      td:first-child,
+      th:first-child {
+        text-align: left;
+      }
+      small {
+        font-size: 11px;
+        color: var(--muted-foreground);
+      }
+      @media (max-width: 580px) {
+        .panels {
+          grid-template-columns: 1fr;
+        }
+        .panel {
+          padding: 16px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <nav>
+        <label
+          >Environment
+          <select id="env">
+            <option value="final-linux-4cpu">Linux · 4 vCPUs</option>
+            <option value="final-linux-2cpu">Linux · 2 vCPUs</option>
+            <option value="final-mac-post-boundary">macOS · 10 CPUs</option>
+          </select></label
+        ><label
+          >Source
+          <select id="codec">
+            <option value="music3.opus">Opus</option>
+            <option value="music3.mp3">MP3</option>
+          </select></label
+        >
+      </nav>
+      <div class="panels">
+        <section class="panel">
+          <h4>CPU · ms per delivered audio second ↓</h4>
+          <div id="cpu"></div>
+        </section>
+        <section class="panel">
+          <h4>Peak RSS · MiB ↓</h4>
+          <div id="rss"></div>
+        </section>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Backend / budget</th>
+            <th>OS threads<br /><small>peak / startup</small></th>
+            <th>Lateness<br /><small>p99 ms</small></th>
+            <th>Excess gap<br /><small>p99 ms</small></th>
+          </tr>
+        </thead>
+        <tbody id="timing"></tbody>
+      </table>
+      <p>
+        <small
+          >512 independent file sessions · 3 interleaved release repetitions · all requested
+          sessions admitted · zero scheduled fallbacks · identical complete audio. Deltas compare
+          refactored dedicated execution. macOS is unpaced; Linux is realtime. Timing percentiles
+          describe per-session worst observations. Sampled RSS varies across series. Dedicated
+          execution remains the production default.</small
+        >
+      </p>
+    </main>
+    <script>
+      const data = [
+        {
+          suite: 'final-linux-2cpu',
+          implementation: 'original',
+          fixture: 'music3.mp3',
+          format: 'opus',
+          pacing: 'Realtime',
+          sessions: 512,
+          workers: 0,
+          budget: 1,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 5.663979817708332,
+          wallSeconds: 4.58317396,
+          throughputAudioSecondsPerWallSecond: 335.13892629988675,
+          activeThreads: 513,
+          peakThreads: 513,
+          startupPeakThreads: 511,
+          peakRssMiB: 212.1484375,
+          incrementalActiveRssMiB: 95.56640625,
+          voluntarySwitches: 10491,
+          involuntarySwitches: 6898,
+          startupP99Ms: 0.352417,
+          gapP99Ms: 3962.016877,
+          latenessP99Ms: 4108.745335,
+          admitted: 0,
+          fallbacks: null,
+          controlP99Ms: {},
+          activeFootprintMiB: null,
+          activePrivateMiB: 98.625,
+          incrementalPrivateMiB: 95.37890625,
+          scheduler: null,
+        },
+        {
+          suite: 'final-linux-2cpu',
+          implementation: 'dedicated',
+          fixture: 'music3.mp3',
+          format: 'opus',
+          pacing: 'Realtime',
+          sessions: 512,
+          workers: 0,
+          budget: 1,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 5.231462239583327,
+          wallSeconds: 4.252511586,
+          throughputAudioSecondsPerWallSecond: 361.1983104424163,
+          activeThreads: 513,
+          peakThreads: 513,
+          startupPeakThreads: 511,
+          peakRssMiB: 218.86328125,
+          incrementalActiveRssMiB: 99.390625,
+          voluntarySwitches: 14216,
+          involuntarySwitches: 7708,
+          startupP99Ms: 0.35133400000000004,
+          gapP99Ms: 3404.353543,
+          latenessP99Ms: 3672.982251,
+          admitted: 0,
+          fallbacks: null,
+          controlP99Ms: {},
+          activeFootprintMiB: null,
+          activePrivateMiB: 102.515625,
+          incrementalPrivateMiB: 99.203125,
+          scheduler: null,
+        },
+        {
+          suite: 'final-linux-2cpu',
+          implementation: 'scheduled',
+          fixture: 'music3.mp3',
+          format: 'opus',
+          pacing: 'Realtime',
+          sessions: 512,
+          workers: 2,
+          budget: 8,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 5.509966145833334,
+          wallSeconds: 4.371113877,
+          throughputAudioSecondsPerWallSecond: 351.3978457715665,
+          activeThreads: 9,
+          peakThreads: 9,
+          startupPeakThreads: 9,
+          peakRssMiB: 162.32421875,
+          incrementalActiveRssMiB: 83.29296875,
+          voluntarySwitches: 94978,
+          involuntarySwitches: 92734,
+          startupP99Ms: 0.48291700000000004,
+          gapP99Ms: 128.66137500000002,
+          latenessP99Ms: 1241.768835,
+          admitted: 512,
+          fallbacks: 0,
+          controlP99Ms: {},
+          activeFootprintMiB: null,
+          activePrivateMiB: 86.3515625,
+          incrementalPrivateMiB: 83.10546875,
+          scheduler: {
+            queuePeak: 512,
+            queueContentions: 197,
+            queueWaitNs: 144750,
+            turns: 18100,
+            actions: 132423,
+            workerBusyNs: 8389552415,
+            busyFractionOfWorkerWallTime: 0.9587448406574652,
+          },
+        },
+        {
+          suite: 'final-linux-2cpu',
+          implementation: 'scheduled',
+          fixture: 'music3.mp3',
+          format: 'opus',
+          pacing: 'Realtime',
+          sessions: 512,
+          workers: 4,
+          budget: 8,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 5.308447916666667,
+          wallSeconds: 4.20822721,
+          throughputAudioSecondsPerWallSecond: 364.9993033527293,
+          activeThreads: 11,
+          peakThreads: 11,
+          startupPeakThreads: 11,
+          peakRssMiB: 164.9453125,
+          incrementalActiveRssMiB: 85.28125,
+          voluntarySwitches: 43540,
+          involuntarySwitches: 42458,
+          startupP99Ms: 0.4255,
+          gapP99Ms: 135.178292,
+          latenessP99Ms: 1094.425002,
+          admitted: 512,
+          fallbacks: 0,
+          controlP99Ms: {},
+          activeFootprintMiB: null,
+          activePrivateMiB: 88.34375,
+          incrementalPrivateMiB: 85.09375,
+          scheduler: {
+            queuePeak: 510,
+            queueContentions: 153,
+            queueWaitNs: 2858586,
+            turns: 18185,
+            actions: 132546,
+            workerBusyNs: 16118270185,
+            busyFractionOfWorkerWallTime: 0.9575451479127715,
+          },
+        },
+        {
+          suite: 'final-linux-2cpu',
+          implementation: 'original',
+          fixture: 'music3.opus',
+          format: 'opus',
+          pacing: 'Realtime',
+          sessions: 512,
+          workers: 0,
+          budget: 1,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 1.230600260416663,
+          wallSeconds: 3.488374585,
+          throughputAudioSecondsPerWallSecond: 440.31968545029406,
+          activeThreads: 513,
+          peakThreads: 513,
+          startupPeakThreads: 511,
+          peakRssMiB: 233.1640625,
+          incrementalActiveRssMiB: 88.4140625,
+          voluntarySwitches: 224140,
+          involuntarySwitches: 32444,
+          startupP99Ms: 0.433709,
+          gapP99Ms: 307.17183300000005,
+          latenessP99Ms: 304.901293,
+          admitted: 0,
+          fallbacks: null,
+          controlP99Ms: {},
+          activeFootprintMiB: null,
+          activePrivateMiB: 91.47265625,
+          incrementalPrivateMiB: 88.2265625,
+          scheduler: null,
+        },
+        {
+          suite: 'final-linux-2cpu',
+          implementation: 'dedicated',
+          fixture: 'music3.opus',
+          format: 'opus',
+          pacing: 'Realtime',
+          sessions: 512,
+          workers: 0,
+          budget: 1,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 1.2247096354166611,
+          wallSeconds: 3.476871876,
+          throughputAudioSecondsPerWallSecond: 441.7764170726664,
+          activeThreads: 513,
+          peakThreads: 513,
+          startupPeakThreads: 512,
+          peakRssMiB: 232.734375,
+          incrementalActiveRssMiB: 88.3515625,
+          voluntarySwitches: 220721,
+          involuntarySwitches: 32765,
+          startupP99Ms: 0.773959,
+          gapP99Ms: 298.979541,
+          latenessP99Ms: 296.172793,
+          admitted: 0,
+          fallbacks: null,
+          controlP99Ms: {},
+          activeFootprintMiB: null,
+          activePrivateMiB: 91.47265625,
+          incrementalPrivateMiB: 88.1640625,
+          scheduler: null,
+        },
+        {
+          suite: 'final-linux-2cpu',
+          implementation: 'scheduled',
+          fixture: 'music3.opus',
+          format: 'opus',
+          pacing: 'Realtime',
+          sessions: 512,
+          workers: 2,
+          budget: 8,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 0.9422519531249983,
+          wallSeconds: 3.426272584,
+          throughputAudioSecondsPerWallSecond: 448.3005838977346,
+          activeThreads: 9,
+          peakThreads: 9,
+          startupPeakThreads: 9,
+          peakRssMiB: 102.26171875,
+          incrementalActiveRssMiB: 62.5234375,
+          voluntarySwitches: 113289,
+          involuntarySwitches: 6911,
+          startupP99Ms: 0.40737500000000004,
+          gapP99Ms: 246.066917,
+          latenessP99Ms: 251.28850200000002,
+          admitted: 512,
+          fallbacks: 0,
+          controlP99Ms: {},
+          activeFootprintMiB: null,
+          activePrivateMiB: 65.578125,
+          incrementalPrivateMiB: 62.3359375,
+          scheduler: {
+            queuePeak: 509,
+            queueContentions: 3889,
+            queueWaitNs: 1889135,
+            turns: 78336,
+            actions: 157696,
+            workerBusyNs: 707425935,
+            busyFractionOfWorkerWallTime: 0.10333953624199581,
+          },
+        },
+        {
+          suite: 'final-linux-2cpu',
+          implementation: 'scheduled',
+          fixture: 'music3.opus',
+          format: 'opus',
+          pacing: 'Realtime',
+          sessions: 512,
+          workers: 4,
+          budget: 8,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 0.9826145833333501,
+          wallSeconds: 3.41915746,
+          throughputAudioSecondsPerWallSecond: 449.2334787061839,
+          activeThreads: 11,
+          peakThreads: 11,
+          startupPeakThreads: 11,
+          peakRssMiB: 103.10546875,
+          incrementalActiveRssMiB: 62.5703125,
+          voluntarySwitches: 179671,
+          involuntarySwitches: 6458,
+          startupP99Ms: 0.5354169999999999,
+          gapP99Ms: 227.36612499999998,
+          latenessP99Ms: 229.351043,
+          admitted: 512,
+          fallbacks: 0,
+          controlP99Ms: {},
+          activeFootprintMiB: null,
+          activePrivateMiB: 65.625,
+          incrementalPrivateMiB: 62.3828125,
+          scheduler: {
+            queuePeak: 507,
+            queueContentions: 5492,
+            queueWaitNs: 4626149,
+            turns: 78336,
+            actions: 157696,
+            workerBusyNs: 1016135553,
+            busyFractionOfWorkerWallTime: 0.07429721831237336,
+          },
+        },
+        {
+          suite: 'final-linux-4cpu',
+          implementation: 'original',
+          fixture: 'music3.mp3',
+          format: 'opus',
+          pacing: 'Realtime',
+          sessions: 512,
+          workers: 0,
+          budget: 1,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 5.969455078125016,
+          wallSeconds: 3.213550168,
+          throughputAudioSecondsPerWallSecond: 477.9760450903283,
+          activeThreads: 513,
+          peakThreads: 513,
+          startupPeakThreads: 511,
+          peakRssMiB: 197.99609375,
+          incrementalActiveRssMiB: 95.5625,
+          voluntarySwitches: 151892,
+          involuntarySwitches: 14180,
+          startupP99Ms: 0.373958,
+          gapP99Ms: 53.06483299999999,
+          latenessP99Ms: 47.729292,
+          admitted: 0,
+          fallbacks: null,
+          controlP99Ms: {},
+          activeFootprintMiB: null,
+          activePrivateMiB: 98.625,
+          incrementalPrivateMiB: 95.375,
+          scheduler: null,
+        },
+        {
+          suite: 'final-linux-4cpu',
+          implementation: 'dedicated',
+          fixture: 'music3.mp3',
+          format: 'opus',
+          pacing: 'Realtime',
+          sessions: 512,
+          workers: 0,
+          budget: 1,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 5.616914062499998,
+          wallSeconds: 3.216605376,
+          throughputAudioSecondsPerWallSecond: 477.52205211759247,
+          activeThreads: 513,
+          peakThreads: 513,
+          startupPeakThreads: 511,
+          peakRssMiB: 200.03125,
+          incrementalActiveRssMiB: 97.5703125,
+          voluntarySwitches: 152813,
+          involuntarySwitches: 14751,
+          startupP99Ms: 0.356375,
+          gapP99Ms: 23.609291,
+          latenessP99Ms: 23.886709999999997,
+          admitted: 0,
+          fallbacks: null,
+          controlP99Ms: {},
+          activeFootprintMiB: null,
+          activePrivateMiB: 100.69140625,
+          incrementalPrivateMiB: 97.3828125,
+          scheduler: null,
+        },
+        {
+          suite: 'final-linux-4cpu',
+          implementation: 'scheduled',
+          fixture: 'music3.mp3',
+          format: 'opus',
+          pacing: 'Realtime',
+          sessions: 512,
+          workers: 2,
+          budget: 8,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 5.908760416666664,
+          wallSeconds: 4.266553419,
+          throughputAudioSecondsPerWallSecond: 360.0095555255018,
+          activeThreads: 9,
+          peakThreads: 9,
+          startupPeakThreads: 9,
+          peakRssMiB: 162.4765625,
+          incrementalActiveRssMiB: 83.296875,
+          voluntarySwitches: 73808,
+          involuntarySwitches: 345,
+          startupP99Ms: 0.358292,
+          gapP99Ms: 129.147542,
+          latenessP99Ms: 1138.4443769999998,
+          admitted: 512,
+          fallbacks: 0,
+          controlP99Ms: {},
+          activeFootprintMiB: null,
+          activePrivateMiB: 86.359375,
+          incrementalPrivateMiB: 83.109375,
+          scheduler: {
+            queuePeak: 512,
+            queueContentions: 338,
+            queueWaitNs: 138959,
+            turns: 18140,
+            actions: 132464,
+            workerBusyNs: 8177214339,
+            busyFractionOfWorkerWallTime: 0.957988739814099,
+          },
+        },
+        {
+          suite: 'final-linux-4cpu',
+          implementation: 'scheduled',
+          fixture: 'music3.mp3',
+          format: 'opus',
+          pacing: 'Realtime',
+          sessions: 512,
+          workers: 4,
+          budget: 8,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 5.569079427083313,
+          wallSeconds: 3.18543571,
+          throughputAudioSecondsPerWallSecond: 482.1946320178598,
+          activeThreads: 11,
+          peakThreads: 11,
+          startupPeakThreads: 11,
+          peakRssMiB: 165.20703125,
+          incrementalActiveRssMiB: 85.26953125,
+          voluntarySwitches: 69238,
+          involuntarySwitches: 24054,
+          startupP99Ms: 0.313166,
+          gapP99Ms: 23.344709,
+          latenessP99Ms: 12.502875999999999,
+          admitted: 512,
+          fallbacks: 0,
+          controlP99Ms: {},
+          activeFootprintMiB: null,
+          activePrivateMiB: 88.328125,
+          incrementalPrivateMiB: 85.08203125,
+          scheduler: {
+            queuePeak: 508,
+            queueContentions: 3606,
+            queueWaitNs: 51833826,
+            turns: 65536,
+            actions: 195072,
+            workerBusyNs: 8197713327,
+            busyFractionOfWorkerWallTime: 0.6429152136717112,
+          },
+        },
+        {
+          suite: 'final-linux-4cpu',
+          implementation: 'original',
+          fixture: 'music3.opus',
+          format: 'opus',
+          pacing: 'Realtime',
+          sessions: 512,
+          workers: 0,
+          budget: 1,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 1.4065013020833304,
+          wallSeconds: 3.37641571,
+          throughputAudioSecondsPerWallSecond: 454.92028586728736,
+          activeThreads: 513,
+          peakThreads: 513,
+          startupPeakThreads: 511,
+          peakRssMiB: 241.94140625,
+          incrementalActiveRssMiB: 90.40234375,
+          voluntarySwitches: 183563,
+          involuntarySwitches: 2700,
+          startupP99Ms: 0.448417,
+          gapP99Ms: 169.683458,
+          latenessP99Ms: 170.80479300000002,
+          admitted: 0,
+          fallbacks: null,
+          controlP99Ms: {},
+          activeFootprintMiB: null,
+          activePrivateMiB: 93.4609375,
+          incrementalPrivateMiB: 90.21484375,
+          scheduler: null,
+        },
+        {
+          suite: 'final-linux-4cpu',
+          implementation: 'dedicated',
+          fixture: 'music3.opus',
+          format: 'opus',
+          pacing: 'Realtime',
+          sessions: 512,
+          workers: 0,
+          budget: 1,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 1.4345631510416788,
+          wallSeconds: 3.371488668,
+          throughputAudioSecondsPerWallSecond: 455.58509941875917,
+          activeThreads: 513,
+          peakThreads: 513,
+          startupPeakThreads: 513,
+          peakRssMiB: 237.72265625,
+          incrementalActiveRssMiB: 90.34375,
+          voluntarySwitches: 185366,
+          involuntarySwitches: 2749,
+          startupP99Ms: 1.150792,
+          gapP99Ms: 168.28645799999998,
+          latenessP99Ms: 156.96121,
+          admitted: 0,
+          fallbacks: null,
+          controlP99Ms: {},
+          activeFootprintMiB: null,
+          activePrivateMiB: 93.46484375,
+          incrementalPrivateMiB: 90.15625,
+          scheduler: null,
+        },
+        {
+          suite: 'final-linux-4cpu',
+          implementation: 'scheduled',
+          fixture: 'music3.opus',
+          format: 'opus',
+          pacing: 'Realtime',
+          sessions: 512,
+          workers: 2,
+          budget: 8,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 0.9515748697916665,
+          wallSeconds: 3.430745501,
+          throughputAudioSecondsPerWallSecond: 447.71610122414614,
+          activeThreads: 9,
+          peakThreads: 9,
+          startupPeakThreads: 9,
+          peakRssMiB: 99.9296875,
+          incrementalActiveRssMiB: 60.578125,
+          voluntarySwitches: 70742,
+          involuntarySwitches: 332,
+          startupP99Ms: 0.43316699999999997,
+          gapP99Ms: 235.96970800000003,
+          latenessP99Ms: 236.07225100000002,
+          admitted: 512,
+          fallbacks: 0,
+          controlP99Ms: {},
+          activeFootprintMiB: null,
+          activePrivateMiB: 63.640625,
+          incrementalPrivateMiB: 60.390625,
+          scheduler: {
+            queuePeak: 510,
+            queueContentions: 4468,
+            queueWaitNs: 1471307,
+            turns: 78336,
+            actions: 157696,
+            workerBusyNs: 720617983,
+            busyFractionOfWorkerWallTime: 0.10511336291456452,
+          },
+        },
+        {
+          suite: 'final-linux-4cpu',
+          implementation: 'scheduled',
+          fixture: 'music3.opus',
+          format: 'opus',
+          pacing: 'Realtime',
+          sessions: 512,
+          workers: 4,
+          budget: 8,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 0.9740624999999952,
+          wallSeconds: 3.313346626,
+          throughputAudioSecondsPerWallSecond: 463.57962911182597,
+          activeThreads: 11,
+          peakThreads: 11,
+          startupPeakThreads: 11,
+          peakRssMiB: 101.46875,
+          incrementalActiveRssMiB: 60.58984375,
+          voluntarySwitches: 86915,
+          involuntarySwitches: 2008,
+          startupP99Ms: 0.423709,
+          gapP99Ms: 130.232625,
+          latenessP99Ms: 130.31083500000003,
+          admitted: 512,
+          fallbacks: 0,
+          controlP99Ms: {},
+          activeFootprintMiB: null,
+          activePrivateMiB: 63.64453125,
+          incrementalPrivateMiB: 60.40234375,
+          scheduler: {
+            queuePeak: 507,
+            queueContentions: 20233,
+            queueWaitNs: 57575659,
+            turns: 78336,
+            actions: 157696,
+            workerBusyNs: 732733994,
+            busyFractionOfWorkerWallTime: 0.0552865483685135,
+          },
+        },
+        {
+          suite: 'final-mac-post-boundary',
+          implementation: 'original',
+          fixture: 'music3.mp3',
+          format: 'opus',
+          pacing: 'Unpaced',
+          sessions: 512,
+          workers: 0,
+          budget: 1,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 6.809156250000001,
+          wallSeconds: 1.199534584,
+          throughputAudioSecondsPerWallSecond: 1280.496636352087,
+          activeThreads: 513,
+          peakThreads: 513,
+          startupPeakThreads: 506,
+          peakRssMiB: 239.71875,
+          incrementalActiveRssMiB: 114.0,
+          voluntarySwitches: 0,
+          involuntarySwitches: 11652,
+          startupP99Ms: 0.22716699999999998,
+          gapP99Ms: 355.541917,
+          latenessP99Ms: 0.0,
+          admitted: 0,
+          fallbacks: null,
+          controlP99Ms: {},
+          activeFootprintMiB: 115.11077117919922,
+          activePrivateMiB: null,
+          incrementalPrivateMiB: null,
+          scheduler: null,
+        },
+        {
+          suite: 'final-mac-post-boundary',
+          implementation: 'dedicated',
+          fixture: 'music3.mp3',
+          format: 'opus',
+          pacing: 'Unpaced',
+          sessions: 512,
+          workers: 0,
+          budget: 1,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 6.851532552083328,
+          wallSeconds: 1.200972,
+          throughputAudioSecondsPerWallSecond: 1278.9640391283062,
+          activeThreads: 513,
+          peakThreads: 513,
+          startupPeakThreads: 501,
+          peakRssMiB: 238.046875,
+          incrementalActiveRssMiB: 114.0625,
+          voluntarySwitches: 2,
+          involuntarySwitches: 9647,
+          startupP99Ms: 0.227917,
+          gapP99Ms: 678.27725,
+          latenessP99Ms: 0.0,
+          admitted: 0,
+          fallbacks: null,
+          controlP99Ms: {},
+          activeFootprintMiB: 115.09510040283203,
+          activePrivateMiB: null,
+          incrementalPrivateMiB: null,
+          scheduler: null,
+        },
+        {
+          suite: 'final-mac-post-boundary',
+          implementation: 'scheduled',
+          fixture: 'music3.mp3',
+          format: 'opus',
+          pacing: 'Unpaced',
+          sessions: 512,
+          workers: 4,
+          budget: 8,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 5.0218639322916685,
+          wallSeconds: 1.819444459,
+          throughputAudioSecondsPerWallSecond: 844.2137337043054,
+          activeThreads: 11,
+          peakThreads: 11,
+          startupPeakThreads: 11,
+          peakRssMiB: 197.671875,
+          incrementalActiveRssMiB: 100.21875,
+          voluntarySwitches: 1,
+          involuntarySwitches: 39215,
+          startupP99Ms: 0.214833,
+          gapP99Ms: 67.509375,
+          latenessP99Ms: 0.0,
+          admitted: 512,
+          fallbacks: 0,
+          controlP99Ms: {},
+          activeFootprintMiB: 100.70376586914062,
+          activePrivateMiB: null,
+          incrementalPrivateMiB: null,
+          scheduler: {
+            queuePeak: 511,
+            queueContentions: 907,
+            queueWaitNs: 2400119,
+            turns: 17408,
+            actions: 131072,
+            workerBusyNs: 6889354097,
+            busyFractionOfWorkerWallTime: 0.9466287996483436,
+          },
+        },
+        {
+          suite: 'final-mac-post-boundary',
+          implementation: 'scheduled',
+          fixture: 'music3.mp3',
+          format: 'opus',
+          pacing: 'Unpaced',
+          sessions: 512,
+          workers: 10,
+          budget: 8,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 6.436646484374993,
+          wallSeconds: 1.09201525,
+          throughputAudioSecondsPerWallSecond: 1406.5737635074236,
+          activeThreads: 17,
+          peakThreads: 17,
+          startupPeakThreads: 17,
+          peakRssMiB: 198.78125,
+          incrementalActiveRssMiB: 100.296875,
+          voluntarySwitches: 1,
+          involuntarySwitches: 34987,
+          startupP99Ms: 0.219333,
+          gapP99Ms: 29.778791000000005,
+          latenessP99Ms: 0.0,
+          admitted: 512,
+          fallbacks: 0,
+          controlP99Ms: {},
+          activeFootprintMiB: 100.76624298095703,
+          activePrivateMiB: null,
+          incrementalPrivateMiB: null,
+          scheduler: {
+            queuePeak: 504,
+            queueContentions: 313,
+            queueWaitNs: 9803220,
+            turns: 17414,
+            actions: 131137,
+            workerBusyNs: 9958748425,
+            busyFractionOfWorkerWallTime: 0.9119605632796794,
+          },
+        },
+        {
+          suite: 'final-mac-post-boundary',
+          implementation: 'original',
+          fixture: 'music3.opus',
+          format: 'opus',
+          pacing: 'Unpaced',
+          sessions: 512,
+          workers: 0,
+          budget: 1,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 0.7017819010416702,
+          wallSeconds: 0.244781625,
+          throughputAudioSecondsPerWallSecond: 6274.98081197884,
+          activeThreads: 513,
+          peakThreads: 513,
+          startupPeakThreads: 509,
+          peakRssMiB: 172.234375,
+          incrementalActiveRssMiB: 78.0625,
+          voluntarySwitches: 0,
+          involuntarySwitches: 10834,
+          startupP99Ms: 0.232,
+          gapP99Ms: 35.36775,
+          latenessP99Ms: 0.0,
+          admitted: 0,
+          fallbacks: null,
+          controlP99Ms: {},
+          activeFootprintMiB: 79.15757751464844,
+          activePrivateMiB: null,
+          incrementalPrivateMiB: null,
+          scheduler: null,
+        },
+        {
+          suite: 'final-mac-post-boundary',
+          implementation: 'dedicated',
+          fixture: 'music3.opus',
+          format: 'opus',
+          pacing: 'Unpaced',
+          sessions: 512,
+          workers: 0,
+          budget: 1,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 0.6857597656250061,
+          wallSeconds: 0.229281125,
+          throughputAudioSecondsPerWallSecond: 6699.199508899827,
+          activeThreads: 513,
+          peakThreads: 513,
+          startupPeakThreads: 512,
+          peakRssMiB: 150.171875,
+          incrementalActiveRssMiB: 78.171875,
+          voluntarySwitches: 1,
+          involuntarySwitches: 7657,
+          startupP99Ms: 0.23987499999999998,
+          gapP99Ms: 12.267042000000004,
+          latenessP99Ms: 0.0,
+          admitted: 0,
+          fallbacks: null,
+          controlP99Ms: {},
+          activeFootprintMiB: 79.23574829101562,
+          activePrivateMiB: null,
+          incrementalPrivateMiB: null,
+          scheduler: null,
+        },
+        {
+          suite: 'final-mac-post-boundary',
+          implementation: 'scheduled',
+          fixture: 'music3.opus',
+          format: 'opus',
+          pacing: 'Unpaced',
+          sessions: 512,
+          workers: 4,
+          budget: 8,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 0.5811054687500178,
+          wallSeconds: 0.258434708,
+          throughputAudioSecondsPerWallSecond: 5943.474125000269,
+          activeThreads: 11,
+          peakThreads: 11,
+          startupPeakThreads: 11,
+          peakRssMiB: 165.9375,
+          incrementalActiveRssMiB: 64.4375,
+          voluntarySwitches: 0,
+          involuntarySwitches: 6044,
+          startupP99Ms: 0.228125,
+          gapP99Ms: 48.210415999999995,
+          latenessP99Ms: 0.0,
+          admitted: 512,
+          fallbacks: 0,
+          controlP99Ms: {},
+          activeFootprintMiB: 64.89124298095703,
+          activePrivateMiB: null,
+          incrementalPrivateMiB: null,
+          scheduler: {
+            queuePeak: 512,
+            queueContentions: 1269,
+            queueWaitNs: 4452543,
+            turns: 11296,
+            actions: 81415,
+            workerBusyNs: 620754123,
+            busyFractionOfWorkerWallTime: 0.6009126548161214,
+          },
+        },
+        {
+          suite: 'final-mac-post-boundary',
+          implementation: 'scheduled',
+          fixture: 'music3.opus',
+          format: 'opus',
+          pacing: 'Unpaced',
+          sessions: 512,
+          workers: 10,
+          budget: 8,
+          repetitions: 3,
+          cpuMsPerAudioSecond: 0.8334667968749995,
+          wallSeconds: 0.225867583,
+          throughputAudioSecondsPerWallSecond: 6800.444665846537,
+          activeThreads: 17,
+          peakThreads: 17,
+          startupPeakThreads: 17,
+          peakRssMiB: 257.28125,
+          incrementalActiveRssMiB: 64.453125,
+          voluntarySwitches: 0,
+          involuntarySwitches: 23702,
+          startupP99Ms: 0.222292,
+          gapP99Ms: 38.896084,
+          latenessP99Ms: 0.0,
+          admitted: 512,
+          fallbacks: 0,
+          controlP99Ms: {},
+          activeFootprintMiB: 64.90686798095703,
+          activePrivateMiB: null,
+          incrementalPrivateMiB: null,
+          scheduler: {
+            queuePeak: 496,
+            queueContentions: 8289,
+            queueWaitNs: 98844959,
+            turns: 20199,
+            actions: 89831,
+            workerBusyNs: 911297763,
+            busyFractionOfWorkerWallTime: 0.40514277083124933,
+          },
+        },
+      ];
+      const colors = [
+        'var(--chart-3)',
+        'var(--chart-2)',
+        'var(--chart-4)',
+        'var(--chart-1)',
+        'var(--chart-5)',
+      ];
+      function label(r) {
+        return r.implementation === 'original'
+          ? 'Original main'
+          : r.workers
+            ? `${r.workers} workers / ${r.budget}`
+            : 'Refactored dedicated';
+      }
+      function render() {
+        let rows = data
+          .filter(
+            (r) =>
+              r.suite === document.getElementById('env').value &&
+              r.fixture === document.getElementById('codec').value,
+          )
+          .sort((a, b) => {
+            let order = (r) =>
+              r.implementation === 'original'
+                ? 0
+                : r.implementation === 'dedicated'
+                  ? 1
+                  : r.workers;
+            return order(a) - order(b);
+          });
+        const dedicated = rows.find((r) => r.implementation === 'dedicated');
+        for (let [id, key, digits] of [
+          ['cpu', 'cpuMsPerAudioSecond', 3],
+          ['rss', 'peakRssMiB', 1],
+        ]) {
+          let max = Math.max(...rows.map((r) => r[key]));
+          document.getElementById(id).innerHTML = rows
+            .map((r, i) => {
+              let delta = (r[key] / dedicated[key] - 1) * 100;
+              let suffix = r.workers
+                ? ` <span class="${delta > 0 ? 'bad' : 'good'}">${delta > 0 ? '+' : ''}${delta.toFixed(1)}%</span>`
+                : '';
+              return `<div class="row"><div class="labels"><span>${label(r)}</span><span>${r[key].toFixed(digits)}${suffix}</span></div><div class="track"><div class="fill" style="width:${(r[key] / max) * 100}%;background:${colors[i]}"></div></div></div>`;
+            })
+            .join('');
+        }
+        document.getElementById('timing').innerHTML = rows
+          .map(
+            (r) =>
+              `<tr><td>${label(r)}</td><td>${r.peakThreads} / ${r.startupPeakThreads}</td><td>${r.pacing === 'unpaced' ? '—' : r.latenessP99Ms.toFixed(1)}</td><td>${r.pacing === 'unpaced' ? '—' : r.gapP99Ms.toFixed(1)}</td></tr>`,
+          )
+          .join('');
+      }
+      document.getElementById('env').addEventListener('change', render);
+      document.getElementById('codec').addEventListener('change', render);
+      render();
+    </script>
+  </body>
+</html>

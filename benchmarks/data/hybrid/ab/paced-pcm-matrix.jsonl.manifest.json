@@ -1,0 +1,32 @@
+{
+  "binaries": {
+    "original": {
+      "path": "/private/tmp/remedia-hybrid-paced/original-target/release/examples/hybrid_scheduler_benchmark",
+      "sha256": "2ffee11741cb004965512506d2551f613f3ec68dc337e1e071e26a31776cd89e"
+    },
+    "dedicated": {
+      "path": "/private/tmp/remedia-hybrid-paced/dedicated-target/release/examples/hybrid_scheduler_benchmark",
+      "sha256": "267931225b919145c95b669eb301e852341c987dce7462708b236c901ec24ad0"
+    },
+    "scheduled": {
+      "path": "/private/tmp/remedia-hybrid-paced/scheduled-target/release/examples/hybrid_scheduler_benchmark",
+      "sha256": "acd2554576510368524ed39637c799115384b8a3710c3920cfd2b6057d50fff3"
+    }
+  },
+  "arguments": {
+    "original": "/tmp/remedia-hybrid-paced/original-target/release/examples/hybrid_scheduler_benchmark",
+    "dedicated": "/tmp/remedia-hybrid-paced/dedicated-target/release/examples/hybrid_scheduler_benchmark",
+    "scheduled": "/tmp/remedia-hybrid-paced/scheduled-target/release/examples/hybrid_scheduler_benchmark",
+    "fixtures": "/tmp/remedia-hybrid-paced/fixtures/music3.mp3",
+    "output": "benchmarks/data/hybrid/ab/paced-pcm-matrix.jsonl",
+    "counts": "128,512",
+    "workers": "1,4",
+    "budgets": "1,8",
+    "formats": "f32le",
+    "repeats": 3,
+    "pacing": "realtime"
+  },
+  "fixtures": {
+    "/tmp/remedia-hybrid-paced/fixtures/music3.mp3": "1b24623c65f9aa388a7bb5e2f8ef938917109c914ee629d5c2b17f364e58846d"
+  }
+}

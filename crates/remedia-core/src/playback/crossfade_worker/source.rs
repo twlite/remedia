@@ -504,7 +504,7 @@ impl ActiveSource {
         {
             let mut state = lock(&shared.data);
             state.processing_mode = Some(PlaybackProcessingMode::Passthrough);
-            shared.changed.notify_all();
+            shared.signal_change();
         }
         encoded_output.write_encoded_packet(encoded, cancellation)?;
         self.consumed += u64::from(packet_samples);

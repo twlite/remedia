@@ -12,7 +12,7 @@ impl PlaybackSession {
             PlaybackState::Paused => return Ok(()),
             PlaybackState::Playing => {
                 data.state = PlaybackState::Pausing;
-                self.shared.changed.notify_all();
+                self.shared.signal_change();
                 if let Some(output) = data.output.as_ref() {
                     output.wake();
                 }
@@ -51,7 +51,7 @@ impl PlaybackSession {
             PlaybackState::Playing => return Ok(()),
             PlaybackState::Paused => {
                 data.state = PlaybackState::Resuming;
-                self.shared.changed.notify_all();
+                self.shared.signal_change();
                 if let Some(output) = data.output.as_ref() {
                     output.wake();
                 }
@@ -156,7 +156,7 @@ impl PlaybackSession {
                 ticket: Arc::clone(&ticket),
             });
             data.seek_ticket = Some(Arc::clone(&ticket));
-            self.shared.changed.notify_all();
+            self.shared.signal_change();
             if let Some(output) = data.output.as_ref() {
                 output.wake();
             }
@@ -218,6 +218,12 @@ impl PlaybackSession {
         data.last_processing_error = None;
         let playback_id = data.playback_id;
         let graph_enabled = expression.is_some();
+        #[cfg(feature = "experimental-scheduler")]
+        {
+            data.filter_scheduler_safe = candidate
+                .as_ref()
+                .is_none_or(PcmFilterGraph::scheduler_cpu_safe);
+        }
         data.filter_graph = expression;
         let active = is_active(data.state) && !data.stopping;
         let response = if active && data.processor_initialized {
@@ -226,7 +232,7 @@ impl PlaybackSession {
                 graph: candidate,
                 response: sender,
             });
-            self.shared.changed.notify_all();
+            self.shared.signal_change();
             if let Some(output) = data.output.as_ref() {
                 output.wake();
             }
@@ -303,7 +309,7 @@ impl PlaybackSession {
                     && data.state == PlaybackState::Playing
                     && data.processing_mode != Some(*target)
             });
-            self.shared.changed.notify_all();
+            self.shared.signal_change();
             if let Some(output) = data.output.as_ref() {
                 output.wake();
             }
@@ -395,7 +401,7 @@ impl PlaybackSession {
             let pending_seek = data.pending_seek.take();
             let pending_filter = data.pending_filter_graph.take();
             let playback_id = data.playback_id;
-            self.shared.changed.notify_all();
+            self.shared.signal_change();
             if let Some(output) = data.output.as_ref() {
                 output.wake();
             }
@@ -441,6 +447,14 @@ impl PlaybackSession {
 
         let worker = lock(&self.worker).take();
         let worker_panicked = worker.is_some_and(|worker| worker.join().is_err());
+        #[cfg(feature = "experimental-scheduler")]
+        {
+            let job = lock(&self.shared.scheduled).take();
+            if let Some(job) = job {
+                job.wake();
+                job.join();
+            }
+        }
         let played_position = output.as_ref().and_then(safe_played_position);
 
         let mut data = lock(&self.shared.data);
@@ -456,7 +470,7 @@ impl PlaybackSession {
             let error = PlaybackError::WorkerPanicked;
             data.state = PlaybackState::Failed;
             data.last_error = Some(error.clone());
-            self.shared.changed.notify_all();
+            self.shared.signal_change();
             if let Some(output) = data.output.as_ref() {
                 output.wake();
             }
@@ -469,7 +483,7 @@ impl PlaybackSession {
             data.state = PlaybackState::Stopped;
         }
         let terminal_state = data.state;
-        self.shared.changed.notify_all();
+        self.shared.signal_change();
         if let Some(output) = data.output.as_ref() {
             output.wake();
         }

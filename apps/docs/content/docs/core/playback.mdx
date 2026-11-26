@@ -329,3 +329,157 @@ that cannot seek.
 - [Rust output adapters](/docs/core/outputs)
 - [Opus passthrough and decoding](/docs/core/opus)
 - [Rust crossfade lifecycle](/docs/core/crossfade)
+
+## Experimental shared executor
+
+The non-default Cargo feature `experimental-scheduler` is propagated through core, Discord,
+Node and server crates. Enabling it preserves dedicated execution for existing constructors.
+Rust embedders can explicitly share a fixed pool:
+
+```rust
+use remedia_core::{InputSource, NullOutput, PlaybackScheduler, PlaybackSession};
+
+let scheduler = PlaybackScheduler::new(2, 1024)?;
+let session = PlaybackSession::with_scheduler(scheduler.clone());
+session.play(InputSource::bytes(encoded_media), NullOutput::new())?;
+// Stop joins both startup and scheduled processing before releasing output ownership.
+session.stop()?;
+```
+
+This experiment schedules owned-byte and local-file Ogg, MP3, ADTS AAC, WAV and FLAC inputs with
+`NullOutput`, `StreamOutput` with unpaced or realtime pacing, or `OpusEncoderOutput` attached
+to `DiscordOpusSender` / `RoutedOpusSender`, including admitted rate-preserving native filtergraphs.
+Full streaming queues suspend production using the existing readiness waker; consumption through
+`StreamReader::poll_next` wakes production. Buffer limits, encoding settings and EOF are unchanged.
+Network sources, other containers (including MP4/M4A), producer byte streams,
+synchronous custom outputs and crossfade retain dedicated execution. Eligible sources open and probe on a bounded shared two-thread startup executor. A full
+startup queue returns a worker-initialization error instead of creating additional threads.
+Unsupported source/output combinations retain dedicated startup and playback. A seek or live filter update transfers exclusive ownership of the same machine to a shared,
+bounded two-thread control executor for one operation. It then returns to CPU scheduling.
+No permanent control thread is added per session. A stalled control can delay other controls,
+but cannot occupy a codec worker; cancellation continues to interrupt its existing source and
+output waits. Codec
+actions still do not have a hard CPU-time budget. The pool is therefore experimental and is not a replacement for production scheduling.
+
+`executor_diagnostic()` identifies scheduled execution or dedicated fallback for an unsupported
+workload, full pool, or a control requiring dedicated execution. `scheduler.diagnostics()` reports worker count, admitted sessions, queue
+depth and action count. Capacity bounds admitted scheduled sessions; excess sessions fall back to
+dedicated execution, so it does not cap total engine concurrency. Pool creation rejects zero counts
+and returns thread creation failures. Existing Node and RPC playback APIs remain dedicated; this
+branch does not add a JavaScript or remote executor-selection API.
+
+For budget experiments, `PlaybackScheduler::with_processing_budget(workers, capacity, actions_per_turn)`
+sets a positive maximum action count per queue dispatch. `new` keeps its existing one-action budget.
+Every action checks controls and readiness; the budget does not bound native codec wall time.
+Larger bursts reduce queue dispatches but can increase the time before another session runs.
+
+Diagnostics distinguish cumulative `admitted` from currently `scheduled_sessions`; `sessions`
+also includes admitted jobs temporarily awaiting isolated controls. `control_workers`,
+`queued_controls`, `isolated_controls` and cumulative `control_handoffs` identify this work;
+`control_fallbacks` counts only dedicated migrations for native graphs outside the scheduling
+contract; ordinary seek/filter handoffs return to scheduling. Dedicated fallbacks are counted
+separately by capacity, control migration, input, output, demuxer, initial filtergraph and crossfade.
+`turns`, `actions`, `queue_peak`, `queue_contentions` and `queue_wait_ns` expose dispatch frequency
+and queue mutex waiting. Contention counts failed immediate mutex acquisitions; wait time includes
+OS descheduling while waiting, and is not isolated mutex instruction cost. These counters do not
+change production executor selection or qualify fallback workloads as scheduler performance.
+
+Realtime streams now use `scheduler_poll_deadline`: a future absolute `Instant` suspends the job
+in the pool's ordered deadline queue. Workers sleep on the readiness condition variable until
+work or the next deadline arrives. No timer thread is created per session. Each job has at most
+one deadline; control, output and cancellation wakes remove it before enqueueing the job, so
+stale timers cannot run a later playback generation. Paused streams stop scheduling deadlines.
+`pending_deadlines`, `deadline_peak`, `deadline_suspensions` and `deadline_wakes` expose this state.
+
+Custom outputs keep their existing defaults. The new optional method delegates to
+`scheduler_poll_ready` unless overridden. An output opting in must expose capacity without
+blocking and retain no more queued audio than its existing buffering contract permits. Returning
+a pacing deadline must not consume the next frame. Scheduling deadlines is not a hard realtime
+or Discord RTP delivery guarantee; overloaded codec work can still deliver audio late.
+
+Capacity and pacing use separate producer wake registrations. Draining a chunk wakes a producer
+waiting for queue space; it does not wake a producer whose only wait is a future pacing deadline.
+Closing, failing, flushing or explicitly waking the output still interrupts a pacing wait. This
+keeps downstream backpressure responsive without repeatedly removing and rearming the same timer.
+
+Pool sizing must cover short codec-work bursts as well as average CPU. High-concurrency
+measurements found worse tail-delivery gaps with small pools during the Opus transition
+needed for container trimming. Worker count and processing budget remain explicit tuning
+choices; lower CPU consumption alone does not establish acceptable delivery latency.
+
+The experimental Discord output uses the same bounded transport queues and RTP actor as dedicated
+playback. A full packet queue suspends codec production; draining it wakes the session. Packet
+ownership stays with the output until admission succeeds, including while a router is detached.
+PCM is retained as one owned input frame and encoded in 20 ms slices, with at most two pending
+encoded packets (EOF can flush two). Pause, resume and finish use resumable acknowledgements;
+completion is published only after the actor acknowledges the finish barrier. RTP deadlines,
+sequence numbers, timestamps, DAVE and transport encryption remain owned by the transport actor.
+No codec worker waits for a socket, transport replacement or acknowledgement. This capability is
+opt-in on `OpusPacketSink`; existing custom sinks keep their synchronous contract and dedicated
+execution. Compile both core and Discord with `experimental-scheduler` when using it.
+
+Custom readiness-aware outputs can override `scheduler_activate` (called once after admission)
+and `scheduler_poll_control(control, cx, cancellation)`. A pending control must retain its
+operation, register the waker and acknowledge it exactly once before returning success. Legacy
+outputs use the existing synchronous pause/resume/finish defaults.
+
+Local files demux on a separate shared two-thread executor. A read-ahead burst transfers up to
+eight owned FFmpeg AVPackets through a readiness-driven queue, targeting at most 128 KiB; one
+larger source packet is retained whole, as on the direct decoder path. Codecs, resampling and
+filters stay on CPU workers. Empty compressed queues suspend the session, and a completed burst
+wakes it. Seeking waits for its in-flight burst on the isolated control executor, then discards
+old read-ahead after the native seek succeeds. Cancellation and `stop` join outstanding reads.
+The file is read incrementally and is never copied wholesale into memory for eligibility.
+`io_workers`, `queued_io`, `active_io`, `io_queue_peak`, `io_bursts` and `io_busy_ns` identify
+this executor. These are fixed pools, not additional permanent threads per session.
+
+`for_available_parallelism()` now uses the platform's available CPU count and an eight-action
+budget, with 1024 admission slots. Explicit `new(workers, capacity)` still uses one action;
+`with_processing_budget` retains caller-selected fixed values. No dynamic resizing is enabled.
+HTTP and producer/plugin streams remain dedicated: a stalled native read could otherwise
+occupy every bounded I/O worker and delay unrelated sources. This branch does not claim those
+fallbacks as scheduled performance, and scheduled crossfade remains deferred.
+
+Discord controls and in-flight pause/finish barriers are fenced by output generation. A seek
+while finish acknowledgement is pending invalidates the old barrier and resumes the same
+playback machine; the old acknowledgement cannot complete the new timeline. Local read-ahead
+completion wakes a session only when it is waiting for input, preserving output pacing deadlines.
+
+The current native filter whitelist is `anull`, `aformat`, `volume`, `bass`, `treble`,
+`equalizer`, `highpass`, `lowpass`, `bandpass`, `bandreject`, `pan` and `asetpts`, plus
+engine endpoints and automatic format adapters. All configured links must remain at
+48 kHz; EQ/biquad filters require `blocksize=0`. Only automatically inserted `aresample`
+adapters are admitted. Explicit resampling, rate changes, `atempo`, buffered EQ and
+other filters retain dedicated execution. The processor currently drains all native
+frames from one input synchronously, so a CPU-only filter that can emit multiple frames
+is not yet safe under the scheduled output's one-frame admission contract.
+
+Classification inspects the configured native graph and options. I/O and external-plugin
+filters also retain dedicated execution. A live replacement outside this contract drains
+retained production on a tracked dedicated fallback and continues there for that generation;
+its fallback is excluded from scheduler performance claims. Eligible volume/EQ replacements
+remain reversible. A resumable native filter drain is required to expand this contract.
+Pause can supersede a pending EOF acknowledgement; resume requests a fresh finish barrier without
+encoding or replaying the tail again.
+
+Scheduled seeking isolates native decoder/filter repositioning, then retains the seek request
+while `scheduler_poll_flush_samples(sample, cx, cancellation)` waits for output invalidation.
+Its acknowledgement is published only after the flush and encoder alignment succeed. Discord
+flush admission and acknowledgement use the same asynchronous control path as other barriers;
+a detached transport parks the seek without occupying either a codec or isolated control worker.
+Later controls remain ordered behind that seek, and stop cancels and acknowledges outstanding
+requests before joining. Custom scheduling outputs whose flush can wait must override this poll;
+the default calls `flush_samples` for outputs with an already nonblocking flush.
+
+Bounded startup pins FFmpeg's `format_whitelist` before container headers and stream probing,
+so containers outside the supported set cannot open nested inputs on a shared startup worker.
+A rejected/failed restricted probe retries the original source on a tracked dedicated worker;
+`probe_retries` reports these attempts. Unsupported containers keep their original playback
+functionality, and these retries/fallbacks are excluded from scheduler benchmark evidence.
+
+MP3, MP2 and AAC native seeks request a landing one second before the requested
+position to restore codec history, then discard preroll samples. The demuxer may land
+earlier according to its index. Scheduled sessions reposition the demuxer on the isolated control executor and decode preroll in bounded codec
+turns. The seek acknowledgement still waits for output invalidation; recovery before
+the first post-seek audio can take longer without changing the requested media
+position or encoder quality.

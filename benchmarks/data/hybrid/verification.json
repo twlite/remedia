@@ -1,0 +1,56 @@
+{
+  "workspace-on": {
+    "passed": true,
+    "rustTestsPassed": 520,
+    "rustTestsIgnored": 7,
+    "lastNonemptyLine": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+  },
+  "workspace-off": {
+    "passed": true,
+    "rustTestsPassed": 515,
+    "rustTestsIgnored": 7,
+    "lastNonemptyLine": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+  },
+  "clippy": {
+    "passed": true,
+    "rustTestsPassed": 0,
+    "rustTestsIgnored": 0,
+    "lastNonemptyLine": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.60s"
+  },
+  "clippy-off": {
+    "passed": true,
+    "rustTestsPassed": 0,
+    "rustTestsIgnored": 0,
+    "lastNonemptyLine": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.76s"
+  },
+  "node-tests-on": {
+    "passed": true,
+    "rustTestsPassed": 0,
+    "rustTestsIgnored": 0,
+    "lastNonemptyLine": "   Duration  27.62s (tests 95%, import 4%)"
+  },
+  "node-tests-off": {
+    "passed": true,
+    "rustTestsPassed": 0,
+    "rustTestsIgnored": 0,
+    "lastNonemptyLine": "   Duration  27.58s (tests 96%, import 4%)"
+  },
+  "lint": {
+    "passed": true,
+    "rustTestsPassed": 0,
+    "rustTestsIgnored": 0,
+    "lastNonemptyLine": "$ oxlint . --deny-warnings"
+  },
+  "ts": {
+    "passed": true,
+    "rustTestsPassed": 0,
+    "rustTestsIgnored": 0,
+    "lastNonemptyLine": "$ tsc -p scripts/docs/tsconfig.json"
+  },
+  "docs": {
+    "passed": true,
+    "rustTestsPassed": 0,
+    "rustTestsIgnored": 0,
+    "lastNonemptyLine": "Verified the static export of the generated API reference."
+  }
+}

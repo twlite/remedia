@@ -7,6 +7,13 @@ pub(crate) struct PcmProcessor {
 }
 
 impl PcmProcessor {
+    #[cfg(feature = "experimental-scheduler")]
+    pub(crate) fn scheduler_cpu_safe(&self) -> bool {
+        self.graph
+            .as_ref()
+            .is_none_or(PcmFilterGraph::scheduler_cpu_safe)
+    }
+
     pub(crate) fn new(
         expression: Option<&str>,
         start_sample: u64,

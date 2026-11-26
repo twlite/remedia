@@ -1,0 +1,53 @@
+#!/bin/sh
+# Build all variants against the same pinned native recipe in an isolated Linux container.
+# Run from the repository; requires Docker and network access for toolchain/native sources.
+set -eu
+hybrid_root=$(git rev-parse --show-toplevel)
+hybrid_output=${1:-/tmp/remedia-hybrid-linux}
+hybrid_container=${HYBRID_CONTAINER:-remedia-hybrid-linux}
+hybrid_revision=$(git rev-parse HEAD)
+mkdir -p "$hybrid_output"
+if ! docker container inspect "$hybrid_container" >/dev/null 2>&1; then
+  docker run -d --name "$hybrid_container" --dns "${HYBRID_DNS:-1.1.1.1}" --cpus 4 \
+    -v "$hybrid_output:/experiment" -v "$hybrid_root:/repo:ro" ubuntu:24.04 sleep infinity
+fi
+docker start "$hybrid_container" >/dev/null
+docker exec -e HYBRID_REVISION="$hybrid_revision" -e HYBRID_REUSE_NATIVE="${HYBRID_REUSE_NATIVE:-0}" -e HYBRID_LINUX_RELEASE_DIR="${HYBRID_LINUX_RELEASE_DIR:-/experiment/releases}" "$hybrid_container" bash -c '
+  set -e
+  if ! command -v clang >/dev/null || ! command -v node >/dev/null; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential ca-certificates clang cmake curl git nasm nodejs perl pkg-config python3
+  fi
+  if [ ! -f /root/.cargo/env ]; then
+    curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.99.1 --profile minimal
+  fi
+  . /root/.cargo/env
+  git config --global --add safe.directory /repo
+  # Build a fixed commit on the container filesystem. Never compile a live host mount:
+  # Docker Desktop can retain stale/truncated pages while host editors rewrite files.
+  hybrid_source="/experiment/source-$HYBRID_REVISION"
+  if [ ! -d "$hybrid_source/.git" ]; then
+    git clone --no-hardlinks --no-checkout /repo "$hybrid_source"
+  fi
+  git -C "$hybrid_source" checkout --detach "$HYBRID_REVISION"
+  cd "$hybrid_source"
+  export RUNNER_TEMP=/experiment/native-work FFMPEG_DIR=/experiment/native-prefix FFMPEG_BUILD_JOBS=4
+  if [ "$HYBRID_REUSE_NATIVE" = 1 ]; then
+    # Reuse only the already-built prefix; every variant links these identical archives.
+    test -f "$FFMPEG_DIR/lib/libavcodec.a"
+    node .github/scripts/audit-ffmpeg-config.mjs "$FFMPEG_DIR/share/remedia-build/config.mak"
+  else
+    bash .github/scripts/build-ffmpeg-static.sh
+  fi
+  # Use pkg-config private static dependencies (including OpenSSL), not the FFMPEG_DIR
+  # abbreviated library list in ffmpeg-sys-next.
+  unset FFMPEG_DIR
+  export PKG_CONFIG_PATH=/experiment/native-prefix/lib/pkgconfig PKG_CONFIG_ALL_STATIC=1 CARGO_BUILD_JOBS=4 HYBRID_COPY_BUILD_CACHE=1
+  bash benchmarks/hybrid-ab-build.sh "$HYBRID_LINUX_RELEASE_DIR"
+  CARGO_TARGET_DIR="$HYBRID_LINUX_RELEASE_DIR/scheduled-target" cargo test --release --locked -p remedia-discord --features experimental-scheduler --lib --no-run
+  CARGO_TARGET_DIR="$HYBRID_LINUX_RELEASE_DIR/scheduled-target" cargo test --release --locked -p remedia-core --features experimental-scheduler --test experimental_scheduler
+'
+# Before each measurement series select an explicit quota AND affinity, e.g.:
+# docker update --cpus 2 --cpuset-cpus 0,1 "$hybrid_container"
+# docker exec "$hybrid_container" python3 /repo/benchmarks/hybrid_ab.py ...
+# Keep output paths fresh. Stop the container after collecting results.

@@ -1,0 +1,80 @@
+{
+  "qualifiedComparisonProcesses": 1056,
+  "implementationProcesses": {
+    "original": 126,
+    "dedicated": 126,
+    "scheduled": 804
+  },
+  "scheduledAdmissionsAcrossIndependentRuns": 137661,
+  "dedicatedFallbacksInSchedulerEvidence": 0,
+  "deliveredAudioMatched": true,
+  "timersReclaimed": true,
+  "checks": {
+    "tests-on": {
+      "passed": true,
+      "rustTestsPassed": 524,
+      "rustTestsIgnored": 7,
+      "lastNonemptyLine": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    },
+    "tests-off": {
+      "passed": true,
+      "rustTestsPassed": 516,
+      "rustTestsIgnored": 7,
+      "lastNonemptyLine": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    },
+    "clippy-on": {
+      "passed": true,
+      "rustTestsPassed": 0,
+      "rustTestsIgnored": 0,
+      "lastNonemptyLine": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.40s"
+    },
+    "clippy-off": {
+      "passed": true,
+      "rustTestsPassed": 0,
+      "rustTestsIgnored": 0,
+      "lastNonemptyLine": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.55s"
+    },
+    "node-on": {
+      "passed": true,
+      "rustTestsPassed": 0,
+      "rustTestsIgnored": 0,
+      "lastNonemptyLine": "   Duration  30.54s (tests 94%, import 5%)"
+    },
+    "node-off": {
+      "passed": true,
+      "rustTestsPassed": 0,
+      "rustTestsIgnored": 0,
+      "lastNonemptyLine": "   Duration  28.06s (tests 94%, import 5%)"
+    },
+    "docs": {
+      "passed": true,
+      "rustTestsPassed": 0,
+      "rustTestsIgnored": 0,
+      "lastNonemptyLine": "Verified the static export of the generated API reference."
+    },
+    "typecheck": {
+      "passed": true,
+      "rustTestsPassed": 0,
+      "rustTestsIgnored": 0,
+      "lastNonemptyLine": "$ tsc -p scripts/docs/tsconfig.json"
+    },
+    "lint": {
+      "passed": true,
+      "rustTestsPassed": 0,
+      "rustTestsIgnored": 0,
+      "lastNonemptyLine": "$ oxlint . --deny-warnings"
+    },
+    "format": {
+      "passed": true,
+      "rustTestsPassed": 0,
+      "rustTestsIgnored": 0,
+      "lastNonemptyLine": "Finished in 394ms on 423 files using 10 threads."
+    },
+    "rustfmt": {
+      "passed": true,
+      "rustTestsPassed": 0,
+      "rustTestsIgnored": 0,
+      "lastNonemptyLine": ""
+    }
+  }
+}

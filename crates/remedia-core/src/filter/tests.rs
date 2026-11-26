@@ -286,3 +286,48 @@ fn filter_graph_does_not_create_a_machine_sized_worker_pool() {
     // SAFETY: read-only inspection of a live, exclusively owned graph.
     assert_eq!(unsafe { (*graph.graph.as_ptr()).nb_threads }, 1);
 }
+
+#[cfg(feature = "experimental-scheduler")]
+#[test]
+fn scheduler_admission_requires_unbuffered_rate_preserving_filters() {
+    for (expression, expected) in [
+        ("volume=0.5", true),
+        ("lowpass=f=1200", true),
+        ("pan=stereo|c0=c1|c1=c0", true),
+        ("atempo=0.5", false),
+        ("aresample=48000", false),
+        ("asetrate=44100,aresample=48000", false),
+        ("aformat=sample_rates=44100", false),
+        ("lowpass=f=1200:blocksize=128", false),
+    ] {
+        assert_eq!(
+            PcmFilterGraph::build(expression)
+                .unwrap()
+                .scheduler_cpu_safe(),
+            expected,
+            "{expression}"
+        );
+    }
+    let mut processor = PcmProcessor::new(Some("lowpass=f=1200:blocksize=128"), 0).unwrap();
+    let mut frames = 0;
+    processor
+        .write_frame(
+            PcmFrame {
+                samples: vec![0.1; 4800],
+                samples_per_channel: 2400,
+                start_sample: 0,
+            },
+            Some(0),
+            false,
+            1.0,
+            |_, _| {
+                frames += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert!(
+        frames > 1,
+        "buffered EQ concretely exceeds one-frame output admission"
+    );
+}

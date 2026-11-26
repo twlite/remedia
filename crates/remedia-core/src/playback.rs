@@ -170,11 +170,27 @@ pub enum MediaPositionAccuracy {
 /// while a source is active; call `stop` before starting a replacement.
 pub struct PlaybackSession {
     shared: Arc<SessionShared>,
-    worker: Mutex<Option<JoinHandle<()>>>,
+    worker: Mutex<Option<WorkerHandle>>,
     start_lock: Mutex<()>,
     filter_update_lock: Mutex<()>,
     stage: Arc<Mutex<Option<Arc<PreparedStage>>>>,
     crossfade: Mutex<Option<CrossfadeConfig>>,
+}
+
+enum WorkerHandle {
+    Dedicated(JoinHandle<()>),
+    #[cfg(feature = "experimental-scheduler")]
+    Startup(blocking::TaskHandle),
+}
+
+impl WorkerHandle {
+    fn join(self) -> std::thread::Result<()> {
+        match self {
+            Self::Dedicated(handle) => handle.join(),
+            #[cfg(feature = "experimental-scheduler")]
+            Self::Startup(handle) => handle.join(),
+        }
+    }
 }
 
 /// A seek that has been submitted to a session. See [`PlaybackSession::start_seek`].
@@ -232,6 +248,17 @@ pub struct PlaybackWaiter {
 }
 
 struct SessionShared {
+    #[cfg(feature = "experimental-scheduler")]
+    executor: std::sync::atomic::AtomicUsize,
+    revision: std::sync::atomic::AtomicU64,
+    #[cfg(feature = "experimental-scheduler")]
+    scheduler: Option<Arc<PlaybackScheduler>>,
+    #[cfg(feature = "experimental-scheduler")]
+    scheduled: Mutex<Option<Arc<scheduler::Job>>>,
+    #[cfg(feature = "experimental-scheduler")]
+    fallback_worker: Mutex<Option<JoinHandle<()>>>,
+    #[cfg(feature = "experimental-scheduler")]
+    input_io: Mutex<Option<std::sync::Weak<crate::decoder::demux_input::queued::QueuedInput>>>,
     data: Mutex<SessionData>,
     changed: Condvar,
     completion_waiters: completion::CompletionWaiters,
@@ -269,6 +296,8 @@ struct SessionData {
     /// A fallback replacement finished preparing (or failed); the worker should look at it.
     fallback_signal: bool,
     filter_graph: Option<String>,
+    #[cfg(feature = "experimental-scheduler")]
+    filter_scheduler_safe: bool,
     pending_filter_graph: Option<FilterUpdate>,
     processor_initialized: bool,
     volume: f32,
@@ -287,6 +316,9 @@ struct FilterUpdate {
 }
 
 enum WorkerAction {
+    #[cfg(feature = "experimental-scheduler")]
+    DedicatedFallback,
+    Wait(u64),
     ConfigureProcessing,
     PollFallback,
     Decode,
@@ -301,6 +333,9 @@ enum WorkerAction {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "experimental-scheduler")]
+pub(crate) mod blocking;
 
 mod completion;
 mod crossfade_events;
@@ -438,3 +473,20 @@ mod control;
 use control::*;
 
 mod controls;
+
+#[cfg(feature = "experimental-scheduler")]
+mod scheduler;
+#[cfg(feature = "experimental-scheduler")]
+pub use scheduler::{PlaybackScheduler, SchedulerDiagnostics};
+
+impl SessionShared {
+    fn signal_change(&self) {
+        self.revision
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        self.changed.notify_all();
+        #[cfg(feature = "experimental-scheduler")]
+        if let Some(job) = lock(&self.scheduled).as_ref() {
+            job.wake();
+        }
+    }
+}

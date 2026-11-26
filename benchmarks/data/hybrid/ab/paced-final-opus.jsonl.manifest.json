@@ -1,0 +1,33 @@
+{
+  "binaries": {
+    "original": {
+      "path": "/private/tmp/remedia-hybrid-tail/original-target/release/examples/hybrid_scheduler_benchmark",
+      "sha256": "3dff56e33317e4715cbcc713f2452debc15ea87809a6e15086f788df4fd4b014"
+    },
+    "dedicated": {
+      "path": "/private/tmp/remedia-hybrid-tail/dedicated-target/release/examples/hybrid_scheduler_benchmark",
+      "sha256": "66bc50fa9a47d6ea0df194143f789c643daa8d83711b533bcfc93197fed64fad"
+    },
+    "scheduled": {
+      "path": "/private/tmp/remedia-hybrid-tail/scheduled-target/release/examples/hybrid_scheduler_benchmark",
+      "sha256": "30340f3bed918c349e8c70851f54bfa24164f3bd3919f090332160fe3b3a49fd"
+    }
+  },
+  "arguments": {
+    "original": "/tmp/remedia-hybrid-tail/original-target/release/examples/hybrid_scheduler_benchmark",
+    "dedicated": "/tmp/remedia-hybrid-tail/dedicated-target/release/examples/hybrid_scheduler_benchmark",
+    "scheduled": "/tmp/remedia-hybrid-tail/scheduled-target/release/examples/hybrid_scheduler_benchmark",
+    "fixtures": "/tmp/remedia-hybrid-tail/fixtures/music3.opus,/tmp/remedia-hybrid-tail/fixtures/music3.mp3",
+    "output": "benchmarks/data/hybrid/ab/paced-final-opus.jsonl",
+    "counts": "1,128,512",
+    "workers": "1,4",
+    "budgets": "8",
+    "formats": "opus",
+    "repeats": 3,
+    "pacing": "realtime"
+  },
+  "fixtures": {
+    "/tmp/remedia-hybrid-tail/fixtures/music3.opus": "0c81e1d9c4fa5e56f4915e0ad7630c7964b30ef901b8aa74ab4187c0f4c8794b",
+    "/tmp/remedia-hybrid-tail/fixtures/music3.mp3": "1b24623c65f9aa388a7bb5e2f8ef938917109c914ee629d5c2b17f364e58846d"
+  }
+}

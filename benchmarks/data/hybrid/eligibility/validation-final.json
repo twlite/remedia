@@ -1,0 +1,75 @@
+{
+  "rust-off": {
+    "passed": 518,
+    "failed": 0,
+    "ignored": 7,
+    "testBinaries": 21
+  },
+  "node-off": "108 passed across 16 files after final filter admission guard",
+  "rust-on": {
+    "passed": 545,
+    "failed": 0,
+    "ignored": 8,
+    "testBinaries": 21
+  },
+  "node-on": "108 passed across 16 files after final filter admission guard",
+  "fmt": {
+    "log": "/tmp/remedia-final-fmt.log",
+    "tail": []
+  },
+  "clippy-off": {
+    "log": "/tmp/remedia-complete-clippy-off.log",
+    "tail": [
+      "   Compiling remedia-server v0.1.0 (/Users/andromeda/Developer/oss/androzdev/remedia/crates/remedia-server)",
+      "   Compiling remedia-node v0.1.0 (/Users/andromeda/Developer/oss/androzdev/remedia/packages/remedia-node)",
+      "    Checking remedia-discord v0.1.0 (/Users/andromeda/Developer/oss/androzdev/remedia/crates/remedia-discord)",
+      "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.20s"
+    ]
+  },
+  "clippy-on": {
+    "log": "/tmp/remedia-complete-clippy-on.log",
+    "tail": [
+      "   Compiling remedia-server v0.1.0 (/Users/andromeda/Developer/oss/androzdev/remedia/crates/remedia-server)",
+      "   Compiling remedia-node v0.1.0 (/Users/andromeda/Developer/oss/androzdev/remedia/packages/remedia-node)",
+      "    Checking remedia-discord v0.1.0 (/Users/andromeda/Developer/oss/androzdev/remedia/crates/remedia-discord)",
+      "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.19s"
+    ]
+  },
+  "lint": {
+    "log": "/tmp/remedia-complete-lint.log",
+    "tail": ["$ oxlint . --deny-warnings"]
+  },
+  "format": {
+    "log": "/tmp/remedia-complete-format.log",
+    "tail": [
+      "Checking formatting...",
+      "",
+      "All matched files use the correct format.",
+      "Finished in 408ms on 444 files using 10 threads."
+    ]
+  },
+  "types": {
+    "log": "/tmp/remedia-complete-types.log",
+    "tail": [
+      "packages/remedia-client typecheck: Done",
+      "apps/discord typecheck$ tsc -p tsconfig.json --noEmit",
+      "apps/discord typecheck: Done",
+      "$ tsc -p scripts/docs/tsconfig.json"
+    ]
+  },
+  "docs": {
+    "log": "/tmp/remedia-complete-docs.log",
+    "tail": [
+      "",
+      "Checked 60988 local links across 395 exported HTML pages.",
+      "$ node scripts/docs/verify-export.ts",
+      "Verified the static export of the generated API reference."
+    ]
+  },
+  "linux-release-integration": "14 experimental scheduler integration tests and filter-shape lib regression passed on immutable 158c7f3; earlier oversized-packet lib regression passed on b763e7e. Full Linux workspace/Node suites were not run.",
+  "scope": "Local dynamic Homebrew FFmpeg Node builds; not audited shipping artifacts. Workspace Rust checks both feature configurations.",
+  "sourceRevision": "158c7f3",
+  "workspace-check": "cargo check --workspace with experimental-scheduler enabled and disabled passed",
+  "linux-static-link-audit": "Original, dedicated and scheduled release executables pass media/TLS static dependency audit",
+  "artifactIntegrity": "All measured macOS executables still match their original manifests; original baseline directories retained"
+}

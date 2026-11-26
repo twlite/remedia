@@ -98,6 +98,16 @@ impl InputSource {
         }
     }
 
+    #[cfg(feature = "experimental-scheduler")]
+    pub(crate) fn scheduler_input(&self) -> bool {
+        match self {
+            Self::Bytes(_) => true,
+            // Named pipes and device paths retain dedicated, interruptible source handling.
+            Self::File(path) => std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file()),
+            _ => false,
+        }
+    }
+
     pub(crate) fn can_seek(&self) -> bool {
         !matches!(self, Self::ByteStream(_) | Self::SequentialHttpUrl(_))
     }

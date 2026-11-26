@@ -165,7 +165,7 @@ pub(super) fn handle_commands(
                     return Err(error);
                 }
                 lock(&shared.data).processing_mode = Some(PlaybackProcessingMode::Transcoding);
-                shared.changed.notify_all();
+                shared.signal_change();
             }
             let result = output
                 .filter_transition(processor.next_sample(), cancellation)
@@ -185,7 +185,7 @@ pub(super) fn handle_commands(
                 let mut state = lock(&shared.data);
                 if state.state == PlaybackState::Pausing {
                     state.state = PlaybackState::Paused;
-                    shared.changed.notify_all();
+                    shared.signal_change();
                 }
             }
             PlaybackState::Resuming => {
@@ -194,7 +194,7 @@ pub(super) fn handle_commands(
                 let mut state = lock(&shared.data);
                 if state.state == PlaybackState::Resuming {
                     state.state = PlaybackState::Playing;
-                    shared.changed.notify_all();
+                    shared.signal_change();
                 }
             }
             PlaybackState::Paused | PlaybackState::Starting => {

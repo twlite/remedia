@@ -5,28 +5,36 @@ use remedia_core::CancellationToken;
 fn mock_packet_barriers_wait_for_target_without_blocking_other_channels() {
     for finish in [false, true] {
         let voice = TestVoiceConnection::new(42);
-        let (ack, result) = mpsc::sync_channel(1);
+        let (ack, result) = flume::bounded(1);
         let control = if finish {
-            Control::Finish { target_id: 2, ack }
+            Control::Finish {
+                generation: 0,
+                target_id: 2,
+                ack,
+            }
         } else {
-            Control::Pause { target_id: 2, ack }
+            Control::Pause {
+                generation: 0,
+                target_id: 2,
+                ack,
+            }
         };
         voice.connection.inner.control_tx.send(control).unwrap();
 
         // A later control acknowledgement proves the actor observed the
         // barrier before any packets, and remained able to receive controls.
-        let (ack, resumed) = mpsc::sync_channel(1);
+        let (ack, resumed) = flume::bounded(1);
         voice
             .connection
             .inner
             .control_tx
-            .send(Control::Resume { ack })
+            .send(Control::Resume { generation: 0, ack })
             .unwrap();
         resumed
             .recv_timeout(Duration::from_secs(1))
             .unwrap()
             .unwrap();
-        assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        assert!(matches!(result.try_recv(), Err(flume::TryRecvError::Empty)));
 
         for id in 1..=2 {
             voice
@@ -47,7 +55,7 @@ fn mock_packet_barriers_wait_for_target_without_blocking_other_channels() {
                 .unwrap();
             voice.wait_for_packets(id as usize);
             if id == 1 {
-                assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+                assert!(matches!(result.try_recv(), Err(flume::TryRecvError::Empty)));
             }
         }
         result
@@ -349,6 +357,7 @@ fn output_cancel_fallback_discards_stale_packets_and_is_idempotent() {
 fn new_output_packet_supersedes_an_old_cancel_barrier() {
     let deadline = Instant::now() + Duration::from_millis(20);
     let mut barrier = Some(PendingBarrier {
+        generation: None,
         target_id: 8,
         silence_packets: 4,
         kind: BarrierKind::Cancel,
@@ -452,6 +461,8 @@ fn concurrent_sender_replacement_and_drop_publish_the_latest_generation() {
             state,
             failure: Arc::new(Mutex::new(None)),
             packet_tx,
+            #[cfg(feature = "experimental-scheduler")]
+            readiness: Arc::new(futures_util::task::AtomicWaker::new()),
             control_tx,
             generation: AtomicU64::new(0),
             generation_update: Mutex::new(()),
@@ -528,7 +539,7 @@ fn heartbeat_ack_must_match_and_timeout_uses_elapsed_monotonic_time() {
 #[test]
 fn opus_sender_backpressures_at_its_bounded_queue_and_cancellation_unblocks() {
     let (packet_tx, packet_rx) = flume::bounded(QUEUE_CAPACITY);
-    let (control_tx, _control_rx) = flume::bounded(16);
+    let (control_tx, control_rx) = flume::bounded(16);
     let (generation_tx, _generation_rx) = watch::channel(0);
     let (state, _) = watch::channel(ConnectionState::Connected);
     let inner = Arc::new(ConnectionInner {
@@ -538,6 +549,8 @@ fn opus_sender_backpressures_at_its_bounded_queue_and_cancellation_unblocks() {
         state,
         failure: Arc::new(Mutex::new(None)),
         packet_tx,
+        #[cfg(feature = "experimental-scheduler")]
+        readiness: Arc::new(futures_util::task::AtomicWaker::new()),
         control_tx,
         generation: AtomicU64::new(0),
         generation_update: Mutex::new(()),
@@ -554,6 +567,8 @@ fn opus_sender_backpressures_at_its_bounded_queue_and_cancellation_unblocks() {
         cancelled: AtomicBool::new(false),
         finished: AtomicBool::new(false),
         played_end_sample: Arc::new(AtomicU64::new(u64::MAX)),
+        #[cfg(feature = "experimental-scheduler")]
+        pending_control: Mutex::new(None),
     });
     sender
         .inner
@@ -570,12 +585,86 @@ fn opus_sender_backpressures_at_its_bounded_queue_and_cancellation_unblocks() {
     for _ in 0..QUEUE_CAPACITY {
         sender.send_packet(packet(), &token).unwrap();
     }
+    #[cfg(feature = "experimental-scheduler")]
+    {
+        use std::task::{Context, Poll, Waker};
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut pending = Some(packet());
+        let allocation = pending.as_ref().unwrap().bytes.as_ptr();
+        assert!(
+            sender
+                .scheduler_poll_packet(&mut pending, &mut cx, &token)
+                .is_pending()
+        );
+        assert_eq!(pending.as_ref().unwrap().bytes.as_ptr(), allocation);
+        packet_rx.try_recv().unwrap();
+        sender.inner.readiness.wake();
+        assert!(matches!(
+            sender.scheduler_poll_packet(&mut pending, &mut cx, &token),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(pending.is_none());
+        assert_eq!(packet_rx.len(), QUEUE_CAPACITY);
+        let kind = remedia_core::OutputControl::Pause;
+        assert!(
+            sender
+                .scheduler_poll_control(kind, &mut cx, &token)
+                .is_pending()
+        );
+        let Control::Pause { target_id, ack, .. } = control_rx.try_recv().unwrap() else {
+            panic!("pause barrier");
+        };
+        assert_eq!(
+            target_id,
+            sender.inner.accepted_packet_id.load(Ordering::Acquire)
+        );
+        assert!(
+            sender
+                .scheduler_poll_control(kind, &mut cx, &token)
+                .is_pending()
+        );
+        assert!(control_rx.is_empty(), "barrier must only be submitted once");
+        ack.send(Ok(())).unwrap();
+        assert!(matches!(
+            sender.scheduler_poll_control(kind, &mut cx, &token),
+            Poll::Ready(Ok(()))
+        ));
+    }
+    #[cfg(not(feature = "experimental-scheduler"))]
+    let _control_rx = control_rx;
+    #[cfg(feature = "experimental-scheduler")]
+    {
+        use std::task::{Context, Waker};
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(
+            sender
+                .scheduler_poll_control(remedia_core::OutputControl::Pause, &mut cx, &token)
+                .is_pending()
+        );
+        let Control::Pause { ack: old_ack, .. } = control_rx.try_recv().unwrap() else {
+            panic!("pause");
+        };
+        let flushing = sender.clone();
+        let flush_token = token.clone();
+        let flush = std::thread::spawn(move || flushing.flush(Duration::ZERO, &flush_token));
+        let Control::Flush { ack, .. } = control_rx.recv_timeout(Duration::from_secs(1)).unwrap()
+        else {
+            panic!("flush");
+        };
+        ack.send(Ok(())).unwrap();
+        flush.join().unwrap().unwrap();
+        assert!(
+            old_ack.send(Ok(())).is_err(),
+            "seek invalidates the previous barrier future"
+        );
+        assert!(lock(&sender.pending_control).is_none());
+    }
     // The bounded queue has accepted packets, but the RTP actor has not dispatched them.
     assert_eq!(sender.played_position(), None);
     sender.played_end_sample.store(960, Ordering::Release);
     assert_eq!(sender.played_position(), Some(Duration::from_millis(20)));
 
-    let (result_tx, result_rx) = mpsc::sync_channel(1);
+    let (result_tx, result_rx) = flume::bounded(1);
     let blocked_sender = Arc::clone(&sender);
     let blocked_token = token.clone();
     let worker = std::thread::spawn(move || {
@@ -584,7 +673,7 @@ fn opus_sender_backpressures_at_its_bounded_queue_and_cancellation_unblocks() {
     });
     assert!(matches!(
         result_rx.recv_timeout(Duration::from_millis(60)),
-        Err(mpsc::RecvTimeoutError::Timeout)
+        Err(flume::RecvTimeoutError::Timeout)
     ));
     token.cancel();
     assert!(matches!(
@@ -594,7 +683,14 @@ fn opus_sender_backpressures_at_its_bounded_queue_and_cancellation_unblocks() {
     worker.join().unwrap();
     assert_eq!(packet_rx.len(), QUEUE_CAPACITY);
     sender.cancel();
-    assert_eq!(sender.inner.cancelled_generation.load(Ordering::Acquire), 1);
+    assert_eq!(
+        sender.inner.cancelled_generation.load(Ordering::Acquire),
+        if cfg!(feature = "experimental-scheduler") {
+            2
+        } else {
+            1
+        }
+    );
 }
 
 mod real_opus {
@@ -613,7 +709,7 @@ mod real_opus {
     use crate::dave::tests::established_group;
     use crate::rtp::serialize_rtp_header;
 
-    const LONG: &[u8] =
+    pub(super) const LONG: &[u8] =
         include_bytes!("../../../remedia-core/tests/fixtures/ffmpeg-opus-silent-lead-long.ogg");
     const WEBM: &[u8] =
         include_bytes!("../../../remedia-core/tests/fixtures/ffmpeg-opus-silent-lead.webm");
@@ -718,7 +814,7 @@ mod real_opus {
         sink.packets()
     }
 
-    async fn through_rtp_and_dave(packets: &[EncodedOpusPacket], mode: EncryptionMode) {
+    pub(super) async fn through_rtp_and_dave(packets: &[EncodedOpusPacket], mode: EncryptionMode) {
         let (_gateway, sender, mut receiver) = established_group();
         let sender_identity = sender.clone_identity_for_test();
         let dave = Arc::new(Mutex::new(sender));
@@ -847,5 +943,98 @@ mod real_opus {
         assert_eq!(received(&old), packets[..split]);
         assert_eq!(received(&replacement), packets[split..]);
         assert_eq!(received(&old)[0].media_samples_per_channel, 648);
+    }
+}
+
+#[cfg(feature = "experimental-scheduler")]
+mod scheduled_transport_benchmark;
+
+#[cfg(feature = "experimental-scheduler")]
+#[tokio::test]
+async fn scheduled_owned_opus_matches_dedicated_through_rtp_and_dave() {
+    use remedia_core::{
+        InputSource, OpusEncoderOutput, PlaybackScheduler, PlaybackSession, PlaybackState,
+    };
+    let pool = PlaybackScheduler::with_processing_budget(2, 8, 8).unwrap();
+    let mut outputs = Vec::new();
+    for scheduled in [false, true] {
+        let voice = TestVoiceConnection::new(903);
+        let router = crate::DiscordOpusSenderRouter::new();
+        router.attach(voice.connection().opus_sender());
+        let session = if scheduled {
+            PlaybackSession::with_scheduler(pool.clone())
+        } else {
+            PlaybackSession::new()
+        };
+        session
+            .play(
+                InputSource::bytes(real_opus::LONG.to_vec()),
+                OpusEncoderOutput::new(router.sink()).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            session.wait(),
+            PlaybackState::Completed,
+            "{:?}",
+            session.last_error()
+        );
+        session.stop().unwrap();
+        outputs.push(
+            voice
+                .packets()
+                .into_iter()
+                .map(|(_, packet)| packet)
+                .collect::<Vec<_>>(),
+        );
+    }
+    assert_eq!(outputs[0], outputs[1]);
+    assert_eq!(pool.diagnostics().admitted, 1);
+    assert_eq!(pool.diagnostics().unsupported_fallbacks, 0);
+    for mode in [EncryptionMode::Aes256Gcm, EncryptionMode::XChaCha20Poly1305] {
+        real_opus::through_rtp_and_dave(&outputs[1], mode).await;
+    }
+}
+
+#[test]
+fn stale_queued_and_inflight_controls_cannot_finish_a_new_generation() {
+    for kind in 0..4 {
+        let (ack, result) = flume::bounded(1);
+        let control = match kind {
+            0 => Control::Flush { generation: 1, ack },
+            1 => Control::Pause {
+                generation: 1,
+                target_id: 9,
+                ack,
+            },
+            2 => Control::Resume { generation: 1, ack },
+            _ => Control::Finish {
+                generation: 1,
+                target_id: 9,
+                ack,
+            },
+        };
+        assert!(control.for_generation(2).is_none());
+        assert!(matches!(
+            result.recv().unwrap(),
+            Err(VoiceError::Superseded)
+        ));
+    }
+    for kind in [BarrierKind::Pause, BarrierKind::Finish] {
+        let (ack, result) = flume::bounded(1);
+        let mut barrier = Some(PendingBarrier {
+            generation: Some(1),
+            target_id: 9,
+            silence_packets: 5,
+            kind,
+            ack: Some(ack),
+        });
+        discard_stale_barrier(&mut barrier, 1);
+        assert!(barrier.is_some());
+        discard_stale_barrier(&mut barrier, 2);
+        assert!(barrier.is_none());
+        assert!(matches!(
+            result.recv().unwrap(),
+            Err(VoiceError::Superseded)
+        ));
     }
 }

@@ -97,7 +97,7 @@ impl EncodedOpusOutput for OpusEncoderOutput {
                 media_samples,
                 start_sample,
                 false,
-                &*self.sink,
+                &self.sink,
                 cancellation,
             )?;
             state.partial_scalars = 0;
@@ -163,12 +163,9 @@ impl EncodedOpusOutput for OpusEncoderOutput {
         state.next_input_sample = Some(live_start_sample - history as u64);
         Self::write_pcm(
             &mut state,
-            PcmFrame {
-                samples: history_pcm.to_vec(),
-                samples_per_channel: history,
-                start_sample: live_start_sample - history as u64,
-            },
-            &*self.sink,
+            history_pcm,
+            live_start_sample - history as u64,
+            &self.sink,
             cancellation,
         )?;
         state.primed_unflushed = true;

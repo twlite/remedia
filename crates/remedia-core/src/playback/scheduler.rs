@@ -1,0 +1,698 @@
+//! Fixed-size FIFO executor. Admission bounds both live tasks and readiness storage.
+use super::*;
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+const IDLE: usize = 0;
+const QUEUED: usize = 1;
+const RUNNING: usize = 2;
+const NOTIFIED: usize = 3;
+const DONE: usize = 4;
+const TIMED: usize = 5;
+
+type DeadlineKey = (Instant, usize);
+
+#[derive(Default)]
+struct ReadyQueue {
+    jobs: VecDeque<Arc<Job>>,
+    deadlines: BTreeMap<DeadlineKey, Arc<Job>>,
+    shutdown: bool,
+}
+
+/// An application-owned experimental CPU pool, shared by explicitly attached sessions.
+/// Dropping the last owner shuts down and joins all pool threads. Dedicated playback remains
+/// the default. Owned-byte/regular-file inputs with supported demuxers and readiness-aware outputs qualify.
+pub struct PlaybackScheduler {
+    inner: Arc<Pool>,
+    threads: Vec<JoinHandle<()>>,
+}
+
+struct Pool {
+    queue: Mutex<ReadyQueue>,
+    changed: Condvar,
+    live: AtomicUsize,
+    scheduled_live: AtomicUsize,
+    capacity: usize,
+    polls: AtomicUsize,
+    busy_ns: std::sync::atomic::AtomicU64,
+    budget: usize,
+    turns: AtomicUsize,
+    admitted: AtomicUsize,
+    migrated: AtomicUsize,
+    permanent: AtomicUsize,
+    isolated: AtomicUsize,
+    controls: blocking::BlockingExecutor,
+    startup: blocking::BlockingExecutor,
+    io: Arc<blocking::BlockingExecutor>,
+    startup_rejections: AtomicUsize,
+    probe_retries: AtomicUsize,
+    unsupported: AtomicUsize,
+    reasons: [AtomicUsize; 5],
+    rejected: AtomicUsize,
+    queue_peak: AtomicUsize,
+    queue_contentions: AtomicUsize,
+    queue_wait_ns: std::sync::atomic::AtomicU64,
+    deadline_suspensions: AtomicUsize,
+    deadline_wakes: AtomicUsize,
+    deadline_peak: AtomicUsize,
+    input_waits: AtomicUsize,
+    output_waits: AtomicUsize,
+    barrier_waits: AtomicUsize,
+}
+
+/// Instantaneous scheduler diagnostics; counts include all sessions attached to this pool.
+#[derive(Clone, Copy, Debug)]
+pub struct SchedulerDiagnostics {
+    /// Fixed OS worker count.
+    pub workers: usize,
+    /// Fixed isolated control workers; these never execute ordinary codec turns.
+    pub control_workers: usize,
+    /// Pending exclusive control handoffs, bounded by admitted sessions.
+    pub queued_controls: usize,
+    /// Fixed startup workers. Unsupported workloads still retain dedicated playback workers.
+    pub startup_workers: usize,
+    /// Fixed local demux workers, shared across admitted file sessions.
+    pub io_workers: usize,
+    /// Pending read-ahead bursts, bounded by admission capacity.
+    pub queued_io: usize,
+    /// Currently executing local demux bursts.
+    pub active_io: usize,
+    /// Maximum queued local demux bursts.
+    pub io_queue_peak: usize,
+    /// Completed local demux bursts, including EOF/error reads.
+    pub io_bursts: usize,
+    /// Sum of local demux burst wall times, in nanoseconds.
+    pub io_busy_ns: u64,
+    /// Currently executing startup operations.
+    pub active_startups: usize,
+    /// Maximum queued startup requests.
+    pub startup_queue_peak: usize,
+    /// Sum of CPU action wall times, in nanoseconds; excludes idle waits.
+    pub worker_busy_ns: u64,
+    /// Pending startup requests; bounded by this scheduler's admission capacity.
+    pub queued_startups: usize,
+    /// Rejected startup requests (reported to callers, never silently admitted).
+    pub startup_rejections: usize,
+    /// Restricted startup failures retried on a tracked dedicated worker before readiness.
+    pub probe_retries: usize,
+    /// Admitted tasks, including suspended sessions.
+    pub sessions: usize,
+    /// Currently admitted sessions still executing on CPU workers, excluding control fallbacks.
+    pub scheduled_sessions: usize,
+    /// Tasks currently queued for CPU work.
+    pub queued: usize,
+    /// Completed bounded action invocations since pool creation.
+    pub actions: usize,
+    /// Maximum actions per turn. Readiness/control boundaries are checked on every action.
+    pub processing_budget: usize,
+    /// CPU queue dispatches, including turns that immediately suspend.
+    pub turns: usize,
+    /// Cumulative scheduled admissions, including already completed sessions.
+    pub admitted: usize,
+    /// Cumulative temporary handoffs to the bounded control executor; never a dedicated fallback.
+    pub control_handoffs: usize,
+    /// Admitted sessions currently awaiting or executing an isolated control.
+    pub isolated_controls: usize,
+    /// Permanent dedicated migrations for native filters outside the CPU-only whitelist.
+    pub control_fallbacks: usize,
+    /// Cumulative unsupported-workload dedicated fallbacks.
+    pub unsupported_fallbacks: usize,
+    /// Unsupported source fallbacks (network, producer streams, pipes/devices).
+    pub input_fallbacks: usize,
+    /// Outputs lacking the nonblocking scheduling contract.
+    pub output_fallbacks: usize,
+    /// Inputs with demuxers outside the conservative whitelist.
+    pub demuxer_fallbacks: usize,
+    /// Initial/live native graphs outside the CPU-only filter whitelist.
+    pub filter_fallbacks: usize,
+    /// Crossfade sessions retaining dedicated execution.
+    pub crossfade_fallbacks: usize,
+    /// Cumulative capacity-related dedicated fallbacks.
+    pub capacity_fallbacks: usize,
+    /// Maximum observed runnable queue length.
+    pub queue_peak: usize,
+    /// Queue mutex acquisitions which could not immediately acquire the mutex.
+    pub queue_contentions: usize,
+    /// Total measured nanoseconds waiting for contended queue mutex acquisitions.
+    pub queue_wait_ns: u64,
+    /// Current generation-specific pacing deadlines (at most one per admitted job).
+    pub pending_deadlines: usize,
+    /// Maximum number of pending pacing deadlines.
+    pub deadline_peak: usize,
+    /// Pacing suspensions, including deadlines replaced after an early control wake.
+    pub deadline_suspensions: usize,
+    /// Expired deadlines promoted to the runnable FIFO.
+    pub deadline_wakes: usize,
+    /// Cumulative empty compressed-input queue polls.
+    pub input_suspensions: usize,
+    /// Cumulative output capacity/production readiness suspensions.
+    pub output_suspensions: usize,
+    /// Cumulative pending transport barrier polls, separate from isolated controls.
+    pub barrier_suspensions: usize,
+}
+
+impl PlaybackScheduler {
+    /// Create a fixed pool with a positive worker count and positive live-session capacity.
+    /// Thread creation failures are returned; already-created workers are shut down and joined.
+    pub fn new(workers: usize, capacity: usize) -> std::io::Result<Arc<Self>> {
+        Self::with_processing_budget(workers, capacity, 1)
+    }
+
+    /// Create a fixed pool with a positive maximum number of actions per scheduling turn.
+    /// Each action still checks output readiness and pending controls. The budget bounds action
+    /// count, not native codec execution time. A larger budget can increase fairness latency.
+    pub fn with_processing_budget(
+        workers: usize,
+        capacity: usize,
+        actions_per_turn: usize,
+    ) -> std::io::Result<Arc<Self>> {
+        if workers == 0 || capacity == 0 || actions_per_turn == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "workers, capacity and processing budget must be positive",
+            ));
+        }
+        let inner = Arc::new(Pool {
+            queue: Mutex::new(ReadyQueue::default()),
+            changed: Condvar::new(),
+            live: AtomicUsize::new(0),
+            scheduled_live: AtomicUsize::new(0),
+            capacity,
+            polls: AtomicUsize::new(0),
+            busy_ns: std::sync::atomic::AtomicU64::new(0),
+            budget: actions_per_turn,
+            turns: AtomicUsize::new(0),
+            admitted: AtomicUsize::new(0),
+            migrated: AtomicUsize::new(0),
+            permanent: AtomicUsize::new(0),
+            isolated: AtomicUsize::new(0),
+            controls: blocking::BlockingExecutor::new(2, capacity, "control")?,
+            startup: blocking::BlockingExecutor::new(2, capacity, "startup")?,
+            io: Arc::new(blocking::BlockingExecutor::new(2, capacity, "demux")?),
+            startup_rejections: AtomicUsize::new(0),
+            probe_retries: AtomicUsize::new(0),
+            unsupported: AtomicUsize::new(0),
+            reasons: std::array::from_fn(|_| AtomicUsize::new(0)),
+            rejected: AtomicUsize::new(0),
+            queue_peak: AtomicUsize::new(0),
+            queue_contentions: AtomicUsize::new(0),
+            queue_wait_ns: std::sync::atomic::AtomicU64::new(0),
+            deadline_suspensions: AtomicUsize::new(0),
+            deadline_wakes: AtomicUsize::new(0),
+            deadline_peak: AtomicUsize::new(0),
+            input_waits: AtomicUsize::new(0),
+            output_waits: AtomicUsize::new(0),
+            barrier_waits: AtomicUsize::new(0),
+        });
+        let mut scheduler = Self {
+            inner,
+            threads: Vec::new(),
+        };
+        for index in 0..workers {
+            let pool = scheduler.inner.clone();
+            scheduler.threads.push(
+                thread::Builder::new()
+                    .name(format!("remedia-cpu-{index}"))
+                    .spawn(move || run(pool))?,
+            );
+        }
+        Ok(Arc::new(scheduler))
+    }
+
+    /// Use available CPU parallelism, 1024 live tasks and an eight-action processing budget.
+    /// This opt-in default avoids the measured synchronized-tail regression of an undersized pool.
+    pub fn for_available_parallelism() -> std::io::Result<Arc<Self>> {
+        Self::with_processing_budget(
+            thread::available_parallelism().map_or(1, |n| n.get()),
+            1024,
+            8,
+        )
+    }
+
+    pub(super) fn record_probe_retry(&self) {
+        self.inner.probe_retries.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn io_executor(&self) -> Arc<blocking::BlockingExecutor> {
+        self.inner.io.clone()
+    }
+
+    pub(super) fn start(
+        &self,
+        task: impl FnOnce() + Send + 'static,
+    ) -> std::io::Result<blocking::TaskHandle> {
+        self.inner.startup.submit(task).inspect_err(|_| {
+            self.inner
+                .startup_rejections
+                .fetch_add(1, Ordering::Relaxed);
+        })
+    }
+
+    /// Read bounded-queue and execution counters without collecting OS resources.
+    pub fn diagnostics(&self) -> SchedulerDiagnostics {
+        let (queued, pending_deadlines) = {
+            let queue = lock(&self.inner.queue);
+            (queue.jobs.len(), queue.deadlines.len())
+        };
+        SchedulerDiagnostics {
+            workers: self.threads.len(),
+            control_workers: self.inner.controls.workers(),
+            queued_controls: self.inner.controls.queued(),
+            startup_workers: self.inner.startup.workers(),
+            io_workers: self.inner.io.workers(),
+            queued_io: self.inner.io.queued(),
+            active_io: self.inner.io.active(),
+            io_queue_peak: self.inner.io.peak(),
+            io_bursts: self.inner.io.completed(),
+            io_busy_ns: self.inner.io.busy_ns(),
+            active_startups: self.inner.startup.active(),
+            startup_queue_peak: self.inner.startup.peak(),
+            worker_busy_ns: self.inner.busy_ns.load(Ordering::Relaxed),
+            queued_startups: self.inner.startup.queued(),
+            startup_rejections: self.inner.startup_rejections.load(Ordering::Relaxed),
+            probe_retries: self.inner.probe_retries.load(Ordering::Relaxed),
+            sessions: self.inner.live.load(Ordering::Relaxed),
+            scheduled_sessions: self
+                .inner
+                .scheduled_live
+                .load(Ordering::Relaxed)
+                .saturating_sub(self.inner.isolated.load(Ordering::Relaxed)),
+            queued,
+            actions: self.inner.polls.load(Ordering::Relaxed),
+            processing_budget: self.inner.budget,
+            turns: self.inner.turns.load(Ordering::Relaxed),
+            admitted: self.inner.admitted.load(Ordering::Relaxed),
+            control_fallbacks: self.inner.permanent.load(Ordering::Relaxed),
+            control_handoffs: self.inner.migrated.load(Ordering::Relaxed),
+            isolated_controls: self.inner.isolated.load(Ordering::Relaxed),
+            unsupported_fallbacks: self.inner.unsupported.load(Ordering::Relaxed),
+            input_fallbacks: self.inner.reasons[0].load(Ordering::Relaxed),
+            output_fallbacks: self.inner.reasons[1].load(Ordering::Relaxed),
+            demuxer_fallbacks: self.inner.reasons[2].load(Ordering::Relaxed),
+            filter_fallbacks: self.inner.reasons[3].load(Ordering::Relaxed),
+            crossfade_fallbacks: self.inner.reasons[4].load(Ordering::Relaxed),
+            capacity_fallbacks: self.inner.rejected.load(Ordering::Relaxed),
+            queue_peak: self.inner.queue_peak.load(Ordering::Relaxed),
+            queue_contentions: self.inner.queue_contentions.load(Ordering::Relaxed),
+            queue_wait_ns: self.inner.queue_wait_ns.load(Ordering::Relaxed),
+            pending_deadlines,
+            deadline_peak: self.inner.deadline_peak.load(Ordering::Relaxed),
+            deadline_suspensions: self.inner.deadline_suspensions.load(Ordering::Relaxed),
+            deadline_wakes: self.inner.deadline_wakes.load(Ordering::Relaxed),
+            input_suspensions: self.inner.input_waits.load(Ordering::Relaxed),
+            output_suspensions: self.inner.output_waits.load(Ordering::Relaxed),
+            barrier_suspensions: self.inner.barrier_waits.load(Ordering::Relaxed),
+        }
+    }
+
+    pub(super) fn unsupported(&self, reason: usize) {
+        self.inner.reasons[reason].fetch_add(1, Ordering::Relaxed);
+        self.inner.unsupported.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn submit(
+        &self,
+        machine: impl FnMut() -> worker::WorkerStep + Send + 'static,
+        on_error: impl Fn(std::io::Error) + Send + Sync + 'static,
+    ) -> Result<Arc<Job>, Machine> {
+        let machine: Machine = Box::new(machine);
+        let mut live = self.inner.live.load(Ordering::Acquire);
+        loop {
+            if live >= self.inner.capacity {
+                self.inner.rejected.fetch_add(1, Ordering::Relaxed);
+                return Err(machine);
+            }
+            match self.inner.live.compare_exchange_weak(
+                live,
+                live + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(current) => live = current,
+            }
+        }
+        self.inner.admitted.fetch_add(1, Ordering::Relaxed);
+        self.inner.scheduled_live.fetch_add(1, Ordering::Relaxed);
+        let job = Arc::new(Job {
+            dedicated: std::sync::atomic::AtomicBool::new(false),
+            on_error: Box::new(on_error),
+
+            cancel_wake: Mutex::new(None),
+            pool: Arc::downgrade(&self.inner),
+            state: AtomicUsize::new(IDLE),
+            deadline: Mutex::new(None),
+            machine: Mutex::new(Some(machine)),
+            finished: Mutex::new(false),
+            changed: Condvar::new(),
+        });
+        Ok(job)
+    }
+}
+
+impl Drop for PlaybackScheduler {
+    fn drop(&mut self) {
+        lock(&self.inner.queue).shutdown = true;
+        self.inner.changed.notify_all();
+        for thread in self.threads.drain(..) {
+            // Last ownership can retire on a worker after its final session is released.
+            if thread.thread().id() != thread::current().id() {
+                let _ = thread.join();
+            }
+        }
+    }
+}
+
+type Machine = Box<dyn FnMut() -> worker::WorkerStep + Send>;
+
+pub(super) struct Job {
+    dedicated: std::sync::atomic::AtomicBool,
+    on_error: Box<dyn Fn(std::io::Error) + Send + Sync>,
+    pub(super) cancel_wake: Mutex<Option<Arc<CancelWake>>>,
+    pool: std::sync::Weak<Pool>,
+    state: AtomicUsize,
+    deadline: Mutex<Option<DeadlineKey>>,
+    machine: Mutex<Option<Machine>>,
+    finished: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl Job {
+    pub(super) fn wake(self: &Arc<Self>) {
+        loop {
+            let state = self.state.load(Ordering::Acquire);
+            match state {
+                IDLE | TIMED => {
+                    if self
+                        .state
+                        .compare_exchange(state, QUEUED, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        if let Some(pool) = self.pool.upgrade() {
+                            let mut queue = queue_lock(&pool);
+                            if let Some(key) = lock(&self.deadline).take() {
+                                queue.deadlines.remove(&key);
+                            }
+                            queue.jobs.push_back(self.clone());
+                            pool.queue_peak
+                                .fetch_max(queue.jobs.len(), Ordering::Relaxed);
+                            drop(queue);
+                            pool.changed.notify_one();
+                        }
+                        return;
+                    }
+                }
+                RUNNING => {
+                    if self
+                        .state
+                        .compare_exchange(RUNNING, NOTIFIED, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        return;
+                    }
+                }
+                _ => return,
+            }
+        }
+    }
+
+    pub(super) fn join(&self) {
+        let mut finished = lock(&self.finished);
+        while !*finished {
+            finished = wait(&self.changed, finished);
+        }
+    }
+}
+
+fn queue_lock(pool: &Pool) -> std::sync::MutexGuard<'_, ReadyQueue> {
+    match pool.queue.try_lock() {
+        Ok(queue) => queue,
+        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            pool.queue_contentions.fetch_add(1, Ordering::Relaxed);
+            let start = Instant::now();
+            let queue = lock(&pool.queue);
+            pool.queue_wait_ns.fetch_add(
+                start.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+                Ordering::Relaxed,
+            );
+            queue
+        }
+    }
+}
+
+fn run(pool: Arc<Pool>) {
+    loop {
+        let job = {
+            let mut queue = queue_lock(&pool);
+            loop {
+                let now = Instant::now();
+                while queue
+                    .deadlines
+                    .first_key_value()
+                    .is_some_and(|(key, _)| key.0 <= now)
+                {
+                    let (_, due) = queue.deadlines.pop_first().expect("due deadline");
+                    lock(&due.deadline).take();
+                    if due
+                        .state
+                        .compare_exchange(TIMED, QUEUED, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        queue.jobs.push_back(due);
+                        pool.deadline_wakes.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                pool.queue_peak
+                    .fetch_max(queue.jobs.len(), Ordering::Relaxed);
+                if queue.shutdown {
+                    return;
+                }
+                if let Some(job) = queue.jobs.pop_front() {
+                    if !queue.jobs.is_empty() {
+                        pool.changed.notify_one();
+                    }
+                    break job;
+                }
+                queue = if let Some((key, _)) = queue.deadlines.first_key_value() {
+                    let delay = key.0.saturating_duration_since(Instant::now());
+                    pool.changed
+                        .wait_timeout(queue, delay)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .0
+                } else {
+                    wait(&pool.changed, queue)
+                };
+            }
+        };
+        job.state.store(RUNNING, Ordering::Release);
+        let turn_start = Instant::now();
+        let mut machine = lock(&job.machine);
+        let mut actions = 0;
+        let outcome = loop {
+            let outcome = machine.as_mut().expect("live task")();
+            actions += 1;
+            if outcome != worker::WorkerStep::Runnable || actions >= pool.budget {
+                break outcome;
+            }
+        };
+        pool.busy_ns.fetch_add(
+            turn_start.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
+        pool.polls.fetch_add(actions, Ordering::Relaxed);
+        pool.turns.fetch_add(1, Ordering::Relaxed);
+        match outcome {
+            worker::WorkerStep::WaitingInput => {
+                pool.input_waits.fetch_add(1, Ordering::Relaxed);
+            }
+            worker::WorkerStep::WaitingOutput => {
+                pool.output_waits.fetch_add(1, Ordering::Relaxed);
+            }
+            worker::WorkerStep::WaitingControl => {
+                pool.barrier_waits.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+        if let worker::WorkerStep::Deadline(deadline) = outcome {
+            let mut queue = queue_lock(&pool);
+            if job
+                .state
+                .compare_exchange(RUNNING, TIMED, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                let key = (deadline, Arc::as_ptr(&job) as usize);
+                let earlier = queue
+                    .deadlines
+                    .first_key_value()
+                    .is_none_or(|(first, _)| key < *first);
+                *lock(&job.deadline) = Some(key);
+                queue.deadlines.insert(key, job.clone());
+                pool.deadline_suspensions.fetch_add(1, Ordering::Relaxed);
+                pool.deadline_peak
+                    .fetch_max(queue.deadlines.len(), Ordering::Relaxed);
+                if earlier {
+                    pool.changed.notify_one();
+                }
+            } else {
+                drop(queue);
+                job.state.store(IDLE, Ordering::Release);
+                job.wake();
+            }
+        } else if outcome == worker::WorkerStep::DedicatedFallback {
+            pool.migrated.fetch_add(1, Ordering::Relaxed);
+            pool.isolated.fetch_add(1, Ordering::Relaxed);
+            // Keep the job admitted. Exclusive ownership moves out of the CPU queue until
+            // one potentially blocking operation finishes; all wakes are coalesced meanwhile.
+            let mut isolated = machine.take().expect("handoff machine");
+            drop(machine);
+            let control_job = job.clone();
+            let control_pool = pool.clone();
+            if let Err(error) = pool.controls.execute(move || {
+                let outcome = catch_unwind(AssertUnwindSafe(&mut isolated));
+                control_pool.isolated.fetch_sub(1, Ordering::Relaxed);
+                match outcome {
+                    Ok(
+                        worker::WorkerStep::Completed
+                        | worker::WorkerStep::Cancelled
+                        | worker::WorkerStep::Failed,
+                    ) => {
+                        drop(isolated);
+                        complete(&control_job, &control_pool);
+                    }
+                    Ok(worker::WorkerStep::UnsupportedFilter) => {
+                        control_pool.permanent.fetch_add(1, Ordering::Relaxed);
+                        control_pool.reasons[3].fetch_add(1, Ordering::Relaxed);
+                        control_pool.scheduled_live.fetch_sub(1, Ordering::Relaxed);
+                        control_job.dedicated.store(true, Ordering::Release);
+                        let context = (control_job.clone(), control_pool.clone());
+                        if let Err(error) = thread::Builder::new()
+                            .name("remedia-filter-fallback".into())
+                            .spawn(move || {
+                                if catch_unwind(AssertUnwindSafe(&mut isolated)).is_err() {
+                                    (context.0.on_error)(std::io::Error::other(
+                                        "filter fallback panicked",
+                                    ));
+                                }
+                                drop(isolated);
+                                complete(&context.0, &context.1);
+                            })
+                        {
+                            (control_job.on_error)(error);
+                            complete(&control_job, &control_pool);
+                        }
+                    }
+                    Ok(_) => {
+                        *lock(&control_job.machine) = Some(isolated);
+                        control_job.state.store(IDLE, Ordering::Release);
+                        control_job.wake();
+                    }
+                    Err(_) => {
+                        (control_job.on_error)(std::io::Error::other("isolated control panicked"));
+                        drop(isolated);
+                        complete(&control_job, &control_pool);
+                    }
+                }
+            }) {
+                pool.isolated.fetch_sub(1, Ordering::Relaxed);
+                (job.on_error)(error);
+                complete(&job, &pool);
+            }
+        } else if matches!(
+            outcome,
+            worker::WorkerStep::Completed
+                | worker::WorkerStep::Cancelled
+                | worker::WorkerStep::Failed
+        ) {
+            machine.take();
+            complete(&job, &pool);
+        } else if outcome == worker::WorkerStep::Runnable
+            || job
+                .state
+                .compare_exchange(RUNNING, IDLE, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            job.state.store(IDLE, Ordering::Release);
+            job.wake();
+        }
+    }
+}
+
+fn complete(job: &Job, pool: &Pool) {
+    if !job.dedicated.load(Ordering::Acquire) {
+        pool.scheduled_live.fetch_sub(1, Ordering::Relaxed);
+    }
+    job.state.store(DONE, Ordering::Release);
+    pool.live.fetch_sub(1, Ordering::AcqRel);
+    *lock(&job.finished) = true;
+    job.changed.notify_all();
+}
+
+pub(super) struct CancelWake(pub std::sync::Weak<Job>);
+impl crate::source::CancellationWake for CancelWake {
+    fn wake_for_cancellation(&self) {
+        if let Some(job) = self.0.upgrade() {
+            job.wake();
+        }
+    }
+}
+
+impl std::task::Wake for CancelWake {
+    fn wake(self: Arc<Self>) {
+        if let Some(job) = self.0.upgrade() {
+            job.wake();
+        }
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        if let Some(job) = self.0.upgrade() {
+            job.wake();
+        }
+    }
+}
+
+#[cfg(test)]
+mod isolation_tests {
+    use super::*;
+
+    #[test]
+    fn stalled_demux_workers_do_not_occupy_codec_or_startup_workers() {
+        let pool = PlaybackScheduler::new(1, 16).unwrap();
+        let started = Arc::new(std::sync::Barrier::new(3));
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let started = started.clone();
+            let release = release.clone();
+            handles.push(
+                pool.io_executor()
+                    .submit(move || {
+                        started.wait();
+                        let mut released = lock(&release.0);
+                        while !*released {
+                            released = wait(&release.1, released);
+                        }
+                    })
+                    .unwrap(),
+            );
+        }
+        started.wait();
+        let session = PlaybackSession::with_scheduler(pool.clone());
+        session
+            .play(
+                InputSource::bytes(
+                    include_bytes!("../../tests/fixtures/generated-tone.mp3").to_vec(),
+                ),
+                crate::NullOutput::new(),
+            )
+            .unwrap();
+        assert_eq!(session.wait(), PlaybackState::Completed);
+        session.stop().unwrap();
+        assert_eq!(pool.diagnostics().admitted, 1);
+        assert_eq!(pool.diagnostics().active_io, 2);
+        *lock(&release.0) = true;
+        release.1.notify_all();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+}

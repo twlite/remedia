@@ -379,7 +379,7 @@ fn worker_loop(
                 {
                     let mut data = lock(&shared.data);
                     data.processing_mode = Some(PlaybackProcessingMode::Passthrough);
-                    shared.changed.notify_all();
+                    shared.signal_change();
                 }
                 record_encoded_packet_submitted(
                     &shared,
@@ -409,7 +409,7 @@ fn worker_loop(
         {
             let mut data = lock(&shared.data);
             data.processing_mode = Some(PlaybackProcessingMode::Transcoding);
-            shared.changed.notify_all();
+            shared.signal_change();
         }
         let mut pcm = match current.read(wanted, &cancellation) {
             Ok(Some(data)) => data,
@@ -653,7 +653,7 @@ fn worker_loop(
                 if completed {
                     data.played_position = played.or(data.played_position);
                     data.state = PlaybackState::Completed;
-                    shared.changed.notify_all();
+                    shared.signal_change();
                 }
 
                 completed

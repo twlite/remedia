@@ -1,0 +1,7 @@
+{
+  "sourceRevision": "2be796c",
+  "instrumentedBinary": "/tmp/remedia-hybrid-profile/target/release/examples/hybrid_scheduler_benchmark",
+  "sha256": "545b22c382ecdf96d7710e1f8653db51c207646a957e5d77cde4553a306f0357",
+  "method": "Wall-time instrumentation in an archived source copy; excluded from normal CPU comparisons",
+  "preservedBinary": "/tmp/remedia-hybrid-profile/profile-cleanup-v1"
+}

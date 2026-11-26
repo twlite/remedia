@@ -3,14 +3,14 @@ use std::sync::{Arc, Mutex};
 use super::*;
 
 #[derive(Clone, Default)]
-struct CaptureSink(Arc<Mutex<CaptureState>>);
+pub(super) struct CaptureSink(pub(super) Arc<Mutex<CaptureState>>);
 
 #[derive(Default)]
-struct CaptureState {
-    packets: Vec<EncodedOpusPacket>,
+pub(super) struct CaptureState {
+    pub(super) packets: Vec<EncodedOpusPacket>,
     flushes: usize,
     flush_sample_positions: Vec<u64>,
-    finished: bool,
+    pub(super) finished: bool,
     fail: bool,
 }
 
@@ -59,7 +59,7 @@ impl OpusPacketSink for CaptureSink {
     fn cancel(&self) {}
 }
 
-fn pcm(start_sample: u64, samples_per_channel: usize) -> PcmFrame {
+pub(super) fn pcm(start_sample: u64, samples_per_channel: usize) -> PcmFrame {
     PcmFrame {
         samples: vec![0.0; samples_per_channel * 2],
         samples_per_channel,
@@ -67,7 +67,7 @@ fn pcm(start_sample: u64, samples_per_channel: usize) -> PcmFrame {
     }
 }
 
-fn assert_settings(output: &OpusEncoderOutput, config: OpusEncoderConfig) {
+pub(super) fn assert_settings(output: &OpusEncoderOutput, config: OpusEncoderConfig) {
     let mut state = lock(&output.state);
     let encoder = state.encoder.as_mut().expect("PCM initialized encoder");
     assert_eq!(

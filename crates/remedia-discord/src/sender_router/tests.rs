@@ -416,3 +416,263 @@ fn routed_delivery_cost() {
     );
     voice.wait_for_packets(PACKETS as usize);
 }
+
+#[cfg(feature = "experimental-scheduler")]
+#[test]
+fn scheduled_owned_pcm_drains_transport_and_acknowledges_finish() {
+    let voice = TestVoiceConnection::new(901);
+    let router = DiscordOpusSenderRouter::new();
+    router.attach(voice.connection().opus_sender());
+    let pool = remedia_core::PlaybackScheduler::with_processing_budget(1, 8, 8).unwrap();
+    let session = PlaybackSession::with_scheduler(pool.clone());
+    let output = OpusEncoderOutput::new(router.sink()).unwrap();
+    let source = pcm_wave(&vec![500; 48_000]);
+    session.play(InputSource::bytes(source), output).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while session.state() != PlaybackState::Completed && std::time::Instant::now() < deadline {
+        assert_ne!(session.state(), PlaybackState::Failed);
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(session.state(), PlaybackState::Completed);
+    let packets = voice.packets();
+    assert_eq!(
+        packets
+            .iter()
+            .map(|(_, p)| u64::from(p.media_samples_per_channel))
+            .sum::<u64>(),
+        48_000
+    );
+    assert!(packets.windows(2).all(|p| p[0].1.start_sample
+        + u64::from(p[0].1.media_samples_per_channel)
+        == p[1].1.start_sample));
+    assert_eq!(pool.diagnostics().admitted, 1);
+    assert_eq!(pool.diagnostics().unsupported_fallbacks, 0);
+    assert_eq!(pool.diagnostics().control_fallbacks, 0);
+    assert!(
+        lock(&router.inner.state)
+            .active_playback_generation
+            .is_none()
+    );
+}
+
+#[cfg(feature = "experimental-scheduler")]
+#[test]
+fn pending_scheduled_router_packet_survives_transport_attachment() {
+    use std::task::{Context, Poll, Wake, Waker};
+    struct WakeCount(std::sync::atomic::AtomicUsize);
+    impl Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    let wake = Arc::new(WakeCount(std::sync::atomic::AtomicUsize::new(0)));
+    let waker = Waker::from(wake.clone());
+    let mut cx = Context::from_waker(&waker);
+    let router = DiscordOpusSenderRouter::new();
+    let sink = router.sink();
+    let token = CancellationToken::new();
+    let mut packet = Some(EncodedOpusPacket {
+        bytes: vec![0xF8, 0xFF, 0xFE],
+        samples_per_channel: 960,
+        media_samples_per_channel: 960,
+        start_sample: 0,
+    });
+    let allocation = packet.as_ref().unwrap().bytes.as_ptr();
+    assert!(
+        sink.scheduler_poll_packet(&mut packet, &mut cx, &token)
+            .is_pending()
+    );
+    assert_eq!(packet.as_ref().unwrap().bytes.as_ptr(), allocation);
+    let voice = TestVoiceConnection::new(902);
+    router.attach(voice.connection().opus_sender());
+    assert!(wake.0.load(Ordering::Relaxed) > 0);
+    assert!(matches!(
+        sink.scheduler_poll_packet(&mut packet, &mut cx, &token),
+        Poll::Ready(Ok(()))
+    ));
+    assert!(packet.is_none());
+    voice.wait_for_packets(1);
+    assert_eq!(voice.packets()[0].1.bytes, vec![0xF8, 0xFF, 0xFE]);
+}
+
+#[cfg(feature = "experimental-scheduler")]
+#[test]
+fn scheduled_seek_during_pending_finish_returns_to_playback_without_starving_others() {
+    let voice = TestVoiceConnection::new(904);
+    voice.hold_finishes(true);
+    let router = DiscordOpusSenderRouter::new();
+    router.attach(voice.connection().opus_sender());
+    let pool = remedia_core::PlaybackScheduler::with_processing_budget(1, 8, 8).unwrap();
+    let session = PlaybackSession::with_scheduler(pool.clone());
+    session
+        .play(
+            InputSource::bytes(
+                include_bytes!(
+                    "../../../remedia-core/tests/fixtures/ffmpeg-opus-silent-lead-long.ogg"
+                )
+                .to_vec(),
+            ),
+            OpusEncoderOutput::new(router.sink()).unwrap(),
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !voice.controls().contains(&"finish") {
+        assert!(std::time::Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        session.state(),
+        PlaybackState::Playing,
+        "completion requires the transport acknowledgement"
+    );
+    let original_end =
+        ((session.position().submitted.as_nanos() * 48_000 + 500_000_000) / 1_000_000_000) as u64;
+    let unrelated = PlaybackSession::with_scheduler(pool.clone());
+    unrelated
+        .play(
+            InputSource::bytes(pcm_wave(&vec![500; 48_000])),
+            remedia_core::NullOutput::new(),
+        )
+        .unwrap();
+    assert_eq!(unrelated.wait(), PlaybackState::Completed);
+    unrelated.stop().unwrap();
+    session.seek(Duration::from_secs(1)).unwrap();
+    assert!(session.executor_diagnostic().starts_with("scheduled"));
+    voice.hold_finishes(false);
+    assert_eq!(
+        session.wait(),
+        PlaybackState::Completed,
+        "{:?}",
+        session.last_error()
+    );
+    session.stop().unwrap();
+    let packets = voice.packets();
+    let after_seek: Vec<_> = packets
+        .iter()
+        .filter(|(generation, _)| *generation != packets[0].0)
+        .map(|(_, packet)| packet)
+        .collect();
+    assert!(!after_seek.is_empty());
+    assert_eq!(after_seek[0].start_sample, 48_000);
+    assert!(after_seek.windows(2).all(|packets| packets[0].start_sample
+        + u64::from(packets[0].media_samples_per_channel)
+        == packets[1].start_sample));
+    let last = after_seek.last().unwrap();
+    assert_eq!(
+        last.start_sample + u64::from(last.media_samples_per_channel),
+        original_end
+    );
+    assert_eq!(pool.diagnostics().control_fallbacks, 0);
+    assert_eq!(pool.diagnostics().sessions, 0);
+}
+
+#[cfg(feature = "experimental-scheduler")]
+#[test]
+fn scheduled_pause_and_resume_can_supersede_a_pending_eof_barrier() {
+    let voice = TestVoiceConnection::new(905);
+    voice.hold_finishes(true);
+    let router = DiscordOpusSenderRouter::new();
+    router.attach(voice.connection().opus_sender());
+    let pool = remedia_core::PlaybackScheduler::new(1, 8).unwrap();
+    let session = PlaybackSession::with_scheduler(pool.clone());
+    session
+        .play(
+            InputSource::bytes(pcm_wave(&vec![500; 48_000])),
+            OpusEncoderOutput::new(router.sink()).unwrap(),
+        )
+        .unwrap();
+    let limit = std::time::Instant::now() + Duration::from_secs(5);
+    while !voice.controls().contains(&"finish") {
+        assert!(std::time::Instant::now() < limit);
+        thread::sleep(Duration::from_millis(1));
+    }
+    session.pause().unwrap();
+    assert_eq!(session.state(), PlaybackState::Paused);
+    voice.hold_finishes(false);
+    session.resume().unwrap();
+    assert_eq!(
+        session.wait(),
+        PlaybackState::Completed,
+        "{:?}",
+        session.last_error()
+    );
+    session.stop().unwrap();
+    assert_eq!(
+        voice
+            .packets()
+            .iter()
+            .map(|(_, packet)| u64::from(packet.media_samples_per_channel))
+            .sum::<u64>(),
+        48_000
+    );
+    assert_eq!(pool.diagnostics().control_fallbacks, 0);
+}
+
+#[cfg(feature = "experimental-scheduler")]
+#[test]
+fn detached_seek_flushes_suspend_without_exhausting_isolated_control_workers() {
+    let pool = remedia_core::PlaybackScheduler::with_processing_budget(1, 16, 8).unwrap();
+    let mut waiting = Vec::new();
+    for _ in 0..3 {
+        let router = DiscordOpusSenderRouter::new();
+        let session = PlaybackSession::with_scheduler(pool.clone());
+        session
+            .play(
+                InputSource::bytes(pcm_wave(&vec![500; 96_000])),
+                OpusEncoderOutput::new(router.sink()).unwrap(),
+            )
+            .unwrap();
+        let seek = session.start_seek(Duration::from_millis(20)).unwrap();
+        waiting.push((router, session, seek));
+    }
+    let limit = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let d = pool.diagnostics();
+        if d.control_handoffs >= 3 && d.isolated_controls == 0 && d.queued_controls == 0 {
+            break;
+        }
+        assert!(std::time::Instant::now() < limit);
+        thread::yield_now();
+    }
+    let unrelated = PlaybackSession::with_scheduler(pool.clone());
+    let (output, reader) = remedia_core::StreamOutput::new(
+        remedia_core::StreamFormat::F32le,
+        remedia_core::StreamPacing::Unpaced,
+        remedia_core::OpusEncoderConfig::default(),
+    )
+    .unwrap();
+    unrelated
+        .play(InputSource::bytes(pcm_wave(&vec![500; 96_000])), output)
+        .unwrap();
+    unrelated.pause().unwrap();
+    unrelated.seek(Duration::from_millis(30)).unwrap();
+    unrelated.set_filter_graph(Some("volume=0.75")).unwrap();
+    unrelated.stop().unwrap();
+    drop(reader);
+    for (index, (router, session, seek)) in waiting.into_iter().enumerate() {
+        let voice = TestVoiceConnection::new(910 + index as u64);
+        router.attach(voice.connection().opus_sender());
+        assert_eq!(
+            seek.wait_outcome().unwrap().applied,
+            Duration::from_millis(20)
+        );
+        assert_eq!(
+            session.wait(),
+            PlaybackState::Completed,
+            "{:?}",
+            session.last_error()
+        );
+        session.stop().unwrap();
+        let packets = voice.packets();
+        assert_eq!(packets[0].1.start_sample, 960);
+        assert_eq!(
+            packets
+                .iter()
+                .map(|(_, packet)| u64::from(packet.media_samples_per_channel))
+                .sum::<u64>(),
+            95_040
+        );
+    }
+    assert_eq!(pool.diagnostics().sessions, 0);
+    assert_eq!(pool.diagnostics().control_fallbacks, 0);
+}

@@ -1,6 +1,60 @@
 use super::*;
 use crate::decoder::{OPUS_ENCODER_LOOKAHEAD, OPUS_RECOVERY_WARM_FRAMES};
 
+// The default path calls the original synchronous operation. Only an admitted machine polls.
+macro_rules! output_barrier {
+    ($shared:expr, $output:expr, $cancellation:expr, $control:ident, $method:ident) => {{
+        #[cfg(feature = "experimental-scheduler")]
+        {
+            let wake = ($shared.executor.load(std::sync::atomic::Ordering::Acquire) == 1)
+                .then(|| {
+                    lock(&$shared.scheduled)
+                        .as_ref()
+                        .and_then(|job| lock(&job.cancel_wake).clone())
+                })
+                .flatten();
+            if let Some(wake) = wake {
+                let waker = std::task::Waker::from(wake);
+                let mut cx = std::task::Context::from_waker(&waker);
+                match $output.scheduler_poll_control(
+                    crate::OutputControl::$control,
+                    &mut cx,
+                    $cancellation,
+                ) {
+                    std::task::Poll::Pending => return WorkerStep::WaitingControl,
+                    std::task::Poll::Ready(result) => result,
+                }
+            } else {
+                $output.$method($cancellation)
+            }
+        }
+        #[cfg(not(feature = "experimental-scheduler"))]
+        {
+            $output.$method($cancellation)
+        }
+    }};
+}
+
+macro_rules! input_action {
+    ($shared:expr, $decoder:expr, $poll:ident, $sync:ident $(, $arg:expr)*) => {{
+        #[cfg(feature = "experimental-scheduler")]
+        {
+            let wake = ($shared.executor.load(std::sync::atomic::Ordering::Acquire) == 1)
+                .then(|| lock(&$shared.scheduled).as_ref().and_then(|job| lock(&job.cancel_wake).clone())).flatten();
+            if let Some(wake) = wake {
+                let waker = std::task::Waker::from(wake);
+                let mut cx = std::task::Context::from_waker(&waker);
+                match $decoder.$poll($($arg,)* &mut cx) {
+                    std::task::Poll::Pending => return WorkerStep::WaitingInput,
+                    std::task::Poll::Ready(result) => result,
+                }
+            } else { $decoder.$sync($($arg),*) }
+        }
+        #[cfg(not(feature = "experimental-scheduler"))]
+        { $decoder.$sync($($arg),*) }
+    }};
+}
+
 pub(super) fn worker_entry(
     shared: Arc<SessionShared>,
     generation: u64,
@@ -8,7 +62,7 @@ pub(super) fn worker_entry(
     output: Arc<dyn MediaOutput>,
     cancellation: CancellationToken,
     ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
-    reopen: fallback::Reopen,
+    (reopen, isolated_startup): (fallback::Reopen, bool),
 ) {
     let panic_ready = ready.clone();
     let worker_shared = Arc::clone(&shared);
@@ -22,7 +76,7 @@ pub(super) fn worker_entry(
             output,
             cancellation,
             ready,
-            reopen,
+            (reopen, isolated_startup),
         );
     }));
 
@@ -40,6 +94,38 @@ pub(super) fn worker_entry(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum WorkerStep {
+    Runnable,
+    Paused(u64),
+    #[cfg(feature = "experimental-scheduler")]
+    WaitingOutput,
+    #[cfg(feature = "experimental-scheduler")]
+    WaitingInput,
+    #[cfg(feature = "experimental-scheduler")]
+    WaitingControl,
+    #[cfg(feature = "experimental-scheduler")]
+    Deadline(Instant),
+    #[cfg(feature = "experimental-scheduler")]
+    DedicatedFallback,
+    #[cfg(feature = "experimental-scheduler")]
+    UnsupportedFilter,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+struct PreparedMachine<M> {
+    machine: M,
+    scheduler_safe: bool,
+    filter_safe: bool,
+}
+
+struct DedicatedStart {
+    retry: startup::DedicatedRetry,
+    reopen: fallback::Reopen,
+}
+
 pub(super) fn worker_loop(
     shared: Arc<SessionShared>,
     generation: u64,
@@ -47,25 +133,360 @@ pub(super) fn worker_loop(
     output: Arc<dyn MediaOutput>,
     cancellation: CancellationToken,
     ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
-    reopen: fallback::Reopen,
+    (reopen, isolated_startup): (fallback::Reopen, bool),
 ) {
+    #[cfg(feature = "experimental-scheduler")]
+    let eligibility = (source.scheduler_input(), output.scheduler_nonblocking());
+    #[cfg(feature = "experimental-scheduler")]
+    let eligible = eligibility.0 && eligibility.1;
+    #[cfg(feature = "experimental-scheduler")]
+    let panic_context = (shared.clone(), output.clone(), cancellation.clone());
+    let PreparedMachine {
+        machine,
+        scheduler_safe: _scheduler_safe,
+        filter_safe: _filter_safe,
+    } = match prepare_machine(
+        Arc::clone(&shared),
+        generation,
+        source,
+        output.clone(),
+        cancellation.clone(),
+        ready,
+        (reopen, isolated_startup),
+    ) {
+        Ok(Some(prepared)) => prepared,
+        Ok(None) => return,
+        Err(retry) => {
+            #[cfg(feature = "experimental-scheduler")]
+            restart_dedicated(&shared, generation, output, cancellation, retry);
+            #[cfg(not(feature = "experimental-scheduler"))]
+            {
+                let DedicatedStart {
+                    retry: startup::DedicatedRetry { source, ready },
+                    reopen,
+                } = *retry;
+                let _ = (source, ready, reopen);
+            }
+            return;
+        }
+    };
+
+    #[cfg(feature = "experimental-scheduler")]
+    if eligible
+        && _scheduler_safe
+        && let Some(pool) = &shared.scheduler
+    {
+        let mut machine = machine;
+        let cancellation = panic_context.2.clone();
+        let observability = shared.observability.clone();
+        let failure_context = (
+            shared.clone(),
+            panic_context.1.clone(),
+            cancellation.clone(),
+        );
+        let safe_machine = move || {
+            if panic_context
+                .0
+                .executor
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 5
+            {
+                return with_dispatch(&observability, || {
+                    if let Err(error) = panic_context.1.scheduler_deactivate(&panic_context.2) {
+                        fail_session(
+                            &panic_context.0,
+                            generation,
+                            error.into(),
+                            &panic_context.2,
+                            &panic_context.1,
+                        );
+                        return WorkerStep::Failed;
+                    }
+                    panic_context.1.wake();
+                    drive_machine(&mut machine, &panic_context.0, generation);
+                    terminal_outcome(&panic_context.0)
+                });
+            }
+            let isolated = panic_context
+                .0
+                .executor
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 4;
+            if isolated {
+                panic_context.1.wake();
+            }
+            let result = with_dispatch(&observability, || {
+                match catch_unwind(AssertUnwindSafe(&mut machine)) {
+                    Ok(step) => step,
+                    Err(_) => {
+                        fail_session(
+                            &panic_context.0,
+                            generation,
+                            PlaybackError::WorkerPanicked,
+                            &panic_context.2,
+                            &panic_context.1,
+                        );
+                        WorkerStep::Failed
+                    }
+                }
+            });
+            if isolated
+                && panic_context
+                    .0
+                    .executor
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    == 4
+            {
+                panic_context
+                    .0
+                    .executor
+                    .store(1, std::sync::atomic::Ordering::Release);
+            }
+            result
+        };
+        let failure_output = failure_context.1.clone();
+        match pool.submit(safe_machine, move |error| {
+            fail_session(
+                &failure_context.0,
+                generation,
+                PlaybackError::WorkerInitialization(Arc::new(error)),
+                &failure_context.2,
+                &failure_context.1,
+            );
+        }) {
+            Ok(job) => {
+                let wake = Arc::new(scheduler::CancelWake(Arc::downgrade(&job)));
+                *lock(&job.cancel_wake) = Some(wake.clone());
+                *lock(&shared.scheduled) = Some(job.clone());
+                cancellation.register_waker(wake);
+                failure_output.scheduler_activate();
+                shared
+                    .executor
+                    .store(1, std::sync::atomic::Ordering::Release);
+                job.wake();
+            }
+            Err(machine) => {
+                shared
+                    .executor
+                    .store(3, std::sync::atomic::Ordering::Release);
+                drive_selected(machine, &shared, generation, isolated_startup);
+            }
+        }
+        return;
+    }
+    #[cfg(feature = "experimental-scheduler")]
+    if let Some(pool) = &shared.scheduler {
+        pool.unsupported(if !eligibility.0 {
+            0
+        } else if !eligibility.1 {
+            1
+        } else if !_filter_safe {
+            3
+        } else {
+            2
+        });
+    }
+    #[cfg(feature = "experimental-scheduler")]
+    shared.executor.store(
+        if shared.scheduler.is_some() { 2 } else { 0 },
+        std::sync::atomic::Ordering::Release,
+    );
+    drive_selected(machine, &shared, generation, isolated_startup);
+}
+
+#[cfg(feature = "experimental-scheduler")]
+fn restart_dedicated(
+    shared: &Arc<SessionShared>,
+    generation: u64,
+    output: Arc<dyn MediaOutput>,
+    cancellation: CancellationToken,
+    retry: Box<DedicatedStart>,
+) {
+    shared
+        .scheduler
+        .as_ref()
+        .expect("restricted startup scheduler")
+        .record_probe_retry();
+    shared
+        .executor
+        .store(2, std::sync::atomic::Ordering::Release);
+    let context = shared.clone();
+    let failure_ready = retry.retry.ready.clone();
+    let failure_context = (output.clone(), cancellation.clone());
+    let result = thread::Builder::new()
+        .name(format!("remedia-probe-fallback-{generation}"))
+        .spawn(move || {
+            with_dispatch(&context.observability, || {
+                worker_entry(
+                    context.clone(),
+                    generation,
+                    retry.retry.source,
+                    output,
+                    cancellation,
+                    retry.retry.ready,
+                    (retry.reopen, false),
+                )
+            });
+        });
+    match result {
+        Ok(worker) => *lock(&shared.fallback_worker) = Some(worker),
+        Err(error) => {
+            let error = PlaybackError::WorkerInitialization(Arc::new(error));
+            fail_session(
+                shared,
+                generation,
+                error.clone(),
+                &failure_context.1,
+                &failure_context.0,
+            );
+            let _ = failure_ready.try_send(Err(error));
+        }
+    }
+}
+
+fn drive_selected(
+    machine: impl FnMut() -> WorkerStep + Send + 'static,
+    shared: &Arc<SessionShared>,
+    generation: u64,
+    isolated_startup: bool,
+) {
+    #[cfg(feature = "experimental-scheduler")]
+    if isolated_startup {
+        let context = shared.clone();
+        let result = thread::Builder::new()
+            .name(format!("remedia-fallback-{generation}"))
+            .spawn(move || {
+                with_dispatch(&context.observability, || {
+                    if catch_unwind(AssertUnwindSafe(|| {
+                        drive_machine(machine, &context, generation)
+                    }))
+                    .is_err()
+                    {
+                        let (output, cancellation) = {
+                            let data = lock(&context.data);
+                            (data.output.clone(), data.cancellation.clone())
+                        };
+                        if let (Some(output), Some(cancellation)) = (output, cancellation) {
+                            fail_session(
+                                &context,
+                                generation,
+                                PlaybackError::WorkerPanicked,
+                                &cancellation,
+                                &output,
+                            );
+                        }
+                    }
+                })
+            });
+        match result {
+            Ok(worker) => *lock(&shared.fallback_worker) = Some(worker),
+            Err(error) => {
+                let (output, cancellation) = {
+                    let data = lock(&shared.data);
+                    (data.output.clone(), data.cancellation.clone())
+                };
+                if let (Some(output), Some(cancellation)) = (output, cancellation) {
+                    fail_session(
+                        shared,
+                        generation,
+                        PlaybackError::WorkerInitialization(Arc::new(error)),
+                        &cancellation,
+                        &output,
+                    );
+                }
+            }
+        }
+        return;
+    }
+    let _ = isolated_startup;
+    drive_machine(machine, shared, generation);
+}
+
+fn terminal_outcome(shared: &SessionShared) -> WorkerStep {
+    match lock(&shared.data).state {
+        PlaybackState::Completed => WorkerStep::Completed,
+        PlaybackState::Failed => WorkerStep::Failed,
+        _ => WorkerStep::Cancelled,
+    }
+}
+
+fn drive_machine(mut machine: impl FnMut() -> WorkerStep, shared: &SessionShared, generation: u64) {
+    loop {
+        match machine() {
+            WorkerStep::Runnable => {}
+            WorkerStep::Completed | WorkerStep::Cancelled | WorkerStep::Failed => return,
+            #[cfg(feature = "experimental-scheduler")]
+            WorkerStep::WaitingOutput
+            | WorkerStep::WaitingInput
+            | WorkerStep::WaitingControl
+            | WorkerStep::Deadline(_)
+            | WorkerStep::DedicatedFallback
+            | WorkerStep::UnsupportedFilter => {
+                unreachable!("dedicated output uses blocking readiness")
+            }
+            WorkerStep::Paused(revision) => {
+                let mut data = lock(&shared.data);
+                while shared.revision.load(std::sync::atomic::Ordering::Acquire) == revision
+                    && data.generation == generation
+                    && matches!(data.state, PlaybackState::Paused | PlaybackState::Starting)
+                    && data.pending_seek.is_none()
+                    && data.pending_filter_graph.is_none()
+                    && !data.fallback_signal
+                    && !data.stopping
+                {
+                    data = wait(&shared.changed, data);
+                }
+            }
+        }
+    }
+}
+
+fn prepare_machine(
+    shared: Arc<SessionShared>,
+    generation: u64,
+    source: InputSource,
+    output: Arc<dyn MediaOutput>,
+    cancellation: CancellationToken,
+    ready: SyncSender<Result<AudioStreamInfo, PlaybackError>>,
+    (reopen, restricted): (fallback::Reopen, bool),
+) -> Result<Option<PreparedMachine<impl FnMut() -> WorkerStep + Send>>, Box<DedicatedStart>> {
+    #[cfg(feature = "experimental-scheduler")]
+    let isolate_file = matches!(source, InputSource::File(_));
     let _log_capture = crate::ffmpeg_logging::capture();
-    let Some(startup::PreparedWorker {
-        output_opus,
+    let startup::PreparedWorker {
         mut decoder,
         mut processor,
         mut can_passthrough,
         mut passthrough_mode,
         playback_id,
         _active_playback,
-    }) = startup::prepare(&shared, generation, source, &output, &cancellation, ready)
-    else {
-        return;
+    } = match startup::prepare(
+        &shared,
+        generation,
+        source,
+        &output,
+        &cancellation,
+        (ready, restricted),
+    ) {
+        Ok(Some(prepared)) => prepared,
+        Ok(None) => return Ok(None),
+        Err(retry) => return Err(Box::new(DedicatedStart { retry, reopen })),
     };
 
+    #[cfg(feature = "experimental-scheduler")]
+    let filter_safe = processor.scheduler_cpu_safe();
+    #[cfg(feature = "experimental-scheduler")]
+    let scheduler_safe = decoder.scheduler_demuxer_supported() && filter_safe;
+    #[cfg(not(feature = "experimental-scheduler"))]
+    let filter_safe = false;
+    #[cfg(not(feature = "experimental-scheduler"))]
+    let scheduler_safe = false;
     let mut pending_frame = None;
     let mut deferred_filter_update: Option<FilterUpdate> = None;
     let mut input_finished = false;
+    let mut processor_finished = false;
+    #[cfg(feature = "experimental-scheduler")]
+    let mut pending_output_seek: Option<SeekRequest> = None;
     // A seek moves the demuxer to an arbitrary sample, so the first packet must be decoded and
     // trimmed. `passthrough_eligible` records whether the stream could otherwise forward packets,
     // and `seek_recovery` tracks the return to whole source packets after that first frame.
@@ -80,643 +501,881 @@ pub(super) fn worker_loop(
     // swapping decoders blends decoded audio.
     let mut fallback: Option<fallback::FallbackSeek> = None;
     let mut force_pcm = false;
-    loop {
-        if let Err(error) = output.wait_ready(&cancellation) {
-            fail_session(&shared, generation, error.into(), &cancellation, &output);
-            return;
-        }
-        if let Some(waiting) = fallback.as_ref() {
-            waiting.set_playhead(fallback_playhead(&pending_frame, &processor));
-            if waiting.is_cancelled() {
-                // The request that asked for this seek gave up on it. Playback was never touched.
-                fallback.take().expect("waiting seek").cancelled();
-                force_pcm = false;
-            } else if waiting.timed_out() {
-                tracing::warn!(
-                    name: "core.playback.fallback_seek_timed_out",
-                    target: "remedia_core::playback",
-                    playback_id,
-                    waited_ms = waiting.elapsed().as_millis() as u64,
-                    "fallback seek abandoned; the replacement source did not catch up"
-                );
-                let error = PlaybackError::UnsupportedSeeking(
-                    "the replacement source did not catch up with playback in time".to_owned(),
-                );
-                fallback.take().expect("waiting seek").finish(Err(error));
-                force_pcm = false;
-            } else if waiting.is_finished() && !waiting.is_ready() {
-                let outcome = waiting.take_outcome();
-                let done = fallback.take().expect("waiting seek");
-                force_pcm = false;
-                let error = match outcome {
-                    Some(Err(error)) => error,
-                    _ => PlaybackError::Cancelled,
-                };
-                tracing::warn!(
-                    name: "core.playback.fallback_seek_failed",
-                    target: "remedia_core::playback",
-                    playback_id,
-                    error_kind = playback_error_kind(&error),
-                    "fallback seek failed; the current source continues"
-                );
-                done.finish(Err(error));
-            } else if waiting.is_ready() && passthrough_mode {
-                // Swapping decoders blends decoded audio, so leave forwarded packets first.
-                force_pcm = true;
-            } else if waiting.is_ready() && !seek_recovery.junction {
-                let done = fallback.take().expect("waiting seek");
-                force_pcm = false;
-                let mut replacement = match done.take_outcome() {
-                    Some(Ok(replacement)) => replacement,
-                    _ => {
-                        done.finish(Err(PlaybackError::Cancelled));
-                        continue;
-                    }
-                };
-                // The audio the old decoder would play next, at the exact sample the swap
-                // happens on. If the old source cannot produce any more, the swap still works.
-                let old = match pending_frame.take() {
-                    Some(frame) => Some(frame),
-                    None => match decoder.next_timed_frame() {
-                        Ok(frame) => frame,
-                        Err(_) if is_stopped(&shared, generation) => return,
-                        Err(_) => None,
-                    },
-                };
-                // The replacement continues from the target plus the source time that has
-                // passed, which is not where the old source is: the difference is the seek.
-                //
-                // An Opus stream that can return to packets also needs its first packet
-                // boundary to coincide with a boundary of the encoder's frame, which holds
-                // for exactly one phase of the replacement's start. Moving the start forward by
-                // the (under 20 ms) difference makes the two grids line up, as a promoted
-                // crossfade source does.
-                let recover = seek_recovery.pending
-                    && output.encoded_opus_output().is_some()
-                    && replacement.decoder.opus_passthrough_rejection().is_none()
-                    && replacement.decoder.opus_pre_skip() == OPUS_ENCODER_LOOKAHEAD;
-                let skip_for = |position: u64| {
-                    if recover {
-                        grid_skip(
-                            position,
-                            processor.next_sample(),
-                            seek_recovery.encoder_origin,
-                        )
-                    } else {
-                        0
-                    }
-                };
-                let position = old
+    Ok(Some(PreparedMachine {
+        machine: move || {
+            #[cfg(feature = "experimental-scheduler")]
+            if isolate_file
+                && matches!(
+                    shared.executor.load(std::sync::atomic::Ordering::Acquire),
+                    1 | 4
+                )
+                && lock(&shared.input_io).is_none()
+            {
+                *lock(&shared.input_io) = decoder
+                    .isolate_demux(
+                        shared
+                            .scheduler
+                            .as_ref()
+                            .expect("file scheduler")
+                            .io_executor(),
+                    )
+                    .map(|input| Arc::downgrade(&input));
+            }
+            let _active = &_active_playback;
+            let _log_capture = crate::ffmpeg_logging::capture();
+            #[cfg(feature = "experimental-scheduler")]
+            if let Some(request) = pending_output_seek.as_ref() {
+                if is_stopped(&shared, generation) || cancellation.is_cancelled() {
+                    let request = pending_output_seek.take().expect("pending output seek");
+                    let _ = request.response.send(Err(PlaybackError::Cancelled));
+                    return terminal_outcome(&shared);
+                }
+                let target = samples_from_duration(request.position);
+                let wake = lock(&shared.scheduled)
                     .as_ref()
-                    .map(|frame| {
-                        let natural = done.position_for(
-                            frame
-                                .source_start_sample
-                                .unwrap_or(frame.frame.start_sample),
-                        );
-                        natural + skip_for(natural)
-                    })
-                    .or_else(|| replacement.start().map(|start| start + skip_for(start)));
-                let aligned = match position {
-                    Some(position) => replacement.align(position).map(|()| position),
-                    None => Err(PlaybackError::SeekOutOfRange {
-                        target: done.target(),
-                        duration: replacement.info.duration.unwrap_or_default(),
-                    }),
-                };
-                let head = aligned.and_then(|position| match replacement.take_head() {
-                    Some(head)
-                        if head.source_start_sample.unwrap_or(head.frame.start_sample)
-                            == position =>
-                    {
-                        Ok(head)
+                    .and_then(|job| lock(&job.cancel_wake).clone())
+                    .expect("scheduled seek waker");
+                let waker = std::task::Waker::from(wake);
+                let mut cx = std::task::Context::from_waker(&waker);
+                let flushed =
+                    match output.scheduler_poll_flush_samples(target, &mut cx, &cancellation) {
+                        std::task::Poll::Pending => return WorkerStep::WaitingControl,
+                        std::task::Poll::Ready(result) => result,
                     }
-                    Some(_) => Err(PlaybackError::UnsupportedSeeking(
-                        "the replacement source's timestamps are not contiguous".to_owned(),
-                    )),
-                    None => Err(PlaybackError::SeekOutOfRange {
-                        target: done.target(),
-                        duration: replacement.info.duration.unwrap_or_default(),
-                    }),
-                });
-                match head {
-                    // The request gave up while the replacement was being lined up.
-                    Ok(_) if !done.commit() => {
-                        pending_frame = old;
-                        done.cancelled();
-                    }
-                    Ok(mut head) => {
-                        fallback::blend_head(
-                            &mut head.frame.samples,
-                            old.as_ref().map(|frame| &frame.frame.samples[..]),
-                        );
-                        let applied_sample =
-                            head.source_start_sample.unwrap_or(head.frame.start_sample);
-                        let info = replacement.info.clone();
-                        // The old decoder, and with it its connection, is released here.
-                        decoder = *replacement.decoder;
-                        pending_frame = Some(head);
-                        input_finished = false;
-                        // The replacement is decoded. If its packets can follow the re-encoded
-                        // audio, the usual recovery returns to them once the encoder and the
-                        // client's decoder have settled on the new audio.
-                        can_passthrough = false;
-                        passthrough_eligible = recover;
-                        seek_recovery.pending = recover;
-                        seek_recovery.pre_skip = decoder.opus_pre_skip();
-                        seek_recovery.junction = false;
-                        seek_recovery.delivered_frames = 0;
-                        {
-                            let mut data = lock(&shared.data);
-                            data.duration = info.duration;
-                            data.info = Some(info);
-                            data.passthrough_available = false;
-                            shared.changed.notify_all();
+                    .and_then(|()| match output.encoded_opus_output() {
+                        Some(encoded) if seek_recovery.pending => {
+                            encoded.align_encoder_frames(target)
                         }
-                        fallback::record_applied(
-                            playback_id,
-                            done.target(),
-                            applied_sample,
-                            done.elapsed(),
-                        );
-                        let outcome = done.outcome(applied_sample);
-                        done.finish(Ok(outcome));
-                    }
-                    Err(error) => {
-                        // The old source's next audio goes back where it was.
-                        pending_frame = old;
-                        if is_stopped(&shared, generation) {
-                            return;
-                        }
-                        tracing::warn!(
-                            name: "core.playback.fallback_seek_failed",
-                            target: "remedia_core::playback",
-                            playback_id,
-                            error_kind = playback_error_kind(&error),
-                            "fallback seek could not be applied; the current source continues"
-                        );
-                        done.finish(Err(error));
-                    }
+                        _ => Ok(()),
+                    });
+                return acknowledge_seek(
+                    &shared,
+                    (generation, playback_id),
+                    &output,
+                    &cancellation,
+                    pending_output_seek.take().expect("pending output seek"),
+                    target,
+                    flushed,
+                );
+            }
+            #[cfg(feature = "experimental-scheduler")]
+            if shared.executor.load(std::sync::atomic::Ordering::Acquire) == 4
+                && !processor_finished
+                && lock(&shared.data)
+                    .pending_filter_graph
+                    .as_ref()
+                    .and_then(|update| update.graph.as_ref())
+                    .is_some_and(|graph| !graph.scheduler_cpu_safe())
+            {
+                shared
+                    .executor
+                    .store(5, std::sync::atomic::Ordering::Release);
+                return WorkerStep::UnsupportedFilter;
+            }
+            #[cfg(feature = "experimental-scheduler")]
+            if shared.executor.load(std::sync::atomic::Ordering::Acquire) == 1 {
+                let data = lock(&shared.data);
+                if data.pending_seek.is_some()
+                    || data
+                        .pending_filter_graph
+                        .as_ref()
+                        .and_then(|update| update.graph.as_ref())
+                        .is_some_and(|graph| !graph.scheduler_cpu_safe())
+                    || fallback.is_some()
+                {
+                    shared
+                        .executor
+                        .store(4, std::sync::atomic::Ordering::Release);
+                    return WorkerStep::DedicatedFallback;
                 }
             }
-        }
-        if fallback.is_none()
-            && seek_recovery.ready(
-                &shared,
-                &decoder,
-                &processor,
-                &pending_frame,
-                passthrough_mode,
-                input_finished,
-                deferred_filter_update.is_some(),
-            )
-        {
-            // The encoder lags its input by its lookahead, so it must be given the first
-            // samples of the next packet before that packet is forwarded in their place.
-            seek_recovery.pending = false;
-            match decoder.overshoot_next_packet(OPUS_ENCODER_LOOKAHEAD as usize) {
-                Ok(Some(head)) => {
-                    pending_frame = Some(head);
-                    seek_recovery.junction = true;
-                    tracing::debug!(
-                        name: "core.playback.passthrough_recovery_junction",
+            #[cfg(feature = "experimental-scheduler")]
+            let seeking = lock(&shared.data).pending_seek.is_some();
+            let output_opus = output.encoded_opus_output();
+            #[cfg(feature = "experimental-scheduler")]
+            let scheduled_waker = (shared.executor.load(std::sync::atomic::Ordering::Acquire) == 1)
+                .then(|| {
+                    lock(&shared.scheduled)
+                        .as_ref()
+                        .and_then(|job| lock(&job.cancel_wake).clone())
+                })
+                .flatten();
+            #[cfg(feature = "experimental-scheduler")]
+            let readiness = if let Some(wake) = scheduled_waker {
+                let waker = std::task::Waker::from(wake);
+                let mut cx = std::task::Context::from_waker(&waker);
+                match output.scheduler_poll_deadline(&mut cx, &cancellation) {
+                    std::task::Poll::Pending => return WorkerStep::WaitingOutput,
+                    std::task::Poll::Ready(Ok(Some(deadline))) if deadline > Instant::now() => {
+                        return WorkerStep::Deadline(deadline);
+                    }
+                    std::task::Poll::Ready(result) => result.map(|_| ()),
+                }
+            } else {
+                if seeking {
+                    Ok(())
+                } else {
+                    output.wait_ready(&cancellation)
+                }
+            };
+            #[cfg(not(feature = "experimental-scheduler"))]
+            let readiness = output.wait_ready(&cancellation);
+            if cancellation.is_cancelled() {
+                return terminal_outcome(&shared);
+            }
+            if let Err(error) = readiness {
+                fail_session(&shared, generation, error.into(), &cancellation, &output);
+                return terminal_outcome(&shared);
+            }
+            if let Some(waiting) = fallback.as_ref() {
+                waiting.set_playhead(fallback_playhead(&pending_frame, &processor));
+                if waiting.is_cancelled() {
+                    // The request that asked for this seek gave up on it. Playback was never touched.
+                    fallback.take().expect("waiting seek").cancelled();
+                    force_pcm = false;
+                } else if waiting.timed_out() {
+                    tracing::warn!(
+                        name: "core.playback.fallback_seek_timed_out",
                         target: "remedia_core::playback",
                         playback_id,
-                        "draining the encoder lookahead before forwarding source packets again"
+                        waited_ms = waiting.elapsed().as_millis() as u64,
+                        "fallback seek abandoned; the replacement source did not catch up"
                     );
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    if is_stopped(&shared, generation) {
-                        return;
-                    }
-                    fail_session(&shared, generation, error.into(), &cancellation, &output);
-                    return;
-                }
-            }
-        }
-        match next_worker_action(
-            &shared,
-            generation,
-            &mut pending_frame,
-            input_finished,
-            can_passthrough && !force_pcm,
-            passthrough_mode,
-        ) {
-            WorkerAction::Exit => return,
-            // The replacement finished preparing; the check at the top of the loop acts on it.
-            WorkerAction::PollFallback => {}
-            WorkerAction::ConfigureProcessing => {
-                let was_passthrough = passthrough_mode;
-                if (processing::ProcessingTransition {
-                    shared: &shared,
-                    generation,
-                    output: &output,
-                    cancellation: &cancellation,
-                    playback_id,
-                    decoder: &mut decoder,
-                    processor: &mut processor,
-                    can_passthrough,
-                    passthrough_mode: &mut passthrough_mode,
-                    pending_frame: &mut pending_frame,
-                    deferred_filter_update: &mut deferred_filter_update,
-                    seamless: seek_recovery.can_resume(),
-                    primed_origin: &mut primed_origin,
-                })
-                .apply()
-                .is_break()
-                {
-                    return;
-                }
-                if was_passthrough && !passthrough_mode && seek_recovery.can_resume() {
-                    // Entering PCM from forwarded packets. A stream whose pre-skip equals the
-                    // encoder lookahead returns to packets only through the lookahead junction.
-                    can_passthrough = false;
-                    lock(&shared.data).passthrough_available = false;
-                    seek_recovery.junction = false;
-                    seek_recovery.truthful = false;
-                    match primed_origin.take() {
-                        Some(origin) => {
-                            // The encoder was primed with what the client just heard, so it is
-                            // warm and its frame phase is known.
-                            seek_recovery.pending = passthrough_eligible;
-                            seek_recovery.delivered_frames = OPUS_RECOVERY_WARM_FRAMES;
-                            seek_recovery.encoder_origin = origin;
-                            seek_recovery.truthful = true;
+                    let error = PlaybackError::UnsupportedSeeking(
+                        "the replacement source did not catch up with playback in time".to_owned(),
+                    );
+                    fallback.take().expect("waiting seek").finish(Err(error));
+                    force_pcm = false;
+                } else if waiting.is_finished() && !waiting.is_ready() {
+                    let outcome = waiting.take_outcome();
+                    let done = fallback.take().expect("waiting seek");
+                    force_pcm = false;
+                    let error = match outcome {
+                        Some(Err(error)) => error,
+                        _ => PlaybackError::Cancelled,
+                    };
+                    tracing::warn!(
+                        name: "core.playback.fallback_seek_failed",
+                        target: "remedia_core::playback",
+                        playback_id,
+                        error_kind = playback_error_kind(&error),
+                        "fallback seek failed; the current source continues"
+                    );
+                    done.finish(Err(error));
+                } else if waiting.is_ready() && passthrough_mode {
+                    // Swapping decoders blends decoded audio, so leave forwarded packets first.
+                    force_pcm = true;
+                } else if waiting.is_ready() && !seek_recovery.junction {
+                    let done = fallback.take().expect("waiting seek");
+                    force_pcm = false;
+                    let mut replacement = match done.take_outcome() {
+                        Some(Ok(replacement)) => replacement,
+                        _ => {
+                            done.finish(Err(PlaybackError::Cancelled));
+                            return WorkerStep::Runnable;
                         }
-                        // Priming was not possible (for example too little history right after
-                        // a seek). Decode on: an unprimed encoder cannot be joined seamlessly.
-                        None => seek_recovery.pending = false,
+                    };
+                    // The audio the old decoder would play next, at the exact sample the swap
+                    // happens on. If the old source cannot produce any more, the swap still works.
+                    let old = match pending_frame.take() {
+                        Some(frame) => Some(frame),
+                        None => match input_action!(
+                            shared,
+                            decoder,
+                            poll_next_timed_frame,
+                            next_timed_frame
+                        ) {
+                            Ok(frame) => frame,
+                            Err(_) if is_stopped(&shared, generation) => {
+                                return terminal_outcome(&shared);
+                            }
+                            Err(_) => None,
+                        },
+                    };
+                    // The replacement continues from the target plus the source time that has
+                    // passed, which is not where the old source is: the difference is the seek.
+                    //
+                    // An Opus stream that can return to packets also needs its first packet
+                    // boundary to coincide with a boundary of the encoder's frame, which holds
+                    // for exactly one phase of the replacement's start. Moving the start forward by
+                    // the (under 20 ms) difference makes the two grids line up, as a promoted
+                    // crossfade source does.
+                    let recover = seek_recovery.pending
+                        && output.encoded_opus_output().is_some()
+                        && replacement.decoder.opus_passthrough_rejection().is_none()
+                        && replacement.decoder.opus_pre_skip() == OPUS_ENCODER_LOOKAHEAD;
+                    let skip_for = |position: u64| {
+                        if recover {
+                            grid_skip(
+                                position,
+                                processor.next_sample(),
+                                seek_recovery.encoder_origin,
+                            )
+                        } else {
+                            0
+                        }
+                    };
+                    let position = old
+                        .as_ref()
+                        .map(|frame| {
+                            let natural = done.position_for(
+                                frame
+                                    .source_start_sample
+                                    .unwrap_or(frame.frame.start_sample),
+                            );
+                            natural + skip_for(natural)
+                        })
+                        .or_else(|| replacement.start().map(|start| start + skip_for(start)));
+                    let aligned = match position {
+                        Some(position) => replacement.align(position).map(|()| position),
+                        None => Err(PlaybackError::SeekOutOfRange {
+                            target: done.target(),
+                            duration: replacement.info.duration.unwrap_or_default(),
+                        }),
+                    };
+                    let head = aligned.and_then(|position| match replacement.take_head() {
+                        Some(head)
+                            if head.source_start_sample.unwrap_or(head.frame.start_sample)
+                                == position =>
+                        {
+                            Ok(head)
+                        }
+                        Some(_) => Err(PlaybackError::UnsupportedSeeking(
+                            "the replacement source's timestamps are not contiguous".to_owned(),
+                        )),
+                        None => Err(PlaybackError::SeekOutOfRange {
+                            target: done.target(),
+                            duration: replacement.info.duration.unwrap_or_default(),
+                        }),
+                    });
+                    match head {
+                        // The request gave up while the replacement was being lined up.
+                        Ok(_) if !done.commit() => {
+                            pending_frame = old;
+                            done.cancelled();
+                        }
+                        Ok(mut head) => {
+                            fallback::blend_head(
+                                &mut head.frame.samples,
+                                old.as_ref().map(|frame| &frame.frame.samples[..]),
+                            );
+                            let applied_sample =
+                                head.source_start_sample.unwrap_or(head.frame.start_sample);
+                            let info = replacement.info.clone();
+                            // The old decoder, and with it its connection, is released here.
+                            #[cfg(feature = "experimental-scheduler")]
+                            if let Some(input) = lock(&shared.input_io)
+                                .take()
+                                .and_then(|input| input.upgrade())
+                            {
+                                input.wait_idle();
+                            }
+                            decoder = *replacement.decoder;
+                            pending_frame = Some(head);
+                            input_finished = false;
+                            processor_finished = false;
+                            // The replacement is decoded. If its packets can follow the re-encoded
+                            // audio, the usual recovery returns to them once the encoder and the
+                            // client's decoder have settled on the new audio.
+                            can_passthrough = false;
+                            passthrough_eligible = recover;
+                            seek_recovery.pending = recover;
+                            seek_recovery.pre_skip = decoder.opus_pre_skip();
+                            seek_recovery.junction = false;
+                            seek_recovery.delivered_frames = 0;
+                            {
+                                let mut data = lock(&shared.data);
+                                data.duration = info.duration;
+                                data.info = Some(info);
+                                data.passthrough_available = false;
+                                shared.signal_change();
+                            }
+                            fallback::record_applied(
+                                playback_id,
+                                done.target(),
+                                applied_sample,
+                                done.elapsed(),
+                            );
+                            let outcome = done.outcome(applied_sample);
+                            done.finish(Ok(outcome));
+                        }
+                        Err(error) => {
+                            // The old source's next audio goes back where it was.
+                            pending_frame = old;
+                            if is_stopped(&shared, generation) {
+                                return terminal_outcome(&shared);
+                            }
+                            tracing::warn!(
+                                name: "core.playback.fallback_seek_failed",
+                                target: "remedia_core::playback",
+                                playback_id,
+                                error_kind = playback_error_kind(&error),
+                                "fallback seek could not be applied; the current source continues"
+                            );
+                            done.finish(Err(error));
+                        }
                     }
                 }
             }
-            WorkerAction::Decode => {
-                if passthrough_mode {
-                    match decoder.read_compressed_packet() {
-                        Ok(Some(packet)) => {
-                            let should_process = {
-                                let data = lock(&shared.data);
-                                data.filter_graph.is_some() || data.volume != 1.0
-                            };
-                            if should_process {
-                                decoder.queue_compressed_packet(packet);
-                                continue;
+            if fallback.is_none()
+                && seek_recovery.ready(
+                    &shared,
+                    &decoder,
+                    &processor,
+                    &pending_frame,
+                    passthrough_mode,
+                    input_finished,
+                    deferred_filter_update.is_some(),
+                )
+            {
+                // The encoder lags its input by its lookahead, so it must be given the first
+                // samples of the next packet before that packet is forwarded in their place.
+                let overshoot = input_action!(
+                    shared,
+                    decoder,
+                    poll_overshoot_next_packet,
+                    overshoot_next_packet,
+                    OPUS_ENCODER_LOOKAHEAD as usize
+                );
+                seek_recovery.pending = false;
+                match overshoot {
+                    Ok(Some(head)) => {
+                        pending_frame = Some(head);
+                        seek_recovery.junction = true;
+                        tracing::debug!(
+                            name: "core.playback.passthrough_recovery_junction",
+                            target: "remedia_core::playback",
+                            playback_id,
+                            "draining the encoder lookahead before forwarding source packets again"
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        if is_stopped(&shared, generation) {
+                            return terminal_outcome(&shared);
+                        }
+                        fail_session(&shared, generation, error.into(), &cancellation, &output);
+                        return terminal_outcome(&shared);
+                    }
+                }
+            }
+            match next_worker_action(
+                &shared,
+                generation,
+                &mut pending_frame,
+                input_finished,
+                can_passthrough && !force_pcm,
+                passthrough_mode,
+            ) {
+                WorkerAction::Exit => return terminal_outcome(&shared),
+                #[cfg(feature = "experimental-scheduler")]
+                WorkerAction::DedicatedFallback => {
+                    shared
+                        .executor
+                        .store(4, std::sync::atomic::Ordering::Release);
+                    return WorkerStep::DedicatedFallback;
+                }
+                WorkerAction::Wait(revision) => return WorkerStep::Paused(revision),
+                // The replacement finished preparing; the check at the top of the loop acts on it.
+                WorkerAction::PollFallback => {}
+                WorkerAction::ConfigureProcessing => {
+                    let was_passthrough = passthrough_mode;
+                    if (processing::ProcessingTransition {
+                        shared: &shared,
+                        generation,
+                        output: &output,
+                        cancellation: &cancellation,
+                        playback_id,
+                        decoder: &mut decoder,
+                        processor: &mut processor,
+                        can_passthrough,
+                        passthrough_mode: &mut passthrough_mode,
+                        pending_frame: &mut pending_frame,
+                        deferred_filter_update: &mut deferred_filter_update,
+                        seamless: seek_recovery.can_resume(),
+                        primed_origin: &mut primed_origin,
+                    })
+                    .apply()
+                    .is_break()
+                    {
+                        return terminal_outcome(&shared);
+                    }
+                    if was_passthrough && !passthrough_mode && seek_recovery.can_resume() {
+                        // Entering PCM from forwarded packets. A stream whose pre-skip equals the
+                        // encoder lookahead returns to packets only through the lookahead junction.
+                        can_passthrough = false;
+                        lock(&shared.data).passthrough_available = false;
+                        seek_recovery.junction = false;
+                        seek_recovery.truthful = false;
+                        match primed_origin.take() {
+                            Some(origin) => {
+                                // The encoder was primed with what the client just heard, so it is
+                                // warm and its frame phase is known.
+                                seek_recovery.pending = passthrough_eligible;
+                                seek_recovery.delivered_frames = OPUS_RECOVERY_WARM_FRAMES;
+                                seek_recovery.encoder_origin = origin;
+                                seek_recovery.truthful = true;
                             }
-                            let packet_info =
-                                encoded_packet_from_demuxed(&packet, decoder.info().channels);
-                            let accepted = output_opus
-                                .filter(|_| !packet.has_trimming_metadata)
-                                .zip(packet_info.as_ref())
-                                .is_some_and(|(encoded, packet)| {
-                                    encoded.supports_encoded_packet(packet)
-                                });
-                            if accepted {
-                                let Some(packet_info) = packet_info else {
-                                    continue;
+                            // Priming was not possible (for example too little history right after
+                            // a seek). Decode on: an unprimed encoder cannot be joined seamlessly.
+                            None => seek_recovery.pending = false,
+                        }
+                    }
+                }
+                WorkerAction::Decode => {
+                    if passthrough_mode {
+                        match input_action!(
+                            shared,
+                            decoder,
+                            poll_compressed_packet,
+                            read_compressed_packet
+                        ) {
+                            Ok(Some(packet)) => {
+                                let should_process = {
+                                    let data = lock(&shared.data);
+                                    data.filter_graph.is_some() || data.volume != 1.0
                                 };
-                                let start_sample = match processor.record_passthrough_packet(
-                                    packet_info.media_samples_per_channel,
-                                    packet.source_start_sample,
-                                    packet.source_position_estimated,
-                                ) {
-                                    Ok(start_sample) => start_sample,
-                                    Err(error) => {
+                                if should_process {
+                                    decoder.queue_compressed_packet(packet);
+                                    return WorkerStep::Runnable;
+                                }
+                                let packet_info =
+                                    encoded_packet_from_demuxed(&packet, decoder.info().channels);
+                                let accepted = output_opus
+                                    .filter(|_| !packet.has_trimming_metadata)
+                                    .zip(packet_info.as_ref())
+                                    .is_some_and(|(encoded, packet)| {
+                                        encoded.supports_encoded_packet(packet)
+                                    });
+                                if accepted {
+                                    let Some(packet_info) = packet_info else {
+                                        return WorkerStep::Runnable;
+                                    };
+                                    let start_sample = match processor.record_passthrough_packet(
+                                        packet_info.media_samples_per_channel,
+                                        packet.source_start_sample,
+                                        packet.source_position_estimated,
+                                    ) {
+                                        Ok(start_sample) => start_sample,
+                                        Err(error) => {
+                                            fail_session(
+                                                &shared,
+                                                generation,
+                                                PlaybackError::FilterGraph(Arc::new(error)),
+                                                &cancellation,
+                                                &output,
+                                            );
+                                            return terminal_outcome(&shared);
+                                        }
+                                    };
+                                    let packet_info = EncodedOpusPacket {
+                                        start_sample,
+                                        ..packet_info
+                                    };
+                                    let submitted_end = start_sample.saturating_add(u64::from(
+                                        packet_info.media_samples_per_channel,
+                                    ));
+                                    let source_end = packet.source_start_sample.map(|start| {
+                                        start.saturating_add(u64::from(
+                                            packet_info.media_samples_per_channel,
+                                        ))
+                                    });
+                                    if let Some(encoded) = output_opus
+                                        && let Err(error) =
+                                            encoded.write_encoded_packet(packet_info, &cancellation)
+                                    {
+                                        if is_stopped(&shared, generation) {
+                                            return terminal_outcome(&shared);
+                                        }
                                         fail_session(
                                             &shared,
                                             generation,
-                                            PlaybackError::FilterGraph(Arc::new(error)),
+                                            PlaybackError::Output(error),
                                             &cancellation,
                                             &output,
                                         );
-                                        return;
+                                        return terminal_outcome(&shared);
+                                    } else {
+                                        record_encoded_packet_submitted(
+                                            &shared,
+                                            generation,
+                                            &output,
+                                            submitted_end,
+                                            source_end.map(|sample| SourcePosition {
+                                                sample,
+                                                estimated: packet.source_position_estimated,
+                                            }),
+                                        );
                                     }
-                                };
-                                let packet_info = EncodedOpusPacket {
-                                    start_sample,
-                                    ..packet_info
-                                };
-                                let submitted_end = start_sample.saturating_add(u64::from(
-                                    packet_info.media_samples_per_channel,
-                                ));
-                                let source_end = packet.source_start_sample.map(|start| {
-                                    start.saturating_add(u64::from(
-                                        packet_info.media_samples_per_channel,
-                                    ))
-                                });
-                                if let Some(encoded) = output_opus
-                                    && let Err(error) =
-                                        encoded.write_encoded_packet(packet_info, &cancellation)
+                                } else {
+                                    tracing::debug!(
+                                        name: "core.playback.opus_packet_passthrough_rejected",
+                                        target: "remedia_core::playback",
+                                        playback_id,
+                                        packet_bytes = packet.packet.size(),
+                                        reason = if packet.has_trimming_metadata { "packet requires container trimming" } else { "packet duration or payload rejected by output" },
+                                        "falling back to PCM decoding for this source"
+                                    );
+                                    decoder.queue_compressed_packet(packet);
+                                    can_passthrough = false;
+                                    lock(&shared.data).passthrough_available = false;
+                                    passthrough_eligible = false;
+                                    seek_recovery.pending = false;
+                                }
+                            }
+                            Ok(None) => input_finished = true,
+                            Err(error) => {
+                                if is_stopped(&shared, generation) {
+                                    return terminal_outcome(&shared);
+                                }
+                                fail_session(
+                                    &shared,
+                                    generation,
+                                    error.into(),
+                                    &cancellation,
+                                    &output,
+                                );
+                                return terminal_outcome(&shared);
+                            }
+                        }
+                    } else {
+                        match input_action!(
+                            shared,
+                            decoder,
+                            poll_next_timed_frame,
+                            next_timed_frame
+                        ) {
+                            Ok(Some(frame)) => pending_frame = Some(frame),
+                            Ok(None) => input_finished = true,
+                            Err(error) => {
+                                if is_stopped(&shared, generation) {
+                                    return terminal_outcome(&shared);
+                                }
+                                fail_session(
+                                    &shared,
+                                    generation,
+                                    error.into(),
+                                    &cancellation,
+                                    &output,
+                                );
+                                return terminal_outcome(&shared);
+                            }
+                        }
+                    }
+                }
+                WorkerAction::Deliver(decoded_frame) => {
+                    seek_recovery.delivered_frames += 1;
+                    let gain = lock(&shared.data).volume;
+                    let DecodedPcmFrame {
+                        frame,
+                        source_start_sample,
+                        source_position_estimated,
+                    } = decoded_frame;
+                    match processor.write_frame(
+                        frame,
+                        source_start_sample,
+                        source_position_estimated,
+                        gain,
+                        |frame, source_position| {
+                            deliver_processed_frame(
+                                &shared,
+                                generation,
+                                &output,
+                                &cancellation,
+                                frame,
+                                source_position,
+                            )
+                        },
+                    ) {
+                        Ok(()) => {
+                            if std::mem::take(&mut seek_recovery.junction) {
+                                // The encoder's lookahead is drained and the packet is back in the
+                                // demuxer. Switch now, before anything can decode it a second time;
+                                // a later gain or filter change takes the ordinary path out.
+                                can_passthrough = true;
+                                lock(&shared.data).passthrough_available = true;
+                                if std::mem::take(&mut seek_recovery.truthful) {
+                                    processor.rewind(u64::from(OPUS_ENCODER_LOOKAHEAD));
+                                }
+                                if (processing::ProcessingTransition {
+                                    shared: &shared,
+                                    generation,
+                                    output: &output,
+                                    cancellation: &cancellation,
+                                    playback_id,
+                                    decoder: &mut decoder,
+                                    processor: &mut processor,
+                                    can_passthrough,
+                                    passthrough_mode: &mut passthrough_mode,
+                                    pending_frame: &mut pending_frame,
+                                    deferred_filter_update: &mut deferred_filter_update,
+                                    seamless: false,
+                                    primed_origin: &mut None,
+                                })
+                                .apply()
+                                .is_break()
                                 {
-                                    if is_stopped(&shared, generation) {
-                                        return;
-                                    }
+                                    return terminal_outcome(&shared);
+                                }
+                            }
+                        }
+                        Err(ProcessError::Output(_)) if is_stopped(&shared, generation) => {
+                            return terminal_outcome(&shared);
+                        }
+                        Err(ProcessError::Output(error)) => {
+                            fail_session(
+                                &shared,
+                                generation,
+                                PlaybackError::Output(error),
+                                &cancellation,
+                                &output,
+                            );
+                            return terminal_outcome(&shared);
+                        }
+                        Err(ProcessError::Filter(error)) => {
+                            fail_session(
+                                &shared,
+                                generation,
+                                PlaybackError::FilterGraph(Arc::new(error)),
+                                &cancellation,
+                                &output,
+                            );
+                            return terminal_outcome(&shared);
+                        }
+                    }
+                }
+                WorkerAction::ReplaceFilter(update) => {
+                    #[cfg(feature = "experimental-scheduler")]
+                    if shared.executor.load(std::sync::atomic::Ordering::Acquire) == 4
+                        && !processor_finished
+                        && update
+                            .graph
+                            .as_ref()
+                            .is_some_and(|graph| !graph.scheduler_cpu_safe())
+                    {
+                        lock(&shared.data).pending_filter_graph = Some(update);
+                        shared
+                            .executor
+                            .store(5, std::sync::atomic::Ordering::Release);
+                        return WorkerStep::UnsupportedFilter;
+                    }
+                    let next_sample = processor.next_sample();
+                    let should_switch_mode = {
+                        let data = lock(&shared.data);
+                        let wants_passthrough =
+                            can_passthrough && update.graph.is_none() && data.volume == 1.0;
+                        let wants_transcoding = update.graph.is_some() || data.volume != 1.0;
+                        (passthrough_mode && wants_transcoding)
+                            || (!passthrough_mode && wants_passthrough)
+                    };
+                    let apply_while_paused = should_switch_mode
+                        && !passthrough_mode
+                        && lock(&shared.data).state == PlaybackState::Paused
+                        && (pending_frame.is_some() || decoder.has_pending_frames());
+                    match output.filter_transition(next_sample, &cancellation) {
+                        Ok(()) => {
+                            if should_switch_mode && !apply_while_paused {
+                                deferred_filter_update = Some(update);
+                            } else {
+                                processor.replace(update.graph);
+                                let _ = update.response.send(Ok(()));
+                            }
+                            tracing::info!(
+                                name: "core.playback.filter_graph_replaced",
+                                target: "remedia_core::playback",
+                                playback_id,
+                                next_sample,
+                                graph_enabled = lock(&shared.data).filter_graph.is_some(),
+                                "PCM filtergraph replaced without resetting the output timeline"
+                            );
+                        }
+                        Err(_) if is_stopped(&shared, generation) => {
+                            let _ = update.response.send(Err(PlaybackError::Cancelled));
+                            return terminal_outcome(&shared);
+                        }
+                        Err(error) => {
+                            let playback_error = PlaybackError::Output(error);
+                            tracing::warn!(
+                                name: "core.playback.filter_graph_replacement_failed",
+                                target: "remedia_core::playback",
+                                playback_id,
+                                next_sample,
+                                error_kind = "output_transition",
+                                "output rejected filtergraph transition"
+                            );
+                            let _ = update.response.send(Err(playback_error.clone()));
+                            fail_session(
+                                &shared,
+                                generation,
+                                playback_error,
+                                &cancellation,
+                                &output,
+                            );
+                            return terminal_outcome(&shared);
+                        }
+                    }
+                }
+                WorkerAction::Pause => {
+                    match output_barrier!(shared, output, &cancellation, Pause, pause) {
+                        Ok(()) => {
+                            let mut data = lock(&shared.data);
+                            let paused = data.generation == generation
+                                && !data.stopping
+                                && data.state == PlaybackState::Pausing;
+                            if paused {
+                                data.state = PlaybackState::Paused;
+                            }
+                            shared.signal_change();
+                            drop(data);
+                            if paused {
+                                tracing::info!(
+                                    name: "core.playback.paused",
+                                    target: "remedia_core::playback",
+                                    playback_id,
+                                    "playback paused at frame boundary"
+                                );
+                            }
+                        }
+                        Err(_) if is_stopped(&shared, generation) => {
+                            return terminal_outcome(&shared);
+                        }
+                        Err(error) => {
+                            fail_session(
+                                &shared,
+                                generation,
+                                PlaybackError::Output(error),
+                                &cancellation,
+                                &output,
+                            );
+                            return terminal_outcome(&shared);
+                        }
+                    }
+                }
+                WorkerAction::Resume => {
+                    match output_barrier!(shared, output, &cancellation, Resume, resume) {
+                        Ok(()) => {
+                            let mut data = lock(&shared.data);
+                            let resumed = data.generation == generation
+                                && !data.stopping
+                                && data.state == PlaybackState::Resuming;
+                            if resumed {
+                                data.state = PlaybackState::Playing;
+                            }
+                            shared.signal_change();
+                            drop(data);
+                            if resumed {
+                                tracing::info!(
+                                    name: "core.playback.resumed",
+                                    target: "remedia_core::playback",
+                                    playback_id,
+                                    "playback resumed"
+                                );
+                            }
+                        }
+                        Err(_) if is_stopped(&shared, generation) => {
+                            return terminal_outcome(&shared);
+                        }
+                        Err(error) => {
+                            fail_session(
+                                &shared,
+                                generation,
+                                PlaybackError::Output(error),
+                                &cancellation,
+                                &output,
+                            );
+                            return terminal_outcome(&shared);
+                        }
+                    }
+                }
+                WorkerAction::Seek(request) => {
+                    // Only the latest seek may replace the active source.
+                    if let Some(previous) = fallback.take() {
+                        previous.supersede();
+                        force_pcm = false;
+                    }
+                    // A decoder that cannot reposition itself is never asked to: a failed attempt
+                    // on an HTTP source can drop the connection and lose the current position.
+                    if lock(&shared.data).fallback_seeking
+                        && reopen.available()
+                        && !decoder.can_seek_in_place()
+                    {
+                        if request.ticket.is_cancelled() {
+                            let _ = request.response.send(Err(PlaybackError::SeekCancelled));
+                            return WorkerStep::Runnable;
+                        }
+                        let origin = fallback_playhead(&pending_frame, &processor);
+                        match fallback::FallbackSeek::start(
+                            &shared,
+                            &reopen,
+                            request,
+                            origin,
+                            playing_info(&shared, &decoder),
+                            &cancellation,
+                        ) {
+                            Ok(started) => {
+                                tracing::info!(
+                                    name: "core.playback.fallback_seek_started",
+                                    target: "remedia_core::playback",
+                                    playback_id,
+                                    position_ms = started.target().as_millis() as u64,
+                                    "seek is preparing a replacement source; playback continues"
+                                );
+                                fallback = Some(started);
+                            }
+                            Err((request, error)) => {
+                                let _ = request.response.send(Err(error));
+                            }
+                        }
+                        return WorkerStep::Runnable;
+                    }
+                    // From here the seek changes the source, so it can no longer be cancelled.
+                    if !request.ticket.commit() {
+                        let _ = request.response.send(Err(PlaybackError::SeekCancelled));
+                        return WorkerStep::Runnable;
+                    }
+
+                    // The demuxer is asked first and nothing else is changed until it agrees, so a
+                    // seek that fails leaves the stream exactly as it was, passthrough included.
+                    match decoder.seek_with_pending(request.position, &mut pending_frame) {
+                        Ok(()) => {
+                            if passthrough_mode {
+                                if let Err(error) = decoder.activate_decoder(&[], None) {
+                                    let playback_error: PlaybackError = error.into();
+                                    let _ = request.response.send(Err(playback_error.clone()));
                                     fail_session(
                                         &shared,
                                         generation,
-                                        PlaybackError::Output(error),
+                                        playback_error,
                                         &cancellation,
                                         &output,
                                     );
-                                    return;
-                                } else {
-                                    record_encoded_packet_submitted(
-                                        &shared,
-                                        generation,
-                                        &output,
-                                        submitted_end,
-                                        source_end.map(|sample| SourcePosition {
-                                            sample,
-                                            estimated: packet.source_position_estimated,
-                                        }),
-                                    );
+                                    return terminal_outcome(&shared);
                                 }
-                            } else {
-                                tracing::debug!(
-                                    name: "core.playback.opus_packet_passthrough_rejected",
-                                    target: "remedia_core::playback",
-                                    playback_id,
-                                    packet_bytes = packet.packet.size(),
-                                    reason = if packet.has_trimming_metadata { "packet requires container trimming" } else { "packet duration or payload rejected by output" },
-                                    "falling back to PCM decoding for this source"
-                                );
-                                decoder.queue_compressed_packet(packet);
-                                can_passthrough = false;
-                                lock(&shared.data).passthrough_available = false;
-                                passthrough_eligible = false;
-                                seek_recovery.pending = false;
+                                passthrough_mode = false;
                             }
-                        }
-                        Ok(None) => input_finished = true,
-                        Err(error) => {
-                            if is_stopped(&shared, generation) {
-                                return;
-                            }
-                            fail_session(&shared, generation, error.into(), &cancellation, &output);
-                            return;
-                        }
-                    }
-                } else {
-                    match decoder.next_timed_frame() {
-                        Ok(Some(frame)) => pending_frame = Some(frame),
-                        Ok(None) => input_finished = true,
-                        Err(error) => {
-                            if is_stopped(&shared, generation) {
-                                return;
-                            }
-                            fail_session(&shared, generation, error.into(), &cancellation, &output);
-                            return;
-                        }
-                    }
-                }
-            }
-            WorkerAction::Deliver(decoded_frame) => {
-                seek_recovery.delivered_frames += 1;
-                let gain = lock(&shared.data).volume;
-                let DecodedPcmFrame {
-                    frame,
-                    source_start_sample,
-                    source_position_estimated,
-                } = decoded_frame;
-                match processor.write_frame(
-                    frame,
-                    source_start_sample,
-                    source_position_estimated,
-                    gain,
-                    |frame, source_position| {
-                        deliver_processed_frame(
-                            &shared,
-                            generation,
-                            &output,
-                            &cancellation,
-                            frame,
-                            source_position,
-                        )
-                    },
-                ) {
-                    Ok(()) => {
-                        if std::mem::take(&mut seek_recovery.junction) {
-                            // The encoder's lookahead is drained and the packet is back in the
-                            // demuxer. Switch now, before anything can decode it a second time;
-                            // a later gain or filter change takes the ordinary path out.
-                            can_passthrough = true;
-                            lock(&shared.data).passthrough_available = true;
-                            if std::mem::take(&mut seek_recovery.truthful) {
-                                processor.rewind(u64::from(OPUS_ENCODER_LOOKAHEAD));
-                            }
-                            if (processing::ProcessingTransition {
-                                shared: &shared,
-                                generation,
-                                output: &output,
-                                cancellation: &cancellation,
-                                playback_id,
-                                decoder: &mut decoder,
-                                processor: &mut processor,
-                                can_passthrough,
-                                passthrough_mode: &mut passthrough_mode,
-                                pending_frame: &mut pending_frame,
-                                deferred_filter_update: &mut deferred_filter_update,
-                                seamless: false,
-                                primed_origin: &mut None,
-                            })
-                            .apply()
-                            .is_break()
+                            // Packet passthrough cannot trim the first packet after a
+                            // demuxer seek to an arbitrary sample. Decode the packets up to
+                            // the next packet boundary so FFmpeg can discard pre-target
+                            // samples exactly, then `seek_recovery` restores passthrough.
+                            can_passthrough = false;
+                            seek_recovery.pending =
+                                passthrough_eligible && seek_recovery.can_resume();
+                            seek_recovery.junction = false;
+                            seek_recovery.truthful = false;
+                            seek_recovery.delivered_frames = 0;
+                            // The output encoder restarts on the media grid at the target.
+                            seek_recovery.encoder_origin = 0;
                             {
-                                return;
+                                let mut data = lock(&shared.data);
+                                data.passthrough_available = false;
+                                data.processing_mode = Some(PlaybackProcessingMode::Transcoding);
+                                shared.signal_change();
                             }
-                        }
-                    }
-                    Err(ProcessError::Output(_)) if is_stopped(&shared, generation) => return,
-                    Err(ProcessError::Output(error)) => {
-                        fail_session(
-                            &shared,
-                            generation,
-                            PlaybackError::Output(error),
-                            &cancellation,
-                            &output,
-                        );
-                        return;
-                    }
-                    Err(ProcessError::Filter(error)) => {
-                        fail_session(
-                            &shared,
-                            generation,
-                            PlaybackError::FilterGraph(Arc::new(error)),
-                            &cancellation,
-                            &output,
-                        );
-                        return;
-                    }
-                }
-            }
-            WorkerAction::ReplaceFilter(update) => {
-                let next_sample = processor.next_sample();
-                let should_switch_mode = {
-                    let data = lock(&shared.data);
-                    let wants_passthrough =
-                        can_passthrough && update.graph.is_none() && data.volume == 1.0;
-                    let wants_transcoding = update.graph.is_some() || data.volume != 1.0;
-                    (passthrough_mode && wants_transcoding)
-                        || (!passthrough_mode && wants_passthrough)
-                };
-                let apply_while_paused = should_switch_mode
-                    && !passthrough_mode
-                    && lock(&shared.data).state == PlaybackState::Paused
-                    && (pending_frame.is_some() || decoder.has_pending_frames());
-                match output.filter_transition(next_sample, &cancellation) {
-                    Ok(()) => {
-                        if should_switch_mode && !apply_while_paused {
-                            deferred_filter_update = Some(update);
-                        } else {
-                            processor.replace(update.graph);
-                            let _ = update.response.send(Ok(()));
-                        }
-                        tracing::info!(
-                            name: "core.playback.filter_graph_replaced",
-                            target: "remedia_core::playback",
-                            playback_id,
-                            next_sample,
-                            graph_enabled = lock(&shared.data).filter_graph.is_some(),
-                            "PCM filtergraph replaced without resetting the output timeline"
-                        );
-                    }
-                    Err(_) if is_stopped(&shared, generation) => {
-                        let _ = update.response.send(Err(PlaybackError::Cancelled));
-                        return;
-                    }
-                    Err(error) => {
-                        let playback_error = PlaybackError::Output(error);
-                        tracing::warn!(
-                            name: "core.playback.filter_graph_replacement_failed",
-                            target: "remedia_core::playback",
-                            playback_id,
-                            next_sample,
-                            error_kind = "output_transition",
-                            "output rejected filtergraph transition"
-                        );
-                        let _ = update.response.send(Err(playback_error.clone()));
-                        fail_session(&shared, generation, playback_error, &cancellation, &output);
-                        return;
-                    }
-                }
-            }
-            WorkerAction::Pause => match output.pause(&cancellation) {
-                Ok(()) => {
-                    let mut data = lock(&shared.data);
-                    let paused = data.generation == generation
-                        && !data.stopping
-                        && data.state == PlaybackState::Pausing;
-                    if paused {
-                        data.state = PlaybackState::Paused;
-                    }
-                    shared.changed.notify_all();
-                    drop(data);
-                    if paused {
-                        tracing::info!(
-                            name: "core.playback.paused",
-                            target: "remedia_core::playback",
-                            playback_id,
-                            "playback paused at frame boundary"
-                        );
-                    }
-                }
-                Err(_) if is_stopped(&shared, generation) => return,
-                Err(error) => {
-                    fail_session(
-                        &shared,
-                        generation,
-                        PlaybackError::Output(error),
-                        &cancellation,
-                        &output,
-                    );
-                    return;
-                }
-            },
-            WorkerAction::Resume => match output.resume(&cancellation) {
-                Ok(()) => {
-                    let mut data = lock(&shared.data);
-                    let resumed = data.generation == generation
-                        && !data.stopping
-                        && data.state == PlaybackState::Resuming;
-                    if resumed {
-                        data.state = PlaybackState::Playing;
-                    }
-                    shared.changed.notify_all();
-                    drop(data);
-                    if resumed {
-                        tracing::info!(
-                            name: "core.playback.resumed",
-                            target: "remedia_core::playback",
-                            playback_id,
-                            "playback resumed"
-                        );
-                    }
-                }
-                Err(_) if is_stopped(&shared, generation) => return,
-                Err(error) => {
-                    fail_session(
-                        &shared,
-                        generation,
-                        PlaybackError::Output(error),
-                        &cancellation,
-                        &output,
-                    );
-                    return;
-                }
-            },
-            WorkerAction::Seek(request) => {
-                // Only the latest seek may replace the active source.
-                if let Some(previous) = fallback.take() {
-                    previous.supersede();
-                    force_pcm = false;
-                }
-                // A decoder that cannot reposition itself is never asked to: a failed attempt
-                // on an HTTP source can drop the connection and lose the current position.
-                if lock(&shared.data).fallback_seeking
-                    && reopen.available()
-                    && !decoder.can_seek_in_place()
-                {
-                    if request.ticket.is_cancelled() {
-                        let _ = request.response.send(Err(PlaybackError::SeekCancelled));
-                        continue;
-                    }
-                    let origin = fallback_playhead(&pending_frame, &processor);
-                    match fallback::FallbackSeek::start(
-                        &shared,
-                        &reopen,
-                        request,
-                        origin,
-                        playing_info(&shared, &decoder),
-                        &cancellation,
-                    ) {
-                        Ok(started) => {
-                            tracing::info!(
-                                name: "core.playback.fallback_seek_started",
-                                target: "remedia_core::playback",
-                                playback_id,
-                                position_ms = started.target().as_millis() as u64,
-                                "seek is preparing a replacement source; playback continues"
-                            );
-                            fallback = Some(started);
-                        }
-                        Err((request, error)) => {
-                            let _ = request.response.send(Err(error));
-                        }
-                    }
-                    continue;
-                }
-                // From here the seek changes the source, so it can no longer be cancelled.
-                if !request.ticket.commit() {
-                    let _ = request.response.send(Err(PlaybackError::SeekCancelled));
-                    continue;
-                }
-
-                // The demuxer is asked first and nothing else is changed until it agrees, so a
-                // seek that fails leaves the stream exactly as it was, passthrough included.
-                match decoder.seek_with_pending(request.position, &mut pending_frame) {
-                    Ok(()) => {
-                        if passthrough_mode {
-                            if let Err(error) = decoder.activate_decoder(&[], None) {
-                                let playback_error: PlaybackError = error.into();
+                            input_finished = false;
+                            processor_finished = false;
+                            let target_sample = samples_from_duration(request.position);
+                            if let Err(error) = processor.reset(target_sample) {
+                                let playback_error = PlaybackError::FilterGraph(Arc::new(error));
                                 let _ = request.response.send(Err(playback_error.clone()));
                                 fail_session(
                                     &shared,
@@ -725,43 +1384,14 @@ pub(super) fn worker_loop(
                                     &cancellation,
                                     &output,
                                 );
-                                return;
+                                return terminal_outcome(&shared);
                             }
-                            passthrough_mode = false;
-                        }
-                        // Packet passthrough cannot trim the first packet after a
-                        // demuxer seek to an arbitrary sample. Decode the packets up to
-                        // the next packet boundary so FFmpeg can discard pre-target
-                        // samples exactly, then `seek_recovery` restores passthrough.
-                        can_passthrough = false;
-                        seek_recovery.pending = passthrough_eligible && seek_recovery.can_resume();
-                        seek_recovery.junction = false;
-                        seek_recovery.truthful = false;
-                        seek_recovery.delivered_frames = 0;
-                        // The output encoder restarts on the media grid at the target.
-                        seek_recovery.encoder_origin = 0;
-                        {
-                            let mut data = lock(&shared.data);
-                            data.passthrough_available = false;
-                            data.processing_mode = Some(PlaybackProcessingMode::Transcoding);
-                            shared.changed.notify_all();
-                        }
-                        input_finished = false;
-                        let target_sample = samples_from_duration(request.position);
-                        if let Err(error) = processor.reset(target_sample) {
-                            let playback_error = PlaybackError::FilterGraph(Arc::new(error));
-                            let _ = request.response.send(Err(playback_error.clone()));
-                            fail_session(
-                                &shared,
-                                generation,
-                                playback_error,
-                                &cancellation,
-                                &output,
-                            );
-                            return;
-                        }
-                        let flushed =
-                            output
+                            #[cfg(feature = "experimental-scheduler")]
+                            if shared.executor.load(std::sync::atomic::Ordering::Acquire) == 4 {
+                                pending_output_seek = Some(request);
+                                return WorkerStep::Runnable;
+                            }
+                            let flushed = output
                                 .flush_samples(target_sample, &cancellation)
                                 .and_then(|()| match output.encoded_opus_output() {
                                     Some(encoded) if seek_recovery.pending => {
@@ -769,47 +1399,60 @@ pub(super) fn worker_loop(
                                     }
                                     _ => Ok(()),
                                 });
-                        match flushed {
-                            Ok(()) => {
-                                let played = safe_played_position(&output);
-                                let mut data = lock(&shared.data);
-                                if data.generation == generation && !data.stopping {
-                                    data.submitted_sample = target_sample;
-                                    data.submitted_position = request.position;
-                                    data.media_position = Some(MediaPosition {
-                                        position: request.position,
-                                        accuracy: MediaPositionAccuracy::Estimated,
-                                    });
-                                    data.played_position = played;
-                                }
-                                drop(data);
-                                let _ = request.response.send(Ok(SeekOutcome {
-                                    requested: request.position,
-                                    applied: request.position,
-                                    replaced_source: false,
-                                }));
-                                tracing::info!(
-                                    name: "core.playback.seek_completed",
-                                    target: "remedia_core::playback",
-                                    playback_id,
-                                    position_ms = request.position.as_millis() as u64,
-                                    "playback seek applied"
-                                );
-                            }
-                            Err(_) if is_stopped(&shared, generation) => {
+                            return acknowledge_seek(
+                                &shared,
+                                (generation, playback_id),
+                                &output,
+                                &cancellation,
+                                request,
+                                target_sample,
+                                flushed,
+                            );
+                        }
+                        Err(error) => {
+                            if is_stopped(&shared, generation) {
                                 let _ = request.response.send(Err(PlaybackError::Cancelled));
-                                return;
+                                return terminal_outcome(&shared);
                             }
-                            Err(error) => {
-                                let playback_error = PlaybackError::Output(error);
-                                tracing::error!(
-                                    name: "core.playback.seek_failed",
-                                    target: "remedia_core::playback",
-                                    playback_id,
-                                    error_kind = playback_error_kind(&playback_error),
-                                    "playback seek failed in output"
-                                );
-                                let _ = request.response.send(Err(playback_error.clone()));
+                            let playback_error: PlaybackError = error.into();
+                            if matches!(playback_error, PlaybackError::UnsupportedSeeking(_))
+                                && lock(&shared.data).fallback_seeking
+                                && reopen.available()
+                            {
+                                // The decoder reported that it cannot seek after all. It keeps
+                                // playing from where it was while a replacement is prepared.
+                                request.ticket.uncommit();
+                                let origin = fallback_playhead(&pending_frame, &processor);
+                                match fallback::FallbackSeek::start(
+                                    &shared,
+                                    &reopen,
+                                    request,
+                                    origin,
+                                    playing_info(&shared, &decoder),
+                                    &cancellation,
+                                ) {
+                                    Ok(started) => fallback = Some(started),
+                                    Err((request, error)) => {
+                                        let _ = request.response.send(Err(error));
+                                    }
+                                }
+                                return WorkerStep::Runnable;
+                            }
+                            let recoverable = matches!(
+                                playback_error,
+                                PlaybackError::UnsupportedSeeking(_)
+                                    | PlaybackError::SeekOutOfRange { .. }
+                            );
+                            tracing::warn!(
+                                name: "core.playback.seek_failed",
+                                target: "remedia_core::playback",
+                                playback_id,
+                                error_kind = playback_error_kind(&playback_error),
+                                recoverable,
+                                "playback seek was not applied"
+                            );
+                            let _ = request.response.send(Err(playback_error.clone()));
+                            if !recoverable && !is_stopped(&shared, generation) {
                                 fail_session(
                                     &shared,
                                     generation,
@@ -817,173 +1460,129 @@ pub(super) fn worker_loop(
                                     &cancellation,
                                     &output,
                                 );
-                                return;
+                                return terminal_outcome(&shared);
+                            }
+                            if is_stopped(&shared, generation) {
+                                return terminal_outcome(&shared);
                             }
                         }
                     }
-                    Err(error) => {
-                        if is_stopped(&shared, generation) {
-                            let _ = request.response.send(Err(PlaybackError::Cancelled));
-                            return;
-                        }
-                        let playback_error: PlaybackError = error.into();
-                        if matches!(playback_error, PlaybackError::UnsupportedSeeking(_))
-                            && lock(&shared.data).fallback_seeking
-                            && reopen.available()
-                        {
-                            // The decoder reported that it cannot seek after all. It keeps
-                            // playing from where it was while a replacement is prepared.
-                            request.ticket.uncommit();
-                            let origin = fallback_playhead(&pending_frame, &processor);
-                            match fallback::FallbackSeek::start(
+                }
+                WorkerAction::Finish if fallback.is_some() => {
+                    // The old source ended while its replacement is still being prepared. Wait for
+                    // it, rather than complete the playback the seek was meant to continue.
+                    thread::sleep(Duration::from_millis(5));
+                }
+                WorkerAction::Finish => {
+                    let gain = lock(&shared.data).volume;
+                    if !processor_finished {
+                        match processor.finish(gain, |frame, source_position| {
+                            deliver_processed_frame(
                                 &shared,
-                                &reopen,
-                                request,
-                                origin,
-                                playing_info(&shared, &decoder),
+                                generation,
+                                &output,
                                 &cancellation,
-                            ) {
-                                Ok(started) => fallback = Some(started),
-                                Err((request, error)) => {
-                                    let _ = request.response.send(Err(error));
-                                }
+                                frame,
+                                source_position,
+                            )
+                        }) {
+                            Ok(()) => {}
+                            Err(ProcessError::Output(_)) if is_stopped(&shared, generation) => {
+                                return terminal_outcome(&shared);
                             }
-                            continue;
+                            Err(ProcessError::Output(error)) => {
+                                fail_session(
+                                    &shared,
+                                    generation,
+                                    PlaybackError::Output(error),
+                                    &cancellation,
+                                    &output,
+                                );
+                                return terminal_outcome(&shared);
+                            }
+                            Err(ProcessError::Filter(error)) => {
+                                fail_session(
+                                    &shared,
+                                    generation,
+                                    PlaybackError::FilterGraph(Arc::new(error)),
+                                    &cancellation,
+                                    &output,
+                                );
+                                return terminal_outcome(&shared);
+                            }
                         }
-                        let recoverable = matches!(
-                            playback_error,
-                            PlaybackError::UnsupportedSeeking(_)
-                                | PlaybackError::SeekOutOfRange { .. }
-                        );
-                        tracing::warn!(
-                            name: "core.playback.seek_failed",
-                            target: "remedia_core::playback",
-                            playback_id,
-                            error_kind = playback_error_kind(&playback_error),
-                            recoverable,
-                            "playback seek was not applied"
-                        );
-                        let _ = request.response.send(Err(playback_error.clone()));
-                        if !recoverable && !is_stopped(&shared, generation) {
+                        processor_finished = true;
+                    }
+                    match output_barrier!(shared, output, &cancellation, Finish, finish) {
+                        Ok(()) => {
+                            let played = safe_played_position(&output);
+                            let (pending_seek, pending_filter, completed) = {
+                                let mut data = lock(&shared.data);
+                                let completed = data.generation == generation && !data.stopping;
+                                let pending = if completed {
+                                    data.played_position = played.or(data.played_position);
+                                    data.state = PlaybackState::Completed;
+                                    (data.pending_seek.take(), data.pending_filter_graph.take())
+                                } else {
+                                    (None, None)
+                                };
+                                shared.signal_change();
+                                (pending.0, pending.1, completed)
+                            };
+                            if completed {
+                                shared.notify_completion_waiters();
+                                shared.notify_crossfade_events();
+                            }
+                            if let Some(request) = pending_seek {
+                                let _ = request.response.send(Err(PlaybackError::InvalidState {
+                                    operation: "seek",
+                                    state: PlaybackState::Completed,
+                                }));
+                            }
+                            if let Some(update) = pending_filter {
+                                // The filter setting was committed to the session before EOF won
+                                // the worker race. There is no remaining PCM boundary to apply it
+                                // to, so acknowledge it for the next source on this session.
+                                let graph_enabled = update.graph.is_some();
+                                let _ = update.response.send(Ok(()));
+                                tracing::info!(
+                                    name: "core.playback.filter_graph_deferred",
+                                    target: "remedia_core::playback",
+                                    playback_id,
+                                    graph_enabled,
+                                    "playback completed before filter transition; configuration remains for the next source"
+                                );
+                            }
+                            shared.observability.metrics().playback_completed();
+                            tracing::info!(
+                                name: "core.playback.completed",
+                                target: "remedia_core::playback",
+                                playback_id,
+                                "playback reached end of stream"
+                            );
+                            return terminal_outcome(&shared);
+                        }
+                        Err(_) if is_stopped(&shared, generation) => {
+                            return terminal_outcome(&shared);
+                        }
+                        Err(error) => {
                             fail_session(
                                 &shared,
                                 generation,
-                                playback_error,
+                                PlaybackError::Output(error),
                                 &cancellation,
                                 &output,
                             );
-                            return;
-                        }
-                        if is_stopped(&shared, generation) {
-                            return;
+                            return terminal_outcome(&shared);
                         }
                     }
                 }
             }
-            WorkerAction::Finish if fallback.is_some() => {
-                // The old source ended while its replacement is still being prepared. Wait for
-                // it, rather than complete the playback the seek was meant to continue.
-                thread::sleep(Duration::from_millis(5));
-            }
-            WorkerAction::Finish => {
-                let gain = lock(&shared.data).volume;
-                match processor.finish(gain, |frame, source_position| {
-                    deliver_processed_frame(
-                        &shared,
-                        generation,
-                        &output,
-                        &cancellation,
-                        frame,
-                        source_position,
-                    )
-                }) {
-                    Ok(()) => {}
-                    Err(ProcessError::Output(_)) if is_stopped(&shared, generation) => return,
-                    Err(ProcessError::Output(error)) => {
-                        fail_session(
-                            &shared,
-                            generation,
-                            PlaybackError::Output(error),
-                            &cancellation,
-                            &output,
-                        );
-                        return;
-                    }
-                    Err(ProcessError::Filter(error)) => {
-                        fail_session(
-                            &shared,
-                            generation,
-                            PlaybackError::FilterGraph(Arc::new(error)),
-                            &cancellation,
-                            &output,
-                        );
-                        return;
-                    }
-                }
-                match output.finish(&cancellation) {
-                    Ok(()) => {
-                        let played = safe_played_position(&output);
-                        let (pending_seek, pending_filter, completed) = {
-                            let mut data = lock(&shared.data);
-                            let completed = data.generation == generation && !data.stopping;
-                            let pending = if completed {
-                                data.played_position = played.or(data.played_position);
-                                data.state = PlaybackState::Completed;
-                                (data.pending_seek.take(), data.pending_filter_graph.take())
-                            } else {
-                                (None, None)
-                            };
-                            shared.changed.notify_all();
-                            (pending.0, pending.1, completed)
-                        };
-                        if completed {
-                            shared.notify_completion_waiters();
-                            shared.notify_crossfade_events();
-                        }
-                        if let Some(request) = pending_seek {
-                            let _ = request.response.send(Err(PlaybackError::InvalidState {
-                                operation: "seek",
-                                state: PlaybackState::Completed,
-                            }));
-                        }
-                        if let Some(update) = pending_filter {
-                            // The filter setting was committed to the session before EOF won
-                            // the worker race. There is no remaining PCM boundary to apply it
-                            // to, so acknowledge it for the next source on this session.
-                            let graph_enabled = update.graph.is_some();
-                            let _ = update.response.send(Ok(()));
-                            tracing::info!(
-                                name: "core.playback.filter_graph_deferred",
-                                target: "remedia_core::playback",
-                                playback_id,
-                                graph_enabled,
-                                "playback completed before filter transition; configuration remains for the next source"
-                            );
-                        }
-                        shared.observability.metrics().playback_completed();
-                        tracing::info!(
-                            name: "core.playback.completed",
-                            target: "remedia_core::playback",
-                            playback_id,
-                            "playback reached end of stream"
-                        );
-                        return;
-                    }
-                    Err(_) if is_stopped(&shared, generation) => return,
-                    Err(error) => {
-                        fail_session(
-                            &shared,
-                            generation,
-                            PlaybackError::Output(error),
-                            &cancellation,
-                            &output,
-                        );
-                        return;
-                    }
-                }
-            }
-        }
-    }
+            WorkerStep::Runnable
+        },
+        scheduler_safe,
+        filter_safe,
+    }))
 }
 
 mod startup;
@@ -1094,6 +1693,63 @@ impl SeekRecovery {
         let data = lock(&shared.data);
         data.filter_graph.is_none() && data.volume == 1.0 && data.state == PlaybackState::Playing
     }
+}
+
+fn acknowledge_seek(
+    shared: &Arc<SessionShared>,
+    (generation, playback_id): (u64, u64),
+    output: &Arc<dyn MediaOutput>,
+    cancellation: &CancellationToken,
+    request: SeekRequest,
+    target_sample: u64,
+    flushed: Result<(), OutputError>,
+) -> WorkerStep {
+    match flushed {
+        Ok(()) => {
+            let played = safe_played_position(output);
+            let mut data = lock(&shared.data);
+            if data.generation == generation && !data.stopping {
+                data.submitted_sample = target_sample;
+                data.submitted_position = request.position;
+                data.media_position = Some(MediaPosition {
+                    position: request.position,
+                    accuracy: MediaPositionAccuracy::Estimated,
+                });
+                data.played_position = played;
+            }
+            drop(data);
+            let _ = request.response.send(Ok(SeekOutcome {
+                requested: request.position,
+                applied: request.position,
+                replaced_source: false,
+            }));
+            tracing::info!(
+                name: "core.playback.seek_completed",
+                target: "remedia_core::playback",
+                playback_id,
+                position_ms = request.position.as_millis() as u64,
+                "playback seek applied"
+            );
+        }
+        Err(_) if is_stopped(shared, generation) => {
+            let _ = request.response.send(Err(PlaybackError::Cancelled));
+            return terminal_outcome(shared);
+        }
+        Err(error) => {
+            let playback_error = PlaybackError::Output(error);
+            tracing::error!(
+                name: "core.playback.seek_failed",
+                target: "remedia_core::playback",
+                playback_id,
+                error_kind = playback_error_kind(&playback_error),
+                "playback seek failed in output"
+            );
+            let _ = request.response.send(Err(playback_error.clone()));
+            fail_session(shared, generation, playback_error, cancellation, output);
+            return terminal_outcome(shared);
+        }
+    }
+    WorkerStep::Runnable
 }
 
 #[cfg(test)]

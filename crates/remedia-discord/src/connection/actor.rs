@@ -15,6 +15,8 @@ pub(super) struct VoiceActorSetup {
     pub(super) dave: Arc<Mutex<DaveProtocol>>,
     pub(super) rtp: RtpSender,
     pub(super) packet_rx: Receiver<QueuedPacket>,
+    #[cfg(feature = "experimental-scheduler")]
+    pub(super) readiness: Arc<futures_util::task::AtomicWaker>,
     pub(super) control_rx: Receiver<Control>,
     pub(super) generation_rx: watch::Receiver<u64>,
     pub(super) cancelled_generation: Arc<AtomicU64>,
@@ -38,6 +40,8 @@ pub(super) async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError
         dave,
         mut rtp,
         packet_rx,
+        #[cfg(feature = "experimental-scheduler")]
+        readiness,
         control_rx,
         mut generation_rx,
         cancelled_generation,
@@ -89,6 +93,14 @@ pub(super) async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError
             _ = async { if let Some(deadline) = deadline { time::sleep_until(deadline).await } }, if deadline.is_some() => Event::Deadline,
             changed = generation_rx.changed() => Event::Generation(changed),
         };
+        let event = match event {
+            Event::Control(Ok(control)) => match control.for_generation(*generation_rx.borrow()) {
+                Some(control) => Event::Control(Ok(control)),
+                None => continue,
+            },
+            other => other,
+        };
+        discard_stale_barrier(&mut scheduler.barrier, *generation_rx.borrow());
         let close_code = match &event {
             Event::Socket(Some(Ok(Message::Close(Some(frame))))) => Some(u16::from(frame.code)),
             _ => None,
@@ -269,6 +281,8 @@ pub(super) async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError
                 }
             }
             Event::Packet(Ok(packet)) => {
+                #[cfg(feature = "experimental-scheduler")]
+                readiness.wake();
                 let published_generation = *generation_rx.borrow();
                 if synchronize_output_generation(
                     published_generation,
@@ -332,9 +346,14 @@ pub(super) async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError
                 }
                 let _ = ack.send(Ok(()));
             }
-            Event::Control(Ok(Control::Pause { target_id, ack })) => {
+            Event::Control(Ok(Control::Pause {
+                generation,
+                target_id,
+                ack,
+            })) => {
                 let silence_packets = if scheduler.speaking { 5 } else { 0 };
                 scheduler.barrier = Some(PendingBarrier {
+                    generation: Some(generation),
                     target_id,
                     silence_packets,
                     kind: BarrierKind::Pause,
@@ -344,7 +363,7 @@ pub(super) async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError
                     scheduler.next_send_at = Some(Instant::now());
                 }
             }
-            Event::Control(Ok(Control::Resume { ack })) => {
+            Event::Control(Ok(Control::Resume { ack, .. })) => {
                 if !scheduler.paused {
                     let _ = ack.send(Err(VoiceError::Protocol(
                         "output resume was requested while it was not paused".into(),
@@ -358,9 +377,14 @@ pub(super) async fn voice_actor(setup: VoiceActorSetup) -> Result<(), VoiceError
                     let _ = ack.send(Ok(()));
                 }
             }
-            Event::Control(Ok(Control::Finish { target_id, ack })) => {
+            Event::Control(Ok(Control::Finish {
+                generation,
+                target_id,
+                ack,
+            })) => {
                 let silence_packets = if scheduler.speaking { 5 } else { 0 };
                 scheduler.barrier = Some(PendingBarrier {
+                    generation: Some(generation),
                     target_id,
                     silence_packets,
                     kind: BarrierKind::Finish,

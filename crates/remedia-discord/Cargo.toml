@@ -30,6 +30,10 @@ url = "2.5"
 workspace = true
 
 [dev-dependencies]
+remedia-resources = { path = "../remedia-resources" }
 openmls = "0.8.1"
 openmls_basic_credential = "0.5.0"
 openmls_rust_crypto = "0.5.1"
+
+[features]
+experimental-scheduler = ["remedia-core/experimental-scheduler"]

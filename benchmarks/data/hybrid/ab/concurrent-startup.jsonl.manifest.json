@@ -1,0 +1,19 @@
+{
+  "binaries": {
+    "original": {
+      "path": "/tmp/remedia-hybrid-tail/original-target/release/examples/hybrid_startup_diagnostic",
+      "sha256": "4f0a97ee05eccd84f31348816708c8b02943569b519e196bc5f1aa3d36d780f4"
+    },
+    "scheduled": {
+      "path": "/tmp/remedia-hybrid-tail/scheduled-target/release/examples/hybrid_startup_diagnostic",
+      "sha256": "d573aadf0b1c911947853872828bcc0c740390f71e20b60099d3d7998b1175a3"
+    }
+  },
+  "arguments": {
+    "original": "/tmp/remedia-hybrid-tail/original-target/release/examples/hybrid_startup_diagnostic",
+    "scheduled": "/tmp/remedia-hybrid-tail/scheduled-target/release/examples/hybrid_startup_diagnostic",
+    "fixture": "crates/remedia-core/tests/fixtures/generated-tone.mp3",
+    "output": "benchmarks/data/hybrid/ab/concurrent-startup.jsonl",
+    "counts": "128,512"
+  }
+}

@@ -2748,6 +2748,7 @@ dependencies = [
  "rand 0.9.5",
  "remedia-core",
  "remedia-observability",
+ "remedia-resources",
  "serde_json",
  "thiserror",
  "tokio",

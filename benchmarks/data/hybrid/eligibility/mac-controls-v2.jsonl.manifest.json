@@ -1,0 +1,36 @@
+{
+  "binaries": {
+    "original": {
+      "path": "/private/tmp/remedia-hybrid-eligibility-controls/original-target/release/examples/hybrid_scheduler_benchmark",
+      "sha256": "7a83fb46f1859964a9b9980b2889b6415595718ac4c6c158927b7996af523cde"
+    },
+    "dedicated": {
+      "path": "/private/tmp/remedia-hybrid-eligibility-controls/dedicated-target/release/examples/hybrid_scheduler_benchmark",
+      "sha256": "ff82e0ebf4893599851af9c8fd6dd215cd920d5d750011f87a3744d5557cbad2"
+    },
+    "scheduled": {
+      "path": "/private/tmp/remedia-hybrid-eligibility-controls/scheduled-target/release/examples/hybrid_scheduler_benchmark",
+      "sha256": "7d4247b528bcdfe76811094b0ad5837cf4985b36f7db7d61889bdfc549a337f5"
+    }
+  },
+  "arguments": {
+    "original": "/tmp/remedia-hybrid-eligibility-controls/original-target/release/examples/hybrid_scheduler_benchmark",
+    "dedicated": "/tmp/remedia-hybrid-eligibility-controls/dedicated-target/release/examples/hybrid_scheduler_benchmark",
+    "scheduled": "/tmp/remedia-hybrid-eligibility-controls/scheduled-target/release/examples/hybrid_scheduler_benchmark",
+    "fixtures": "/tmp/remedia-hybrid-tail/fixtures/music3.mp3",
+    "output": "/Users/andromeda/Developer/oss/androzdev/remedia/benchmarks/data/hybrid/eligibility/mac-controls-v2.jsonl",
+    "counts": "8,64,256",
+    "workers": "4,10",
+    "budgets": "8",
+    "formats": "f32le",
+    "repeats": 3,
+    "source": "file",
+    "startup_stagger_ms": 0,
+    "controls": 4,
+    "mixed": false,
+    "pacing": "unpaced"
+  },
+  "fixtures": {
+    "/tmp/remedia-hybrid-tail/fixtures/music3.mp3": "1b24623c65f9aa388a7bb5e2f8ef938917109c914ee629d5c2b17f364e58846d"
+  }
+}
