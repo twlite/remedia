@@ -3,7 +3,8 @@ param(
   [switch]$NoFFmpeg,
   [string]$Version = $(if ($env:REMEDIA_VERSION) { $env:REMEDIA_VERSION } else { 'latest' }),
   [string]$InstallDir = $(if ($env:REMEDIA_INSTALL_DIR) { $env:REMEDIA_INSTALL_DIR } else { Join-Path $HOME '.remedia' }),
-  [string]$ArchivePath = $env:REMEDIA_ARCHIVE_PATH
+  [string]$ArchivePath = $env:REMEDIA_ARCHIVE_PATH,
+  [switch]$NoModifyPath
 )
 $ErrorActionPreference = 'Stop'
 # Read the native OS architecture even from an emulated or 32-bit shell. These
@@ -414,7 +415,9 @@ exit /b %ERRORLEVEL%
       Set-InstallText $path ($content.Replace("`n", "`r`n") + "`r`n")
     }
   }
-  Add-RemediaToPath -Directory $binDir
+  if (!$NoModifyPath -and $env:REMEDIA_NO_MODIFY_PATH -ne '1') {
+    Add-RemediaToPath -Directory $binDir
+  }
   foreach ($name in @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt', 'LICENSES.md', 'COPYING.GPLv3')) {
     Copy-Item -LiteralPath (Join-Path $versionDir "licenses/$name") -Destination (Join-Path $licenseDir $name) -Force
   }
@@ -430,7 +433,11 @@ exit /b %ERRORLEVEL%
   try { Remove-ObsoleteVersions $libexec $oldCurrent }
   catch { Write-InstallStatus "Retaining obsolete directories after cleanup failure: $($_.Exception.Message)" }
   Write-Host "Installed Remedia $tag to $InstallDir ($versionDir)"
-  Write-Host 'Run: remedia --version'
+  if ($NoModifyPath -or $env:REMEDIA_NO_MODIFY_PATH -eq '1') {
+    Write-Host "PATH unchanged; run: & '$binDir\remedia.cmd' --version"
+  } else {
+    Write-Host 'Run: remedia --version'
+  }
 } finally {
   if ($stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
   if ($tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }

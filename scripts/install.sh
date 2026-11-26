@@ -4,19 +4,21 @@ set -eu
 REPO="twlite/remedia"
 INSTALL_DIR="${REMEDIA_INSTALL_DIR:-$HOME/.remedia}"
 VERSION="${REMEDIA_VERSION:-latest}"
+NO_MODIFY_PATH="${REMEDIA_NO_MODIFY_PATH:-0}"
 log() {
   printf '[remedia] %s\n' "$*"
 }
 
 usage() {
   cat <<'EOF'
-Usage: install.sh [--no-ffmpeg]
+Usage: install.sh [--no-ffmpeg] [--no-modify-path]
 
 Install the self-contained Remedia server. --no-ffmpeg is accepted as a no-op.
 
 Environment:
   REMEDIA_INSTALL_DIR   Installation prefix (default: ~/.remedia)
   REMEDIA_VERSION       Server release, latest or x.y.z
+  REMEDIA_NO_MODIFY_PATH Set to 1 to leave shell startup files unchanged
 EOF
 }
 
@@ -35,7 +37,7 @@ configure_shell_path() {
   path_dir="$INSTALL_DIR/bin"
   case "${SHELL:-}" in
     */bash|bash) profile_path="$HOME/.bashrc" ;;
-    */zsh|zsh) profile_path="$HOME/.zshrc" ;;
+    */zsh|zsh) profile_path="${ZDOTDIR:-$HOME}/.zshrc" ;;
     *) profile_path="$HOME/.profile" ;;
   esac
 
@@ -245,6 +247,7 @@ EOF
 for arg in "$@"; do
   case "$arg" in
     --no-ffmpeg) ;;
+    --no-modify-path) NO_MODIFY_PATH=1 ;;
     --help) usage; exit 0 ;;
     *) echo "Unsupported argument: $arg" >&2; usage >&2; exit 2 ;;
   esac
@@ -295,7 +298,9 @@ old_current="$(cat "$libexec/current.txt" 2>/dev/null || true)"
 case "$old_current" in *[!A-Za-z0-9._+-]*|.*) echo "Invalid current installation pointer" >&2; exit 1 ;; esac
 install_server
 write_server_commands
-configure_shell_path
+if [ "$NO_MODIFY_PATH" != 1 ]; then
+  configure_shell_path
+fi
 # Notices are also retained in each version so cached rollback preserves them.
 for item in LICENSE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.txt LICENSES.md COPYING.GPLv3; do
   cp "$version_dir/licenses/$item" "$INSTALL_DIR/licenses/$item"
@@ -317,4 +322,8 @@ if ! mv -f "$libexec/.current-$$.new" "$libexec/current.txt"; then
 fi
 cleanup_versions || log "Retaining obsolete directories after cleanup failure."
 log "Installed: $INSTALL_DIR/bin/remedia ($version_name)"
-log "Open a new terminal to use: remedia --version"
+if [ "$NO_MODIFY_PATH" = 1 ]; then
+  log "PATH unchanged; use $INSTALL_DIR/bin/remedia --version"
+else
+  log "Open a new terminal to use: remedia --version"
+fi

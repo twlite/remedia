@@ -289,8 +289,19 @@ fn update_reuses_installer_version_check_and_infers_custom_prefix() {
     )).unwrap();
     fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
 
+    let home = root.join("home");
+    let zdotdir = root.join("zsh");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&zdotdir).unwrap();
+    let profile = zdotdir.join(".zshrc");
+    fs::write(&profile, "# fixture\n").unwrap();
     let mut update = Command::new(executable);
     update
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("ZDOTDIR", &zdotdir)
+        .env("SHELL", "/bin/zsh")
+        .env("REMEDIA_NO_MODIFY_PATH", "1")
         .args(["update", "--no-ffmpeg"])
         .env_remove("REMEDIA_INSTALL_DIR")
         .env_remove("REMEDIA_VERSION")
@@ -310,6 +321,11 @@ fn update_reuses_installer_version_check_and_infers_custom_prefix() {
         fs::read_to_string(libexec.join("current.txt")).unwrap(),
         tag
     );
+
+    assert_eq!(fs::read_to_string(&profile).unwrap(), "# fixture\n");
+    assert!(!home.join(".zshrc").exists());
+    assert!(!home.join(".bashrc").exists());
+    assert!(!home.join(".profile").exists());
 
     // Unsupported hosts must still fail before release lookup or installation changes.
     fs::write(

@@ -77,6 +77,7 @@ function runSh(box, args, extraEnv = {}) {
       HOME: box.home,
       SHELL: '/bin/sh',
       REMEDIA_INSTALL_DIR: box.installDir,
+      REMEDIA_NO_MODIFY_PATH: '1',
       ...extraEnv,
     },
   });
@@ -136,6 +137,36 @@ function fakeRelease(box, version, { failDownload = false, badChecksum = false }
   );
   chmodSync(curl, 0o755);
 }
+
+test('Unix PATH opt-out and ZDOTDIR handling', { skip: !unixInstallerPlatform }, () => {
+  const box = sandbox();
+  try {
+    fakeRelease(box, '0.3.0');
+    const zdotdir = join(box.base, 'zsh config');
+    mkdirSync(zdotdir);
+    const profile = join(zdotdir, '.zshrc');
+    writeFileSync(profile, '# fixture\n');
+    const env = { SHELL: '/bin/zsh', ZDOTDIR: zdotdir };
+    for (const [args, extra] of [
+      [[], env],
+      [['--no-modify-path'], { ...env, REMEDIA_NO_MODIFY_PATH: '0' }],
+    ]) {
+      const result = runSh(box, args, extra);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(readFileSync(profile, 'utf8'), '# fixture\n');
+      assert.equal(existsSync(join(box.home, '.zshrc')), false);
+    }
+    const result = runSh(box, [], { ...env, REMEDIA_NO_MODIFY_PATH: '0' });
+    assert.equal(result.status, 0, result.stderr);
+    const registered = readFileSync(profile, 'utf8');
+    assert.ok(registered.includes(join(box.installDir, 'bin')));
+    assert.equal(existsSync(join(box.home, '.zshrc')), false);
+    assert.equal(runSh(box, [], { ...env, REMEDIA_NO_MODIFY_PATH: '0' }).status, 0);
+    assert.equal(readFileSync(profile, 'utf8'), registered);
+  } finally {
+    box.cleanup();
+  }
+});
 
 test(
   'Bash installs, skips identical full versions, updates between dev and stable, and retains the active pair on failure',
@@ -404,11 +435,16 @@ test(
       ['-NoProfile', '-Command', '(Get-Command powershell.exe).Source'],
       { encoding: 'utf8' },
     ).stdout.trim();
-    const userPath = spawnSync(
-      realShell,
-      ['-NoProfile', '-Command', "[Environment]::GetEnvironmentVariable('Path','User')"],
-      { encoding: 'utf8' },
-    ).stdout.trim();
+    const readUserPath = () => {
+      const result = spawnSync(
+        realShell,
+        ['-NoProfile', '-Command', "[Environment]::GetEnvironmentVariable('Path','User')"],
+        { encoding: 'utf8' },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout;
+    };
+    const userPath = readUserPath();
     const psQuote = (value) => `'${value.replaceAll("'", "''")}'`;
     const actualPwsh = spawnSync(
       realShell,
@@ -499,6 +535,7 @@ fn main() {
         PATH: `${box.fakeBin};${process.env.PATH}`,
         REMEDIA_INSTALL_DIR: box.installDir,
         REMEDIA_ARCHIVE_PATH: archive,
+        REMEDIA_NO_MODIFY_PATH: '1',
         FIXTURE_BOOTSTRAP: bootstrap,
         FIXTURE_LOG: box.log,
         FIXTURE_SHELL: realShell,
@@ -627,12 +664,8 @@ pointer: ${existsSync(pointer) ? readFileSync(pointer, 'utf8') : '(missing)'}`,
         rmSync(join(box.installDir, 'libexec/current.txt'));
       }
     } finally {
-      spawnSync(realShell, [
-        '-NoProfile',
-        '-Command',
-        `[Environment]::SetEnvironmentVariable('Path', ${psQuote(userPath)}, 'User')`,
-      ]);
       box.cleanup();
+      assert.equal(readUserPath(), userPath, 'installer must not modify the user PATH');
     }
   },
 );
