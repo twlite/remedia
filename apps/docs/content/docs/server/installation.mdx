@@ -26,6 +26,13 @@ copies LICENSE, LICENSES.md, COPYING.GPLv3 and third-party acknowledgments into
 GPLv3-or-later obligations. [Bundled FFmpeg](/docs/node/ffmpeg-9) explains the source
 archive and distribution model.
 
+For automated or isolated installations, pass `--no-modify-path` (POSIX) or
+`-NoModifyPath` (PowerShell), or set `REMEDIA_NO_MODIFY_PATH=1` in the installer
+process environment. This also works with `remedia update` when the installed CLI
+contains the updated installer. Shell startup files and the Windows user PATH
+remain unchanged; invoke the wrappers directly from the installation prefix’s
+`bin` directory or configure PATH yourself.
+
 ## Version directories and updates
 
 A fresh installation uses `~/.remedia/libexec/vVERSION/` (or the chosen prefix),
